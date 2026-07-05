@@ -12,7 +12,10 @@ let package = Package(
             name: "HedosKernel",
             dependencies: [.product(name: "LlamaSwift", package: "llama.swift")],
             resources: [.copy("Resources")]),
-        .executableTarget(name: "Hedos", dependencies: ["HedosKernel"]),
+        .executableTarget(
+            name: "Hedos",
+            dependencies: ["HedosKernel"],
+            resources: [.copy("Resources")]),
         .testTarget(
             name: "HedosKernelTests",
             dependencies: ["HedosKernel"],
