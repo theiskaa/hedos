@@ -27,6 +27,7 @@ public actor Kernel {
     public static let version = "0.1.0"
 
     public let registry: Registry
+    public let settings: SettingsStore
     private let adapters: [any RuntimeAdapter]
 
     public init(
@@ -34,25 +35,44 @@ public actor Kernel {
         adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
     ) {
         self.registry = Registry(directory: directory)
+        self.settings = SettingsStore(directory: directory)
         self.adapters = adapters
     }
 
     public init() {
-        self.registry = Registry(directory: Registry.defaultDirectory())
+        let directory = Registry.defaultDirectory()
+        self.registry = Registry(directory: directory)
+        self.settings = SettingsStore(directory: directory)
         self.adapters = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
     }
 
     public func discover() async throws -> DiscoverySummary {
         let home = FileManager.default.homeDirectoryForCurrentUser
+        let watched = (try? await settings.load().watchedFolders) ?? []
+        let looseDirectories =
+            LooseFileScanner.defaultDirectories()
+            + watched.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let scanners: [any StoreScanner] = [
             OllamaStoreScanner(root: home.appendingPathComponent(".ollama/models")),
             HFCacheScanner(roots: HFCacheScanner.defaultRoots()),
             LMStudioScanner(roots: LMStudioScanner.defaultRoots()),
-            LooseFileScanner(directories: LooseFileScanner.defaultDirectories()),
+            LooseFileScanner(directories: looseDirectories),
         ]
         let summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
         return summary
+    }
+
+    public func watchedFolders() async throws -> [String] {
+        try await settings.load().watchedFolders
+    }
+
+    public func addWatchedFolder(_ path: String) async throws {
+        _ = try await settings.addWatchedFolder(path)
+    }
+
+    public func removeWatchedFolder(_ path: String) async throws {
+        _ = try await settings.removeWatchedFolder(path)
     }
 
     public func resolve() async throws {
