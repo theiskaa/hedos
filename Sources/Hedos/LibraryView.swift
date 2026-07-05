@@ -86,6 +86,7 @@ struct LibraryView: View {
     @State private var model = LibraryViewModel()
     @State private var selectedID: String?
     @State private var showFolders = false
+    @State private var pendingConfirm: String?
 
     var body: some View {
         NavigationSplitView {
@@ -97,6 +98,27 @@ struct LibraryView: View {
         .frame(minWidth: 760, minHeight: 480)
         .tint(Design.accent)
         .task { await model.rescan() }
+        .onChange(of: selectedID) {
+            guard let record = model.record(id: selectedID),
+                record.runtime.resolved == .auto, record.runtime.confirmedAt == nil,
+                record.runtime.tier != .recipeNeeded
+            else {
+                pendingConfirm = nil
+                return
+            }
+            pendingConfirm = record.id
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { pendingConfirm != nil },
+                set: { if !$0 { pendingConfirm = nil } })
+        ) {
+            if let record = model.record(id: pendingConfirm) {
+                ResolutionSheet(record: record, library: model) {
+                    pendingConfirm = nil
+                }
+            }
+        }
     }
 
     private var sidebar: some View {
@@ -180,30 +202,15 @@ struct LibraryView: View {
             } else if record.capabilities.contains(.chat), record.runtime.id != nil {
                 ChatView(record: record, kernel: model.kernel)
                     .id(record.id)
-                    .sheet(isPresented: needsConfirmation(record)) {
-                        ResolutionSheet(record: record, library: model)
-                    }
             } else if record.capabilities.contains(.speak), record.runtime.id != nil {
                 VoiceView(record: record, kernel: model.kernel)
                     .id(record.id)
-                    .sheet(isPresented: needsConfirmation(record)) {
-                        ResolutionSheet(record: record, library: model)
-                    }
             } else {
                 ModelInfoPane(record: record)
             }
         } else {
             HeroPane(model: model)
         }
-    }
-
-    private func needsConfirmation(_ record: ModelRecord) -> Binding<Bool> {
-        Binding(
-            get: {
-                let current = model.record(id: record.id) ?? record
-                return current.runtime.resolved == .auto && current.runtime.confirmedAt == nil
-            },
-            set: { _ in })
     }
 }
 
@@ -459,11 +466,13 @@ struct FoldersPopover: View {
 struct ResolutionSheet: View {
     let record: ModelRecord
     let library: LibraryViewModel
+    let onDismiss: () -> Void
     @State private var chosen: String
 
-    init(record: ModelRecord, library: LibraryViewModel) {
+    init(record: ModelRecord, library: LibraryViewModel, onDismiss: @escaping () -> Void) {
         self.record = record
         self.library = library
+        self.onDismiss = onDismiss
         _chosen = State(initialValue: record.runtime.id ?? "")
     }
 
@@ -484,6 +493,8 @@ struct ResolutionSheet: View {
                 .pickerStyle(.radioGroup)
             }
             HStack {
+                Button("Cancel") { onDismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Run") {
                     Task {
@@ -492,6 +503,7 @@ struct ResolutionSheet: View {
                         } else {
                             await library.overrideRuntime(record.id, to: chosen)
                         }
+                        onDismiss()
                     }
                 }
                 .keyboardShortcut(.defaultAction)

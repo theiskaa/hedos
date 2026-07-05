@@ -160,9 +160,9 @@ struct ChatView: View {
                     }
                     Color.clear.frame(height: 1).id("tail")
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 28)
                 .padding(.vertical, 20)
-                .frame(maxWidth: 680)
+                .frame(maxWidth: 720, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -284,10 +284,8 @@ struct ChatView: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 28)
         .padding(.bottom, 6)
-        .frame(maxWidth: 680)
-        .frame(maxWidth: .infinity)
     }
 
     private var composer: some View {
@@ -295,15 +293,19 @@ struct ChatView: View {
             TextField("Message \(record.name)…", text: $model.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
-                .lineLimit(1...6)
+                .lineLimit(1...8)
                 .onSubmit { model.send() }
+                .padding(.leading, 6)
+                .padding(.vertical, 3)
             if model.isStreaming {
                 Button {
                     model.stop()
                 } label: {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Design.warn)
+                        .foregroundStyle(.white)
+                        .frame(width: 26, height: 26)
+                        .background(Design.warn, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .help("Stop generating")
@@ -312,22 +314,27 @@ struct ChatView: View {
                     model.send()
                 } label: {
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(
-                            sendable
-                                ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.quaternary))
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(sendable ? .white : .secondary)
+                        .frame(width: 26, height: 26)
+                        .background(
+                            sendable ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.quaternary),
+                            in: Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!sendable)
                 .help("Send")
             }
         }
-        .hedosField()
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 22))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(.quaternary, lineWidth: 1))
+        .padding(.horizontal, 20)
         .padding(.bottom, 16)
         .padding(.top, 8)
-        .frame(maxWidth: 680)
-        .frame(maxWidth: .infinity)
     }
 
     private var sendable: Bool {
