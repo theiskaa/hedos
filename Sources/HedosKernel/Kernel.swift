@@ -29,14 +29,18 @@ public actor Kernel {
     public let registry: Registry
     public let settings: SettingsStore
     private let adapters: [any RuntimeAdapter]
+    private let scheduler: JobScheduler
 
     public init(
         directory: URL,
-        adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
+        adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()],
+        admission: any JobAdmission = ImmediateAdmission()
     ) {
         self.registry = Registry(directory: directory)
         self.settings = SettingsStore(directory: directory)
         self.adapters = adapters
+        self.scheduler = JobScheduler(
+            history: JobHistoryStore(directory: directory), admission: admission)
     }
 
     public init() {
@@ -44,6 +48,7 @@ public actor Kernel {
         self.registry = Registry(directory: directory)
         self.settings = SettingsStore(directory: directory)
         self.adapters = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
+        self.scheduler = JobScheduler(history: JobHistoryStore(directory: directory))
     }
 
     public func discover() async throws -> DiscoverySummary {
@@ -154,6 +159,40 @@ public actor Kernel {
     public func submit(
         _ modelID: String, _ capability: Capability, payload: JSONValue
     ) async throws -> String {
-        throw KernelError.notImplemented("submit")
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
+            throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
+        }
+        guard let runner = adapter as? any JobRunning else {
+            throw KernelError.runtimeFailed(
+                "\(adapter.id) cannot run \(capability.rawValue) as a job")
+        }
+        return await scheduler.submit(
+            modelID: modelID, capability: capability, payload: payload
+        ) {
+            runner.run(record, capability, payload: payload)
+        }
+    }
+
+    public func job(id: String) async throws -> Job? {
+        try await scheduler.job(id: id)
+    }
+
+    public func jobEvents(id: String) async -> AsyncStream<JobEvent> {
+        await scheduler.events(id: id)
+    }
+
+    public func cancel(jobID: String) async {
+        await scheduler.cancel(jobID)
+    }
+
+    public func jobHistory() async throws -> [Job] {
+        try await scheduler.history.list()
+    }
+
+    public func activeJobs() async -> [Job] {
+        await scheduler.active()
     }
 }
