@@ -129,6 +129,7 @@ struct ChatView: View {
     let record: ModelRecord
     @State private var model: ChatViewModel
     @State private var followsStream = true
+    @State private var expandedThinking: Set<UUID> = []
 
     init(record: ModelRecord, kernel: Kernel) {
         self.record = record
@@ -138,22 +139,8 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
-            Divider()
             if let notice = model.notice {
-                HStack(spacing: 12) {
-                    Label(notice, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(Design.terracotta)
-                    if model.canStartOllama {
-                        Button("Start Ollama") {
-                            model.startOllamaAndRetry()
-                        }
-                        .controlSize(.small)
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 8)
+                noticeBar(notice)
             }
             composer
         }
@@ -164,19 +151,19 @@ struct ChatView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     if model.transcript.isEmpty {
                         emptyTranscript
                     }
                     ForEach(model.transcript) { entry in
-                        MessageBubble(entry: entry, isStreaming: model.isStreaming)
-                            .frame(
-                                maxWidth: .infinity,
-                                alignment: entry.role == .user ? .trailing : .leading)
+                        turn(entry)
                     }
                     Color.clear.frame(height: 1).id("tail")
                 }
-                .padding(18)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.containerSize.height
@@ -192,35 +179,131 @@ struct ChatView: View {
         }
     }
 
-    private var emptyTranscript: some View {
-        VStack(spacing: 8) {
-            Image(systemName: Design.modalityGlyph(record.modality))
-                .font(.system(size: 26))
-                .foregroundStyle(Design.modalityColor(record.modality).opacity(0.6))
-            Text("Chatting with \(record.name), locally.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+    @ViewBuilder
+    private func turn(_ entry: ChatViewModel.Entry) -> some View {
+        if entry.role == .user {
+            Text(entry.text)
+                .font(.system(size: 13))
+                .textSelection(.enabled)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+                .frame(maxWidth: 420, alignment: .trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                if !entry.thinking.isEmpty {
+                    thinkingBlock(entry)
+                }
+                if !entry.text.isEmpty {
+                    Text(entry.text)
+                        .font(.system(size: 13))
+                        .lineSpacing(3.5)
+                        .textSelection(.enabled)
+                } else if model.isStreaming && entry.thinking.isEmpty {
+                    Text("…")
+                        .foregroundStyle(.tertiary)
+                }
+                if let stats = entry.stats, !entry.text.isEmpty {
+                    statsLine(stats)
+                }
+            }
+            .frame(maxWidth: 620, alignment: .leading)
         }
+    }
+
+    @ViewBuilder
+    private func thinkingBlock(_ entry: ChatViewModel.Entry) -> some View {
+        let streaming = entry.text.isEmpty && model.isStreaming
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if expandedThinking.contains(entry.id) {
+                    expandedThinking.remove(entry.id)
+                } else {
+                    expandedThinking.insert(entry.id)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(streaming ? "Thinking…" : "Thought")
+                    Image(
+                        systemName: expandedThinking.contains(entry.id)
+                            ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            if expandedThinking.contains(entry.id) {
+                Text(entry.thinking)
+                    .font(.system(size: 11.5))
+                    .lineSpacing(3)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(.quaternary)
+                            .frame(width: 2)
+                    }
+            }
+        }
+    }
+
+    private func statsLine(_ stats: GenerationStats) -> some View {
+        var parts: [String] = []
+        if let tokens = stats.completionTokens {
+            parts.append("\(tokens) tok")
+            if let ms = stats.durationMs, ms > 0 {
+                parts.append(String(format: "%.0f tok/s", Double(tokens) / Double(ms) * 1000))
+            }
+        }
+        return Text(parts.joined(separator: " · "))
+            .font(Design.data(10))
+            .foregroundStyle(.quaternary)
+    }
+
+    private var emptyTranscript: some View {
+        Text("Chatting with \(record.name), locally.")
+            .font(.system(size: 12))
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 100)
+    }
+
+    private func noticeBar(_ notice: String) -> some View {
+        HStack(spacing: 10) {
+            Text(notice)
+                .font(.system(size: 12))
+                .foregroundStyle(Design.warn)
+            if model.canStartOllama {
+                Button("Start Ollama") {
+                    model.startOllamaAndRetry()
+                }
+                .controlSize(.small)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 6)
+        .frame(maxWidth: 680)
         .frame(maxWidth: .infinity)
-        .padding(.top, 80)
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
+        HStack(alignment: .bottom, spacing: 8) {
             TextField("Message \(record.name)…", text: $model.draft, axis: .vertical)
                 .textFieldStyle(.plain)
+                .font(.system(size: 13))
                 .lineLimit(1...6)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
                 .onSubmit { model.send() }
             if model.isStreaming {
                 Button {
                     model.stop()
                 } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 24))
-                        .foregroundStyle(Design.terracotta)
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Design.warn)
                 }
                 .buttonStyle(.plain)
                 .help("Stop generating")
@@ -228,81 +311,26 @@ struct ChatView: View {
                 Button {
                     model.send()
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 24))
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(
-                            model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Design.accent))
+                            sendable
+                                ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.quaternary))
                 }
                 .buttonStyle(.plain)
-                .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!sendable)
                 .help("Send")
             }
         }
-        .padding(14)
-    }
-}
-
-struct MessageBubble: View {
-    let entry: ChatViewModel.Entry
-    let isStreaming: Bool
-
-    var body: some View {
-        VStack(alignment: entry.role == .user ? .trailing : .leading, spacing: 5) {
-            bubble
-            if entry.role == .assistant, let stats = entry.stats, !entry.text.isEmpty {
-                statsLine(stats)
-            }
-        }
-        .frame(maxWidth: 520, alignment: entry.role == .user ? .trailing : .leading)
+        .hedosField()
+        .padding(.horizontal, 24)
+        .padding(.bottom, 16)
+        .padding(.top, 8)
+        .frame(maxWidth: 680)
+        .frame(maxWidth: .infinity)
     }
 
-    @ViewBuilder
-    private var bubble: some View {
-        let isUser = entry.role == .user
-        VStack(alignment: .leading, spacing: 7) {
-            if !entry.thinking.isEmpty {
-                DisclosureGroup {
-                    Text(entry.thinking)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 4)
-                } label: {
-                    Label(
-                        entry.text.isEmpty && isStreaming ? "Thinking…" : "Thought",
-                        systemImage: "brain")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Design.lapis)
-                }
-            }
-            if !entry.text.isEmpty || entry.thinking.isEmpty {
-                Text(entry.text.isEmpty && isStreaming ? "…" : entry.text)
-                    .textSelection(.enabled)
-                    .lineSpacing(2)
-            }
-        }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 9)
-        .background(
-            isUser
-                ? AnyShapeStyle(Design.accent.opacity(0.16))
-                : AnyShapeStyle(.quaternary.opacity(0.7)),
-            in: RoundedRectangle(cornerRadius: 11))
-    }
-
-    private func statsLine(_ stats: GenerationStats) -> some View {
-        var parts: [String] = []
-        if let tokens = stats.completionTokens {
-            parts.append("\(tokens) tokens")
-            if let ms = stats.durationMs, ms > 0 {
-                parts.append(String(format: "%.0f tok/s", Double(tokens) / Double(ms) * 1000))
-            }
-        }
-        return Text(parts.joined(separator: " · "))
-            .font(Design.data(10))
-            .foregroundStyle(.tertiary)
-            .padding(.horizontal, 4)
+    private var sendable: Bool {
+        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }

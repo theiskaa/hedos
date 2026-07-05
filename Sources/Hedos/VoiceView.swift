@@ -136,10 +136,10 @@ struct VoiceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                Text(record.name).font(Design.plaque(24))
-                TierBadge(tier: record.runtime.tier)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(record.name)
+                    .font(.system(size: 15, weight: .semibold))
                 Spacer()
                 if model.isPlaying {
                     SpeakingIndicator()
@@ -147,42 +147,32 @@ struct VoiceView: View {
             }
 
             TextEditor(text: $model.text)
-                .font(.system(size: 15))
+                .font(.system(size: 13))
                 .lineSpacing(3)
                 .scrollContentBackground(.hidden)
-                .padding(12)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 11))
-                .frame(minHeight: 110, maxHeight: 200)
+                .frame(minHeight: 100, maxHeight: 180)
+                .hedosField()
 
-            HStack(spacing: 14) {
-                Picker(selection: $model.voice) {
+            HStack(spacing: 12) {
+                Picker("Voice", selection: $model.voice) {
                     ForEach(model.voices, id: \.self) { voice in
                         Text(voice).tag(voice)
                     }
-                } label: {
-                    Label("Voice", systemImage: "person.wave.2")
                 }
-                .frame(maxWidth: 230)
+                .labelsHidden()
+                .frame(maxWidth: 170)
                 .disabled(model.voices.isEmpty)
 
                 Spacer()
 
                 if model.isSpeaking {
-                    Button {
+                    Button("Stop") {
                         model.stop()
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                            .frame(minWidth: 74)
                     }
-                    .controlSize(.large)
                 } else {
-                    Button {
+                    Button("Speak") {
                         model.speak()
-                    } label: {
-                        Label("Speak", systemImage: "waveform")
-                            .frame(minWidth: 74)
                     }
-                    .controlSize(.large)
                     .buttonStyle(.borderedProminent)
                     .tint(Design.accent)
                     .keyboardShortcut(.defaultAction)
@@ -192,20 +182,23 @@ struct VoiceView: View {
             }
 
             if let status = model.status {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(status).font(.callout).foregroundStyle(.secondary)
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.mini)
+                    Text(status)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
             }
             if let notice = model.notice {
-                Label(notice, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(Design.terracotta)
-                    .font(.callout)
+                Text(notice)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Design.warn)
             }
             Spacer()
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
+        .frame(maxWidth: 560, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle(record.name)
         .navigationSubtitle(record.runtime.id ?? "")
         .task { await model.loadVoices() }

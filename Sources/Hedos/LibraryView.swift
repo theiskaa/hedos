@@ -59,10 +59,10 @@ final class LibraryViewModel {
     var groupedRecords: [(section: String, records: [ModelRecord])] {
         let sections: [(SourceKind, String)] = [
             (.ollama, "Ollama"),
-            (.huggingfaceCache, "Hugging Face cache"),
+            (.huggingfaceCache, "Hugging Face"),
             (.lmStudio, "LM Studio"),
-            (.file, "Loose files"),
-            (.folder, "Loose files"),
+            (.file, "Loose"),
+            (.folder, "Loose"),
         ]
         var grouped: [String: [ModelRecord]] = [:]
         var order: [String] = []
@@ -90,11 +90,11 @@ struct LibraryView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 290, ideal: 340)
+                .navigationSplitViewColumnWidth(min: 210, ideal: 240)
         } detail: {
             detail
         }
-        .frame(minWidth: 800, minHeight: 500)
+        .frame(minWidth: 760, minHeight: 480)
         .tint(Design.accent)
         .task { await model.rescan() }
     }
@@ -107,10 +107,10 @@ struct LibraryView: View {
                         ModelRow(record: record).tag(record.id)
                     }
                 } header: {
-                    Text(group.section)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(nil)
+                    Text(group.section.uppercased())
+                        .font(.system(size: 10, weight: .medium))
+                        .tracking(0.8)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
@@ -132,22 +132,18 @@ struct LibraryView: View {
     private var footer: some View {
         VStack(spacing: 0) {
             Divider()
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 if model.isScanning {
                     ProgressView().controlSize(.mini)
-                    Text("Scanning…").font(.caption).foregroundStyle(.secondary)
                 } else if let summary = model.summary {
-                    Text("\(summary.totalCount) models")
-                        .font(.caption.weight(.medium))
+                    Text("\(summary.totalCount) models · \(DiscoverySummary.formatBytes(summary.totalBytes))")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    Text(DiscoverySummary.formatBytes(summary.totalBytes))
-                        .font(Design.data(10))
-                        .foregroundStyle(.tertiary)
                     if !summary.duplicates.isEmpty {
-                        Image(systemName: "externaldrive.badge.exclamationmark")
-                            .font(.caption)
-                            .foregroundStyle(Design.terracotta)
-                            .help("Duplicate weights on disk")
+                        Circle()
+                            .fill(Design.warn)
+                            .frame(width: 5, height: 5)
+                            .help(duplicatesSummary(summary))
                     }
                 }
                 Spacer()
@@ -155,10 +151,10 @@ struct LibraryView: View {
                     showFolders.toggle()
                 } label: {
                     Image(systemName: "folder.badge.plus")
-                        .font(.caption)
+                        .font(.system(size: 11))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
                 .help("Watched folders")
                 .popover(isPresented: $showFolders, arrowEdge: .bottom) {
                     FoldersPopover(model: model)
@@ -168,6 +164,12 @@ struct LibraryView: View {
             .padding(.vertical, 7)
         }
         .background(.bar)
+    }
+
+    private func duplicatesSummary(_ summary: DiscoverySummary) -> String {
+        summary.duplicates.map {
+            "\($0.names.joined(separator: " and ")) are duplicates — \(DiscoverySummary.formatBytes($0.wastedBytes)) wasted"
+        }.joined(separator: "\n")
     }
 
     @ViewBuilder
@@ -209,72 +211,24 @@ struct ModelRow: View {
     let record: ModelRecord
 
     var body: some View {
-        HStack(spacing: 9) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Design.modalityColor(record.modality).opacity(0.16))
-                .frame(width: 24, height: 24)
-                .overlay {
-                    Image(systemName: Design.modalityGlyph(record.modality))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(Design.modalityColor(record.modality))
-                }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(record.name).lineLimit(1)
-                if let repo = record.source.repo, repo != record.name {
-                    Text(repo)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                }
-            }
-            .layoutPriority(1)
-            Spacer(minLength: 6)
+        HStack {
+            Text(record.name)
+                .font(.system(size: 13))
+                .lineLimit(1)
+            Spacer(minLength: 8)
             if record.state == .missing {
-                Image(systemName: "questionmark.circle")
-                    .font(.caption)
-                    .foregroundStyle(Design.terracotta)
+                Circle()
+                    .fill(Design.warn.opacity(0.8))
+                    .frame(width: 5, height: 5)
                     .help("No longer found on disk")
-            } else {
-                TierBadge(tier: record.runtime.tier)
-            }
-            if let mb = record.footprintMB, mb > 0 {
-                Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
-                    .font(Design.data(10))
-                    .foregroundStyle(.tertiary)
-                    .frame(minWidth: 46, alignment: .trailing)
+            } else if record.runtime.tier == .recipeNeeded {
+                Circle()
+                    .fill(.quaternary)
+                    .frame(width: 5, height: 5)
+                    .help("Needs a runtime recipe — select for details")
             }
         }
-        .padding(.vertical, 2)
-    }
-}
-
-struct TierBadge: View {
-    let tier: RunTier
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: 9, weight: .semibold))
-            .tracking(0.3)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .background(color.opacity(0.15), in: Capsule())
-            .foregroundStyle(color)
-    }
-
-    private var label: String {
-        switch tier {
-        case .native: "NATIVE"
-        case .managed: "MANAGED"
-        case .recipeNeeded: "RECIPE"
-        }
-    }
-
-    private var color: Color {
-        switch tier {
-        case .native: Design.laurel
-        case .managed: Design.lapis
-        case .recipeNeeded: Design.granite
-        }
+        .padding(.vertical, 1)
     }
 }
 
@@ -284,33 +238,25 @@ struct HeroPane: View {
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            HeptagonMark(size: 56, color: .primary.opacity(0.85))
-                .padding(.bottom, 28)
+            HeptagonMark(size: 52, color: .primary.opacity(0.85))
+                .padding(.bottom, 30)
             if let summary = model.summary {
                 Text(summary.headline)
-                    .font(Design.plaque(21))
+                    .font(Design.plaque(20))
                     .multilineTextAlignment(.center)
                     .lineSpacing(5)
-                    .frame(maxWidth: 460)
-                ForEach(summary.duplicates, id: \.self) { group in
-                    Text(
-                        "\(group.names.joined(separator: " and ")) live in more than one place — \(DiscoverySummary.formatBytes(group.wastedBytes)) duplicated."
-                    )
-                    .font(.callout)
-                    .foregroundStyle(Design.terracotta)
-                    .padding(.top, 14)
-                }
+                    .frame(maxWidth: 430)
                 Text("Select a model to open it.")
-                    .font(.callout)
+                    .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
-                    .padding(.top, 22)
+                    .padding(.top, 24)
             } else {
                 Text("Looking for models on this Mac…")
-                    .font(Design.plaque(21))
+                    .font(Design.plaque(20))
                     .foregroundStyle(.secondary)
                 ProgressView()
                     .controlSize(.small)
-                    .padding(.top, 16)
+                    .padding(.top, 18)
             }
             Spacer()
             Spacer()
@@ -320,34 +266,168 @@ struct HeroPane: View {
     }
 }
 
+struct DetailHeader: View {
+    let record: ModelRecord
+    var trailing: AnyView? = nil
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: Design.modalityGlyph(record.modality))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Design.modalityColor(record.modality))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(record.name)
+                    .font(.system(size: 15, weight: .semibold))
+                if let runtime = record.runtime.id {
+                    Text("runs via \(runtime) · \(tierWord)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+            if let trailing { trailing }
+        }
+    }
+
+    private var tierWord: String {
+        switch record.runtime.tier {
+        case .native: "native"
+        case .managed: "managed"
+        case .recipeNeeded: "needs recipe"
+        }
+    }
+}
+
+struct MetaGrid: View {
+    let record: ModelRecord
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 8) {
+            row("Kind", record.source.kind.rawValue)
+            row("Modality", record.modality.rawValue)
+            if let repo = record.source.repo {
+                row("Repo", repo)
+            }
+            if let mb = record.footprintMB, mb > 0 {
+                GridRow {
+                    label("Size")
+                    Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
+                        .font(Design.data(12))
+                }
+            }
+        }
+        .font(.system(size: 13))
+    }
+
+    private func row(_ name: String, _ value: String) -> some View {
+        GridRow {
+            label(name)
+            Text(value)
+        }
+    }
+
+    private func label(_ name: String) -> some View {
+        Text(name)
+            .font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+    }
+}
+
+struct ModelInfoPane: View {
+    let record: ModelRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            DetailHeader(record: record)
+            MetaGrid(record: record)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(28)
+    }
+}
+
+struct RecipeNeededPane: View {
+    let record: ModelRecord
+    let shelf: [ModelRecord]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            DetailHeader(record: record)
+            Text(reason)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 480, alignment: .leading)
+            if let sibling = runnableSibling {
+                Text("You also have \(sibling.name), which runs.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            MetaGrid(record: record)
+            Spacer()
+            Text("A runtime recipe can make this model runnable later.")
+                .font(.system(size: 11))
+                .foregroundStyle(.quaternary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(28)
+    }
+
+    private var reason: String {
+        let identified = Identification.identify(record)
+        switch identified.format {
+        case .unknown:
+            return record.primaryWeightPath == nil
+                ? "This model's weights are in a format none of the built-in runtimes can execute — no safetensors or GGUF detected, likely PyTorch or another framework's format."
+                : "Hedos found this model but could not identify what kind it is."
+        case .diffusers:
+            return "This is an image-generation pipeline. Hedos's image runtime arrives in a later milestone."
+        case .safetensors, .mlxSafetensors:
+            return "The format is recognized, but no built-in runtime serves \(record.modality.rawValue) models yet."
+        default:
+            return "No built-in runtime can execute this model yet."
+        }
+    }
+
+    private var runnableSibling: ModelRecord? {
+        let base =
+            record.name.lowercased().split(separator: "-").first.map(String.init)
+            ?? record.name.lowercased()
+        guard base.count >= 4 else { return nil }
+        return shelf.first {
+            $0.id != record.id && $0.state == .ready
+                && $0.name.lowercased().contains(base)
+        }
+    }
+}
+
 struct FoldersPopover: View {
     let model: LibraryViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("Watched folders")
-                .font(.callout.weight(.semibold))
-            Text("Hedos scans Downloads, Models, and any folders you add here.")
-                .font(.caption)
+                .font(.system(size: 13, weight: .semibold))
+            Text("Hedos scans Downloads, Models, and any folders added here.")
+                .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if !model.watchedFolders.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 7) {
                     ForEach(model.watchedFolders, id: \.self) { path in
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 7) {
                             Text((path as NSString).abbreviatingWithTildeInPath)
-                                .font(.caption)
+                                .font(.system(size: 11))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
                             Button {
                                 Task { await model.removeFolder(path) }
                             } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.caption)
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
                                     .foregroundStyle(.tertiary)
                             }
                             .buttonStyle(.plain)
@@ -367,12 +447,12 @@ struct FoldersPopover: View {
                     Task { await model.addFolder(url) }
                 }
             } label: {
-                Label("Add folder…", systemImage: "plus")
-                    .font(.callout)
+                Text("Add folder…")
+                    .font(.system(size: 12))
             }
         }
         .padding(14)
-        .frame(width: 300)
+        .frame(width: 280)
     }
 }
 
@@ -389,22 +469,11 @@ struct ResolutionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(Design.modalityColor(record.modality).opacity(0.16))
-                    .frame(width: 30, height: 30)
-                    .overlay {
-                        Image(systemName: Design.modalityGlyph(record.modality))
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Design.modalityColor(record.modality))
-                    }
-                Text("Run \(record.name)?")
-                    .font(.title3.weight(.semibold))
-            }
-            Text(
-                "Hedos will run this \(record.modality.rawValue) model via **\(record.runtime.id ?? "?")**."
-            )
-            .foregroundStyle(.secondary)
+            Text("Run \(record.name)?")
+                .font(.system(size: 15, weight: .semibold))
+            Text("Hedos will run this \(record.modality.rawValue) model via \(record.runtime.id ?? "?").")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
             if !record.runtime.alternatives.isEmpty {
                 Picker("Runtime", selection: $chosen) {
                     Text(record.runtime.id ?? "?").tag(record.runtime.id ?? "")
@@ -428,113 +497,7 @@ struct ResolutionSheet: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(22)
-        .frame(width: 380)
-    }
-}
-
-struct ModelInfoPane: View {
-    let record: ModelRecord
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Text(record.name).font(Design.plaque(24))
-                TierBadge(tier: record.runtime.tier)
-            }
-            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 7) {
-                GridRow {
-                    Text("Kind").foregroundStyle(.secondary)
-                    Text(record.source.kind.rawValue)
-                }
-                GridRow {
-                    Text("Modality").foregroundStyle(.secondary)
-                    Text(record.modality.rawValue)
-                }
-                if let repo = record.source.repo {
-                    GridRow {
-                        Text("Repo").foregroundStyle(.secondary)
-                        Text(repo)
-                    }
-                }
-                if let mb = record.footprintMB, mb > 0 {
-                    GridRow {
-                        Text("Size").foregroundStyle(.secondary)
-                        Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
-                            .font(Design.data(12))
-                    }
-                }
-                if let runtime = record.runtime.id {
-                    GridRow {
-                        Text("Runtime").foregroundStyle(.secondary)
-                        Text(runtime)
-                    }
-                }
-            }
-            .font(.callout)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(28)
-    }
-}
-
-struct RecipeNeededPane: View {
-    let record: ModelRecord
-    let shelf: [ModelRecord]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Text(record.name).font(Design.plaque(24))
-                TierBadge(tier: .recipeNeeded)
-            }
-            Text(reason)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let sibling = runnableSibling {
-                Label(
-                    "You also have \(sibling.name), which runs.",
-                    systemImage: "checkmark.circle")
-                .foregroundStyle(Design.laurel)
-            }
-            Text(
-                "A runtime recipe — a small manifest that teaches Hedos how to execute this format — can make it runnable later."
-            )
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(28)
-    }
-
-    private var reason: String {
-        let identified = Identification.identify(record)
-        switch identified.format {
-        case .unknown:
-            return record.primaryWeightPath == nil
-                ? "Hedos found this model, but its weights are in a format none of the built-in runtimes can execute — no safetensors or GGUF weights detected, likely PyTorch or another framework's format."
-                : "Hedos found this model but could not identify what kind it is."
-        case .diffusers:
-            return
-                "This is an image-generation pipeline. Hedos's image runtime arrives in a later milestone."
-        case .safetensors, .mlxSafetensors:
-            return
-                "This model's format is recognized, but no built-in runtime serves its modality (\(record.modality.rawValue)) yet."
-        default:
-            return "No built-in runtime can execute this model yet."
-        }
-    }
-
-    private var runnableSibling: ModelRecord? {
-        let base =
-            record.name.lowercased().split(separator: "-").first.map(String.init)
-            ?? record.name.lowercased()
-        guard base.count >= 4 else { return nil }
-        return shelf.first {
-            $0.id != record.id && $0.state == .ready
-                && $0.name.lowercased().contains(base)
-        }
+        .padding(20)
+        .frame(width: 340)
     }
 }
