@@ -65,6 +65,7 @@ final class VoiceViewModel {
     var status: String?
     var notice: String?
     var isSpeaking = false
+    var isPlaying = false
 
     init(kernel: Kernel, modelID: String) {
         self.kernel = kernel
@@ -98,6 +99,7 @@ final class VoiceViewModel {
                         status = message
                     case .audio(let frame):
                         status = nil
+                        isPlaying = true
                         player.enqueue(frame)
                     case .done:
                         break
@@ -105,14 +107,13 @@ final class VoiceViewModel {
                         break
                     }
                 }
-            } catch KernelError.runtimeUnavailable(let hint) {
-                notice = hint
             } catch is CancellationError {
             } catch {
-                notice = "Speech failed: \(error.localizedDescription)"
+                notice = error.localizedDescription
             }
             status = nil
             isSpeaking = false
+            isPlaying = false
         }
     }
 
@@ -121,6 +122,7 @@ final class VoiceViewModel {
         player.stop()
         status = nil
         isSpeaking = false
+        isPlaying = false
     }
 }
 
@@ -134,22 +136,33 @@ struct VoiceView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(record.name).font(.title2.weight(.semibold))
-            TextEditor(text: $model.text)
-                .font(.body)
-                .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-                .frame(minHeight: 100, maxHeight: 180)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Text(record.name).font(Design.plaque(24))
+                TierBadge(tier: record.runtime.tier)
+                Spacer()
+                if model.isPlaying {
+                    SpeakingIndicator()
+                }
+            }
 
-            HStack(spacing: 12) {
-                Picker("Voice", selection: $model.voice) {
+            TextEditor(text: $model.text)
+                .font(.system(size: 15))
+                .lineSpacing(3)
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 11))
+                .frame(minHeight: 110, maxHeight: 200)
+
+            HStack(spacing: 14) {
+                Picker(selection: $model.voice) {
                     ForEach(model.voices, id: \.self) { voice in
                         Text(voice).tag(voice)
                     }
+                } label: {
+                    Label("Voice", systemImage: "person.wave.2")
                 }
-                .frame(maxWidth: 220)
+                .frame(maxWidth: 230)
                 .disabled(model.voices.isEmpty)
 
                 Spacer()
@@ -159,13 +172,19 @@ struct VoiceView: View {
                         model.stop()
                     } label: {
                         Label("Stop", systemImage: "stop.fill")
+                            .frame(minWidth: 74)
                     }
+                    .controlSize(.large)
                 } else {
                     Button {
                         model.speak()
                     } label: {
                         Label("Speak", systemImage: "waveform")
+                            .frame(minWidth: 74)
                     }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Design.accent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(
                         model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -175,18 +194,20 @@ struct VoiceView: View {
             if let status = model.status {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text(status).foregroundStyle(.secondary)
+                    Text(status).font(.callout).foregroundStyle(.secondary)
                 }
             }
             if let notice = model.notice {
                 Label(notice, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Design.terracotta)
                     .font(.callout)
             }
             Spacer()
         }
-        .padding(24)
+        .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .navigationTitle(record.name)
+        .navigationSubtitle(record.runtime.id ?? "")
         .task { await model.loadVoices() }
     }
 }
