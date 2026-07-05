@@ -29,6 +29,20 @@ final class LibraryViewModel {
         return records.first { $0.id == id }
     }
 
+    func refreshShelf() async {
+        records = (try? await kernel.shelf()) ?? records
+    }
+
+    func confirmRuntime(_ id: String) async {
+        try? await kernel.confirmRuntime(id)
+        await refreshShelf()
+    }
+
+    func overrideRuntime(_ id: String, to runtimeID: String) async {
+        try? await kernel.overrideRuntime(id, to: runtimeID)
+        await refreshShelf()
+    }
+
     var groupedRecords: [(section: String, records: [ModelRecord])] {
         let sections: [(SourceKind, String)] = [
             (.ollama, "Ollama"),
@@ -134,6 +148,8 @@ struct LibraryView: View {
                 Image(systemName: "questionmark.circle")
                     .foregroundStyle(.orange)
                     .help("No longer found on disk")
+            } else {
+                TierBadge(tier: record.runtime.tier)
             }
             if let mb = record.footprintMB {
                 Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
@@ -146,9 +162,14 @@ struct LibraryView: View {
     @ViewBuilder
     private var detail: some View {
         if let record = model.record(id: selectedID) {
-            if record.capabilities.contains(.chat) {
+            if record.runtime.tier == .recipeNeeded {
+                RecipeNeededPane(record: record)
+            } else if record.capabilities.contains(.chat), record.runtime.id != nil {
                 ChatView(record: record, kernel: model.kernel)
                     .id(record.id)
+                    .sheet(isPresented: needsConfirmation(record)) {
+                        ResolutionSheet(record: record, library: model)
+                    }
             } else {
                 ModelInfoPane(record: record)
             }
@@ -158,6 +179,112 @@ struct LibraryView: View {
                 systemImage: "square.stack.3d.up",
                 description: Text("Chat-capable models open a conversation here."))
         }
+    }
+
+    private func needsConfirmation(_ record: ModelRecord) -> Binding<Bool> {
+        Binding(
+            get: {
+                let current = model.record(id: record.id) ?? record
+                return current.runtime.resolved == .auto && current.runtime.confirmedAt == nil
+            },
+            set: { _ in })
+    }
+}
+
+struct TierBadge: View {
+    let tier: RunTier
+
+    var body: some View {
+        Text(label)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
+    }
+
+    private var label: String {
+        switch tier {
+        case .native: "native"
+        case .managed: "managed"
+        case .recipeNeeded: "recipe"
+        }
+    }
+
+    private var color: Color {
+        switch tier {
+        case .native: .green
+        case .managed: .blue
+        case .recipeNeeded: .gray
+        }
+    }
+}
+
+struct ResolutionSheet: View {
+    let record: ModelRecord
+    let library: LibraryViewModel
+    @State private var chosen: String
+
+    init(record: ModelRecord, library: LibraryViewModel) {
+        self.record = record
+        self.library = library
+        _chosen = State(initialValue: record.runtime.id ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Run \(record.name)?").font(.title3.weight(.semibold))
+            Text(
+                "Hedos will run this \(record.modality.rawValue) model via **\(record.runtime.id ?? "?")**."
+            )
+            if !record.runtime.alternatives.isEmpty {
+                Picker("Runtime", selection: $chosen) {
+                    Text(record.runtime.id ?? "?").tag(record.runtime.id ?? "")
+                    ForEach(record.runtime.alternatives, id: \.self) { alt in
+                        Text(alt).tag(alt)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+            }
+            HStack {
+                Spacer()
+                Button("Confirm") {
+                    Task {
+                        if chosen == record.runtime.id ?? "" {
+                            await library.confirmRuntime(record.id)
+                        } else {
+                            await library.overrideRuntime(record.id, to: chosen)
+                        }
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
+    }
+}
+
+struct RecipeNeededPane: View {
+    let record: ModelRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(record.name).font(.title2.weight(.semibold))
+                TierBadge(tier: .recipeNeeded)
+            }
+            Text(
+                "Hedos found this model but no built-in runtime can run it yet. It needs a runtime recipe — a small manifest that teaches Hedos how to execute it."
+            )
+            .foregroundStyle(.secondary)
+            Text("Community recipes arrive with the runtime library in a later release.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
     }
 }
 
