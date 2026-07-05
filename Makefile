@@ -1,0 +1,16 @@
+.PHONY: build test app run clean
+
+build:
+	swift build
+
+test:
+	swift test
+
+app:
+	./scripts/build_app.sh
+
+run: app
+	open dist/Hedos.app
+
+clean:
+	rm -rf .build dist
