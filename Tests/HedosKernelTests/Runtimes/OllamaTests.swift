@@ -116,6 +116,10 @@ private struct FakeAdapter: RuntimeAdapter {
         capability == .chat
     }
 
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        nil
+    }
+
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {

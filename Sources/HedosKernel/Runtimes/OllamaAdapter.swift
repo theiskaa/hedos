@@ -9,7 +9,14 @@ public struct OllamaAdapter: RuntimeAdapter {
     }
 
     public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
-        record.source.kind == .ollama && (capability == .chat || capability == .complete)
+        guard capability == .chat || capability == .complete else { return false }
+        if let runtimeID = record.runtime.id { return runtimeID == id }
+        return record.source.kind == .ollama
+    }
+
+    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        guard identified.format == .ollamaStore else { return nil }
+        return RuntimeBid(tier: .native, preference: 20)
     }
 
     public func invoke(

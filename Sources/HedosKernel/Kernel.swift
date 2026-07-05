@@ -14,14 +14,17 @@ public actor Kernel {
     public let registry: Registry
     private let adapters: [any RuntimeAdapter]
 
-    public init(directory: URL, adapters: [any RuntimeAdapter] = [OllamaAdapter()]) {
+    public init(
+        directory: URL,
+        adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter()]
+    ) {
         self.registry = Registry(directory: directory)
         self.adapters = adapters
     }
 
     public init() {
         self.registry = Registry(directory: Registry.defaultDirectory())
-        self.adapters = [OllamaAdapter()]
+        self.adapters = [LlamaCppAdapter(), OllamaAdapter()]
     }
 
     public func discover() async throws -> DiscoverySummary {
@@ -32,7 +35,42 @@ public actor Kernel {
             LMStudioScanner(roots: LMStudioScanner.defaultRoots()),
             LooseFileScanner(directories: LooseFileScanner.defaultDirectories()),
         ]
-        return try await DiscoveryService(scanners: scanners).discover(into: registry)
+        let summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
+        try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+        return summary
+    }
+
+    public func resolve() async throws {
+        try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+    }
+
+    public func confirmRuntime(_ modelID: String) async throws {
+        guard var record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        record.runtime.confirmedAt = Date()
+        try await registry.register(record)
+    }
+
+    public func overrideRuntime(_ modelID: String, to runtimeID: String) async throws {
+        guard var record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        let identified = Identification.identify(record)
+        let bids = adapters.compactMap { adapter -> (id: String, bid: RuntimeBid)? in
+            guard let bid = adapter.bid(record, identified) else { return nil }
+            return (adapter.id, bid)
+        }
+        guard let chosen = bids.first(where: { $0.id == runtimeID }) else {
+            throw KernelError.runtimeFailed("runtime \(runtimeID) cannot serve \(record.name)")
+        }
+        record.runtime = RuntimeRef(
+            id: chosen.id,
+            resolved: .user,
+            tier: chosen.bid.tier,
+            alternatives: bids.map(\.id).filter { $0 != runtimeID },
+            confirmedAt: Date())
+        try await registry.register(record)
     }
 
     public func shelf() async throws -> [ModelRecord] {

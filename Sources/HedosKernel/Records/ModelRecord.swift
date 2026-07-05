@@ -30,17 +30,20 @@ public struct RuntimeRef: Codable, Hashable, Sendable {
     public var resolved: Resolution
     public var tier: RunTier
     public var alternatives: [String]
+    public var confirmedAt: Date?
 
     public init(
         id: String? = nil,
         resolved: Resolution = .unresolved,
         tier: RunTier = .recipeNeeded,
-        alternatives: [String] = []
+        alternatives: [String] = [],
+        confirmedAt: Date? = nil
     ) {
         self.id = id
         self.resolved = resolved
         self.tier = tier
         self.alternatives = alternatives
+        self.confirmedAt = confirmedAt
     }
 
     public static let unresolved = RuntimeRef()
