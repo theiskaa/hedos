@@ -16,7 +16,7 @@ public actor Kernel {
 
     public init(
         directory: URL,
-        adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter()]
+        adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
     ) {
         self.registry = Registry(directory: directory)
         self.adapters = adapters
@@ -24,7 +24,7 @@ public actor Kernel {
 
     public init() {
         self.registry = Registry(directory: Registry.defaultDirectory())
-        self.adapters = [LlamaCppAdapter(), OllamaAdapter()]
+        self.adapters = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
     }
 
     public func discover() async throws -> DiscoverySummary {

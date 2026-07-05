@@ -1,7 +1,21 @@
+import Foundation
+
 public enum CapabilityChunk: Sendable, Hashable {
     case text(String)
     case thinking(String)
+    case audio(AudioFrame)
+    case status(String)
     case done(GenerationStats?)
+}
+
+public struct AudioFrame: Sendable, Hashable {
+    public var data: Data
+    public var sampleRate: Int
+
+    public init(data: Data, sampleRate: Int) {
+        self.data = data
+        self.sampleRate = sampleRate
+    }
 }
 
 public struct GenerationStats: Sendable, Hashable {

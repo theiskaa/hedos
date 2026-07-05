@@ -5,6 +5,7 @@ public actor LlamaEngine {
     public static let shared = LlamaEngine()
 
     private static let backendReady: Void = {
+        llama_log_set({ _, _, _ in }, nil)
         llama_backend_init()
     }()
 

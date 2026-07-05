@@ -10,8 +10,12 @@ let package = Package(
     targets: [
         .target(
             name: "HedosKernel",
-            dependencies: [.product(name: "LlamaSwift", package: "llama.swift")]),
+            dependencies: [.product(name: "LlamaSwift", package: "llama.swift")],
+            resources: [.copy("Resources")]),
         .executableTarget(name: "Hedos", dependencies: ["HedosKernel"]),
-        .testTarget(name: "HedosKernelTests", dependencies: ["HedosKernel"]),
+        .testTarget(
+            name: "HedosKernelTests",
+            dependencies: ["HedosKernel"],
+            exclude: ["Sidecar/FakeSidecar.py"]),
     ]
 )
