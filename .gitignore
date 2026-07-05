@@ -1,0 +1,21 @@
+# Private docs & working rules
+internal/
+CLAUDE.md
+
+# macOS
+.DS_Store
+
+# Swift / Xcode
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcresult
+
+# Python (runtime sidecars)
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local scratch
+*.local.*
