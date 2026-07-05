@@ -23,6 +23,24 @@ public actor Kernel {
         self.registry = Registry(directory: Registry.defaultDirectory())
     }
 
+    /// Walk the machine's model habitats, land everything on the shelf,
+    /// and report the disk truth.
+    public func discover() async throws -> DiscoverySummary {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let scanners: [any StoreScanner] = [
+            OllamaStoreScanner(root: home.appendingPathComponent(".ollama/models")),
+            HFCacheScanner(roots: HFCacheScanner.defaultRoots()),
+            LMStudioScanner(roots: LMStudioScanner.defaultRoots()),
+            LooseFileScanner(directories: LooseFileScanner.defaultDirectories()),
+        ]
+        return try await DiscoveryService(scanners: scanners).discover(into: registry)
+    }
+
+    /// The shelf, as persisted.
+    public func shelf() async throws -> [ModelRecord] {
+        try await registry.list()
+    }
+
     /// Interactive capabilities (`chat`, `speak`, …): one call, a typed
     /// stream of chunks back. Real path lands in M3 (Ollama chat).
     public func invoke(

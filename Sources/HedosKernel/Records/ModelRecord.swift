@@ -106,6 +106,9 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
     public var footprintMB: Int?
     public var state: ModelState
     public var registeredAt: Date
+    /// Resolved path of the largest weight file — what duplicate detection
+    /// compares across stores. Optional and additive; schema stays v1.
+    public var primaryWeightPath: String?
 
     public init(
         name: String,
