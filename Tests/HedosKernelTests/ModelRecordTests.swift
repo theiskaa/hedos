@@ -30,14 +30,11 @@ import Testing
     let other = Fixtures.gguf()
     #expect(a.id != other.id)
 
-    // Same path, different kind => different identity.
     let asFolder = ModelSource(kind: .folder, path: a.source.path, repo: a.source.repo)
     #expect(ModelRecord.stableID(for: asFolder) != a.id)
 }
 
 @Test func jsonValueNumbersCompareNumerically() throws {
-    // JSON's single number type: whole doubles decode as ints; equality
-    // and hashing must not care.
     #expect(JSONValue.double(0.0) == JSONValue.int(0))
     #expect(JSONValue.double(0.0).hashValue == JSONValue.int(0).hashValue)
     #expect(JSONValue.double(1.5) != JSONValue.int(1))
@@ -59,8 +56,6 @@ import Testing
 }
 
 @Test func openIdentifiersAcceptUnknownValues() throws {
-    // A modality/capability the kernel has never heard of must decode fine —
-    // extensibility is a contract, not an accident.
     let modality = try JSONDecoder().decode(Modality.self, from: Data("\"music\"".utf8))
     #expect(modality.rawValue == "music")
     let capability = try JSONDecoder().decode(Capability.self, from: Data("\"video\"".utf8))

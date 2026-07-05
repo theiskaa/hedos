@@ -1,10 +1,5 @@
 import Foundation
 
-/// Reads Ollama's on-disk store directly — no daemon required. Layout
-/// (verified against a real store):
-/// `<root>/manifests/<registry>/<namespace>/<model>/<tag>` is a JSON
-/// manifest whose layers carry media types and sizes; weights live in the
-/// shared `<root>/blobs/sha256-<digest>` pool. Weights are never touched.
 public struct OllamaStoreScanner: StoreScanner {
     public var kinds: Set<SourceKind> { [.ollama] }
     public let root: URL
@@ -26,15 +21,12 @@ public struct OllamaStoreScanner: StoreScanner {
         scanSynchronously()
     }
 
-    // NSEnumerator iteration is unavailable in async contexts.
     private func scanSynchronously() -> ScanResult {
     let fm = FileManager.default
         let manifests = root.appendingPathComponent("manifests")
         guard fm.fileExists(atPath: manifests.path) else { return ScanResult() }
 
         var result = ScanResult()
-        // producesRelativePathURLs sidesteps /var vs /private/var prefix
-        // mismatches that break string-based relative-path math.
         guard
             let enumerator = fm.enumerator(
                 at: manifests, includingPropertiesForKeys: [.isRegularFileKey],
@@ -44,7 +36,6 @@ public struct OllamaStoreScanner: StoreScanner {
         for case let url as URL in enumerator {
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
             else { continue }
-            // Relative shape: <registry>/<namespace>/<model>/<tag>
             let rel = url.relativePath.split(separator: "/")
             guard rel.count == 4 else { continue }
             let namespace = String(rel[1])

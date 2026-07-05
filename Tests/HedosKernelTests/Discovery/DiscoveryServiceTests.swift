@@ -3,8 +3,6 @@ import Testing
 
 @testable import HedosKernel
 
-/// Builds a composite fixture machine: all four stores populated, one
-/// deliberately planted duplicate (same bytes in LM Studio and Downloads).
 private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreScanner]) {
     let root = try Fixtures.tempDirectory()
     let ollama = root.appendingPathComponent("ollama")
@@ -31,7 +29,6 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
             org: "mlx-community", repo: "Kokoro-82M-bf16",
             files: [("kokoro.safetensors", 2000)],
             configJSON: DiscoveryFixtures.kokoroConfig))
-    // Planted duplicate: identical bytes in LM Studio and Downloads.
     try DiscoveryFixtures.makeGGUF(
         at: lmstudio.appendingPathComponent("org/dup/dup-model.gguf"), bytes: 5000, fill: 0x55)
     try DiscoveryFixtures.makeGGUF(
@@ -46,7 +43,6 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     return (root, scanners)
 }
 
-/// The M2 gate, headless: full discovery over a composite fixture machine.
 @Test func discoveryFindsEverythingAndReportsDiskTruth() async throws {
     let (root, scanners) = try makeCompositeMachine()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -67,11 +63,9 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     #expect(summary.headline.contains("1 in LM Studio"))
     #expect(summary.headline.contains("1 loose file."))
 
-    // The planted duplicate is flagged with correct waste.
     #expect(summary.duplicates.count == 1)
     #expect(summary.duplicates[0].wastedBytes == 5000)
 
-    // Records persisted.
     #expect(try await registry.list().count == 6)
 }
 
@@ -102,7 +96,7 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     _ = try await service.discover(into: registry)
 
     let records = try await registry.list()
-    #expect(records.count == 6)  // kept, not deleted
+    #expect(records.count == 6)
     let missing = try #require(records.first { $0.source.kind == .lmStudio })
     #expect(missing.state == .missing)
 }
@@ -130,7 +124,7 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     let a = dir.appendingPathComponent("a.gguf")
     let b = dir.appendingPathComponent("b.gguf")
     try DiscoveryFixtures.makeGGUF(at: a, bytes: 4096, fill: 0x01)
-    try DiscoveryFixtures.makeGGUF(at: b, bytes: 4096, fill: 0x02)  // same size, different bytes
+    try DiscoveryFixtures.makeGGUF(at: b, bytes: 4096, fill: 0x02)
 
     func model(_ url: URL) -> DiscoveredModel {
         DiscoveredModel(
@@ -141,7 +135,6 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     let differing = DuplicateDetector.detect(in: [model(a), model(b)], threshold: 1024)
     #expect(differing.isEmpty)
 
-    // Below threshold: ignored even when identical.
     try DiscoveryFixtures.makeGGUF(at: b, bytes: 4096, fill: 0x01)
     let identical = DuplicateDetector.detect(in: [model(a), model(b)], threshold: 8192)
     #expect(identical.isEmpty)

@@ -1,9 +1,6 @@
 import CryptoKit
 import Foundation
 
-/// Where a model's weights live. `path` always points at what some other
-/// tool (or the user) put on disk — Hedos never moves, copies, or
-/// re-downloads weights. Source and runtime are independent by design.
 public struct ModelSource: Codable, Hashable, Sendable {
     public var kind: SourceKind
     public var path: String
@@ -17,15 +14,11 @@ public struct ModelSource: Codable, Hashable, Sendable {
         self.ref = ref
     }
 
-    /// Canonical identity string; the stable record ID is derived from this,
-    /// so re-discovering the same model is an upsert, never a duplicate.
     public var identity: String {
         "\(kind.rawValue)|\(path)|\(repo ?? "")"
     }
 }
 
-/// What executes the model: the resolution engine's pick, how it was chosen,
-/// the run-tier badge, and the alternatives the user may switch to.
 public struct RuntimeRef: Codable, Hashable, Sendable {
     public enum Resolution: String, Codable, Hashable, Sendable {
         case auto
@@ -53,9 +46,6 @@ public struct RuntimeRef: Codable, Hashable, Sendable {
     public static let unresolved = RuntimeRef()
 }
 
-/// One entry of a model's parameter schema. The UI renders controls from
-/// these generically, so a model type the app has never seen still gets
-/// correct controls.
 public struct ParamSpec: Codable, Hashable, Sendable {
     public enum ParamType: String, Codable, Hashable, Sendable {
         case int
@@ -91,9 +81,6 @@ public struct ParamSpec: Codable, Hashable, Sendable {
     }
 }
 
-/// One registered model — the single source of truth the whole platform
-/// hangs off. Everything else (resolution, execution, UI) reads and writes
-/// through this record.
 public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
     public let id: String
     public var name: String
@@ -106,8 +93,6 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
     public var footprintMB: Int?
     public var state: ModelState
     public var registeredAt: Date
-    /// Resolved path of the largest weight file — what duplicate detection
-    /// compares across stores. Optional and additive; schema stays v1.
     public var primaryWeightPath: String?
 
     public init(
@@ -135,8 +120,6 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         self.registeredAt = registeredAt
     }
 
-    /// Content-derived ID: same source, same ID, forever — the property that
-    /// makes discovery rescans idempotent.
     public static func stableID(for source: ModelSource) -> String {
         let digest = SHA256.hash(data: Data(source.identity.utf8))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()

@@ -1,9 +1,5 @@
 import Foundation
 
-/// Reads the Hugging Face Hub cache in place. Layout (verified):
-/// `<hub>/models--<org>--<repo>/` with `refs/main` naming the current
-/// revision, `snapshots/<revision>/` holding symlinked files, and a
-/// per-repo `blobs/` directory holding the real bytes.
 public struct HFCacheScanner: StoreScanner {
     public var kinds: Set<SourceKind> { [.huggingfaceCache] }
     public let roots: [URL]
@@ -16,10 +12,6 @@ public struct HFCacheScanner: StoreScanner {
         self.roots = [root]
     }
 
-    /// ALL candidate cache locations, not first-match: the `HF_HUB_CACHE` /
-    /// `HF_HOME` overrides AND the standard `~/.cache/huggingface/hub`.
-    /// A stale env override must never hide the real cache — completeness
-    /// is the product promise.
     public static func defaultRoots(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [URL] {
@@ -117,7 +109,6 @@ public struct HFCacheScanner: StoreScanner {
             let url = snapshots.appendingPathComponent(trimmed)
             if fm.fileExists(atPath: url.path) { return (url, trimmed) }
         }
-        // Fallback: newest snapshot directory.
         let candidates =
             (try? fm.contentsOfDirectory(
                 at: snapshots, includingPropertiesForKeys: [.contentModificationDateKey],
@@ -146,8 +137,6 @@ public struct HFCacheScanner: StoreScanner {
         return total
     }
 
-    /// Largest safetensors in the snapshot, symlinks resolved so the path
-    /// points at real bytes (what dedup compares).
     private func largestWeight(in snapshot: URL) -> String? {
         let fm = FileManager.default
         let files =

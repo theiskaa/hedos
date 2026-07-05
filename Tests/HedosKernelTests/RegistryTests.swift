@@ -3,9 +3,6 @@ import Testing
 
 @testable import HedosKernel
 
-/// The M1 gate: register a hand-written record, then reload it through a
-/// completely fresh Registry instance on the same directory — true
-/// persistence, not an in-memory echo.
 @Test func registerPersistReloadList() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

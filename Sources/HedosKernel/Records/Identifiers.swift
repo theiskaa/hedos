@@ -1,7 +1,3 @@
-/// Open, string-backed identifiers. Modalities, capabilities, and source
-/// kinds are extensible sets: new ones arrive with runtime manifests and
-/// scanners, not kernel releases. Only genuinely fixed semantics (execution
-/// mode, run tier, model state) are closed enums.
 
 public struct Modality: RawRepresentable, Codable, Hashable, Sendable, ExpressibleByStringLiteral {
     public let rawValue: String
@@ -43,16 +39,12 @@ public struct SourceKind: RawRepresentable, Codable, Hashable, Sendable, Express
     public static let folder = SourceKind(rawValue: "folder")
 }
 
-/// How a capability is exercised: interactive stream, long-running job with
-/// progress and artifacts, or plain request/response.
 public enum ExecutionMode: String, Codable, Hashable, Sendable {
     case stream
     case job
     case sync
 }
 
-/// The honest badge on the shelf: how this model will run, surfaced before
-/// the user clicks, never after.
 public enum RunTier: String, Codable, Hashable, Sendable {
     case native
     case managed

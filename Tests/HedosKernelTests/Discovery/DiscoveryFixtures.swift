@@ -2,15 +2,11 @@ import Foundation
 
 @testable import HedosKernel
 
-/// Builds miniature on-disk store layouts mirroring the real formats the
-/// scanners were designed against (verified Ollama manifests, HF hub cache
-/// with refs/snapshots/blobs indirection).
 enum DiscoveryFixtures {
     static func data(bytes: Int, fill: UInt8 = 0xAB) -> Data {
         Data(repeating: fill, count: bytes)
     }
 
-    // MARK: - Ollama
 
     struct OllamaTag {
         var namespace = "library"
@@ -65,7 +61,6 @@ enum DiscoveryFixtures {
         }
     }
 
-    // MARK: - Hugging Face cache
 
     struct HFRepo {
         var org: String
@@ -112,15 +107,12 @@ enum DiscoveryFixtures {
         }
     }
 
-    /// Mirrors the real Kokoro-82M config shape: no architectures[] key,
-    /// StyleTTS2-signature keys instead (verified against the actual repo).
     static let kokoroConfig =
         #"{"istftnet": {}, "plbert": {}, "style_dim": 128, "n_mels": 80, "n_token": 178}"#
     static let causalLMConfig =
         #"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}"#
     static let fluxModelIndex = #"{"_class_name": "FluxPipeline"}"#
 
-    // MARK: - LM Studio / loose files
 
     static func makeGGUF(at url: URL, bytes: Int, fill: UInt8 = 0x77) throws {
         try FileManager.default.createDirectory(

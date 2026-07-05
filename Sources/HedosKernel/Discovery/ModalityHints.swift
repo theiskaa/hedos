@@ -1,8 +1,5 @@
 import Foundation
 
-/// Cheap, file-shape-based modality hints used at discovery time. This is
-/// NOT the resolution engine (M4) — just enough archaeology that the shelf
-/// can group a freshly found model sensibly.
 enum ModalityHints {
     struct Hint {
         var modality: Modality?
@@ -10,12 +7,10 @@ enum ModalityHints {
         var execution: ExecutionMode
     }
 
-    /// A `model_index.json` marks a diffusers-style pipeline: image-shaped.
     static func fromModelIndex(at url: URL) -> Hint {
         Hint(modality: .image, capabilities: [.image], execution: .job)
     }
 
-    /// `config.json` architectures archaeology, cheapest-first.
     static func fromConfigJSON(at url: URL) -> Hint? {
         guard let data = try? Data(contentsOf: url),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -34,9 +29,6 @@ enum ModalityHints {
             }
         }
 
-        // Shape heuristics for configs with no architectures[] at all.
-        // Real Kokoro/StyleTTS2 configs are exactly this: istftnet/plbert/
-        // style_dim/n_mels keys and nothing transformers-shaped.
         let keys = Set(json.keys)
         if keys.contains("istftnet") || keys.contains("plbert")
             || (keys.contains("style_dim") && keys.contains("n_mels"))
@@ -46,7 +38,6 @@ enum ModalityHints {
         return nil
     }
 
-    /// A GGUF file is a text model until the resolution engine says otherwise.
     static var gguf: Hint {
         Hint(modality: .text, capabilities: [.chat, .complete], execution: .stream)
     }

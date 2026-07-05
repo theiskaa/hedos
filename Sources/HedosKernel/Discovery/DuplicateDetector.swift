@@ -7,13 +7,8 @@ public struct DuplicateGroup: Sendable, Hashable {
     public var wastedBytes: Int64
 }
 
-/// Finds the same weights living in more than one place. Candidates are
-/// grouped by exact byte size of their primary weight file (only files at
-/// or above the threshold — small files collide by size too easily), then
-/// confirmed by hashing the first 1 MiB of each. Whole weights are never
-/// hashed. Report-only: nothing is ever deleted.
 public enum DuplicateDetector {
-    public static let defaultThreshold: Int64 = 256 << 20  // 256 MB
+    public static let defaultThreshold: Int64 = 256 << 20
 
     public static func detect(
         in models: [DiscoveredModel], threshold: Int64 = defaultThreshold

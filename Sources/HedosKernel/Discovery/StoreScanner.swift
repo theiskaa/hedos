@@ -1,8 +1,5 @@
 import Foundation
 
-/// What a scanner found: pre-record model facts, plus per-entry problems.
-/// Scanners never throw out of `scan()` — one broken manifest must not kill
-/// discovery; it becomes an issue string instead.
 public struct DiscoveredModel: Sendable, Hashable {
     public var name: String
     public var source: ModelSource
@@ -45,8 +42,6 @@ public struct ScanResult: Sendable {
 }
 
 public protocol StoreScanner: Sendable {
-    /// The source kinds this scanner can emit — used by reconciliation to
-    /// know which registry records it is authoritative for.
     var kinds: Set<SourceKind> { get }
     func scan() async -> ScanResult
 }

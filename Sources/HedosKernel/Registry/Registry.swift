@@ -1,14 +1,9 @@
 import Foundation
 
 public enum RegistryError: Error, Sendable {
-    /// The store exists but cannot be decoded. Never silently discarded —
-    /// surfaced so the user (or a future migration) can decide.
     case corruptStore(description: String)
 }
 
-/// The persisted shelf: all registered models, backed by `models.json` in
-/// the given directory. Storage location is injected so tests run against
-/// temp dirs; the app passes `Registry.defaultDirectory()`.
 public actor Registry {
     public let directory: URL
 
@@ -24,10 +19,7 @@ public actor Registry {
             .appendingPathComponent("Hedos", isDirectory: true)
     }
 
-    // MARK: - Mutations (persist immediately)
 
-    /// Upsert keyed by the record's stable ID: re-registering the same
-    /// source updates the record instead of duplicating it.
     public func register(_ record: ModelRecord) throws {
         try loadIfNeeded()
         models[record.id] = record
@@ -42,7 +34,6 @@ public actor Registry {
         return removed
     }
 
-    // MARK: - Queries
 
     public func get(id: String) throws -> ModelRecord? {
         try loadIfNeeded()
@@ -56,7 +47,6 @@ public actor Registry {
         }
     }
 
-    // MARK: - Persistence
 
     private struct Envelope: Codable {
         var schemaVersion: Int

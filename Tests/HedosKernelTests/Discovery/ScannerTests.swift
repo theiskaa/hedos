@@ -18,13 +18,13 @@ import Testing
     let byName = Dictionary(uniqueKeysWithValues: result.discovered.map { ($0.name, $0) })
     #expect(byName.count == 2)
 
-    let qwen = try #require(byName["qwen3.5:9b"])  // "library" namespace elided
+    let qwen = try #require(byName["qwen3.5:9b"])
     #expect(qwen.footprintBytes == 4096 + 64)
     #expect(qwen.modalityHint == .text)
     #expect(qwen.capabilitiesHint == [.chat, .complete])
     #expect(qwen.primaryWeightPath?.contains("blobs/sha256-") == true)
 
-    #expect(byName["someorg/custom:latest"] != nil)  // non-library keeps namespace
+    #expect(byName["someorg/custom:latest"] != nil)
 }
 
 @Test func ollamaScannerIsolatesMalformedManifests() async throws {
@@ -66,9 +66,9 @@ import Testing
     let flux = try #require(byRepo["black-forest-labs/FLUX.1-schnell"])
     #expect(flux.modalityHint == .image)
     #expect(flux.executionHint == .job)
-    #expect(flux.footprintBytes >= 8192)  // blobs include the model_index blob too
+    #expect(flux.footprintBytes >= 8192)
     #expect(flux.source.ref == "abc123def456")
-    #expect(flux.primaryWeightPath?.hasSuffix("blob0") == true)  // symlink resolved
+    #expect(flux.primaryWeightPath?.hasSuffix("blob0") == true)
 
     let kokoro = try #require(byRepo["mlx-community/Kokoro-82M-bf16"])
     #expect(kokoro.modalityHint == .speech)
@@ -93,14 +93,11 @@ import Testing
 }
 
 @Test func hfDefaultRootsNeverLetEnvOverrideHideTheStandardCache() {
-    // Regression: a stale HF_HOME pointing at an empty dir must not hide
-    // the real ~/.cache/huggingface/hub (39 GB missed on first real run).
     let roots = HFCacheScanner.defaultRoots(environment: ["HF_HOME": "/tmp/stale-override"])
     #expect(roots.count == 2)
     #expect(roots[0].path == "/tmp/stale-override/hub")
     #expect(roots[1].path.hasSuffix(".cache/huggingface/hub"))
 
-    // No override: just the standard location, no duplicates.
     let plain = HFCacheScanner.defaultRoots(environment: [:])
     #expect(plain.count == 1)
 }
@@ -128,7 +125,6 @@ import Testing
 @Test func looseFileScannerFindsFilesAndBundlesWithinDepth() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    // Depth 0 file, depth-1 bundle folder, depth-3 file (must be ignored).
     try DiscoveryFixtures.makeGGUF(at: dir.appendingPathComponent("loose.gguf"), bytes: 256)
     let bundle = dir.appendingPathComponent("some-model")
     try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)

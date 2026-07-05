@@ -1,9 +1,5 @@
 import Foundation
 
-/// Sweeps explicit, listed folders for loose models — never a disk crawl.
-/// Depth is capped at 2. Finds standalone `.gguf` files (kind `.file`) and
-/// folders shaped like a model bundle: `config.json` + at least one
-/// safetensors (kind `.folder`).
 public struct LooseFileScanner: StoreScanner {
     public var kinds: Set<SourceKind> { [.file, .folder] }
     public let directories: [URL]

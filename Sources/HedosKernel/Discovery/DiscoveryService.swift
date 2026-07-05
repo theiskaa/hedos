@@ -12,7 +12,6 @@ public struct DiscoverySummary: Sendable {
     public var duplicates: [DuplicateGroup]
     public var issues: [String]
 
-    /// The hero sentence. Lives in the kernel so it is testable headlessly.
     public var headline: String {
         guard totalCount > 0 else {
             return "No models found on this Mac yet."
@@ -53,8 +52,6 @@ public struct DiscoverySummary: Sendable {
     }
 }
 
-/// Runs the scanners, lands the results in the registry, reconciles what
-/// disappeared, and reports the shelf's disk truth.
 public actor DiscoveryService {
     private let scanners: [any StoreScanner]
     private let duplicateThreshold: Int64
@@ -68,7 +65,6 @@ public actor DiscoveryService {
     }
 
     public func discover(into registry: Registry) async throws -> DiscoverySummary {
-        // 1. Scan concurrently; scanner failures are isolated into issues.
         var discovered: [DiscoveredModel] = []
         var issues: [String] = []
         await withTaskGroup(of: ScanResult.self) { group in
@@ -81,8 +77,6 @@ public actor DiscoveryService {
             }
         }
 
-        // 2. Upsert. Stable IDs make rescans idempotent; a record's runtime
-        //    field is the user's (or resolver's) choice and survives rescans.
         let existing = try await registry.list()
         let existingByID = Dictionary(
             existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -116,8 +110,6 @@ public actor DiscoveryService {
             }
         }
 
-        // 3. Reconcile: records this scan was authoritative for that were
-        //    not rediscovered are marked missing — kept, never deleted.
         let scannedKinds = Set(scanners.flatMap(\.kinds))
         for record in existing
         where scannedKinds.contains(record.source.kind) && !seenIDs.contains(record.id)
@@ -128,7 +120,6 @@ public actor DiscoveryService {
             try await registry.register(stale)
         }
 
-        // 4. Disk truth.
         var perKind: [SourceKind: DiscoverySummary.KindStat] = [:]
         for model in discovered {
             var stat = perKind[model.source.kind] ?? .init(count: 0, bytes: 0)

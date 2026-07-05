@@ -1,30 +1,29 @@
 import Foundation
 
 public enum KernelError: Error, Sendable {
-    /// The signature is pinned but the path lands in a later milestone.
     case notImplemented(String)
     case modelNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
+    case runtimeUnavailable(hint: String)
+    case runtimeFailed(String)
 }
 
-/// The Hedos kernel — the stateful brain between the models on this machine
-/// and everything that wants to use them. Surfaces (the app UI, later the
-/// local gateway) talk only to this API; no surface has a privileged path.
 public actor Kernel {
     public static let version = "0.1.0"
 
     public let registry: Registry
+    private let adapters: [any RuntimeAdapter]
 
-    public init(directory: URL) {
+    public init(directory: URL, adapters: [any RuntimeAdapter] = [OllamaAdapter()]) {
         self.registry = Registry(directory: directory)
+        self.adapters = adapters
     }
 
     public init() {
         self.registry = Registry(directory: Registry.defaultDirectory())
+        self.adapters = [OllamaAdapter()]
     }
 
-    /// Walk the machine's model habitats, land everything on the shelf,
-    /// and report the disk truth.
     public func discover() async throws -> DiscoverySummary {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let scanners: [any StoreScanner] = [
@@ -36,21 +35,37 @@ public actor Kernel {
         return try await DiscoveryService(scanners: scanners).discover(into: registry)
     }
 
-    /// The shelf, as persisted.
     public func shelf() async throws -> [ModelRecord] {
         try await registry.list()
     }
 
-    /// Interactive capabilities (`chat`, `speak`, …): one call, a typed
-    /// stream of chunks back. Real path lands in M3 (Ollama chat).
     public func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue
-    ) async throws -> AsyncThrowingStream<JSONValue, Error> {
-        throw KernelError.notImplemented("invoke")
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
+            throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
+        }
+        return adapter.invoke(record, capability, payload: payload)
     }
 
-    /// Generative capabilities (`image`, `video`, …): submit returns a job
-    /// ID; progress, previews, and artifacts follow. Lands in v0.2.
+    public func chat(
+        _ modelID: String, messages: [ChatMessage]
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        let payload: JSONValue = .object([
+            "messages": .array(
+                messages.map {
+                    .object([
+                        "role": .string($0.role.rawValue),
+                        "content": .string($0.content),
+                    ])
+                })
+        ])
+        return try await invoke(modelID, .chat, payload: payload)
+    }
+
     public func submit(
         _ modelID: String, _ capability: Capability, payload: JSONValue
     ) async throws -> String {

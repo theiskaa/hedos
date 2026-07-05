@@ -3,10 +3,6 @@ import Foundation
 @testable import HedosKernel
 
 enum Fixtures {
-    /// Maximal, FLUX-shaped record mirroring the Model Record example in the
-    /// architecture doc: params schema, job execution, resolved managed
-    /// runtime with alternatives. Fixed whole-second date so ISO-8601
-    /// round-trips are exact.
     static func flux() -> ModelRecord {
         ModelRecord(
             name: "FLUX.1-schnell",
@@ -37,7 +33,6 @@ enum Fixtures {
             registeredAt: Date(timeIntervalSince1970: 1_750_000_000))
     }
 
-    /// Minimal GGUF-file record: defaults everywhere a default exists.
     static func gguf(path: String = "~/Downloads/qwen3.5-9b-q4.gguf") -> ModelRecord {
         ModelRecord(
             name: "qwen3.5-9b-q4",
