@@ -5,6 +5,7 @@ import SwiftUI
 final class HedosAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
+            await SidecarSupervisor.shared.shutdownAll()
             await LlamaEngine.shared.shutdown()
             await MainActor.run {
                 sender.reply(toApplicationShouldTerminate: true)

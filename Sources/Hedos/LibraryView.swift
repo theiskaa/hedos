@@ -168,6 +168,12 @@ struct LibraryView: View {
                     .sheet(isPresented: needsConfirmation(record)) {
                         ResolutionSheet(record: record, library: model)
                     }
+            } else if record.capabilities.contains(.speak), record.runtime.id != nil {
+                VoiceView(record: record, kernel: model.kernel)
+                    .id(record.id)
+                    .sheet(isPresented: needsConfirmation(record)) {
+                        ResolutionSheet(record: record, library: model)
+                    }
             } else {
                 ModelInfoPane(record: record)
             }
