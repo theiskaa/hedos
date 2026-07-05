@@ -4,7 +4,7 @@ import SwiftUI
 @Observable
 @MainActor
 final class LibraryViewModel {
-    private let kernel = Kernel()
+    let kernel = Kernel()
 
     var summary: DiscoverySummary?
     var records: [ModelRecord] = []
@@ -22,6 +22,11 @@ final class LibraryViewModel {
         } catch {
             errorMessage = String(describing: error)
         }
+    }
+
+    func record(id: String?) -> ModelRecord? {
+        guard let id else { return nil }
+        return records.first { $0.id == id }
     }
 
     var groupedRecords: [(section: String, records: [ModelRecord])] {
@@ -52,18 +57,31 @@ final class LibraryViewModel {
 
 struct LibraryView: View {
     @State private var model = LibraryViewModel()
+    @State private var selectedID: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            if model.records.isEmpty && !model.isScanning {
-                emptyState
-            } else {
-                shelf
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 280, ideal: 330)
+        } detail: {
+            detail
+        }
+        .frame(minWidth: 760, minHeight: 460)
+        .task { await model.rescan() }
+    }
+
+    private var sidebar: some View {
+        List(selection: $selectedID) {
+            ForEach(model.groupedRecords, id: \.section) { group in
+                Section(group.section) {
+                    ForEach(group.records) { record in
+                        row(record).tag(record.id)
+                    }
+                }
             }
         }
-        .frame(minWidth: 560, minHeight: 400)
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, alignment: .leading) { header }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -74,86 +92,114 @@ struct LibraryView: View {
                 .disabled(model.isScanning)
             }
         }
-        .task { await model.rescan() }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             if model.isScanning && model.summary == nil {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Looking for models on this Mac…")
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Looking for models…").foregroundStyle(.secondary)
                 }
+                .font(.callout)
             } else if let summary = model.summary {
                 Text(summary.headline)
-                    .font(.title3.weight(.medium))
+                    .font(.callout.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
                 ForEach(summary.duplicates, id: \.self) { group in
                     Label(
                         "\(group.names.joined(separator: " and ")) live in more than one place — \(DiscoverySummary.formatBytes(group.wastedBytes)) duplicated.",
                         systemImage: "externaldrive.badge.exclamationmark")
                     .foregroundStyle(.orange)
-                    .font(.callout)
-                }
-                if let error = model.errorMessage {
-                    Text(error).foregroundStyle(.red).font(.caption)
+                    .font(.caption)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
-    }
-
-    private var shelf: some View {
-        List {
-            ForEach(model.groupedRecords, id: \.section) { group in
-                Section(group.section) {
-                    ForEach(group.records) { record in
-                        row(record)
-                    }
-                }
-            }
-        }
-        .listStyle(.inset)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 
     private func row(_ record: ModelRecord) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(record.name)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(record.name).lineLimit(1)
                 if let repo = record.source.repo, repo != record.name {
-                    Text(repo).font(.caption).foregroundStyle(.secondary)
+                    Text(repo).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer()
             if record.state == .missing {
-                Text("missing")
-                    .font(.caption.weight(.medium))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(.orange.opacity(0.2), in: Capsule())
+                Image(systemName: "questionmark.circle")
                     .foregroundStyle(.orange)
+                    .help("No longer found on disk")
             }
             if let mb = record.footprintMB {
                 Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
-                    .font(.callout.monospacedDigit())
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(width: 80, alignment: .trailing)
             }
         }
-        .padding(.vertical, 2)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Spacer()
-            Text("No models found on this Mac yet.")
-                .font(.title3)
-            Text("Models from Ollama, the Hugging Face cache, LM Studio, and your Downloads folder appear here automatically.")
+    @ViewBuilder
+    private var detail: some View {
+        if let record = model.record(id: selectedID) {
+            if record.capabilities.contains(.chat) {
+                ChatView(record: record, kernel: model.kernel)
+                    .id(record.id)
+            } else {
+                ModelInfoPane(record: record)
+            }
+        } else {
+            ContentUnavailableView(
+                "Select a model",
+                systemImage: "square.stack.3d.up",
+                description: Text("Chat-capable models open a conversation here."))
+        }
+    }
+}
+
+struct ModelInfoPane: View {
+    let record: ModelRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(record.name).font(.title2.weight(.semibold))
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                GridRow {
+                    Text("Kind").foregroundStyle(.secondary)
+                    Text(record.source.kind.rawValue)
+                }
+                GridRow {
+                    Text("Modality").foregroundStyle(.secondary)
+                    Text(record.modality.rawValue)
+                }
+                if let repo = record.source.repo {
+                    GridRow {
+                        Text("Repo").foregroundStyle(.secondary)
+                        Text(repo)
+                    }
+                }
+                if let mb = record.footprintMB {
+                    GridRow {
+                        Text("Size").foregroundStyle(.secondary)
+                        Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
+                    }
+                }
+                GridRow {
+                    Text("State").foregroundStyle(.secondary)
+                    Text(record.state.rawValue)
+                }
+            }
+            .font(.callout)
+            Text("Running this kind of model arrives in a later milestone.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
             Spacer()
         }
-        .frame(maxWidth: .infinity)
-        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
     }
 }
