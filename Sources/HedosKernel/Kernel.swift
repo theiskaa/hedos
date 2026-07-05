@@ -28,27 +28,35 @@ public actor Kernel {
 
     public let registry: Registry
     public let settings: SettingsStore
+    public let governor: MemoryGovernor
     private let adapters: [any RuntimeAdapter]
     private let scheduler: JobScheduler
 
     public init(
         directory: URL,
-        adapters: [any RuntimeAdapter] = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()],
-        admission: any JobAdmission = ImmediateAdmission()
+        adapters: [any RuntimeAdapter]? = nil,
+        governor: MemoryGovernor = .shared
     ) {
-        self.registry = Registry(directory: directory)
+        let registry = Registry(directory: directory)
+        self.registry = registry
         self.settings = SettingsStore(directory: directory)
-        self.adapters = adapters
+        self.governor = governor
+        self.adapters = adapters ?? Self.defaultAdapters(governor: governor)
         self.scheduler = JobScheduler(
-            history: JobHistoryStore(directory: directory), admission: admission)
+            history: JobHistoryStore(directory: directory),
+            admission: GovernorAdmission(governor: governor, registry: registry))
     }
 
     public init() {
-        let directory = Registry.defaultDirectory()
-        self.registry = Registry(directory: directory)
-        self.settings = SettingsStore(directory: directory)
-        self.adapters = [LlamaCppAdapter(), OllamaAdapter(), MlxAudioAdapter()]
-        self.scheduler = JobScheduler(history: JobHistoryStore(directory: directory))
+        self.init(directory: Registry.defaultDirectory())
+    }
+
+    private static func defaultAdapters(governor: MemoryGovernor) -> [any RuntimeAdapter] {
+        [
+            LlamaCppAdapter(governor: governor),
+            OllamaAdapter(),
+            MlxAudioAdapter(governor: governor),
+        ]
     }
 
     public func discover() async throws -> DiscoverySummary {

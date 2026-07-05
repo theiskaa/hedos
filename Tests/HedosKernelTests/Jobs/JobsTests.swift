@@ -34,8 +34,10 @@ actor GateAdmission: JobAdmission {
     private var waiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
     private var open = false
 
-    func admit(_ job: Job, onWait: @escaping @Sendable (String) async -> Void) async throws {
-        if open { return }
+    func admit(
+        _ job: Job, onWait: @escaping @Sendable (String) async -> Void
+    ) async throws -> RAMVerdict {
+        if open { return .ok }
         await onWait("Waiting for 30 GB of memory")
         let token = UUID()
         try await withTaskCancellationHandler {
@@ -51,6 +53,7 @@ actor GateAdmission: JobAdmission {
         } onCancel: {
             Task { await self.abandon(token) }
         }
+        return .ok
     }
 
     func release() {

@@ -10,88 +10,190 @@ public actor LlamaEngine {
     }()
 
     private var loadedPath: String?
+    private var loadedModelID: String?
     private var model: OpaquePointer?
     private var context: OpaquePointer?
+    private var generationSlotHeld = false
+    private var generationSlotWaiters: [CheckedContinuation<Void, Never>] = []
 
     public func run(
         path: String,
+        modelID: String,
+        modelName: String,
+        footprintMB: Int?,
+        governor: MemoryGovernor,
         messages: [ChatMessage],
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async {
+        await governor.beginGeneration(modelID)
+        await acquireGenerationSlot()
         do {
-            try ensureLoaded(path: path)
-            guard let model, let context else {
-                throw KernelError.runtimeFailed("llama model not loaded")
+            let producer = GPUProducer.generation(modelID: modelID)
+            try await acquireGateWithModelLoaded(
+                producer: producer, path: path, modelID: modelID, modelName: modelName,
+                footprintMB: footprintMB, governor: governor, continuation: continuation)
+            do {
+                try await generate(messages: messages, continuation: continuation)
+                await governor.gate.release(producer)
+            } catch {
+                await governor.gate.release(producer)
+                throw error
             }
-            let vocab = llama_model_get_vocab(model)
-            let prompt = renderPrompt(model: model, messages: messages)
-            var tokens = tokenize(vocab: vocab, text: prompt)
-            guard !tokens.isEmpty else {
-                throw KernelError.runtimeFailed("prompt produced no tokens")
-            }
-
-            let memory = llama_get_memory(context)
-            llama_memory_clear(memory, true)
-
-            let clock = ContinuousClock()
-            let started = clock.now
-            let promptCount = tokens.count
-
-            var batch = llama_batch_get_one(&tokens, Int32(tokens.count))
-            guard llama_decode(context, batch) == 0 else {
-                throw KernelError.runtimeFailed("llama prompt decode failed")
-            }
-
-            let samplerParams = llama_sampler_chain_default_params()
-            let sampler = llama_sampler_chain_init(samplerParams)
-            llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7))
-            llama_sampler_chain_add(sampler, llama_sampler_init_dist(UInt32.random(in: 0..<UInt32.max)))
-            defer { llama_sampler_free(sampler) }
-
-            var generated = 0
-            let maxTokens = 2048
-            var pieceBuffer = [CChar](repeating: 0, count: 512)
-
-            while generated < maxTokens {
-                await Task.yield()
-                if Task.isCancelled { break }
-                var token = llama_sampler_sample(sampler, context, -1)
-                if llama_vocab_is_eog(vocab, token) { break }
-
-                let written = llama_token_to_piece(vocab, token, &pieceBuffer, 512, 0, false)
-                if written > 0 {
-                    let piece = String(
-                        decoding: pieceBuffer[0..<Int(written)].map { UInt8(bitPattern: $0) },
-                        as: UTF8.self)
-                    if !piece.isEmpty {
-                        continuation.yield(.text(piece))
-                    }
-                }
-                generated += 1
-
-                batch = llama_batch_get_one(&token, 1)
-                guard llama_decode(context, batch) == 0 else {
-                    throw KernelError.runtimeFailed("llama decode failed mid-generation")
-                }
-            }
-
-            let elapsed = clock.now - started
-            continuation.yield(
-                .done(
-                    GenerationStats(
-                        promptTokens: promptCount,
-                        completionTokens: generated,
-                        durationMs: Int(elapsed.components.seconds) * 1000
-                            + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
             continuation.finish()
         } catch {
             continuation.finish(throwing: error)
         }
+        releaseGenerationSlot()
+        await governor.endGeneration(modelID)
     }
 
-    private func ensureLoaded(path: String) throws {
-        _ = Self.backendReady
+    private func acquireGenerationSlot() async {
+        if !generationSlotHeld {
+            generationSlotHeld = true
+            return
+        }
+        await withCheckedContinuation { generationSlotWaiters.append($0) }
+    }
+
+    private func releaseGenerationSlot() {
+        if generationSlotWaiters.isEmpty {
+            generationSlotHeld = false
+        } else {
+            generationSlotWaiters.removeFirst().resume()
+        }
+    }
+
+    private func acquireGateWithModelLoaded(
+        producer: GPUProducer,
+        path: String,
+        modelID: String,
+        modelName: String,
+        footprintMB: Int?,
+        governor: MemoryGovernor,
+        continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
+    ) async throws {
+        while true {
+            try await ensureLoadedGoverned(
+                path: path, modelID: modelID, modelName: modelName,
+                footprintMB: footprintMB, governor: governor, continuation: continuation)
+            await governor.gate.acquire(producer)
+            if loadedPath == path, model != nil, context != nil { return }
+            await governor.gate.release(producer)
+        }
+    }
+
+    private func generate(
+        messages: [ChatMessage],
+        continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
+    ) async throws {
+        guard let model, let context else {
+            throw KernelError.runtimeFailed("llama model not loaded")
+        }
+        let vocab = llama_model_get_vocab(model)
+        let prompt = renderPrompt(model: model, messages: messages)
+        var tokens = tokenize(vocab: vocab, text: prompt)
+        guard !tokens.isEmpty else {
+            throw KernelError.runtimeFailed("prompt produced no tokens")
+        }
+
+        let memory = llama_get_memory(context)
+        llama_memory_clear(memory, true)
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        let promptCount = tokens.count
+
+        var batch = llama_batch_get_one(&tokens, Int32(tokens.count))
+        guard llama_decode(context, batch) == 0 else {
+            throw KernelError.runtimeFailed("llama prompt decode failed")
+        }
+
+        let samplerParams = llama_sampler_chain_default_params()
+        let sampler = llama_sampler_chain_init(samplerParams)
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7))
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist(UInt32.random(in: 0..<UInt32.max)))
+        defer { llama_sampler_free(sampler) }
+
+        var generated = 0
+        let maxTokens = 2048
+        var pieceBuffer = [CChar](repeating: 0, count: 512)
+
+        while generated < maxTokens {
+            await Task.yield()
+            if Task.isCancelled { break }
+            var token = llama_sampler_sample(sampler, context, -1)
+            if llama_vocab_is_eog(vocab, token) { break }
+
+            let written = llama_token_to_piece(vocab, token, &pieceBuffer, 512, 0, false)
+            if written > 0 {
+                let piece = String(
+                    decoding: pieceBuffer[0..<Int(written)].map { UInt8(bitPattern: $0) },
+                    as: UTF8.self)
+                if !piece.isEmpty {
+                    continuation.yield(.text(piece))
+                }
+            }
+            generated += 1
+
+            batch = llama_batch_get_one(&token, 1)
+            guard llama_decode(context, batch) == 0 else {
+                throw KernelError.runtimeFailed("llama decode failed mid-generation")
+            }
+        }
+
+        let elapsed = clock.now - started
+        continuation.yield(
+            .done(
+                GenerationStats(
+                    promptTokens: promptCount,
+                    completionTokens: generated,
+                    durationMs: Int(elapsed.components.seconds) * 1000
+                        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
+    }
+
+    private func ensureLoadedGoverned(
+        path: String,
+        modelID: String,
+        modelName: String,
+        footprintMB: Int?,
+        governor: MemoryGovernor,
+        continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
+    ) async throws {
         if loadedPath == path, model != nil, context != nil { return }
+        let verdict = try await governor.admit(
+            modelID: modelID, name: modelName, footprintMB: footprintMB
+        ) { reason in
+            continuation.yield(.status(reason))
+        }
+        if verdict == .tight {
+            continuation.yield(.status("Memory is tight — generation may be slow"))
+        }
+        let producer = GPUProducer.load(modelID: modelID)
+        await governor.gate.acquire(producer)
+        do {
+            if let previousModelID = loadedModelID {
+                unload()
+                await governor.markUnloaded(previousModelID)
+            }
+            try load(path: path, modelID: modelID)
+            await governor.gate.release(producer)
+        } catch {
+            await governor.gate.release(producer)
+            await governor.markUnloaded(modelID)
+            throw error
+        }
+        await governor.markLoaded(
+            modelID: modelID, name: modelName, footprintMB: footprintMB
+        ) {
+            await LlamaEngine.shared.unloadIfLoaded(path: path)
+        }
+        if let observed = Self.weightsFootprintMB(path: path) {
+            await governor.observeFootprint(modelID, footprintMB: observed)
+        }
+    }
+
+    private func load(path: String, modelID: String) throws {
+        _ = Self.backendReady
         unload()
 
         let modelParams = llama_model_default_params()
@@ -107,10 +209,20 @@ public actor LlamaEngine {
         model = loaded
         context = created
         loadedPath = path
+        loadedModelID = modelID
     }
 
-    public func shutdown() {
+    public func unloadIfLoaded(path: String) {
+        guard loadedPath == path else { return }
         unload()
+    }
+
+    static func weightsFootprintMB(path: String) -> Int? {
+        guard
+            let size = try? FileManager.default
+                .attributesOfItem(atPath: path)[.size] as? Int64
+        else { return nil }
+        return Int(size / (1 << 20))
     }
 
     private func unload() {
@@ -119,6 +231,7 @@ public actor LlamaEngine {
         context = nil
         model = nil
         loadedPath = nil
+        loadedModelID = nil
     }
 
     private func renderPrompt(model: OpaquePointer, messages: [ChatMessage]) -> String {

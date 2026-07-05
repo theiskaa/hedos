@@ -49,12 +49,18 @@ public actor SidecarSupervisor {
     }
 
     private var sidecars: [String: Sidecar] = [:]
-    private var idleTasks: [String: Task<Void, Never>] = [:]
 
     public init() {}
 
+    public func isRunning(_ id: String) -> Bool {
+        sidecars[id]?.process.isRunning ?? false
+    }
+
+    public func processIdentifier(_ id: String) -> Int32? {
+        sidecars[id]?.process.processIdentifier
+    }
+
     public func ensureRunning(_ spec: SidecarSpec) async throws {
-        idleTasks[spec.runtimeID]?.cancel()
         if let existing = sidecars[spec.runtimeID], existing.process.isRunning { return }
         sidecars[spec.runtimeID] = nil
 
@@ -126,14 +132,12 @@ public actor SidecarSupervisor {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.ensureRunning(spec)
                     try self.send(spec.runtimeID, control)
                     try await self.pump(spec, into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
-                await self.scheduleIdle(spec)
             }
             continuation.onTermination = { termination in
                 if case .cancelled = termination {
@@ -249,15 +253,6 @@ public actor SidecarSupervisor {
         try sidecar.stdin.fileHandleForWriting.write(contentsOf: data)
     }
 
-    private func scheduleIdle(_ spec: SidecarSpec) {
-        idleTasks[spec.runtimeID]?.cancel()
-        idleTasks[spec.runtimeID] = Task {
-            try? await Task.sleep(for: spec.idleTimeout)
-            guard !Task.isCancelled else { return }
-            await self.shutdown(spec.runtimeID)
-        }
-    }
-
     public func shutdown(_ id: String) async {
         guard let sidecar = sidecars[id] else { return }
         if sidecar.process.isRunning {
@@ -274,6 +269,12 @@ public actor SidecarSupervisor {
     public func shutdownAll() async {
         for id in Array(sidecars.keys) {
             await shutdown(id)
+        }
+    }
+
+    public func terminateAll() {
+        for id in Array(sidecars.keys) {
+            kill(id)
         }
     }
 

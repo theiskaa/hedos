@@ -143,15 +143,24 @@ private func fakeSidecarSpec(mode: String = "normal", idle: Duration = .seconds(
     await supervisor.shutdownAll()
 }
 
-@Test func supervisorIdleTimeoutShutsSidecarDown() async throws {
-    let spec = fakeSidecarSpec(idle: .milliseconds(400))
+@Test func residencyManagerDrivesSidecarIdleUnload() async throws {
+    let spec = fakeSidecarSpec()
     let supervisor = SidecarSupervisor()
+    let residency = ResidencyManager(defaultWarmWindow: .milliseconds(400))
     try await supervisor.ensureRunning(spec)
+    await residency.register(spec.runtimeID) {
+        await supervisor.shutdown(spec.runtimeID)
+        return true
+    }
 
     let stream = await supervisor.request(spec, .object(["op": .string("speak")]))
     for try await _ in stream {}
+    await residency.scheduleIdleUnload(spec.runtimeID)
 
     try await Task.sleep(for: .seconds(2))
+    #expect(await supervisor.isRunning(spec.runtimeID) == false)
+
+    try await supervisor.ensureRunning(spec)
     let respawnStream = await supervisor.request(spec, .object(["op": .string("speak")]))
     var frames = 0
     for try await chunk in respawnStream {
@@ -159,6 +168,39 @@ private func fakeSidecarSpec(mode: String = "normal", idle: Duration = .seconds(
     }
     #expect(frames == 3)
     await supervisor.shutdownAll()
+}
+
+private func processAlive(_ pid: Int32) -> Bool {
+    let ps = Process()
+    ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+    ps.arguments = ["-p", "\(pid)", "-o", "state="]
+    let out = Pipe()
+    ps.standardOutput = out
+    do { try ps.run() } catch { return false }
+    ps.waitUntilExit()
+    let state = String(
+        decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    return !state.isEmpty && !state.hasPrefix("Z")
+}
+
+@Test func terminateAllKillsSidecarsWithoutGracefulShutdown() async throws {
+    let spec = fakeSidecarSpec()
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+    let pid = try #require(await supervisor.processIdentifier(spec.runtimeID))
+    #expect(processAlive(pid))
+
+    await supervisor.terminateAll()
+
+    #expect(await supervisor.isRunning(spec.runtimeID) == false)
+    var alive = true
+    for _ in 0..<100 {
+        alive = processAlive(pid)
+        if !alive { break }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(alive == false)
 }
 
 @Test func supervisorTimesOutWhenSidecarNeverReady() async throws {

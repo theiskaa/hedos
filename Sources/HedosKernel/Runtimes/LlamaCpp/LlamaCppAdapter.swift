@@ -3,7 +3,11 @@ import Foundation
 public struct LlamaCppAdapter: RuntimeAdapter {
     public var id: String { "llama-cpp" }
 
-    public init() {}
+    private let governor: MemoryGovernor
+
+    public init(governor: MemoryGovernor = .shared) {
+        self.governor = governor
+    }
 
     public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         guard capability == .chat || capability == .complete else { return false }
@@ -37,9 +41,16 @@ public struct LlamaCppAdapter: RuntimeAdapter {
                 return ChatMessage(role: parsedRole, content: content)
             }
             let expanded = (path as NSString).expandingTildeInPath
+            let governor = governor
             let task = Task {
                 await LlamaEngine.shared.run(
-                    path: expanded, messages: messages, continuation: continuation)
+                    path: expanded,
+                    modelID: record.id,
+                    modelName: record.name,
+                    footprintMB: record.footprintMB,
+                    governor: governor,
+                    messages: messages,
+                    continuation: continuation)
             }
             continuation.onTermination = { _ in task.cancel() }
         }

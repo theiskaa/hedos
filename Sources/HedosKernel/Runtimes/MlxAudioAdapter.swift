@@ -3,7 +3,11 @@ import Foundation
 public struct MlxAudioAdapter: RuntimeAdapter {
     public var id: String { "python:mlx-audio" }
 
-    public init() {}
+    private let governor: MemoryGovernor
+
+    public init(governor: MemoryGovernor = .shared) {
+        self.governor = governor
+    }
 
     public static func bundleDirectory() -> URL? {
         guard let root = Bundle.module.resourceURL else { return nil }
@@ -41,7 +45,10 @@ public struct MlxAudioAdapter: RuntimeAdapter {
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
+            let governor = governor
+            let runtimeID = id
             let task = Task {
+                await governor.beginGeneration(record.id)
                 do {
                     guard let bundle = Self.bundleDirectory(),
                         FileManager.default.fileExists(atPath: bundle.path)
@@ -50,27 +57,68 @@ public struct MlxAudioAdapter: RuntimeAdapter {
                     }
                     continuation.yield(.status("Preparing speech runtime…"))
                     let envDir = try await EnvironmentManager.shared.prepare(
-                        runtimeID: id,
+                        runtimeID: runtimeID,
                         lockfile: bundle.appendingPathComponent("requirements.lock"),
                         progress: { message in continuation.yield(.status(message)) })
 
                     let spec = try Self.spec(
-                        runtimeID: id, envDir: envDir, bundle: bundle, record: record)
-                    continuation.yield(.status("Starting speech runtime…"))
-                    try await SidecarSupervisor.shared.ensureRunning(spec)
+                        runtimeID: runtimeID, envDir: envDir, bundle: bundle, record: record)
+                    let producer = GPUProducer.generation(modelID: record.id)
+                    while true {
+                        if await !SidecarSupervisor.shared.isRunning(spec.runtimeID) {
+                            let verdict = try await governor.admit(
+                                modelID: record.id, name: record.name,
+                                footprintMB: record.footprintMB
+                            ) { reason in
+                                continuation.yield(.status(reason))
+                            }
+                            if verdict == .tight {
+                                continuation.yield(.status("Memory is tight — loading anyway"))
+                            }
+                            continuation.yield(.status("Starting speech runtime…"))
+                            let loadProducer = GPUProducer.load(modelID: record.id)
+                            await governor.gate.acquire(loadProducer)
+                            do {
+                                try await SidecarSupervisor.shared.ensureRunning(spec)
+                                await governor.gate.release(loadProducer)
+                            } catch {
+                                await governor.gate.release(loadProducer)
+                                await governor.markUnloaded(record.id)
+                                throw error
+                            }
+                            await governor.markLoaded(
+                                modelID: record.id, name: record.name,
+                                footprintMB: record.footprintMB,
+                                warmWindow: spec.idleTimeout
+                            ) {
+                                await SidecarSupervisor.shared.shutdown(spec.runtimeID)
+                            }
+                        }
+                        await governor.gate.acquire(producer)
+                        if await SidecarSupervisor.shared.isRunning(spec.runtimeID) { break }
+                        await governor.gate.release(producer)
+                    }
 
                     var control: [String: JSONValue] = ["op": .string("speak")]
                     if case .object(let fields) = payload {
                         for (key, value) in fields { control[key] = value }
                     }
-                    let stream = await SidecarSupervisor.shared.request(spec, .object(control))
-                    for try await chunk in stream {
-                        continuation.yield(chunk)
+                    do {
+                        let stream = await SidecarSupervisor.shared.request(
+                            spec, .object(control))
+                        for try await chunk in stream {
+                            continuation.yield(chunk)
+                        }
+                        await governor.gate.release(producer)
+                    } catch {
+                        await governor.gate.release(producer)
+                        throw error
                     }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
+                await governor.endGeneration(record.id)
             }
             continuation.onTermination = { _ in task.cancel() }
         }
@@ -92,7 +140,7 @@ public struct MlxAudioAdapter: RuntimeAdapter {
         let darwinCache = tmp.deletingLastPathComponent().appendingPathComponent("C")
 
         return SidecarSpec(
-            runtimeID: runtimeID,
+            runtimeID: "\(runtimeID)#\(record.id)",
             executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
             arguments: [
                 "-f", bundle.appendingPathComponent("sandbox.sb").path,

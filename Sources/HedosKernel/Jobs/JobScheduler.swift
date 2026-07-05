@@ -90,8 +90,9 @@ public actor JobScheduler {
             await conclude(jobID, as: .failed, error: "job \(jobID) lost its runner")
             return
         }
+        let verdict: RAMVerdict
         do {
-            try await admission.admit(job) { [weak self] reason in
+            verdict = try await admission.admit(job) { [weak self] reason in
                 await self?.markWaiting(jobID, reason: reason)
             }
         } catch is CancellationError {
@@ -111,6 +112,9 @@ public actor JobScheduler {
             $0.startedAt = Date()
         }
         emit(jobID, .preparing)
+        if verdict == .tight {
+            emit(jobID, .status("Memory is tight — running anyway"))
+        }
         do {
             for try await event in runner() {
                 if Task.isCancelled { break }
