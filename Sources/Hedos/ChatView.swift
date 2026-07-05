@@ -38,24 +38,48 @@ final class ChatViewModel {
 
         streamTask = Task { [weak self] in
             guard let self else { return }
+            var pendingText = ""
+            var pendingThinking = ""
+            let clock = ContinuousClock()
+            var lastFlush = clock.now
+
+            @MainActor func flush() {
+                guard !transcript.isEmpty else { return }
+                if !pendingText.isEmpty {
+                    transcript[transcript.count - 1].text += pendingText
+                    pendingText = ""
+                }
+                if !pendingThinking.isEmpty {
+                    transcript[transcript.count - 1].thinking += pendingThinking
+                    pendingThinking = ""
+                }
+            }
+
             do {
                 let stream = try await kernel.chat(modelID, messages: history)
                 for try await chunk in stream {
-                    guard !transcript.isEmpty else { continue }
                     switch chunk {
                     case .text(let delta):
-                        transcript[transcript.count - 1].text += delta
+                        pendingText += delta
                     case .thinking(let delta):
-                        transcript[transcript.count - 1].thinking += delta
+                        pendingThinking += delta
                     case .done:
                         break
                     }
+                    if clock.now - lastFlush > .milliseconds(50) {
+                        flush()
+                        lastFlush = clock.now
+                    }
                 }
+                flush()
             } catch KernelError.runtimeUnavailable(let hint) {
+                flush()
                 notice = hint
                 dropEmptyAssistantTail()
             } catch is CancellationError {
+                flush()
             } catch {
+                flush()
                 notice = "Generation failed: \(error.localizedDescription)"
                 dropEmptyAssistantTail()
             }
@@ -102,23 +126,18 @@ struct ChatView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(model.transcript) { entry in
-                        bubble(entry)
-                            .frame(
-                                maxWidth: .infinity,
-                                alignment: entry.role == .user ? .trailing : .leading)
-                    }
-                    Color.clear.frame(height: 1).id("tail")
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(model.transcript) { entry in
+                    bubble(entry)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: entry.role == .user ? .trailing : .leading)
                 }
-                .padding(16)
             }
-            .onChange(of: model.transcript) {
-                proxy.scrollTo("tail", anchor: .bottom)
-            }
+            .padding(16)
         }
+        .defaultScrollAnchor(.bottom)
     }
 
     @ViewBuilder

@@ -52,6 +52,7 @@ public actor LlamaEngine {
             var pieceBuffer = [CChar](repeating: 0, count: 512)
 
             while generated < maxTokens {
+                await Task.yield()
                 if Task.isCancelled { break }
                 var token = llama_sampler_sample(sampler, context, -1)
                 if llama_vocab_is_eog(vocab, token) { break }
