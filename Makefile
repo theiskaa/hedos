@@ -14,3 +14,5 @@ run: app
 
 clean:
 	rm -rf .build dist
+icon:
+	swift scripts/render_icon.swift
