@@ -95,7 +95,7 @@ struct LibraryView: View {
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .top, alignment: .leading) { header }
+        .safeAreaInset(edge: .bottom, spacing: 0) { statusFooter }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -108,30 +108,28 @@ struct LibraryView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if model.isScanning && model.summary == nil {
-                HStack(spacing: 6) {
+    private var statusFooter: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Divider()
+            HStack(spacing: 6) {
+                if model.isScanning {
                     ProgressView().controlSize(.mini)
-                    Text("Looking for models…").foregroundStyle(.secondary)
+                    Text("Looking for models…")
+                } else if let summary = model.summary {
+                    Text("\(summary.totalCount) models · \(DiscoverySummary.formatBytes(summary.totalBytes))")
+                    if !summary.duplicates.isEmpty {
+                        Image(systemName: "externaldrive.badge.exclamationmark")
+                            .foregroundStyle(.orange)
+                            .help("Duplicate weights found — see details")
+                    }
                 }
-                .font(.callout)
-            } else if let summary = model.summary {
-                Text(summary.headline)
-                    .font(.callout.weight(.medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                ForEach(summary.duplicates, id: \.self) { group in
-                    Label(
-                        "\(group.names.joined(separator: " and ")) live in more than one place — \(DiscoverySummary.formatBytes(group.wastedBytes)) duplicated.",
-                        systemImage: "externaldrive.badge.exclamationmark")
-                    .foregroundStyle(.orange)
-                    .font(.caption)
-                }
+                Spacer()
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
         .background(.bar)
     }
 
@@ -151,7 +149,7 @@ struct LibraryView: View {
             } else {
                 TierBadge(tier: record.runtime.tier)
             }
-            if let mb = record.footprintMB {
+            if let mb = record.footprintMB, mb > 0 {
                 Text(DiscoverySummary.formatBytes(Int64(mb) << 20))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -174,10 +172,35 @@ struct LibraryView: View {
                 ModelInfoPane(record: record)
             }
         } else {
-            ContentUnavailableView(
-                "Select a model",
-                systemImage: "square.stack.3d.up",
-                description: Text("Chat-capable models open a conversation here."))
+            VStack(spacing: 20) {
+                Spacer()
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.tertiary)
+                if let summary = model.summary {
+                    Text(summary.headline)
+                        .font(.title3.weight(.medium))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 460)
+                    ForEach(summary.duplicates, id: \.self) { group in
+                        Label(
+                            "\(group.names.joined(separator: " and ")) live in more than one place — \(DiscoverySummary.formatBytes(group.wastedBytes)) duplicated.",
+                            systemImage: "externaldrive.badge.exclamationmark")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    }
+                } else {
+                    Text("Looking for models on this Mac…")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Select a model to open it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(24)
         }
     }
 
