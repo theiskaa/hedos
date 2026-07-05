@@ -77,6 +77,11 @@ public actor Kernel {
         try await registry.list()
     }
 
+    public func startOllama() async throws {
+        let adapter = adapters.compactMap { $0 as? OllamaAdapter }.first ?? OllamaAdapter()
+        try await adapter.startDaemon()
+    }
+
     public func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {

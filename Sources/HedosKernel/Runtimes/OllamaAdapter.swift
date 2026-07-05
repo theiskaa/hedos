@@ -19,6 +19,43 @@ public struct OllamaAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .native, preference: 20)
     }
 
+    public static func daemonBinary() -> URL? {
+        let candidates = [
+            "/usr/local/bin/ollama",
+            "/opt/homebrew/bin/ollama",
+            "\(NSHomeDirectory())/.local/bin/ollama",
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    public func startDaemon() async throws {
+        guard let binary = Self.daemonBinary() else {
+            throw KernelError.runtimeUnavailable(
+                hint: "Ollama isn't installed. Get it from ollama.com.")
+        }
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["serve"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+
+        let probe = baseURL.appendingPathComponent("api/tags")
+        for _ in 0..<20 {
+            try await Task.sleep(nanoseconds: 500_000_000)
+            var request = URLRequest(url: probe)
+            request.timeoutInterval = 2
+            if let (_, response) = try? await URLSession.shared.data(for: request),
+                (response as? HTTPURLResponse)?.statusCode == 200
+            {
+                return
+            }
+        }
+        throw KernelError.runtimeUnavailable(
+            hint: "Started Ollama but it never became reachable.")
+    }
+
     public func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {

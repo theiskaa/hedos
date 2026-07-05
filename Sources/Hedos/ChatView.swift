@@ -19,6 +19,7 @@ final class ChatViewModel {
     var draft = ""
     var isStreaming = false
     var notice: String?
+    var canStartOllama = false
 
     init(kernel: Kernel, modelID: String) {
         self.kernel = kernel
@@ -28,10 +29,31 @@ final class ChatViewModel {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
-        notice = nil
         draft = ""
         transcript.append(Entry(role: .user, text: text))
+        run()
+    }
 
+    func startOllamaAndRetry() {
+        guard !isStreaming else { return }
+        canStartOllama = false
+        notice = "Starting Ollama…"
+        Task {
+            do {
+                try await kernel.startOllama()
+                notice = nil
+                if transcript.last?.role == .user { run() }
+            } catch KernelError.runtimeUnavailable(let hint) {
+                notice = hint
+            } catch {
+                notice = "Could not start Ollama: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func run() {
+        notice = nil
+        canStartOllama = false
         let history = transcript.map { ChatMessage(role: $0.role, content: $0.text) }
         transcript.append(Entry(role: .assistant, text: ""))
         isStreaming = true
@@ -63,7 +85,7 @@ final class ChatViewModel {
                         pendingText += delta
                     case .thinking(let delta):
                         pendingThinking += delta
-                    case .done:
+                    default:
                         break
                     }
                     if clock.now - lastFlush > .milliseconds(50) {
@@ -75,6 +97,7 @@ final class ChatViewModel {
             } catch KernelError.runtimeUnavailable(let hint) {
                 flush()
                 notice = hint
+                canStartOllama = hint.contains("ollama serve")
                 dropEmptyAssistantTail()
             } catch is CancellationError {
                 flush()
@@ -113,12 +136,20 @@ struct ChatView: View {
             transcript
             Divider()
             if let notice = model.notice {
-                Label(notice, systemImage: "exclamationmark.triangle")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+                HStack(spacing: 12) {
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    if model.canStartOllama {
+                        Button("Start Ollama") {
+                            model.startOllamaAndRetry()
+                        }
+                        .controlSize(.small)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
             }
             composer
         }
