@@ -20,6 +20,15 @@ public struct MlxAudioAdapter: RuntimeAdapter {
         record.runtime.id == id && capability == .speak
     }
 
+    public static func availableVoices(_ record: ModelRecord) -> [String] {
+        guard let paths = try? resolvedModelPaths(record) else { return [] }
+        let voicesDir = URL(fileURLWithPath: paths.snapshot).appendingPathComponent("voices")
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: voicesDir.path)) ?? []
+        return files.filter { $0.hasSuffix(".safetensors") }
+            .map { String($0.dropLast(".safetensors".count)) }
+            .sorted()
+    }
+
     public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.modality == .speech,
             identified.capabilities.contains(.speak),

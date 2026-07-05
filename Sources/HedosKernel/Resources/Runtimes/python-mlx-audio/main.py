@@ -37,32 +37,77 @@ def read_frame():
     return body[0], body[1:]
 
 
+def setup_espeak():
+    import misaki.espeak
+
+    brew_lib = "/opt/homebrew/lib/libespeak-ng.dylib"
+    brew_share = "/opt/homebrew/share"
+    if os.path.exists(brew_lib) and os.path.exists(brew_share + "/espeak-ng-data/phontab"):
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+        EspeakWrapper.set_library(brew_lib)
+        EspeakWrapper.set_data_path(brew_share)
+        return "homebrew"
+
+    class DisabledEspeakFallback:
+        def __init__(self, *a, **k):
+            raise RuntimeError("no usable espeak")
+
+    misaki.espeak.EspeakFallback = DisabledEspeakFallback
+    return "disabled"
+
+
+def patch_sinegen():
+    import mlx.core as mx
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    def aligned_call(self, f0):
+        fn = f0 * mx.arange(1, self.harmonic_num + 2)[None, None, :]
+        sine_waves = self._f02sine(fn) * self.sine_amp
+        uv = self._f02uv(f0)
+        n = min(sine_waves.shape[1], uv.shape[1])
+        sine_waves = sine_waves[:, :n, :]
+        uv = uv[:, :n, :]
+        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
+        noise = noise_amp * mx.random.normal(sine_waves.shape)
+        sine_waves = sine_waves * uv + noise
+        return sine_waves, uv, noise
+
+    istftnet.SineGen.__call__ = aligned_call
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--workdir", required=True)
     args = parser.parse_args()
 
-    import misaki.espeak
-
-    class DisabledEspeakFallback:
-        def __init__(self, *a, **k):
-            raise RuntimeError("espeak fallback disabled")
-
-    misaki.espeak.EspeakFallback = DisabledEspeakFallback
+    espeak_mode = setup_espeak()
 
     import numpy as np
     from mlx_audio.tts.utils import load_model
     from mlx_audio.tts.models.kokoro import KokoroPipeline
+
+    patch_sinegen()
 
     link = os.path.join(args.workdir, "kokoro-model")
     if os.path.islink(link):
         os.unlink(link)
     os.symlink(args.model, link)
 
+    voices_dir = os.path.join(link, "voices")
+    voices = sorted(
+        f[:-12] for f in os.listdir(voices_dir) if f.endswith(".safetensors")
+    ) if os.path.isdir(voices_dir) else []
+
     model = load_model(link)
     pipeline = KokoroPipeline(lang_code="a", model=model, repo_id=link)
-    send_json({"event": "ready", "sample_rate": 24000})
+    send_json({
+        "event": "ready",
+        "sample_rate": 24000,
+        "voices": voices,
+        "espeak": espeak_mode,
+    })
 
     while True:
         frame = read_frame()
@@ -82,7 +127,7 @@ def main():
         if op == "speak":
             text = request.get("text", "")
             voice = request.get("voice", "af_heart")
-            voice_path = os.path.join(link, "voices", f"{voice}.safetensors")
+            voice_path = os.path.join(voices_dir, f"{voice}.safetensors")
             if not os.path.exists(voice_path):
                 send_json({"event": "error", "message": f"voice {voice} not found"})
                 continue

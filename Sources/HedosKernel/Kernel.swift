@@ -1,11 +1,26 @@
 import Foundation
 
-public enum KernelError: Error, Sendable {
+public enum KernelError: Error, Sendable, LocalizedError {
     case notImplemented(String)
     case modelNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case runtimeUnavailable(hint: String)
     case runtimeFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notImplemented(let what):
+            "\(what) is not implemented yet."
+        case .modelNotFound(let id):
+            "No model with id \(id) is registered."
+        case .capabilityUnsupported(let model, let capability):
+            "\(model) has no runtime for \(capability.rawValue)."
+        case .runtimeUnavailable(let hint):
+            hint
+        case .runtimeFailed(let message):
+            message
+        }
+    }
 }
 
 public actor Kernel {
@@ -75,6 +90,13 @@ public actor Kernel {
 
     public func shelf() async throws -> [ModelRecord] {
         try await registry.list()
+    }
+
+    public func voices(_ modelID: String) async throws -> [String] {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        return MlxAudioAdapter.availableVoices(record)
     }
 
     public func startOllama() async throws {

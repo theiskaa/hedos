@@ -19,6 +19,7 @@
     (subpath "/System")
     (subpath "/usr")
     (subpath "/Library")
+    (subpath "/opt/homebrew")
     (subpath "/private/etc")
     (subpath "/private/var/db")
     (subpath "/dev"))
@@ -28,7 +29,8 @@
     (subpath (param "UVPY"))
     (subpath "/System")
     (subpath "/usr/lib")
-    (subpath "/Library"))
+    (subpath "/Library")
+    (subpath "/opt/homebrew"))
 
 (deny file-write*)
 (allow file-write*
