@@ -161,7 +161,7 @@ struct LibraryView: View {
     private var detail: some View {
         if let record = model.record(id: selectedID) {
             if record.runtime.tier == .recipeNeeded {
-                RecipeNeededPane(record: record)
+                RecipeNeededPane(record: record, shelf: model.records)
             } else if record.capabilities.contains(.chat), record.runtime.id != nil {
                 ChatView(record: record, kernel: model.kernel)
                     .id(record.id)
@@ -296,6 +296,7 @@ struct ResolutionSheet: View {
 
 struct RecipeNeededPane: View {
     let record: ModelRecord
+    let shelf: [ModelRecord]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -303,17 +304,55 @@ struct RecipeNeededPane: View {
                 Text(record.name).font(.title2.weight(.semibold))
                 TierBadge(tier: .recipeNeeded)
             }
+            Text(reason)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let sibling = runnableSibling {
+                Label(
+                    "You also have \(sibling.name), which runs.",
+                    systemImage: "checkmark.circle")
+                .foregroundStyle(.green)
+            }
             Text(
-                "Hedos found this model but no built-in runtime can run it yet. It needs a runtime recipe — a small manifest that teaches Hedos how to execute it."
+                "A runtime recipe — a small manifest that teaches Hedos how to execute this format — can make it runnable later."
             )
-            .foregroundStyle(.secondary)
-            Text("Community recipes arrive with the runtime library in a later release.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
+    }
+
+    private var reason: String {
+        let identified = Identification.identify(record)
+        let what: String
+        switch identified.format {
+        case .unknown:
+            what =
+                record.primaryWeightPath == nil
+                ? "Hedos found this model, but its weights are in a format none of the built-in runtimes can execute (no safetensors or GGUF weights detected — likely PyTorch or another framework's format)."
+                : "Hedos found this model but could not identify what kind it is."
+        case .diffusers:
+            what =
+                "This is an image-generation pipeline. Hedos's image runtime arrives in a later milestone."
+        case .safetensors, .mlxSafetensors:
+            what =
+                "This model's format is recognized, but no built-in runtime serves its modality (\(record.modality.rawValue)) yet."
+        default:
+            what = "No built-in runtime can execute this model yet."
+        }
+        return what
+    }
+
+    private var runnableSibling: ModelRecord? {
+        let base = record.name.lowercased()
+            .split(separator: "-").first.map(String.init) ?? record.name.lowercased()
+        guard base.count >= 4 else { return nil }
+        return shelf.first {
+            $0.id != record.id && $0.state == .ready
+                && $0.name.lowercased().contains(base)
+        }
     }
 }
 

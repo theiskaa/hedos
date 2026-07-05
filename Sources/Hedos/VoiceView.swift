@@ -61,6 +61,7 @@ final class VoiceViewModel {
 
     var text = "Hedos gives every local model a home."
     var voice = "af_heart"
+    var voices: [String] = []
     var status: String?
     var notice: String?
     var isSpeaking = false
@@ -68,6 +69,13 @@ final class VoiceViewModel {
     init(kernel: Kernel, modelID: String) {
         self.kernel = kernel
         self.modelID = modelID
+    }
+
+    func loadVoices() async {
+        voices = (try? await kernel.voices(modelID)) ?? []
+        if !voices.contains(voice), let first = voices.first {
+            voice = first
+        }
     }
 
     func speak() {
@@ -137,12 +145,12 @@ struct VoiceView: View {
 
             HStack(spacing: 12) {
                 Picker("Voice", selection: $model.voice) {
-                    Text("af_heart").tag("af_heart")
-                    Text("af_bella").tag("af_bella")
-                    Text("am_michael").tag("am_michael")
-                    Text("bf_emma").tag("bf_emma")
+                    ForEach(model.voices, id: \.self) { voice in
+                        Text(voice).tag(voice)
+                    }
                 }
                 .frame(maxWidth: 220)
+                .disabled(model.voices.isEmpty)
 
                 Spacer()
 
@@ -179,5 +187,6 @@ struct VoiceView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task { await model.loadVoices() }
     }
 }
