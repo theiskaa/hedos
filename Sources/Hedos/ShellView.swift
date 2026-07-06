@@ -92,8 +92,13 @@ final class ShellModel {
     }
 
     func newChat() {
-        guard let record = Launcher.defaultChatModel(in: library.records) else { return }
-        startChat(bound: record)
+        let kernel = kernel
+        Task {
+            let preferred = (try? await kernel.defaultChatModelID()) ?? nil
+            guard let record = Launcher.defaultChatModel(in: library.records, preferring: preferred)
+            else { return }
+            startChat(bound: record)
+        }
     }
 
     func openParams(_ artifact: Artifact) {
@@ -367,21 +372,13 @@ struct ChatDetail: View {
 
     var body: some View {
         if let session = shell.session(id: shell.chatSelection) {
-            if let record = shell.library.record(id: session.modelID ?? ""),
-                Launcher.destination(for: record) == .chat
-            {
-                ChatView(record: record, kernel: shell.kernel)
-                    .id(session.id)
-            } else if shell.library.isScanning && shell.library.records.isEmpty {
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ModeEmptyState(
-                    glyph: "bubble.left",
-                    headline: "This chat's model is gone.",
-                    caption: "The model it was bound to is no longer runnable on the shelf.")
-            }
+            ChatView(
+                session: session, library: shell.library, kernel: shell.kernel,
+                onSessionsChanged: { [weak shell] in
+                    Task { await shell?.refreshSessions() }
+                }
+            )
+            .id(session.id)
         } else {
             chatEmptyState
         }

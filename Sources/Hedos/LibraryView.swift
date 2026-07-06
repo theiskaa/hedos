@@ -61,6 +61,10 @@ final class LibraryViewModel {
     }
 
     var groupedRecords: [(section: String, records: [ModelRecord])] {
+        Self.grouped(records)
+    }
+
+    static func grouped(_ records: [ModelRecord]) -> [(section: String, records: [ModelRecord])] {
         let sections: [(SourceKind, String)] = [
             (.ollama, "Ollama"),
             (.huggingfaceCache, "Hugging Face"),

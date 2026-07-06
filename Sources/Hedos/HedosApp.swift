@@ -47,6 +47,12 @@ struct HedosApp: App {
                     openWindow(id: "about")
                 }
             }
+            CommandGroup(replacing: .newItem) {
+                Button("New Chat") {
+                    shell.newChat()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
             CommandGroup(before: .toolbar) {
                 ForEach(AppMode.allCases, id: \.self) { mode in
                     Button(Design.modeTitle(mode)) {
