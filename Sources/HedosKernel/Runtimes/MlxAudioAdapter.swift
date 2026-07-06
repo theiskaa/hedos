@@ -10,14 +10,7 @@ public struct MlxAudioAdapter: RuntimeAdapter {
     }
 
     public static func bundleDirectory() -> URL? {
-        guard let root = Bundle.module.resourceURL else { return nil }
-        let candidates = [
-            root.appendingPathComponent("Resources/Runtimes/python-mlx-audio"),
-            root.appendingPathComponent("Runtimes/python-mlx-audio"),
-            root.deletingLastPathComponent()
-                .appendingPathComponent("Resources/Runtimes/python-mlx-audio"),
-        ]
-        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+        RuntimeBundle.directory(named: "python-mlx-audio")
     }
 
     public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
@@ -25,7 +18,7 @@ public struct MlxAudioAdapter: RuntimeAdapter {
     }
 
     public static func availableVoices(_ record: ModelRecord) -> [String] {
-        guard let paths = try? resolvedModelPaths(record) else { return [] }
+        let paths = SidecarModelPaths.resolve(record)
         let voicesDir = URL(fileURLWithPath: paths.snapshot).appendingPathComponent("voices")
         let files = (try? FileManager.default.contentsOfDirectory(atPath: voicesDir.path)) ?? []
         return files.filter { $0.hasSuffix(".safetensors") }
@@ -128,7 +121,7 @@ public struct MlxAudioAdapter: RuntimeAdapter {
         runtimeID: String, envDir: URL, bundle: URL, record: ModelRecord
     ) throws -> SidecarSpec {
         let fm = FileManager.default
-        let paths = try resolvedModelPaths(record)
+        let paths = SidecarModelPaths.resolve(record)
         let workdir = Registry.defaultDirectory()
             .appendingPathComponent("workdirs/python-mlx-audio", isDirectory: true)
         try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
@@ -157,20 +150,5 @@ public struct MlxAudioAdapter: RuntimeAdapter {
                 "--workdir", workdir.path,
             ],
             workingDirectory: workdir)
-    }
-
-    static func resolvedModelPaths(_ record: ModelRecord) throws -> (
-        sandboxRoot: String, snapshot: String
-    ) {
-        let base = URL(
-            fileURLWithPath: (record.source.path as NSString).expandingTildeInPath)
-        let root = base.resolvingSymlinksInPath()
-        if record.source.kind == .huggingfaceCache, let ref = record.source.ref {
-            let snapshot = root.appendingPathComponent("snapshots/\(ref)")
-            if FileManager.default.fileExists(atPath: snapshot.path) {
-                return (root.path, snapshot.path)
-            }
-        }
-        return (root.path, root.path)
     }
 }

@@ -20,7 +20,7 @@ enum Fixtures {
             params: [
                 ParamSpec(key: "steps", type: .int, defaultValue: .int(4), range: [.int(1), .int(50)]),
                 ParamSpec(
-                    key: "guidance", type: .float, defaultValue: .double(0.0),
+                    key: "guidance", type: .float, defaultValue: .double(4.0),
                     range: [.double(0), .double(10)]),
                 ParamSpec(
                     key: "size", type: .enumeration, defaultValue: .string("1024x1024"),

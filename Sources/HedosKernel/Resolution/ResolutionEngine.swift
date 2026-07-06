@@ -3,10 +3,12 @@ import Foundation
 public struct RuntimeBid: Sendable, Hashable {
     public var tier: RunTier
     public var preference: Int
+    public var alternatives: [String]
 
-    public init(tier: RunTier, preference: Int) {
+    public init(tier: RunTier, preference: Int, alternatives: [String] = []) {
         self.tier = tier
         self.preference = preference
+        self.alternatives = alternatives
     }
 }
 
@@ -37,11 +39,16 @@ public actor ResolutionEngine {
         var updated = record
         if let winner = bids.first {
             let previous = record.runtime
+            var alternatives = bids.dropFirst().map(\.id)
+            for declared in winner.bid.alternatives
+            where declared != winner.id && !alternatives.contains(declared) {
+                alternatives.append(declared)
+            }
             updated.runtime = RuntimeRef(
                 id: winner.id,
                 resolved: .auto,
                 tier: winner.bid.tier,
-                alternatives: bids.dropFirst().map(\.id),
+                alternatives: alternatives,
                 confirmedAt: previous.id == winner.id ? previous.confirmedAt : nil)
             updated.state = .ready
         } else {
@@ -51,6 +58,7 @@ public actor ResolutionEngine {
         }
         if let modality = identified.modality { updated.modality = modality }
         if !identified.capabilities.isEmpty { updated.capabilities = identified.capabilities }
+        if !identified.params.isEmpty { updated.params = identified.params }
         updated.execution = identified.execution
 
         if updated != record {

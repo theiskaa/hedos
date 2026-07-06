@@ -64,6 +64,7 @@ public actor Kernel {
             LlamaCppAdapter(governor: governor),
             OllamaAdapter(),
             MlxAudioAdapter(governor: governor),
+            MfluxAdapter(governor: governor),
         ]
     }
 

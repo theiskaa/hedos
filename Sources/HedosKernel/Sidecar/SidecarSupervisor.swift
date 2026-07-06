@@ -41,6 +41,10 @@ public actor SidecarSupervisor {
         var eof = false
         var sampleRate = 24000
         var stderrTail = ""
+        var busy = false
+        var jobSession: UUID?
+        var jobOpSent = false
+        var pending: [CheckedContinuation<Void, Never>] = []
 
         init(process: Process, stdin: Pipe) {
             self.process = process
@@ -148,6 +152,125 @@ public actor SidecarSupervisor {
         }
     }
 
+    public func jobRequest(
+        _ spec: SidecarSpec, _ control: JSONValue
+    ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let session = UUID()
+            let task = Task {
+                do {
+                    try await self.runJob(spec, control, session: session, into: continuation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { termination in
+                guard case .cancelled = termination else { return }
+                task.cancel()
+                Task { await self.cancelJob(spec.runtimeID, session: session) }
+            }
+        }
+    }
+
+    private func runJob(
+        _ spec: SidecarSpec, _ control: JSONValue, session: UUID,
+        into continuation: AsyncThrowingStream<JobRuntimeEvent, Error>.Continuation
+    ) async throws {
+        let id = spec.runtimeID
+        await acquireExclusive(id, session: session)
+        defer { releaseExclusive(id, session: session) }
+        try Task.checkCancellation()
+        try send(id, control)
+        markJobOpSent(id, session: session)
+        try await pumpJob(spec, into: continuation)
+    }
+
+    private func cancelJob(_ id: String, session: UUID) {
+        guard let sidecar = sidecars[id],
+            sidecar.busy,
+            sidecar.jobSession == session,
+            sidecar.jobOpSent
+        else { return }
+        try? send(id, .object(["op": .string("cancel")]))
+    }
+
+    private func acquireExclusive(_ id: String, session: UUID) async {
+        while let sidecar = sidecars[id], sidecar.busy {
+            await withCheckedContinuation { sidecar.pending.append($0) }
+        }
+        guard let sidecar = sidecars[id] else { return }
+        sidecar.busy = true
+        sidecar.jobSession = session
+        sidecar.jobOpSent = false
+    }
+
+    private func markJobOpSent(_ id: String, session: UUID) {
+        guard let sidecar = sidecars[id], sidecar.jobSession == session else { return }
+        sidecar.jobOpSent = true
+    }
+
+    private func releaseExclusive(_ id: String, session: UUID) {
+        guard let sidecar = sidecars[id], sidecar.jobSession == session else { return }
+        sidecar.jobSession = nil
+        sidecar.jobOpSent = false
+        sidecar.busy = false
+        resumePending(sidecar)
+    }
+
+    private func resumePending(_ sidecar: Sidecar) {
+        let waiters = sidecar.pending
+        sidecar.pending = []
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    private func pumpJob(
+        _ spec: SidecarSpec,
+        into continuation: AsyncThrowingStream<JobRuntimeEvent, Error>.Continuation
+    ) async throws {
+        let id = spec.runtimeID
+        while let frame = await nextFrame(id, timeout: .seconds(600)) {
+            guard case .control(let value) = frame else { continue }
+            switch value.objectValue?["event"]?.stringValue {
+            case "begin":
+                continuation.yield(.started)
+            case "step":
+                let step = value.objectValue?["n"]?.intValue ?? 0
+                let total = value.objectValue?["total"]?.intValue ?? 0
+                continuation.yield(.progress(step: step, totalSteps: total))
+            case "preview":
+                if let data = await nextBinaryFrame(id) {
+                    continuation.yield(.preview(data))
+                }
+            case "image":
+                let format = value.objectValue?["format"]?.stringValue ?? "png"
+                if let data = await nextBinaryFrame(id) {
+                    continuation.yield(.result(data: data, fileExtension: format))
+                }
+            case "done":
+                return
+            case "cancelled":
+                throw CancellationError()
+            case "error":
+                throw KernelError.runtimeFailed(
+                    value.objectValue?["message"]?.stringValue ?? "sidecar error")
+            default:
+                continue
+            }
+        }
+        throw KernelError.runtimeFailed(
+            "sidecar \(id) exited mid-job: \(stderrTail(id))")
+    }
+
+    private func nextBinaryFrame(_ id: String) async -> Data? {
+        guard let frame = await nextFrame(id, timeout: .seconds(600)),
+            case .audio(let data) = frame
+        else { return nil }
+        return data
+    }
+
     private func pump(
         _ spec: SidecarSpec,
         into continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
@@ -204,6 +327,7 @@ public actor SidecarSupervisor {
             sidecar.waiter = nil
             waiter.resume(returning: nil)
         }
+        resumePending(sidecar)
     }
 
     private func nextFrame(_ id: String, timeout: Duration) async -> Frame? {
@@ -285,6 +409,7 @@ public actor SidecarSupervisor {
                 sidecar.waiter = nil
                 waiter.resume(returning: nil)
             }
+            resumePending(sidecar)
         }
         sidecars[id] = nil
     }

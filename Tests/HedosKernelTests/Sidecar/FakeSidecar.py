@@ -1,5 +1,6 @@
 import json
 import os
+import select
 import struct
 import sys
 import time
@@ -66,3 +67,34 @@ while True:
         for i in range(3):
             send(2, bytes([i]) * 640)
         send_json({"event": "done", "seconds": 0.12})
+    if op == "image":
+        if request.get("prompt") == "fail":
+            send_json({"event": "error", "message": "the pipeline exploded"})
+            continue
+        if request.get("prompt") == "abort":
+            send_json({"event": "begin"})
+            send_json({"event": "cancelled"})
+            continue
+        steps = int(request.get("steps", 4))
+        send_json({"event": "begin"})
+        cancelled = False
+        for i in range(1, steps + 1):
+            time.sleep(0.02)
+            send_json({"event": "step", "n": i, "total": steps})
+            if i == 1:
+                send_json({"event": "preview", "format": "png"})
+                send(2, b"\x89PNG-preview")
+            if select.select([0], [], [], 0)[0]:
+                inner = read_frame()
+                if inner is None:
+                    sys.exit(0)
+                inner_request = json.loads(inner[1])
+                if inner_request.get("op") == "cancel":
+                    cancelled = True
+                    break
+        if cancelled:
+            send_json({"event": "cancelled"})
+            continue
+        send_json({"event": "image", "format": "png", "index": 0, "count": 1})
+        send(2, b"\x89PNG" + json.dumps(request.get("seed")).encode())
+        send_json({"event": "done", "seconds": 0.2})

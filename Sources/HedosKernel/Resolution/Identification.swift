@@ -14,6 +14,14 @@ public struct IdentifiedModel: Sendable, Hashable {
     public var modality: Modality?
     public var capabilities: [Capability]
     public var execution: ExecutionMode
+    public var params: [ParamSpec] = []
+    public var pipelineClass: String? = nil
+}
+
+public struct DiffusersPipelineProfile: Sendable, Hashable {
+    public var modality: Modality
+    public var capabilities: [Capability]
+    public var params: [ParamSpec]
 }
 
 public enum Identification {
@@ -37,14 +45,26 @@ public enum Identification {
                 execution: .stream)
         }
 
-        if FileManager.default.fileExists(
-            atPath: container.appendingPathComponent("model_index.json").path)
-        {
+        let modelIndexURL = container.appendingPathComponent("model_index.json")
+        if FileManager.default.fileExists(atPath: modelIndexURL.path) {
+            let pipelineClass = diffusersPipelineClass(at: modelIndexURL)
+            guard let pipelineClass,
+                let profile = diffusersPipelineProfiles[pipelineClass]
+            else {
+                return IdentifiedModel(
+                    format: .diffusers,
+                    modality: nil,
+                    capabilities: [],
+                    execution: .job,
+                    pipelineClass: pipelineClass)
+            }
             return IdentifiedModel(
                 format: .diffusers,
-                modality: .image,
-                capabilities: [.image],
-                execution: .job)
+                modality: profile.modality,
+                capabilities: profile.capabilities,
+                execution: .job,
+                params: profile.params,
+                pipelineClass: pipelineClass)
         }
 
         let configURL = container.appendingPathComponent("config.json")
@@ -67,6 +87,31 @@ public enum Identification {
         }
         return IdentifiedModel(
             format: .unknown, modality: nil, capabilities: [], execution: .sync)
+    }
+
+    static let imagePipelineParams: [ParamSpec] = [
+        ParamSpec(key: "steps", type: .int, defaultValue: .int(4), range: [.int(1), .int(50)]),
+        ParamSpec(
+            key: "guidance", type: .float, defaultValue: .double(4.0),
+            range: [.double(0), .double(10)]),
+        ParamSpec(
+            key: "size", type: .enumeration, defaultValue: .string("1024x1024"),
+            values: ["512x512", "768x768", "1024x1024"]),
+        ParamSpec(key: "seed", type: .int),
+    ]
+
+    static let diffusersPipelineProfiles: [String: DiffusersPipelineProfile] = [
+        "FluxPipeline": DiffusersPipelineProfile(
+            modality: .image,
+            capabilities: [.image],
+            params: imagePipelineParams)
+    ]
+
+    static func diffusersPipelineClass(at url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+            let index = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return index["_class_name"] as? String
     }
 
     static func hasGGUFMagic(at url: URL) -> Bool {
