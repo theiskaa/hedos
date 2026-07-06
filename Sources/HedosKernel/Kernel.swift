@@ -73,6 +73,7 @@ public actor Kernel {
     private static func defaultAdapters(governor: MemoryGovernor) -> [any RuntimeAdapter] {
         [
             LlamaCppAdapter(governor: governor),
+            WhisperCppAdapter(governor: governor),
             OllamaAdapter(),
             MlxAudioAdapter(governor: governor),
             MfluxAdapter(governor: governor),
