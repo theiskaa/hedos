@@ -337,11 +337,12 @@ struct ModelInfoPane: View {
 struct RecipeNeededPane: View {
     let record: ModelRecord
     let shelf: [ModelRecord]
+    @State private var reason: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             DetailHeader(record: record)
-            Text(reason)
+            Text(reason ?? "")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
@@ -360,11 +361,16 @@ struct RecipeNeededPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(28)
+        .task(id: record.id) {
+            let record = record
+            reason = await Task.detached {
+                Self.reason(for: record, format: Identification.identify(record).format)
+            }.value
+        }
     }
 
-    private var reason: String {
-        let identified = Identification.identify(record)
-        switch identified.format {
+    private nonisolated static func reason(for record: ModelRecord, format: ModelFormat) -> String {
+        switch format {
         case .unknown:
             return record.primaryWeightPath == nil
                 ? "This model's weights are in a format none of the built-in runtimes can execute — no safetensors or GGUF detected, likely PyTorch or another framework's format."
