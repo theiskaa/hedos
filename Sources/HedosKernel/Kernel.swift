@@ -226,6 +226,10 @@ public actor Kernel {
         try await artifactStore.url(id: id)
     }
 
+    public func artifactPreview(id: String) async throws -> Data? {
+        try await artifactStore.previewData(id: id)
+    }
+
     public func deleteArtifact(id: String) async throws {
         try await artifactStore.delete(id: id)
     }
