@@ -346,7 +346,6 @@ struct RecipeNeededPane: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: 480, alignment: .leading)
             if let sibling = runnableSibling {
                 Text("You also have \(sibling.name), which runs.")
