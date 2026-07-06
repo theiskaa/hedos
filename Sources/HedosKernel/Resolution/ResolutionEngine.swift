@@ -14,9 +14,11 @@ public struct RuntimeBid: Sendable, Hashable {
 
 public actor ResolutionEngine {
     private let adapters: [any RuntimeAdapter]
+    private let profiles: ProfileRegistry
 
-    public init(adapters: [any RuntimeAdapter]) {
+    public init(adapters: [any RuntimeAdapter], profiles: ProfileRegistry = .builtin) {
         self.adapters = adapters
+        self.profiles = profiles
     }
 
     public func resolveAll(in registry: Registry) async throws {
@@ -60,6 +62,7 @@ public actor ResolutionEngine {
         if !identified.capabilities.isEmpty { updated.capabilities = identified.capabilities }
         if !identified.params.isEmpty { updated.params = identified.params }
         updated.execution = identified.execution
+        updated = profiles.populated(updated)
 
         if updated != record {
             try await registry.register(updated)

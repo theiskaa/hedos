@@ -96,15 +96,32 @@ public struct OllamaAdapter: RuntimeAdapter {
         }
     }
 
+    static let optionKeys: [(payload: String, option: String)] = [
+        ("temperature", "temperature"),
+        ("top_p", "top_p"),
+        ("max_tokens", "num_predict"),
+        ("context_length", "num_ctx"),
+    ]
+
     static func requestBody(model: String, payload: JSONValue) throws -> Data {
         guard case .object(let object) = payload, let messages = object["messages"] else {
             throw KernelError.runtimeFailed("chat payload must carry a messages array")
         }
-        let body: JSONValue = .object([
+        var body: [String: JSONValue] = [
             "model": .string(model),
             "messages": messages,
             "stream": .bool(true),
-        ])
-        return try JSONEncoder().encode(body)
+        ]
+        var options: [String: JSONValue] = [:]
+        for mapping in Self.optionKeys {
+            if let value = object[mapping.payload], value != .null {
+                options[mapping.option] = value
+            }
+        }
+        if !options.isEmpty { body["options"] = .object(options) }
+        if let thinking = object["thinking"], thinking != .null {
+            body["think"] = thinking
+        }
+        return try JSONEncoder().encode(JSONValue.object(body))
     }
 }

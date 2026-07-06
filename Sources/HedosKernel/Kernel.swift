@@ -5,6 +5,7 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case modelNotFound(String)
     case artifactNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
+    case paramUnsupported(model: String, key: String)
     case runtimeUnavailable(hint: String)
     case runtimeFailed(String)
 
@@ -18,6 +19,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "No artifact with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
             "\(model) has no runtime for \(capability.rawValue)."
+        case .paramUnsupported(let model, let key):
+            "\(model) has no \(key) option."
         case .runtimeUnavailable(let hint):
             hint
         case .runtimeFailed(let message):
@@ -212,7 +215,9 @@ public actor Kernel {
         guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
             throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
         }
-        return adapter.invoke(record, capability, payload: payload)
+        let configured = ModelConfiguration.merged(
+            record: record, capability: capability, payload: payload)
+        return adapter.invoke(record, capability, payload: configured)
     }
 
     public func chat(
@@ -243,7 +248,8 @@ public actor Kernel {
             throw KernelError.runtimeFailed(
                 "\(adapter.id) cannot run \(capability.rawValue) as a job")
         }
-        let seededPayload = Self.seeded(payload)
+        let seededPayload = Self.seeded(
+            ModelConfiguration.merged(record: record, capability: capability, payload: payload))
         return await scheduler.submit(
             modelID: modelID, capability: capability, payload: seededPayload
         ) {

@@ -67,7 +67,7 @@ public actor Registry {
         do {
             let envelope = try decoder.decode(Envelope.self, from: data)
             models = Dictionary(
-                envelope.models.map { ($0.id, $0) },
+                envelope.models.map { ($0.id, $0.droppingVanishedParamValues()) },
                 uniquingKeysWith: { _, newer in newer })
         } catch {
             throw RegistryError.corruptStore(description: String(describing: error))

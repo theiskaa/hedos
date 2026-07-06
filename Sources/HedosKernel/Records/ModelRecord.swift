@@ -92,6 +92,9 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
     public var source: ModelSource
     public var runtime: RuntimeRef
     public var params: [ParamSpec]
+    public var paramValues: [String: JSONValue]
+    public var systemPrompt: String?
+    public var alias: String?
     public var execution: ExecutionMode
     public var footprintMB: Int?
     public var state: ModelState
@@ -105,6 +108,9 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         source: ModelSource,
         runtime: RuntimeRef = .unresolved,
         params: [ParamSpec] = [],
+        paramValues: [String: JSONValue] = [:],
+        systemPrompt: String? = nil,
+        alias: String? = nil,
         execution: ExecutionMode = .sync,
         footprintMB: Int? = nil,
         state: ModelState = .unresolved,
@@ -117,10 +123,45 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         self.source = source
         self.runtime = runtime
         self.params = params
+        self.paramValues = paramValues
+        self.systemPrompt = systemPrompt
+        self.alias = alias
         self.execution = execution
         self.footprintMB = footprintMB
         self.state = state
         self.registeredAt = registeredAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, modality, capabilities, source, runtime, params, paramValues
+        case systemPrompt, alias, execution, footprintMB, state, registeredAt
+        case primaryWeightPath
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.modality = try container.decode(Modality.self, forKey: .modality)
+        self.capabilities = try container.decode([Capability].self, forKey: .capabilities)
+        self.source = try container.decode(ModelSource.self, forKey: .source)
+        self.runtime = try container.decode(RuntimeRef.self, forKey: .runtime)
+        self.params = try container.decode([ParamSpec].self, forKey: .params)
+        self.paramValues =
+            try container.decodeIfPresent([String: JSONValue].self, forKey: .paramValues) ?? [:]
+        self.systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
+        self.alias = try container.decodeIfPresent(String.self, forKey: .alias)
+        self.execution = try container.decode(ExecutionMode.self, forKey: .execution)
+        self.footprintMB = try container.decodeIfPresent(Int.self, forKey: .footprintMB)
+        self.state = try container.decode(ModelState.self, forKey: .state)
+        self.registeredAt = try container.decode(Date.self, forKey: .registeredAt)
+        self.primaryWeightPath = try container.decodeIfPresent(
+            String.self, forKey: .primaryWeightPath)
+    }
+
+    public var displayName: String {
+        guard let alias, !alias.isEmpty else { return name }
+        return alias
     }
 
     public static func stableID(for source: ModelSource) -> String {
