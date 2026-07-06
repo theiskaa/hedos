@@ -65,6 +65,34 @@ import Testing
     #expect(Launcher.defaultChatModel(in: [Fixtures.flux(), speaker]) == nil)
 }
 
+@Test func modeSidebarsIncludeNonRunnableModelsOfTheirModality() {
+    var recipeImage = Fixtures.gguf(path: "~/models/sdxl-turbo")
+    recipeImage.modality = .image
+    recipeImage.capabilities = [.image]
+    recipeImage.runtime = RuntimeRef(id: nil, resolved: .unresolved, tier: .recipeNeeded)
+    recipeImage.state = .unresolved
+    var recipeVoice = Fixtures.gguf(path: "~/models/kokoro-alt")
+    recipeVoice.modality = .speech
+    recipeVoice.capabilities = [.speak]
+    recipeVoice.runtime = .unresolved
+    recipeVoice.state = .unresolved
+    var mystery = Fixtures.gguf(path: "~/models/mystery")
+    mystery.modality = .unknown
+    mystery.capabilities = []
+    mystery.runtime = .unresolved
+    mystery.state = .unresolved
+    let readyImage = Fixtures.flux()
+    let shelf = [recipeImage, recipeVoice, mystery, readyImage]
+
+    #expect(Launcher.destination(for: recipeImage) == .library)
+    #expect(
+        Launcher.models(in: shelf, for: .images).map(\.id) == [recipeImage.id, readyImage.id])
+    #expect(Launcher.models(in: shelf, for: .voice).map(\.id) == [recipeVoice.id])
+    #expect(Launcher.models(in: shelf, for: .chat).isEmpty)
+    #expect(!Launcher.models(in: shelf, for: .images).contains { $0.id == mystery.id })
+    #expect(!Launcher.models(in: shelf, for: .voice).contains { $0.id == mystery.id })
+}
+
 @Test func shellStateSelectionAccessorsCoverEveryMode() {
     var state = ShellState()
     #expect(state.mode == .library)

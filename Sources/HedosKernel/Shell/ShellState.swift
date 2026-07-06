@@ -39,7 +39,24 @@ public enum Launcher {
     }
 
     public static func models(in shelf: [ModelRecord], for mode: AppMode) -> [ModelRecord] {
-        shelf.filter { destination(for: $0) == mode }
+        shelf.filter { belongs($0, to: mode) }
+    }
+
+    private static func belongs(_ record: ModelRecord, to mode: AppMode) -> Bool {
+        let destination = destination(for: record)
+        if destination == mode { return true }
+        guard destination == .library, mode != .library else { return false }
+        switch mode {
+        case .chat:
+            return record.capabilities.contains(.chat) || record.modality == .text
+        case .images:
+            return record.capabilities.contains(.image) || record.modality == .image
+        case .voice:
+            return record.capabilities.contains(.speak) || record.modality == .speech
+                || record.modality == .audio
+        default:
+            return false
+        }
     }
 }
 
