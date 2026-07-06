@@ -173,10 +173,9 @@ private func waitUntil(
     #expect(try await kernel.watchedFolders() == [modelsDir.path])
 
     let scanner = LooseFileScanner(
-        directories: LooseFileScanner.defaultDirectories()
-            + (try await kernel.watchedFolders()).map {
-                URL(fileURLWithPath: $0, isDirectory: true)
-            })
+        directories: (try await kernel.watchedFolders()).map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        })
     let result = await scanner.scan()
     #expect(result.discovered.contains { $0.name == "hidden-model" })
 

@@ -188,7 +188,7 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     process.executableURL = spec.executable
     process.arguments = Array(spec.arguments[..<(pythonIndex + 1)]) + ["-c", probe]
     var environment = spec.environment
-    environment["HOME"] = NSHomeDirectory()
+    environment["HOME"] = dir.path
     process.environment = environment
     process.currentDirectoryURL = spec.workingDirectory
     let stdout = Pipe()

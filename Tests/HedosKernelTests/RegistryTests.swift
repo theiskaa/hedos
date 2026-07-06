@@ -82,10 +82,10 @@ import Testing
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let registry = Registry(directory: dir)
-    try await registry.register(Fixtures.gguf(path: "~/Models/zeta.gguf"))
+    try await registry.register(Fixtures.gguf(path: "/tmp/hedos-fixtures/zeta.gguf"))
     try await registry.register(Fixtures.flux())
 
-    var zeta = Fixtures.gguf(path: "~/Models/zeta.gguf")
+    var zeta = Fixtures.gguf(path: "/tmp/hedos-fixtures/zeta.gguf")
     zeta.name = "Zeta"
     try await registry.register(zeta)
 

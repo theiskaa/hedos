@@ -33,7 +33,7 @@ enum Fixtures {
             registeredAt: Date(timeIntervalSince1970: 1_750_000_000))
     }
 
-    static func gguf(path: String = "~/Downloads/qwen3.5-9b-q4.gguf") -> ModelRecord {
+    static func gguf(path: String = "/tmp/hedos-fixtures/qwen3.5-9b-q4.gguf") -> ModelRecord {
         ModelRecord(
             name: "qwen3.5-9b-q4",
             modality: .text,
