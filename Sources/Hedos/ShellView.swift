@@ -68,17 +68,17 @@ final class ShellModel {
 
     func selectLibrary(_ id: String?) {
         librarySelection = id
-        guard let record = library.record(id: id) else {
-            persist()
-            return
-        }
-        if needsConfirmation(record) {
-            confirmJumps = true
-            pendingConfirm = record.id
-        } else {
-            launch(record)
-        }
         persist()
+        guard let record = library.record(id: id) else { return }
+        Task {
+            guard librarySelection == record.id else { return }
+            if needsConfirmation(record) {
+                confirmJumps = true
+                pendingConfirm = record.id
+            } else {
+                launch(record)
+            }
+        }
     }
 
     func resolutionFinished(confirmed: Bool) {
