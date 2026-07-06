@@ -707,17 +707,20 @@ struct ImagesDetail: View {
                 shell.openParams(artifact)
             }
         } else if let record = shell.library.record(
-            id: shell.imagesModelID(shell.imagesSelection)),
-            Launcher.destination(for: record) == .images
+            id: shell.imagesModelID(shell.imagesSelection))
         {
-            ImageCanvasView(
-                record: record,
-                kernel: shell.kernel,
-                prefill: shell.prefill(for: record)?.artifact
-            ) {
-                shell.selectImages("gallery")
+            if Launcher.destination(for: record) == .images {
+                ImageCanvasView(
+                    record: record,
+                    kernel: shell.kernel,
+                    prefill: shell.prefill(for: record)?.artifact
+                ) {
+                    shell.selectImages("gallery")
+                }
+                .id("\(record.id):\(shell.prefill(for: record)?.id.uuidString ?? "")")
+            } else {
+                RecipeNeededPane(record: record, shelf: shell.library.records)
             }
-            .id("\(record.id):\(shell.prefill(for: record)?.id.uuidString ?? "")")
         } else if shell.library.isScanning && shell.library.records.isEmpty {
             ProgressView()
                 .controlSize(.small)
@@ -768,11 +771,13 @@ struct VoiceDetail: View {
     let shell: ShellModel
 
     var body: some View {
-        if let record = shell.library.record(id: shell.voiceSelection),
-            Launcher.destination(for: record) == .voice
-        {
-            VoiceView(record: record, kernel: shell.kernel)
-                .id(record.id)
+        if let record = shell.library.record(id: shell.voiceSelection) {
+            if Launcher.destination(for: record) == .voice {
+                VoiceView(record: record, kernel: shell.kernel)
+                    .id(record.id)
+            } else {
+                RecipeNeededPane(record: record, shelf: shell.library.records)
+            }
         } else if shell.library.isScanning && shell.library.records.isEmpty {
             ProgressView()
                 .controlSize(.small)
