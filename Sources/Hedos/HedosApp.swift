@@ -52,6 +52,14 @@ struct HedosApp: App {
                     shell.newChat()
                 }
                 .keyboardShortcut("n", modifiers: .command)
+                Button("Import Chat…") {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.json]
+                    panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url {
+                        shell.importChat(from: url)
+                    }
+                }
             }
             CommandGroup(before: .toolbar) {
                 ForEach(AppMode.allCases, id: \.self) { mode in

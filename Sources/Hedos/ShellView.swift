@@ -107,6 +107,36 @@ final class ShellModel {
         persist()
     }
 
+    func openGallery() {
+        imagesSelection = "gallery"
+        mode = .images
+        persist()
+    }
+
+    func importChat(from url: URL) {
+        let kernel = kernel
+        Task {
+            do {
+                let transcript = try ChatExport.decode(try Data(contentsOf: url))
+                let session = try await kernel.chats.importTranscript(transcript)
+                await refreshSessions()
+                chatSelection = session.id
+                mode = .chat
+                persist()
+            } catch {
+                presentError("The chat archive could not be imported.", error)
+            }
+        }
+    }
+
+    private func presentError(_ headline: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = headline
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
     func prefill(for record: ModelRecord) -> CanvasPrefill? {
         guard let canvasPrefill, canvasPrefill.artifact.modelID == record.id else { return nil }
         return canvasPrefill
@@ -115,13 +145,15 @@ final class ShellModel {
     var sessionFilter: ChatSessionFilter = .active
 
     func setSessionFilter(_ filter: ChatSessionFilter) {
-        guard sessionFilter != filter else { return }
         sessionFilter = filter
-        Task { await refreshSessions() }
+    }
+
+    var filteredSessions: [ChatSession] {
+        sessions.filter { $0.archived == (sessionFilter == .archived) }
     }
 
     func refreshSessions() async {
-        sessions = (try? await kernel.chats.sessions(filter: sessionFilter)) ?? sessions
+        sessions = (try? await kernel.chats.sessions(filter: .all)) ?? sessions
     }
 
     func session(id: String?) -> ChatSession? {
@@ -320,14 +352,14 @@ struct ChatSidebar: View {
         ) {
             if !query.isEmpty {
                 searchResults
-            } else if shell.sessions.isEmpty {
+            } else if shell.filteredSessions.isEmpty {
                 Text(shell.sessionFilter == .archived
                     ? "Nothing archived."
                     : "No conversations yet.")
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
             } else {
-                ForEach(SessionGrouping.groups(shell.sessions), id: \.title) { group in
+                ForEach(SessionGrouping.groups(shell.filteredSessions), id: \.title) { group in
                     Section {
                         ForEach(group.sessions) { session in
                             ChatSessionRow(session: session, shell: shell)
@@ -475,8 +507,33 @@ struct ChatSidebar: View {
             setArchived(session, !session.archived)
         }
         Divider()
+        Button("Export as Markdown…") {
+            export(session, json: false)
+        }
+        Button("Export as JSON…") {
+            export(session, json: true)
+        }
+        Divider()
         Button("Delete…", role: .destructive) {
             deleting = session
+        }
+    }
+
+    private func export(_ session: ChatSession, json: Bool) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = session.title + (json ? ".json" : ".md")
+        let shell = shell
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task {
+                guard let transcript = try? await shell.kernel.chats.session(id: session.id)
+                else { return }
+                if json {
+                    try? ChatExport.json(transcript).write(to: url)
+                } else {
+                    try? Data(ChatExport.markdown(transcript).utf8).write(to: url)
+                }
+            }
         }
     }
 
@@ -571,6 +628,9 @@ struct ChatDetail: View {
                 session: session, library: shell.library, kernel: shell.kernel,
                 onSessionsChanged: { [weak shell] in
                     Task { await shell?.refreshSessions() }
+                },
+                onOpenArtifacts: { [weak shell] in
+                    shell?.openGallery()
                 }
             )
             .id(session.id)

@@ -1,3 +1,4 @@
+import AppKit
 import HedosKernel
 import SwiftUI
 
@@ -10,6 +11,8 @@ final class ChatViewModel {
         var text: String
         var thinking: String = ""
         var stats: GenerationStats?
+        var artifactRefs: [String] = []
+        var persisted = false
     }
 
     private let kernel: Kernel
@@ -17,6 +20,7 @@ final class ChatViewModel {
     private var streamTask: Task<Void, Never>?
 
     var transcript: [Entry] = []
+    var previousVersions: [String: [ChatTurn]] = [:]
     var draft = ""
     var isStreaming = false
     var notice: String?
@@ -33,19 +37,36 @@ final class ChatViewModel {
 
     func load() async {
         if let stored = try? await kernel.chats.session(id: sessionID) {
-            boundModelID = stored.session.modelID
-            transcript = stored.turns
-                .filter { $0.supersededBy == nil && $0.role != .system }
-                .map {
-                    Entry(
-                        id: $0.id,
-                        role: $0.role,
-                        text: $0.content,
-                        thinking: $0.thinking ?? "",
-                        stats: $0.stats)
-                }
+            apply(stored)
         }
         defaultModelID = (try? await kernel.defaultChatModelID()) ?? nil
+    }
+
+    private func apply(_ stored: ChatTranscript) {
+        boundModelID = stored.session.modelID
+        var previous: [String: [ChatTurn]] = [:]
+        for turn in stored.turns {
+            if let supersededBy = turn.supersededBy {
+                previous[supersededBy, default: []].append(turn)
+            }
+        }
+        previousVersions = previous
+        transcript = stored.turns
+            .filter { $0.supersededBy == nil && $0.role != .system }
+            .map {
+                Entry(
+                    id: $0.id,
+                    role: $0.role,
+                    text: $0.content,
+                    thinking: $0.thinking ?? "",
+                    stats: $0.stats,
+                    artifactRefs: $0.artifactRefs,
+                    persisted: true)
+            }
+    }
+
+    var transcriptCharacterCount: Int {
+        transcript.reduce(0) { $0 + $1.text.count }
     }
 
     func send() {
@@ -74,6 +95,26 @@ final class ChatViewModel {
         let kernel = kernel
         Task {
             try? await kernel.setDefaultChatModel(record.id)
+        }
+    }
+
+    func edit(_ entry: Entry, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isStreaming, entry.role == .user, entry.persisted, !trimmed.isEmpty else { return }
+        guard let index = transcript.firstIndex(where: { $0.id == entry.id }) else { return }
+        transcript.removeSubrange(index...)
+        transcript.append(Entry(role: .user, text: trimmed))
+        stream { kernel, sessionID in
+            try await kernel.editChatTurn(sessionID: sessionID, turnID: entry.id, text: trimmed)
+        }
+    }
+
+    func regenerate(_ entry: Entry) {
+        guard !isStreaming, entry.role == .assistant, entry.persisted else { return }
+        guard let index = transcript.firstIndex(where: { $0.id == entry.id }) else { return }
+        transcript.removeSubrange(index...)
+        stream { kernel, sessionID in
+            try await kernel.regenerateChatTurn(sessionID: sessionID, turnID: entry.id)
         }
     }
 
@@ -165,6 +206,9 @@ final class ChatViewModel {
             }
             isStreaming = false
             _ = try? await kernel.autoTitleIfNeeded(sessionID: sessionID)
+            if let stored = try? await kernel.chats.session(id: sessionID) {
+                apply(stored)
+            }
             onSessionsChanged?()
         }
     }
@@ -179,17 +223,23 @@ final class ChatViewModel {
 struct ChatView: View {
     let session: ChatSession
     let library: LibraryViewModel
+    let onOpenArtifacts: (() -> Void)?
     @State private var model: ChatViewModel
     @State private var followsStream = true
     @State private var expandedThinking: Set<String> = []
+    @State private var expandedVersions: Set<String> = []
     @State private var showModelPicker = false
+    @State private var editingEntryID: String?
+    @State private var editText = ""
 
     init(
         session: ChatSession, library: LibraryViewModel, kernel: Kernel,
-        onSessionsChanged: (() -> Void)? = nil
+        onSessionsChanged: (() -> Void)? = nil,
+        onOpenArtifacts: (() -> Void)? = nil
     ) {
         self.session = session
         self.library = library
+        self.onOpenArtifacts = onOpenArtifacts
         let viewModel = ChatViewModel(kernel: kernel, session: session)
         viewModel.onSessionsChanged = onSessionsChanged
         _model = State(initialValue: viewModel)
@@ -246,34 +296,164 @@ struct ChatView: View {
     @ViewBuilder
     private func turn(_ entry: ChatViewModel.Entry) -> some View {
         if entry.role == .user {
-            Text(entry.text)
-                .font(.system(size: 13))
-                .textSelection(.enabled)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
-                .frame(maxWidth: 420, alignment: .trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 4) {
+                if editingEntryID == entry.id {
+                    editField(entry)
+                } else {
+                    Text(entry.text)
+                        .font(.system(size: 13))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 8)
+                        .background(
+                            .quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+                        .contextMenu {
+                            Button("Copy") { copy(entry.text) }
+                            if entry.persisted && !model.isStreaming {
+                                Button("Edit…") {
+                                    editText = entry.text
+                                    editingEntryID = entry.id
+                                }
+                            }
+                        }
+                }
+                previousVersionsAffordance(entry)
+            }
+            .frame(maxWidth: 420, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if !entry.thinking.isEmpty {
                     thinkingBlock(entry)
                 }
                 if !entry.text.isEmpty {
-                    Text(entry.text)
-                        .font(.system(size: 13))
-                        .lineSpacing(3.5)
-                        .textSelection(.enabled)
+                    MarkdownTurnView(text: entry.text)
+                        .contextMenu {
+                            Button("Copy") { copy(entry.text) }
+                            if entry.persisted && !model.isStreaming {
+                                Button("Regenerate") { model.regenerate(entry) }
+                            }
+                        }
                 } else if model.isStreaming && entry.thinking.isEmpty {
                     Text("…")
                         .foregroundStyle(.tertiary)
                 }
+                ForEach(entry.artifactRefs, id: \.self) { reference in
+                    artifactCard(reference)
+                }
                 if let stats = entry.stats, !entry.text.isEmpty {
                     statsLine(stats)
                 }
+                previousVersionsAffordance(entry)
             }
             .frame(maxWidth: 620, alignment: .leading)
         }
+    }
+
+    private func editField(_ entry: ChatViewModel.Entry) -> some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            TextField("Edit message", text: $editText, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .lineLimit(1...8)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(.tertiary, lineWidth: 1))
+            HStack(spacing: 8) {
+                Button("Cancel") { editingEntryID = nil }
+                    .controlSize(.small)
+                Button("Send") {
+                    editingEntryID = nil
+                    model.edit(entry, text: editText)
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func previousVersionsAffordance(_ entry: ChatViewModel.Entry) -> some View {
+        if let versions = model.previousVersions[entry.id], !versions.isEmpty {
+            VStack(
+                alignment: entry.role == .user ? .trailing : .leading, spacing: 6
+            ) {
+                Button {
+                    if expandedVersions.contains(entry.id) {
+                        expandedVersions.remove(entry.id)
+                    } else {
+                        expandedVersions.insert(entry.id)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 8))
+                        Text(
+                            versions.count == 1
+                                ? "Previous version" : "\(versions.count) previous versions")
+                        Image(
+                            systemName: expandedVersions.contains(entry.id)
+                                ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 7, weight: .semibold))
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.quaternary)
+                }
+                .buttonStyle(.plain)
+                if expandedVersions.contains(entry.id) {
+                    ForEach(versions) { version in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(version.role.rawValue.capitalized)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.quaternary)
+                            Text(version.content)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                        }
+                        .padding(.leading, 10)
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(.quaternary)
+                                .frame(width: 2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func artifactCard(_ reference: String) -> some View {
+        Button {
+            onOpenArtifacts?()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "photo.stack")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text("Generated artifact")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .help("Open in the gallery")
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     @ViewBuilder
@@ -316,11 +496,18 @@ struct ChatView: View {
 
     private func statsLine(_ stats: GenerationStats) -> some View {
         var parts: [String] = []
+        if let ttft = stats.ttftMs {
+            parts.append(String(format: "ttft %.1fs", Double(ttft) / 1000))
+        }
         if let tokens = stats.completionTokens {
-            parts.append("\(tokens) tok")
-            if let ms = stats.durationMs, ms > 0 {
+            let generationMs = (stats.durationMs ?? 0) - (stats.ttftMs ?? 0)
+            if generationMs > 0 {
+                parts.append(
+                    String(format: "%.0f tok/s", Double(tokens) / Double(generationMs) * 1000))
+            } else if let ms = stats.durationMs, ms > 0 {
                 parts.append(String(format: "%.0f tok/s", Double(tokens) / Double(ms) * 1000))
             }
+            parts.append("\(tokens) tok")
         }
         return Text(parts.joined(separator: " · "))
             .font(Design.data(10))
@@ -357,12 +544,23 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if model.transcriptCharacterCount > 16000 {
+                Text("This conversation is getting long — early turns may drop out of context.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.quaternary)
+                    .padding(.leading, 6)
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(placeholder, text: $model.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .lineLimit(1...8)
                     .onSubmit { model.send() }
+                    .onKeyPress(.return, phases: .down) { press in
+                        guard press.modifiers.contains(.shift) else { return .ignored }
+                        model.draft += "\n"
+                        return .handled
+                    }
                     .padding(.leading, 6)
                     .padding(.vertical, 3)
                 if model.isStreaming {
