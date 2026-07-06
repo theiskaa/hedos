@@ -3,7 +3,7 @@ import Foundation
 public actor ResidencyManager {
     public typealias Unloader = @Sendable () async -> Bool
 
-    private let defaultWarmWindow: Duration
+    private var defaultWarmWindow: Duration
     private var warmWindows: [String: Duration] = [:]
     private var unloaders: [String: Unloader] = [:]
     private var idleTasks: [String: Task<Void, Never>] = [:]
@@ -25,6 +25,10 @@ public actor ResidencyManager {
 
     public func setWarmWindow(_ window: Duration, for modelID: String) {
         warmWindows[modelID] = window
+    }
+
+    public func setDefaultWarmWindow(_ window: Duration) {
+        defaultWarmWindow = window
     }
 
     public func warmWindow(for modelID: String) -> Duration {

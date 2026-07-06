@@ -30,6 +30,8 @@ public actor MemoryGovernor {
     private let heavyThresholdMB: Int
     private let tightFraction: Double
     private var residents: [String: ResidentModel] = [:]
+    private var evictionPolicy: EvictionPolicy = .strictSingle
+    private var ramBudgetMB: Int?
 
     public init(
         totalMemoryMB: Int = Int(ProcessInfo.processInfo.physicalMemory / (1 << 20)),
@@ -51,7 +53,7 @@ public actor MemoryGovernor {
         onWait: (@Sendable (String) async -> Void)? = nil
     ) async throws -> RAMVerdict {
         if isHeavy(footprintMB) {
-            while let conflict = heavyResident(besides: modelID) {
+            while let conflict = evictionConflict(admitting: modelID, footprintMB: footprintMB) {
                 if await leases.count(conflict.modelID) > 0 {
                     await onWait?("Waiting for \(conflict.name) to finish")
                     try await leases.drain(conflict.modelID)
@@ -148,6 +150,16 @@ public actor MemoryGovernor {
         await residency.setWarmWindow(window, for: modelID)
     }
 
+    public func apply(policy: ResidencyPolicy) async {
+        evictionPolicy = policy.eviction
+        ramBudgetMB = policy.ramBudgetMB
+        await residency.setDefaultWarmWindow(policy.keepWarm.warmWindow)
+    }
+
+    public func currentEvictionPolicy() -> EvictionPolicy {
+        evictionPolicy
+    }
+
     public func suspendForQuit() async {
         await residency.suspendAll()
     }
@@ -158,5 +170,24 @@ public actor MemoryGovernor {
 
     private func heavyResident(besides modelID: String) -> ResidentModel? {
         residents.values.first { $0.modelID != modelID && $0.footprintMB >= heavyThresholdMB }
+    }
+
+    private func evictionConflict(
+        admitting modelID: String, footprintMB: Int?
+    ) -> ResidentModel? {
+        switch evictionPolicy {
+        case .strictSingle:
+            return heavyResident(besides: modelID)
+        case .budgeted:
+            let budget = ramBudgetMB ?? Int(Double(totalMemoryMB) * tightFraction)
+            let incoming = footprintMB ?? heavyThresholdMB
+            let others = residents.values.filter { $0.modelID != modelID }
+            let occupied = others.reduce(0) { $0 + $1.footprintMB }
+            guard occupied + incoming > budget else { return nil }
+            return
+                others
+                .filter { $0.footprintMB >= heavyThresholdMB }
+                .min { ($0.loadedAt, $0.modelID) < ($1.loadedAt, $1.modelID) }
+        }
     }
 }

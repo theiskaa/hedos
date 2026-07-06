@@ -264,9 +264,9 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     defer { try? FileManager.default.removeItem(at: dir) }
     let store = SettingsStore(directory: dir)
 
-    #expect(try await store.defaultChatModelID() == nil)
+    #expect(await store.defaultChatModelID() == nil)
     try await store.setDefaultChatModelID("model-z")
-    #expect(try await SettingsStore(directory: dir).defaultChatModelID() == "model-z")
+    #expect(await SettingsStore(directory: dir).defaultChatModelID() == "model-z")
 
     let first = readyChatModel(path: "~/models/first.gguf", footprintMB: 3000)
     let preferred = readyChatModel(path: "~/models/preferred.gguf", footprintMB: 9000)

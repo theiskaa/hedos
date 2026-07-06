@@ -83,14 +83,14 @@ import Testing
     defer { try? FileManager.default.removeItem(at: dir) }
     let store = SettingsStore(directory: dir)
 
-    #expect(try await store.shellState() == ShellState())
+    #expect(await store.shellState() == ShellState())
 
     var state = ShellState(mode: .images)
     state.setSelection("model:abcd1234", in: .images)
     state.setSelection("session-1", in: .chat)
     try await store.saveShellState(state)
 
-    let relaunched = try await SettingsStore(directory: dir).shellState()
+    let relaunched = await SettingsStore(directory: dir).shellState()
     #expect(relaunched == state)
     #expect(relaunched.mode == .images)
     #expect(relaunched.selection(in: .images) == "model:abcd1234")
@@ -106,9 +106,9 @@ import Testing
     try await store.saveShellState(ShellState(mode: .voice, voiceModelID: "kokoro"))
     _ = try await store.addWatchedFolder("/tmp/models-b")
 
-    let reloaded = try await SettingsStore(directory: dir).load()
-    #expect(reloaded.watchedFolders == ["/tmp/models-a", "/tmp/models-b"])
-    #expect(reloaded.shell == ShellState(mode: .voice, voiceModelID: "kokoro"))
+    let reloaded = SettingsStore(directory: dir)
+    #expect(await reloaded.models().watchedFolders == ["/tmp/models-a", "/tmp/models-b"])
+    #expect(await reloaded.shellState() == ShellState(mode: .voice, voiceModelID: "kokoro"))
 }
 
 @Test func legacySettingsFileWithoutShellDecodesToDefaults() async throws {
@@ -119,9 +119,9 @@ import Testing
         """
     try Data(legacy.utf8).write(to: dir.appendingPathComponent("settings.json"))
 
-    let settings = try await SettingsStore(directory: dir).load()
-    #expect(settings.watchedFolders == ["/tmp/old-models"])
-    #expect(settings.shell == ShellState())
+    let store = SettingsStore(directory: dir)
+    #expect(await store.models().watchedFolders == ["/tmp/old-models"])
+    #expect(await store.shellState() == ShellState())
 }
 
 @Test func unknownShellModeFallsBackToLibrary() async throws {
@@ -136,7 +136,7 @@ import Testing
         """
     try Data(future.utf8).write(to: dir.appendingPathComponent("settings.json"))
 
-    let state = try await SettingsStore(directory: dir).shellState()
+    let state = await SettingsStore(directory: dir).shellState()
     #expect(state.mode == .library)
     #expect(state.chatSessionID == "s-1")
 }

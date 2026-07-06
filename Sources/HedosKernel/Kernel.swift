@@ -38,7 +38,7 @@ public actor Kernel {
     public let artifactStore: ArtifactStore
     public let chats: ChatStore
     private let adapters: [any RuntimeAdapter]
-    private let scheduler: JobScheduler
+    let scheduler: JobScheduler
 
     public init(
         directory: URL,
@@ -74,8 +74,9 @@ public actor Kernel {
     }
 
     public func discover() async throws -> DiscoverySummary {
+        await applyStoredPolicies()
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let watched = (try? await settings.load().watchedFolders) ?? []
+        let watched = await settings.models().watchedFolders
         let looseDirectories =
             LooseFileScanner.defaultDirectories()
             + watched.map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -91,7 +92,7 @@ public actor Kernel {
     }
 
     public func watchedFolders() async throws -> [String] {
-        try await settings.load().watchedFolders
+        await settings.models().watchedFolders
     }
 
     public func addWatchedFolder(_ path: String) async throws {
@@ -103,7 +104,7 @@ public actor Kernel {
     }
 
     public func shellState() async throws -> ShellState {
-        try await settings.shellState()
+        await settings.shellState()
     }
 
     public func saveShellState(_ shell: ShellState) async throws {
@@ -111,7 +112,7 @@ public actor Kernel {
     }
 
     public func defaultChatModelID() async throws -> String? {
-        try await settings.defaultChatModelID()
+        await settings.defaultChatModelID()
     }
 
     public func setDefaultChatModel(_ modelID: String?) async throws {

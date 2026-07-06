@@ -2,7 +2,7 @@ import Foundation
 
 public actor JobHistoryStore {
     public let directory: URL
-    public let limit: Int
+    public private(set) var limit: Int
 
     private var jobs: [Job] = []
     private var loaded = false
@@ -10,6 +10,10 @@ public actor JobHistoryStore {
     public init(directory: URL, limit: Int = 50) {
         self.directory = directory
         self.limit = limit
+    }
+
+    public func setLimit(_ newLimit: Int) {
+        limit = max(1, newLimit)
     }
 
     public func record(_ job: Job) throws {

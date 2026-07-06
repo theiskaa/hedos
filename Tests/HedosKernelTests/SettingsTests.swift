@@ -3,12 +3,146 @@ import Testing
 
 @testable import HedosKernel
 
-@Test func settingsRoundTripAndDedup() async throws {
+private func waitUntil(
+    _ condition: @Sendable () async throws -> Bool
+) async throws {
+    for _ in 0..<500 {
+        if try await condition() { return }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    Issue.record("condition never became true")
+}
+
+@Test func everyDomainRoundTripsAcrossStoreReload() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let store = SettingsStore(directory: dir)
 
-    #expect(try await store.load() == HedosSettings())
+    var general = GeneralSettings()
+    general.restoreLastSession = false
+    var models = ModelsSettings()
+    models.watchedFolders = ["/tmp/models"]
+    models.keepWarm = .oneHour
+    models.eviction = .budgeted
+    models.ramBudgetMB = 24000
+    var chat = ChatSettings()
+    chat.defaultModelID = "abc123"
+    chat.defaultSystemPrompt = "Be concise."
+    var voice = VoiceSettings()
+    voice.defaultVoice = "bf_alpha"
+    voice.speed = 1.4
+    voice.autoSpeak = true
+    var appearance = AppearanceSettings()
+    appearance.theme = .dark
+    appearance.chatWidth = .wide
+    appearance.density = .compact
+    var advanced = AdvancedSettings()
+    advanced.jobHistoryLimit = 200
+
+    try await store.save(general)
+    try await store.save(models)
+    try await store.save(chat)
+    try await store.save(voice)
+    try await store.save(appearance)
+    try await store.save(advanced)
+
+    for name in ["general", "models", "chat", "voice", "appearance", "advanced"] {
+        let file = dir.appendingPathComponent("settings/\(name).json")
+        #expect(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    let reloaded = SettingsStore(directory: dir)
+    #expect(await reloaded.general() == general)
+    #expect(await reloaded.models() == models)
+    #expect(await reloaded.chat() == chat)
+    #expect(await reloaded.voice() == voice)
+    #expect(await reloaded.appearance() == appearance)
+    #expect(await reloaded.advanced() == advanced)
+}
+
+@Test func missingFilesYieldDefaultsAndAreNeverWritten() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SettingsStore(directory: dir)
+
+    #expect(await store.general() == GeneralSettings())
+    #expect(await store.models() == ModelsSettings())
+    #expect(await store.chat() == ChatSettings())
+    #expect(await store.voice() == VoiceSettings())
+    #expect(await store.appearance() == AppearanceSettings())
+    #expect(await store.advanced() == AdvancedSettings())
+
+    let settingsDir = dir.appendingPathComponent("settings")
+    #expect(!FileManager.default.fileExists(atPath: settingsDir.path))
+}
+
+@Test func legacyWatchedFoldersMigrateThroughCompatibilityRead() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let legacy = """
+        {"schemaVersion": 1, "watchedFolders": ["/tmp/models-a", "/tmp/models-b"]}
+        """
+    try legacy.write(
+        to: dir.appendingPathComponent("settings.json"), atomically: true, encoding: .utf8)
+
+    let store = SettingsStore(directory: dir)
+    let models = await store.models()
+    #expect(models.watchedFolders == ["/tmp/models-a", "/tmp/models-b"])
+    #expect(models.keepWarm == .fiveMinutes)
+    let modelsFile = dir.appendingPathComponent("settings/models.json")
+    #expect(!FileManager.default.fileExists(atPath: modelsFile.path))
+
+    let settings = try await store.addWatchedFolder("/tmp/models-c")
+    #expect(settings.watchedFolders == ["/tmp/models-a", "/tmp/models-b", "/tmp/models-c"])
+    #expect(FileManager.default.fileExists(atPath: modelsFile.path))
+
+    let reloaded = await SettingsStore(directory: dir).models()
+    #expect(reloaded.watchedFolders == settings.watchedFolders)
+}
+
+@Test func lenientDecodeSurvivesUnknownMissingAndMistypedFields() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let settingsDir = dir.appendingPathComponent("settings")
+    try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+
+    try """
+        {"defaultModelID": 42, "futureKnob": true}
+        """.write(
+        to: settingsDir.appendingPathComponent("chat.json"), atomically: true, encoding: .utf8)
+    try """
+        {"speed": "fast", "autoSpeak": true, "somethingElse": {"nested": 1}}
+        """.write(
+        to: settingsDir.appendingPathComponent("voice.json"), atomically: true, encoding: .utf8)
+    try """
+        {"keepWarm": "2days", "eviction": "budgeted", "watchedFolders": ["/tmp/x"]}
+        """.write(
+        to: settingsDir.appendingPathComponent("models.json"), atomically: true, encoding: .utf8)
+    try "not json at all".write(
+        to: settingsDir.appendingPathComponent("appearance.json"), atomically: true,
+        encoding: .utf8)
+
+    let store = SettingsStore(directory: dir)
+    let chat = await store.chat()
+    #expect(chat.defaultModelID == nil)
+    #expect(chat.defaultSystemPrompt == nil)
+
+    let voice = await store.voice()
+    #expect(voice.speed == 1.0)
+    #expect(voice.autoSpeak == true)
+
+    let models = await store.models()
+    #expect(models.keepWarm == .fiveMinutes)
+    #expect(models.eviction == .budgeted)
+    #expect(models.watchedFolders == ["/tmp/x"])
+
+    #expect(await store.appearance() == AppearanceSettings())
+}
+
+@Test func watchedFolderAddRemoveDedupsAndPersists() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SettingsStore(directory: dir)
 
     _ = try await store.addWatchedFolder("/tmp/models-a")
     _ = try await store.addWatchedFolder("/tmp/models-a")
@@ -17,12 +151,12 @@ import Testing
     #expect(settings.watchedFolders[1].hasSuffix("/models-b"))
     #expect(!settings.watchedFolders[1].contains("~"))
 
-    let reloaded = try await SettingsStore(directory: dir).load()
+    let reloaded = await SettingsStore(directory: dir).models()
     #expect(reloaded == settings)
 
     let afterRemove = try await store.removeWatchedFolder("/tmp/models-a")
     #expect(afterRemove.watchedFolders.count == 1)
-    let reloadedAgain = try await SettingsStore(directory: dir).load()
+    let reloadedAgain = await SettingsStore(directory: dir).models()
     #expect(reloadedAgain.watchedFolders == afterRemove.watchedFolders)
 }
 
@@ -48,4 +182,65 @@ import Testing
 
     try await kernel.removeWatchedFolder(modelsDir.path)
     #expect(try await kernel.watchedFolders().isEmpty)
+}
+
+@Test func updatingModelsSettingsDrivesGovernorResidencyPolicy() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let governor = MemoryGovernor(
+        totalMemoryMB: 65536, heavyThresholdMB: 1024, defaultWarmWindow: .seconds(300))
+    let kernel = Kernel(directory: dir, adapters: [], governor: governor)
+
+    var models = await kernel.modelsSettings()
+    models.keepWarm = .never
+    models.eviction = .budgeted
+    models.ramBudgetMB = 20000
+    try await kernel.updateModelsSettings(models)
+
+    #expect(await governor.residency.warmWindow(for: "any-model") == .zero)
+    #expect(await governor.currentEvictionPolicy() == .budgeted)
+
+    let unloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "llm", name: "llm", footprintMB: 4000) {
+        unloaded.mark()
+    }
+    await governor.beginGeneration("llm")
+    await governor.endGeneration("llm")
+    try await waitUntil { await governor.isResident("llm") == false }
+    #expect(unloaded.wasInvoked)
+}
+
+@Test func budgetedEvictionKeepsResidentsWithinBudgetAndEvictsOldestOverIt() async throws {
+    let governor = MemoryGovernor(
+        totalMemoryMB: 65536, heavyThresholdMB: 1024, defaultWarmWindow: .seconds(300))
+    await governor.apply(
+        policy: ResidencyPolicy(keepWarm: .oneHour, eviction: .budgeted, ramBudgetMB: 16000))
+
+    let firstUnloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "first", name: "first", footprintMB: 6000) {
+        firstUnloaded.mark()
+    }
+    try await governor.admit(modelID: "second", name: "second", footprintMB: 6000)
+    await governor.markLoaded(modelID: "second", name: "second", footprintMB: 6000) {}
+    #expect(firstUnloaded.wasInvoked == false)
+    #expect(await governor.isResident("first"))
+    #expect(await governor.isResident("second"))
+
+    try await governor.admit(modelID: "third", name: "third", footprintMB: 6000)
+    #expect(firstUnloaded.wasInvoked)
+    #expect(await governor.isResident("first") == false)
+    #expect(await governor.isResident("second"))
+    #expect(await governor.isResident("third"))
+}
+
+@Test func advancedSettingsDriveJobHistoryLimit() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir, adapters: [])
+
+    var advanced = await kernel.advancedSettings()
+    advanced.jobHistoryLimit = 2
+    try await kernel.updateAdvancedSettings(advanced)
+
+    #expect(await kernel.scheduler.history.limit == 2)
 }
