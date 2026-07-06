@@ -6,19 +6,25 @@ swift build -c release
 
 APP=dist/Hedos.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 RELEASE=$(swift build -c release --show-bin-path)
 
 cp "$RELEASE/Hedos" "$APP/Contents/MacOS/Hedos"
 for bundle in "$RELEASE"/*.bundle; do
     cp -R "$bundle" "$APP/Contents/Resources/"
-    cp -R "$bundle" "$APP/Contents/MacOS/"
 done
+HAS_FRAMEWORKS=0
 for framework in "$RELEASE"/*.framework; do
     [ -e "$framework" ] || continue
-    cp -R "$framework" "$APP/Contents/MacOS/"
+    cp -R "$framework" "$APP/Contents/Frameworks/"
+    HAS_FRAMEWORKS=1
 done
+if [ "$HAS_FRAMEWORKS" = 1 ]; then
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Hedos"
+else
+    rmdir "$APP/Contents/Frameworks"
+fi
 cp Sources/Hedos/Resources/Hedos.icns "$APP/Contents/Resources/Hedos.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -52,13 +58,24 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application/ {print $2; exit}' || true)
+
+sign_bundle() {
+    for framework in "$APP"/Contents/Frameworks/*.framework; do
+        [ -e "$framework" ] || continue
+        codesign --force "$@" "$framework"
+    done
+    codesign --force "$@" "$APP"
+}
+
 if [ -n "$IDENTITY" ]; then
-    codesign --force --options runtime --sign "$IDENTITY" "$APP"
+    sign_bundle --options runtime --sign "$IDENTITY"
     echo "signed: $IDENTITY"
 else
-    codesign --force --options runtime --sign - "$APP"
+    sign_bundle --sign -
     echo "signed: ad-hoc"
 fi
 
+codesign --verify --deep --strict "$APP"
 echo "built: $APP"
