@@ -4,17 +4,24 @@ import SwiftUI
 
 @MainActor
 final class PCMPlayer {
-    private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private var engine: AVAudioEngine?
+    private var player: AVAudioPlayerNode?
     private var format: AVAudioFormat?
 
     func enqueue(_ frame: AudioFrame) {
+        let engine = self.engine ?? AVAudioEngine()
+        let player = self.player ?? AVAudioPlayerNode()
+        self.engine = engine
+        self.player = player
+
         if format == nil || format?.sampleRate != Double(frame.sampleRate) {
-            let newFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: Double(frame.sampleRate),
-                channels: 1,
-                interleaved: false)!
+            guard
+                let newFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Double(frame.sampleRate),
+                    channels: 1,
+                    interleaved: false)
+            else { return }
             if engine.attachedNodes.contains(player) {
                 engine.detach(player)
             }
@@ -45,8 +52,10 @@ final class PCMPlayer {
     }
 
     func stop() {
-        player.stop()
-        engine.stop()
+        player?.stop()
+        engine?.stop()
+        player = nil
+        engine = nil
         format = nil
     }
 }
