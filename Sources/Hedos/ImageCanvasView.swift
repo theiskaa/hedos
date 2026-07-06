@@ -31,12 +31,19 @@ final class ImageCanvasViewModel {
     var resultURL: URL?
     var jobID: String?
 
-    init(kernel: Kernel, record: ModelRecord) {
+    init(kernel: Kernel, record: ModelRecord, prefill: Artifact? = nil) {
         self.kernel = kernel
         self.modelID = record.id
         self.modelName = record.name
-        self.form = ParamForm(schema: record.params)
-        reattach()
+        var form = ParamForm(schema: record.params)
+        if let prefill {
+            form.load(prefill.params)
+            prompt = Provenance.prompt(of: prefill.params) ?? ""
+        }
+        self.form = form
+        if prefill == nil {
+            reattach()
+        }
     }
 
     var activePrompt: String? {
@@ -227,11 +234,17 @@ final class ImageCanvasViewModel {
 
 struct ImageCanvasView: View {
     let record: ModelRecord
+    let onOpenGallery: (() -> Void)?
     @State private var model: ImageCanvasViewModel
 
-    init(record: ModelRecord, kernel: Kernel) {
+    init(
+        record: ModelRecord, kernel: Kernel, prefill: Artifact? = nil,
+        onOpenGallery: (() -> Void)? = nil
+    ) {
         self.record = record
-        _model = State(initialValue: ImageCanvasViewModel(kernel: kernel, record: record))
+        self.onOpenGallery = onOpenGallery
+        _model = State(
+            initialValue: ImageCanvasViewModel(kernel: kernel, record: record, prefill: prefill))
     }
 
     var body: some View {
@@ -413,6 +426,12 @@ struct ImageCanvasView: View {
                 .help("Generate a sibling with a fresh seed")
                 Button("Reveal in Finder") {
                     model.reveal()
+                }
+                if let onOpenGallery {
+                    Button("Gallery") {
+                        onOpenGallery()
+                    }
+                    .help("Browse everything generated")
                 }
             }
             .controlSize(.small)

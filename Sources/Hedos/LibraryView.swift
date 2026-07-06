@@ -82,11 +82,18 @@ final class LibraryViewModel {
     }
 }
 
+struct CanvasPrefill: Identifiable {
+    let id = UUID()
+    let artifact: Artifact
+}
+
 struct LibraryView: View {
     @State private var model = LibraryViewModel()
     @State private var selectedID: String?
     @State private var showFolders = false
     @State private var pendingConfirm: String?
+    @State private var showGallery = false
+    @State private var canvasPrefill: CanvasPrefill?
 
     var body: some View {
         NavigationSplitView {
@@ -99,6 +106,10 @@ struct LibraryView: View {
         .tint(Design.accent)
         .task { await model.rescan() }
         .onChange(of: selectedID) {
+            showGallery = false
+            if canvasPrefill?.artifact.modelID != selectedID {
+                canvasPrefill = nil
+            }
             guard let record = model.record(id: selectedID),
                 record.runtime.resolved == .auto, record.runtime.confirmedAt == nil,
                 record.runtime.tier != .recipeNeeded
@@ -126,7 +137,11 @@ struct LibraryView: View {
             ForEach(model.groupedRecords, id: \.section) { group in
                 Section {
                     ForEach(group.records) { record in
-                        ModelRow(record: record).tag(record.id)
+                        ModelRow(record: record)
+                            .contentShape(Rectangle())
+                            .tag(record.id)
+                            .simultaneousGesture(
+                                TapGesture().onEnded { showGallery = false })
                     }
                 } header: {
                     Text(group.section.uppercased())
@@ -194,8 +209,32 @@ struct LibraryView: View {
         }.joined(separator: "\n")
     }
 
-    @ViewBuilder
     private var detail: some View {
+        ZStack {
+            modelPane
+                .disabled(showGallery)
+                .accessibilityHidden(showGallery)
+            if showGallery {
+                GalleryView(kernel: model.kernel, shelf: model.records) { artifact in
+                    openParams(artifact)
+                }
+                .background()
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Toggle(isOn: $showGallery) {
+                    Label("Gallery", systemImage: "photo.stack")
+                        .symbolVariant(showGallery ? .fill : .none)
+                }
+                .toggleStyle(.button)
+                .help("Browse everything generated")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modelPane: some View {
         if let record = model.record(id: selectedID) {
             if record.runtime.tier == .recipeNeeded {
                 RecipeNeededPane(record: record, shelf: model.records)
@@ -206,14 +245,31 @@ struct LibraryView: View {
                 VoiceView(record: record, kernel: model.kernel)
                     .id(record.id)
             } else if record.capabilities.contains(.image), record.runtime.id != nil {
-                ImageCanvasView(record: record, kernel: model.kernel)
-                    .id(record.id)
+                ImageCanvasView(
+                    record: record,
+                    kernel: model.kernel,
+                    prefill: prefill(for: record)?.artifact
+                ) {
+                    showGallery = true
+                }
+                .id("\(record.id):\(prefill(for: record)?.id.uuidString ?? "")")
             } else {
                 ModelInfoPane(record: record)
             }
         } else {
             HeroPane(model: model)
         }
+    }
+
+    private func prefill(for record: ModelRecord) -> CanvasPrefill? {
+        guard let canvasPrefill, canvasPrefill.artifact.modelID == record.id else { return nil }
+        return canvasPrefill
+    }
+
+    private func openParams(_ artifact: Artifact) {
+        canvasPrefill = CanvasPrefill(artifact: artifact)
+        showGallery = false
+        selectedID = artifact.modelID
     }
 }
 
