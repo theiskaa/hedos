@@ -311,6 +311,23 @@ private func seedValue(_ params: JSONValue) throws -> Int {
     #expect(try await kernel.artifactStore.previewData(id: artifact.id) == nil)
 }
 
+@Test func artifactURLPointsAtTheStoredBlob() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = makeKernel(dir)
+    let record = fakeImageRecord()
+    try await kernel.registry.register(record)
+
+    let jobID = try await kernel.submit(record.id, .image, payload: imagePayload())
+    let job = try await runToDone(kernel, jobID)
+    let artifact = try await resultArtifact(kernel, of: job)
+
+    let url = try #require(try await kernel.artifactURL(id: artifact.id))
+    #expect(url == dir.appendingPathComponent("outputs").appendingPathComponent(artifact.path))
+    #expect(try Data(contentsOf: url) == DeterministicImageAdapter.imageBytes(artifact.params))
+    #expect(try await kernel.artifactURL(id: "missing") == nil)
+}
+
 @Test func rerunAndVaryOnUnknownArtifactThrowArtifactNotFound() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
