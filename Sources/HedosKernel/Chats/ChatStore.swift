@@ -222,6 +222,40 @@ public actor ChatStore {
         }
     }
 
+    public func importTranscript(_ transcript: ChatTranscript) throws -> ChatSession {
+        let database = try open()
+        try database.transaction {
+            try apply(.insertSession(transcript.session), to: database)
+            try database.run(
+                "DELETE FROM turns WHERE session_id = ?", [.text(transcript.session.id)])
+            for turn in transcript.turns {
+                try database.run(
+                    """
+                    INSERT INTO turns
+                        (id, session_id, seq, role, content, thinking, model_id, stats_json,
+                         artifact_refs, superseded_by, content_hash, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        .text(turn.id),
+                        .text(turn.sessionID),
+                        .integer(Int64(turn.seq)),
+                        .text(turn.role.rawValue),
+                        .text(turn.content),
+                        turn.thinking.map(SQLiteValue.text) ?? .null,
+                        turn.modelID.map(SQLiteValue.text) ?? .null,
+                        turn.statsJSON.map(SQLiteValue.text) ?? .null,
+                        .text(turn.artifactRefs.joined(separator: ",")),
+                        turn.supersededBy.map(SQLiteValue.text) ?? .null,
+                        .text(turn.contentHash),
+                        .real(turn.createdAt.timeIntervalSince1970),
+                        .real(turn.updatedAt.timeIntervalSince1970),
+                    ])
+            }
+        }
+        return transcript.session
+    }
+
     public func searchChats(query: String, limit: Int = 50) throws -> [SearchHit] {
         let database = try open()
         let match = Self.ftsQuery(query)

@@ -131,6 +131,18 @@ public actor Kernel {
         try await chatFlow().autoTitleIfNeeded(sessionID: sessionID)
     }
 
+    public func editChatTurn(
+        sessionID: String, turnID: String, text: String
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        try await chatFlow().editUserTurn(sessionID: sessionID, turnID: turnID, text: text)
+    }
+
+    public func regenerateChatTurn(
+        sessionID: String, turnID: String
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        try await chatFlow().regenerate(sessionID: sessionID, turnID: turnID)
+    }
+
     private func chatFlow() -> ChatFlow {
         ChatFlow(
             chats: chats,

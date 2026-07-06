@@ -32,6 +32,44 @@ struct ChatFlow: Sendable {
             session: transcript.session, history: Self.messages(from: transcript.turns))
     }
 
+    func editUserTurn(
+        sessionID: String, turnID: String, text: String
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        guard let transcript = try await chats.session(id: sessionID) else {
+            throw ChatStoreError.sessionNotFound(sessionID)
+        }
+        let active = transcript.turns.filter { $0.supersededBy == nil }
+        guard let index = active.firstIndex(where: { $0.id == turnID }),
+            active[index].role == .user
+        else { throw ChatStoreError.turnNotFound(turnID) }
+        let replacement = try await chats.appendTurn(
+            TurnDraft(role: .user, content: text), to: sessionID)
+        for turn in active[index...] {
+            var retired = turn
+            retired.supersededBy = replacement.id
+            _ = try await chats.updateTurn(retired)
+        }
+        var history = Self.messages(from: Array(active[..<index]))
+        history.append(ChatMessage(role: .user, content: text))
+        return try await run(session: transcript.session, history: history)
+    }
+
+    func regenerate(
+        sessionID: String, turnID: String
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        guard let transcript = try await chats.session(id: sessionID) else {
+            throw ChatStoreError.sessionNotFound(sessionID)
+        }
+        let active = transcript.turns.filter { $0.supersededBy == nil }
+        guard let index = active.firstIndex(where: { $0.id == turnID }),
+            active[index].role == .assistant
+        else { throw ChatStoreError.turnNotFound(turnID) }
+        return try await run(
+            session: transcript.session,
+            history: Self.messages(from: Array(active[..<index])),
+            retiring: Array(active[index...]))
+    }
+
     func autoTitleIfNeeded(sessionID: String) async throws -> String? {
         guard let transcript = try await chats.session(id: sessionID),
             transcript.session.title == ChatSession.defaultTitle
@@ -51,7 +89,7 @@ struct ChatFlow: Sendable {
     }
 
     private func run(
-        session: ChatSession, history: [ChatMessage]
+        session: ChatSession, history: [ChatMessage], retiring: [ChatTurn] = []
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let modelID = session.modelID else {
             throw KernelError.runtimeFailed("No model is bound to this chat.")
@@ -65,16 +103,22 @@ struct ChatFlow: Sendable {
                 var content = ""
                 var thinking = ""
                 var stats: GenerationStats?
+                var ttftMs: Int?
                 let clock = ContinuousClock()
-                var lastPersist = clock.now
+                let started = clock.now
+                var lastPersist = started
 
                 func persist() async {
                     guard !content.isEmpty || !thinking.isEmpty || stats != nil else { return }
                     let tags = thinking.isEmpty ? [] : [SessionTag.thinking]
+                    var mergedStats = stats
+                    if mergedStats != nil, mergedStats?.ttftMs == nil {
+                        mergedStats?.ttftMs = ttftMs
+                    }
                     if var updated = turn {
                         updated.content = content
                         updated.thinking = thinking.isEmpty ? nil : thinking
-                        updated.statsJSON = stats?.turnStatsJSON
+                        updated.statsJSON = mergedStats?.turnStatsJSON
                         turn =
                             (try? await chats.updateTurn(updated, mergingCapabilityTags: tags))
                             ?? updated
@@ -85,9 +129,16 @@ struct ChatFlow: Sendable {
                                 content: content,
                                 thinking: thinking.isEmpty ? nil : thinking,
                                 modelID: modelID,
-                                stats: stats),
+                                stats: mergedStats),
                             to: sessionID,
                             mergingCapabilityTags: tags)
+                        if let replacement = turn {
+                            for retired in retiring where retired.supersededBy == nil {
+                                var superseded = retired
+                                superseded.supersededBy = replacement.id
+                                _ = try? await chats.updateTurn(superseded)
+                            }
+                        }
                     }
                 }
 
@@ -95,11 +146,17 @@ struct ChatFlow: Sendable {
                     for try await chunk in upstream {
                         switch chunk {
                         case .text(let delta):
+                            if ttftMs == nil, !delta.isEmpty {
+                                ttftMs = Int((clock.now - started) / .milliseconds(1))
+                            }
                             content += delta
                         case .thinking(let delta):
+                            if ttftMs == nil, !delta.isEmpty {
+                                ttftMs = Int((clock.now - started) / .milliseconds(1))
+                            }
                             thinking += delta
                         case .done(let generationStats):
-                            stats = generationStats
+                            stats = generationStats ?? GenerationStats()
                         default:
                             break
                         }

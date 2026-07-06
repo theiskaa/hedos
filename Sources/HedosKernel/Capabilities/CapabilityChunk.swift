@@ -22,13 +22,16 @@ public struct GenerationStats: Codable, Sendable, Hashable {
     public var promptTokens: Int?
     public var completionTokens: Int?
     public var durationMs: Int?
+    public var ttftMs: Int?
 
     public init(
-        promptTokens: Int? = nil, completionTokens: Int? = nil, durationMs: Int? = nil
+        promptTokens: Int? = nil, completionTokens: Int? = nil, durationMs: Int? = nil,
+        ttftMs: Int? = nil
     ) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.durationMs = durationMs
+        self.ttftMs = ttftMs
     }
 }
 
