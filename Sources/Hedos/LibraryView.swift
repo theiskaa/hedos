@@ -205,6 +205,9 @@ struct LibraryView: View {
             } else if record.capabilities.contains(.speak), record.runtime.id != nil {
                 VoiceView(record: record, kernel: model.kernel)
                     .id(record.id)
+            } else if record.capabilities.contains(.image), record.runtime.id != nil {
+                ImageCanvasView(record: record, kernel: model.kernel)
+                    .id(record.id)
             } else {
                 ModelInfoPane(record: record)
             }
@@ -390,7 +393,7 @@ struct RecipeNeededPane: View {
                 ? "This model's weights are in a format none of the built-in runtimes can execute — no safetensors or GGUF detected, likely PyTorch or another framework's format."
                 : "Hedos found this model but could not identify what kind it is."
         case .diffusers:
-            return "This is an image-generation pipeline. Hedos's image runtime arrives in a later milestone."
+            return "This is an image-generation pipeline the built-in image runtime cannot serve yet."
         case .safetensors, .mlxSafetensors:
             return "The format is recognized, but no built-in runtime serves \(record.modality.rawValue) models yet."
         default:
