@@ -7,6 +7,11 @@ let repoRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .deletingLastPathComponent()
 
+let artworkURL = repoRoot.appendingPathComponent(
+    "Icon Exports/Icon-iOS-Dark-1024x1024@4x.png")
+let artworkSource = CGImageSourceCreateWithURL(artworkURL as CFURL, nil)!
+let artwork = CGImageSourceCreateImageAtIndex(artworkSource, 0, nil)!
+
 func drawIcon(size: Int) -> CGImage {
     let s = CGFloat(size)
     let context = CGContext(
@@ -20,45 +25,9 @@ func drawIcon(size: Int) -> CGImage {
 
     let margin = s * 100 / 1024
     let tile = CGRect(x: margin, y: margin, width: s - 2 * margin, height: s - 2 * margin)
-    let radius = s * 185 / 1024
 
-    context.saveGState()
-    context.addPath(
-        CGPath(roundedRect: tile, cornerWidth: radius, cornerHeight: radius, transform: nil))
-    context.clip()
-    let colors =
-        [
-            CGColor(red: 1, green: 1, blue: 1, alpha: 1),
-            CGColor(red: 0.94, green: 0.94, blue: 0.95, alpha: 1),
-        ] as CFArray
-    let gradient = CGGradient(
-        colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!, colors: colors, locations: [0, 1])!
-    context.drawLinearGradient(
-        gradient,
-        start: CGPoint(x: s / 2, y: tile.maxY),
-        end: CGPoint(x: s / 2, y: tile.minY),
-        options: [])
-    context.restoreGState()
-
-    let center = CGPoint(x: s / 2, y: s / 2)
-    let heptRadius = tile.width * 0.345
-    let path = CGMutablePath()
-    for index in 0..<7 {
-        let angle = (Double(index) * 2 * .pi / 7) + .pi / 2
-        let point = CGPoint(
-            x: center.x + heptRadius * cos(angle),
-            y: center.y + heptRadius * sin(angle))
-        if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-    }
-    path.closeSubpath()
-
-    let ink = CGColor(red: 0.04, green: 0.04, blue: 0.05, alpha: 1)
-    context.setFillColor(ink)
-    context.setStrokeColor(ink)
-    context.setLineJoin(.round)
-    context.setLineWidth(tile.width * 0.07)
-    context.addPath(path)
-    context.drawPath(using: .fillStroke)
+    context.interpolationQuality = .high
+    context.draw(artwork, in: tile)
 
     return context.makeImage()!
 }
