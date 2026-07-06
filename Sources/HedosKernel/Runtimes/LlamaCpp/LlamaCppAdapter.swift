@@ -16,7 +16,9 @@ public struct LlamaCppAdapter: RuntimeAdapter {
     }
 
     public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
-        guard identified.format == .gguf else { return nil }
+        guard identified.format == .gguf, identified.capabilities.contains(.chat) else {
+            return nil
+        }
         return RuntimeBid(tier: .native, preference: 10)
     }
 
