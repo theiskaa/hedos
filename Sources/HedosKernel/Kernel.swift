@@ -4,6 +4,7 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case notImplemented(String)
     case modelNotFound(String)
     case artifactNotFound(String)
+    case promptNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case paramUnsupported(model: String, key: String)
     case runtimeUnavailable(hint: String)
@@ -17,6 +18,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "No model with id \(id) is registered."
         case .artifactNotFound(let id):
             "No artifact with id \(id) is stored."
+        case .promptNotFound(let id):
+            "No prompt with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
             "\(model) has no runtime for \(capability.rawValue)."
         case .paramUnsupported(let model, let key):
@@ -37,6 +40,7 @@ public actor Kernel {
     public let governor: MemoryGovernor
     public let artifactStore: ArtifactStore
     public let chats: ChatStore
+    public let promptStore: PromptStore
     private let adapters: [any RuntimeAdapter]
     let scheduler: JobScheduler
 
@@ -53,6 +57,8 @@ public actor Kernel {
         self.governor = governor
         self.artifactStore = artifactStore
         self.chats = ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
+        self.promptStore = PromptStore(
+            directory: directory.appendingPathComponent("prompts", isDirectory: true))
         self.adapters = adapters ?? Self.defaultAdapters(governor: governor)
         self.scheduler = JobScheduler(
             history: JobHistoryStore(directory: directory),
