@@ -70,11 +70,14 @@ struct ChatFlow: Sendable {
 
                 func persist() async {
                     guard !content.isEmpty || !thinking.isEmpty || stats != nil else { return }
+                    let tags = thinking.isEmpty ? [] : [SessionTag.thinking]
                     if var updated = turn {
                         updated.content = content
                         updated.thinking = thinking.isEmpty ? nil : thinking
                         updated.statsJSON = stats?.turnStatsJSON
-                        turn = (try? await chats.updateTurn(updated)) ?? updated
+                        turn =
+                            (try? await chats.updateTurn(updated, mergingCapabilityTags: tags))
+                            ?? updated
                     } else {
                         turn = try? await chats.appendTurn(
                             TurnDraft(
@@ -83,7 +86,8 @@ struct ChatFlow: Sendable {
                                 thinking: thinking.isEmpty ? nil : thinking,
                                 modelID: modelID,
                                 stats: stats),
-                            to: sessionID)
+                            to: sessionID,
+                            mergingCapabilityTags: tags)
                     }
                 }
 

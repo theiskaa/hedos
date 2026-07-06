@@ -137,7 +137,9 @@ public actor ChatStore {
         return turn
     }
 
-    public func updateTurn(_ turn: ChatTurn) throws -> ChatTurn {
+    public func updateTurn(
+        _ turn: ChatTurn, mergingCapabilityTags: [String] = []
+    ) throws -> ChatTurn {
         let hash = Self.contentHash(
             content: turn.content, thinking: turn.thinking, modelID: turn.modelID,
             statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
@@ -158,7 +160,7 @@ public actor ChatStore {
                 var updated = turn
                 updated.contentHash = hash
                 updated.updatedAt = Self.now()
-                try apply(.updateTurn(updated), to: database)
+                try apply(.updateTurn(updated, mergeTags: mergingCapabilityTags), to: database)
                 return updated
             }
         }
@@ -175,9 +177,11 @@ public actor ChatStore {
         shadowTurns[turn.id] = updated
         if var session = shadowSessions[turn.sessionID] {
             session.updatedAt = updated.updatedAt
+            session.capabilityTags = Self.mergedTags(
+                session.capabilityTags, mergingCapabilityTags)
             shadowSessions[turn.sessionID] = session
         }
-        queuedWrites.append(.updateTurn(updated))
+        queuedWrites.append(.updateTurn(updated, mergeTags: mergingCapabilityTags))
         return updated
     }
 
@@ -251,10 +255,18 @@ public actor ChatStore {
         try open().rowsWritten(to: ["sessions", "turns"])
     }
 
+    public func resetStatementLog() throws {
+        try open().resetStatementLog()
+    }
+
+    public func statementLog() throws -> [String] {
+        try open().statementLog
+    }
+
     private enum ChatWrite {
         case insertSession(ChatSession)
         case insertTurn(ChatTurn, mergeTags: [String])
-        case updateTurn(ChatTurn)
+        case updateTurn(ChatTurn, mergeTags: [String])
         case renameSession(id: String, title: String, at: Date)
         case rebindSession(id: String, modelID: String?, at: Date)
         case setPinned(id: String, pinned: Bool, at: Date)
@@ -387,7 +399,7 @@ public actor ChatStore {
                     .text(Self.mergedTags(storedTags, mergeTags).joined(separator: ",")),
                     .text(turn.sessionID),
                 ])
-        case .updateTurn(let turn):
+        case .updateTurn(let turn, let mergeTags):
             try database.run(
                 """
                 UPDATE turns
@@ -406,9 +418,16 @@ public actor ChatStore {
                     .real(turn.updatedAt.timeIntervalSince1970),
                     .text(turn.id),
                 ])
+            let storedTags = try database.rows(
+                "SELECT capability_tags FROM sessions WHERE id = ?", [.text(turn.sessionID)]
+            ).first.map { Self.splitTags($0.text(0)) } ?? []
             try database.run(
-                "UPDATE sessions SET updated_at = ? WHERE id = ?",
-                [.real(turn.updatedAt.timeIntervalSince1970), .text(turn.sessionID)])
+                "UPDATE sessions SET updated_at = ?, capability_tags = ? WHERE id = ?",
+                [
+                    .real(turn.updatedAt.timeIntervalSince1970),
+                    .text(Self.mergedTags(storedTags, mergeTags).joined(separator: ",")),
+                    .text(turn.sessionID),
+                ])
         case .renameSession(let id, let title, let at):
             try database.run(
                 "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",

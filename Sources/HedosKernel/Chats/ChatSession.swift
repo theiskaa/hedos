@@ -48,6 +48,12 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+public enum SessionTag {
+    public static let thinking = "thinking"
+    public static let spoke = "spoke"
+    public static let generatedImage = "generated-image"
+}
+
 public enum ChatSessionFilter: String, Codable, Sendable {
     case active
     case archived

@@ -44,6 +44,15 @@ enum Design {
         }
     }
 
+    static func tagGlyph(_ tag: String) -> String? {
+        switch tag {
+        case SessionTag.thinking: "brain"
+        case SessionTag.spoke: "waveform"
+        case SessionTag.generatedImage: "photo"
+        default: nil
+        }
+    }
+
     static func plaque(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .serif)
     }

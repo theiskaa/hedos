@@ -112,8 +112,16 @@ final class ShellModel {
         return canvasPrefill
     }
 
+    var sessionFilter: ChatSessionFilter = .active
+
+    func setSessionFilter(_ filter: ChatSessionFilter) {
+        guard sessionFilter != filter else { return }
+        sessionFilter = filter
+        Task { await refreshSessions() }
+    }
+
     func refreshSessions() async {
-        sessions = (try? await kernel.chats.sessions()) ?? sessions
+        sessions = (try? await kernel.chats.sessions(filter: sessionFilter)) ?? sessions
     }
 
     func session(id: String?) -> ChatSession? {
@@ -298,6 +306,11 @@ private struct SidebarSectionHeader: View {
 
 struct ChatSidebar: View {
     @Bindable var shell: ShellModel
+    @State private var query = ""
+    @State private var hits: [SearchHit] = []
+    @State private var renaming: ChatSession?
+    @State private var renameTitle = ""
+    @State private var deleting: ChatSession?
 
     var body: some View {
         List(
@@ -305,21 +318,57 @@ struct ChatSidebar: View {
                 get: { shell.chatSelection },
                 set: { shell.selectChat($0) })
         ) {
-            if shell.sessions.isEmpty {
-                Text("No conversations yet.")
+            if !query.isEmpty {
+                searchResults
+            } else if shell.sessions.isEmpty {
+                Text(shell.sessionFilter == .archived
+                    ? "Nothing archived."
+                    : "No conversations yet.")
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
             } else {
-                ForEach(shell.sessions) { session in
-                    ChatSessionRow(session: session, shell: shell)
-                        .tag(session.id)
+                ForEach(SessionGrouping.groups(shell.sessions), id: \.title) { group in
+                    Section {
+                        ForEach(group.sessions) { session in
+                            ChatSessionRow(session: session, shell: shell)
+                                .tag(session.id)
+                                .contextMenu { rowActions(session) }
+                        }
+                    } header: {
+                        SidebarSectionHeader(title: group.title)
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
         .navigationTitle("Chat")
+        .searchable(text: $query, placement: .sidebar, prompt: "Search all chats")
         .task { await shell.refreshSessions() }
+        .task(id: query) {
+            guard !query.isEmpty else {
+                hits = []
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            hits = (try? await shell.kernel.chats.searchChats(query: query)) ?? []
+        }
         .toolbar {
+            ToolbarItem {
+                Menu {
+                    Picker("Show", selection: Binding(
+                        get: { shell.sessionFilter },
+                        set: { shell.setSessionFilter($0) })
+                    ) {
+                        Text("Active").tag(ChatSessionFilter.active)
+                        Text("Archived").tag(ChatSessionFilter.archived)
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Label("Filter", systemImage: "archivebox")
+                }
+                .help("Switch between active and archived chats")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     shell.newChat()
@@ -329,6 +378,137 @@ struct ChatSidebar: View {
                 .help(newChatHelp)
                 .disabled(Launcher.defaultChatModel(in: shell.library.records) == nil)
             }
+        }
+        .alert(
+            "Rename Chat",
+            isPresented: Binding(
+                get: { renaming != nil },
+                set: { if !$0 { renaming = nil } })
+        ) {
+            TextField("Title", text: $renameTitle)
+            Button("Rename") {
+                if let session = renaming {
+                    rename(session, to: renameTitle)
+                }
+                renaming = nil
+            }
+            Button("Cancel", role: .cancel) {
+                renaming = nil
+            }
+        }
+        .confirmationDialog(
+            "Delete “\(deleting?.title ?? "")”?",
+            isPresented: Binding(
+                get: { deleting != nil },
+                set: { if !$0 { deleting = nil } })
+        ) {
+            Button("Delete", role: .destructive) {
+                if let session = deleting {
+                    delete(session)
+                }
+                deleting = nil
+            }
+        } message: {
+            Text("The conversation leaves your history.")
+        }
+    }
+
+    @ViewBuilder
+    private var searchResults: some View {
+        if hits.isEmpty {
+            Text("Nothing found.")
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+        } else {
+            ForEach(hits, id: \.turnID) { hit in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(hit.sessionTitle)
+                        .font(.system(size: 13))
+                        .lineLimit(1)
+                    snippetText(hit.snippet)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+                .padding(.vertical, 1)
+                .tag(hit.sessionID)
+            }
+        }
+    }
+
+    private func snippetText(_ snippet: String) -> Text {
+        var result = Text(verbatim: "")
+        var current = ""
+        var marked = false
+        for character in snippet {
+            switch character {
+            case "[" where !marked:
+                result = result + Text(current)
+                current = ""
+                marked = true
+            case "]" where marked:
+                result = result + Text(current).fontWeight(.semibold).foregroundStyle(.secondary)
+                current = ""
+                marked = false
+            default:
+                current.append(character)
+            }
+        }
+        if !current.isEmpty {
+            result = result + (marked
+                ? Text(current).fontWeight(.semibold).foregroundStyle(.secondary)
+                : Text(current))
+        }
+        return result
+    }
+
+    @ViewBuilder
+    private func rowActions(_ session: ChatSession) -> some View {
+        Button("Rename…") {
+            renameTitle = session.title
+            renaming = session
+        }
+        Button(session.pinned ? "Unpin" : "Pin") {
+            setPinned(session, !session.pinned)
+        }
+        Button(session.archived ? "Unarchive" : "Archive") {
+            setArchived(session, !session.archived)
+        }
+        Divider()
+        Button("Delete…", role: .destructive) {
+            deleting = session
+        }
+    }
+
+    private func rename(_ session: ChatSession, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        mutate { try await $0.renameSession(id: session.id, title: trimmed) }
+    }
+
+    private func setPinned(_ session: ChatSession, _ pinned: Bool) {
+        mutate { try await $0.setPinned(id: session.id, pinned) }
+    }
+
+    private func setArchived(_ session: ChatSession, _ archived: Bool) {
+        mutate { try await $0.setArchived(id: session.id, archived) }
+        if archived, shell.chatSelection == session.id {
+            shell.selectChat(nil)
+        }
+    }
+
+    private func delete(_ session: ChatSession) {
+        mutate { try await $0.deleteSession(id: session.id) }
+        if shell.chatSelection == session.id {
+            shell.selectChat(nil)
+        }
+    }
+
+    private func mutate(_ change: @escaping @Sendable (ChatStore) async throws -> Void) {
+        let shell = shell
+        Task {
+            try? await change(shell.kernel.chats)
+            await shell.refreshSessions()
         }
     }
 
@@ -345,14 +525,29 @@ private struct ChatSessionRow: View {
     let shell: ShellModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(session.title)
-                .font(.system(size: 13))
-                .lineLimit(1)
-            Text(subtitle)
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.title)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            HStack(spacing: 4) {
+                ForEach(session.capabilityTags.compactMap(Design.tagGlyph), id: \.self) { glyph in
+                    Image(systemName: glyph)
+                        .font(.system(size: 8))
+                        .foregroundStyle(.quaternary)
+                }
+                if session.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 7))
+                        .foregroundStyle(.tertiary)
+                }
+            }
         }
         .padding(.vertical, 1)
     }
