@@ -3,6 +3,7 @@ import Foundation
 public enum KernelError: Error, Sendable, LocalizedError {
     case notImplemented(String)
     case modelNotFound(String)
+    case artifactNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case runtimeUnavailable(hint: String)
     case runtimeFailed(String)
@@ -13,6 +14,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "\(what) is not implemented yet."
         case .modelNotFound(let id):
             "No model with id \(id) is registered."
+        case .artifactNotFound(let id):
+            "No artifact with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
             "\(model) has no runtime for \(capability.rawValue)."
         case .runtimeUnavailable(let hint):
@@ -29,6 +32,7 @@ public actor Kernel {
     public let registry: Registry
     public let settings: SettingsStore
     public let governor: MemoryGovernor
+    public let artifactStore: ArtifactStore
     private let adapters: [any RuntimeAdapter]
     private let scheduler: JobScheduler
 
@@ -38,13 +42,17 @@ public actor Kernel {
         governor: MemoryGovernor = .shared
     ) {
         let registry = Registry(directory: directory)
+        let artifactStore = ArtifactStore(
+            root: directory.appendingPathComponent("outputs", isDirectory: true))
         self.registry = registry
         self.settings = SettingsStore(directory: directory)
         self.governor = governor
+        self.artifactStore = artifactStore
         self.adapters = adapters ?? Self.defaultAdapters(governor: governor)
         self.scheduler = JobScheduler(
             history: JobHistoryStore(directory: directory),
-            admission: GovernorAdmission(governor: governor, registry: registry))
+            admission: GovernorAdmission(governor: governor, registry: registry),
+            artifacts: ProvenanceArtifactWriter(store: artifactStore, registry: registry))
     }
 
     public init() {
@@ -177,10 +185,11 @@ public actor Kernel {
             throw KernelError.runtimeFailed(
                 "\(adapter.id) cannot run \(capability.rawValue) as a job")
         }
+        let seededPayload = Self.seeded(payload)
         return await scheduler.submit(
-            modelID: modelID, capability: capability, payload: payload
+            modelID: modelID, capability: capability, payload: seededPayload
         ) {
-            runner.run(record, capability, payload: payload)
+            runner.run(record, capability, payload: seededPayload)
         }
     }
 
@@ -202,5 +211,62 @@ public actor Kernel {
 
     public func activeJobs() async -> [Job] {
         await scheduler.active()
+    }
+
+    public func artifacts() async throws -> [Artifact] {
+        try await artifactStore.list()
+    }
+
+    public func artifact(id: String) async throws -> Artifact? {
+        try await artifactStore.get(id: id)
+    }
+
+    public func deleteArtifact(id: String) async throws {
+        try await artifactStore.delete(id: id)
+    }
+
+    public func rerun(artifactID: String) async throws -> String {
+        guard let artifact = try await artifactStore.get(id: artifactID) else {
+            throw KernelError.artifactNotFound(artifactID)
+        }
+        return try await submit(artifact.modelID, artifact.capability, payload: artifact.params)
+    }
+
+    public func vary(artifactID: String) async throws -> String {
+        guard let artifact = try await artifactStore.get(id: artifactID) else {
+            throw KernelError.artifactNotFound(artifactID)
+        }
+        return try await submit(
+            artifact.modelID, artifact.capability, payload: Self.reseeded(artifact.params))
+    }
+
+    private static func seeded(_ payload: JSONValue) -> JSONValue {
+        guard var fields = seedableFields(payload) else { return payload }
+        if let seed = fields["seed"], seed != .null { return .object(fields) }
+        fields["seed"] = .int(randomSeed())
+        return .object(fields)
+    }
+
+    private static func reseeded(_ params: JSONValue) -> JSONValue {
+        guard var fields = seedableFields(params) else { return params }
+        let previous = fields["seed"]
+        var fresh = JSONValue.int(randomSeed())
+        while fresh == previous {
+            fresh = .int(randomSeed())
+        }
+        fields["seed"] = fresh
+        return .object(fields)
+    }
+
+    private static func seedableFields(_ payload: JSONValue) -> [String: JSONValue]? {
+        switch payload {
+        case .object(let fields): fields
+        case .null: [:]
+        default: nil
+        }
+    }
+
+    private static func randomSeed() -> Int {
+        Int.random(in: 0..<Int(UInt32.max))
     }
 }

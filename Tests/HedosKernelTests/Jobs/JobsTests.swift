@@ -239,7 +239,14 @@ private func waitUntil(
     #expect(recorded.result == ["artifact-\(record.id)"])
     #expect(recorded.modelID == record.id)
     #expect(recorded.capability == .image)
-    #expect(recorded.payload == payload)
+    guard case .object(let fields) = recorded.payload else {
+        Issue.record("expected object payload, got \(recorded.payload)")
+        return
+    }
+    #expect(fields["prompt"] == .string("a lighthouse at dusk"))
+    if case .int = try #require(fields["seed"]) {} else {
+        Issue.record("expected an injected int seed, got \(String(describing: fields["seed"]))")
+    }
     #expect(recorded.error == nil)
 
     let freshKernel = Kernel(directory: dir, adapters: [])

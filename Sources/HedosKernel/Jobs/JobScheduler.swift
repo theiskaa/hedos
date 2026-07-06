@@ -6,6 +6,7 @@ public actor JobScheduler {
     public let history: JobHistoryStore
 
     private let admission: any JobAdmission
+    private let artifacts: (any ArtifactWriting)?
     private var jobs: [String: Job] = [:]
     private var queue: [String] = []
     private var runners: [String: Runner] = [:]
@@ -13,9 +14,14 @@ public actor JobScheduler {
     private var executing: (jobID: String, task: Task<Void, Never>)?
     private var cancelRequested: Set<String> = []
 
-    public init(history: JobHistoryStore, admission: any JobAdmission = ImmediateAdmission()) {
+    public init(
+        history: JobHistoryStore,
+        admission: any JobAdmission = ImmediateAdmission(),
+        artifacts: (any ArtifactWriting)? = nil
+    ) {
         self.history = history
         self.admission = admission
+        self.artifacts = artifacts
     }
 
     public func submit(
@@ -118,7 +124,11 @@ public actor JobScheduler {
         do {
             for try await event in runner() {
                 if Task.isCancelled { break }
-                apply(event, to: jobID)
+                if case .result(let data, let fileExtension) = event {
+                    try await persist(data, fileExtension: fileExtension, jobID: jobID)
+                } else {
+                    apply(event, to: jobID)
+                }
             }
             if cancelRequested.contains(jobID) || Task.isCancelled {
                 await conclude(jobID, as: .cancelled)
@@ -152,7 +162,18 @@ public actor JobScheduler {
             emit(jobID, .preview(frame))
         case .artifacts(let ids):
             mutate(jobID) { $0.result.append(contentsOf: ids) }
+        case .result:
+            break
         }
+    }
+
+    private func persist(_ data: Data, fileExtension: String, jobID: String) async throws {
+        guard let job = jobs[jobID] else { return }
+        guard let artifacts else {
+            throw KernelError.runtimeFailed("no artifact store is attached to the job scheduler")
+        }
+        let artifact = try await artifacts.write(data, fileExtension: fileExtension, for: job)
+        mutate(jobID) { $0.result.append(artifact.id) }
     }
 
     private func markRunning(_ jobID: String) {

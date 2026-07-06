@@ -17,5 +17,6 @@ public enum JobRuntimeEvent: Hashable, Sendable {
     case started
     case progress(step: Int, totalSteps: Int)
     case preview(Data)
+    case result(data: Data, fileExtension: String)
     case artifacts([String])
 }
