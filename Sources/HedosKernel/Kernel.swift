@@ -33,6 +33,7 @@ public actor Kernel {
     public let settings: SettingsStore
     public let governor: MemoryGovernor
     public let artifactStore: ArtifactStore
+    public let chats: ChatStore
     private let adapters: [any RuntimeAdapter]
     private let scheduler: JobScheduler
 
@@ -48,6 +49,7 @@ public actor Kernel {
         self.settings = SettingsStore(directory: directory)
         self.governor = governor
         self.artifactStore = artifactStore
+        self.chats = ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
         self.adapters = adapters ?? Self.defaultAdapters(governor: governor)
         self.scheduler = JobScheduler(
             history: JobHistoryStore(directory: directory),
