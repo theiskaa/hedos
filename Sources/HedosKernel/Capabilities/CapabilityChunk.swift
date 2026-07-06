@@ -18,7 +18,7 @@ public struct AudioFrame: Sendable, Hashable {
     }
 }
 
-public struct GenerationStats: Sendable, Hashable {
+public struct GenerationStats: Codable, Sendable, Hashable {
     public var promptTokens: Int?
     public var completionTokens: Int?
     public var durationMs: Int?

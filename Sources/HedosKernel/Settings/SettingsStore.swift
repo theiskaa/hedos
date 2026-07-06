@@ -3,10 +3,21 @@ import Foundation
 public struct HedosSettings: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     public var watchedFolders: [String]
+    public var shell: ShellState
 
-    public init(schemaVersion: Int = 1, watchedFolders: [String] = []) {
+    public init(
+        schemaVersion: Int = 1, watchedFolders: [String] = [], shell: ShellState = ShellState()
+    ) {
         self.schemaVersion = schemaVersion
         self.watchedFolders = watchedFolders
+        self.shell = shell
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        watchedFolders = try container.decodeIfPresent([String].self, forKey: .watchedFolders) ?? []
+        shell = try container.decodeIfPresent(ShellState.self, forKey: .shell) ?? ShellState()
     }
 }
 
@@ -52,6 +63,17 @@ public actor SettingsStore {
             try save(settings)
         }
         return settings
+    }
+
+    public func shellState() throws -> ShellState {
+        try load().shell
+    }
+
+    public func saveShellState(_ shell: ShellState) throws {
+        var settings = try load()
+        guard settings.shell != shell else { return }
+        settings.shell = shell
+        try save(settings)
     }
 
     public func removeWatchedFolder(_ path: String) throws -> HedosSettings {

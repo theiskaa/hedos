@@ -28,6 +28,7 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
 struct HedosApp: App {
     @NSApplicationDelegateAdaptor(HedosAppDelegate.self) private var delegate
     @Environment(\.openWindow) private var openWindow
+    @State private var shell = ShellModel()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -35,7 +36,7 @@ struct HedosApp: App {
 
     var body: some Scene {
         WindowGroup("Hedos") {
-            LibraryView()
+            ShellView(shell: shell)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
                 }
@@ -45,6 +46,16 @@ struct HedosApp: App {
                 Button("About Hedos") {
                     openWindow(id: "about")
                 }
+            }
+            CommandGroup(before: .toolbar) {
+                ForEach(AppMode.allCases, id: \.self) { mode in
+                    Button(Design.modeTitle(mode)) {
+                        shell.setMode(mode)
+                    }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(mode.ordinal)")), modifiers: .command)
+                }
+                Divider()
             }
         }
 

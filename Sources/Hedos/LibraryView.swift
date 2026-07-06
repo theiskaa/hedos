@@ -5,7 +5,11 @@ import SwiftUI
 @Observable
 @MainActor
 final class LibraryViewModel {
-    let kernel = Kernel()
+    let kernel: Kernel
+
+    init(kernel: Kernel) {
+        self.kernel = kernel
+    }
 
     var summary: DiscoverySummary?
     var records: [ModelRecord] = []
@@ -87,61 +91,19 @@ struct CanvasPrefill: Identifiable {
     let artifact: Artifact
 }
 
-struct LibraryView: View {
-    @State private var model = LibraryViewModel()
-    @State private var selectedID: String?
+struct LibrarySidebar: View {
+    let model: LibraryViewModel
+    @Binding var selection: String?
     @State private var showFolders = false
-    @State private var pendingConfirm: String?
-    @State private var showGallery = false
-    @State private var canvasPrefill: CanvasPrefill?
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 210, ideal: 240)
-        } detail: {
-            detail
-        }
-        .frame(minWidth: 760, minHeight: 480)
-        .tint(Design.accent)
-        .task { await model.rescan() }
-        .onChange(of: selectedID) {
-            showGallery = false
-            if canvasPrefill?.artifact.modelID != selectedID {
-                canvasPrefill = nil
-            }
-            guard let record = model.record(id: selectedID),
-                record.runtime.resolved == .auto, record.runtime.confirmedAt == nil,
-                record.runtime.tier != .recipeNeeded
-            else {
-                pendingConfirm = nil
-                return
-            }
-            pendingConfirm = record.id
-        }
-        .sheet(
-            isPresented: Binding(
-                get: { pendingConfirm != nil },
-                set: { if !$0 { pendingConfirm = nil } })
-        ) {
-            if let record = model.record(id: pendingConfirm) {
-                ResolutionSheet(record: record, library: model) {
-                    pendingConfirm = nil
-                }
-            }
-        }
-    }
-
-    private var sidebar: some View {
-        List(selection: $selectedID) {
+        List(selection: $selection) {
             ForEach(model.groupedRecords, id: \.section) { group in
                 Section {
                     ForEach(group.records) { record in
                         ModelRow(record: record)
                             .contentShape(Rectangle())
                             .tag(record.id)
-                            .simultaneousGesture(
-                                TapGesture().onEnded { showGallery = false })
                     }
                 } header: {
                     Text(group.section.uppercased())
@@ -152,6 +114,7 @@ struct LibraryView: View {
             }
         }
         .listStyle(.sidebar)
+        .navigationTitle("Library")
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -208,68 +171,22 @@ struct LibraryView: View {
             "\($0.names.joined(separator: " and ")) are duplicates — \(DiscoverySummary.formatBytes($0.wastedBytes)) wasted"
         }.joined(separator: "\n")
     }
+}
 
-    private var detail: some View {
-        ZStack {
-            modelPane
-                .disabled(showGallery)
-                .accessibilityHidden(showGallery)
-            if showGallery {
-                GalleryView(kernel: model.kernel, shelf: model.records) { artifact in
-                    openParams(artifact)
-                }
-                .background()
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Toggle(isOn: $showGallery) {
-                    Label("Gallery", systemImage: "photo.stack")
-                        .symbolVariant(showGallery ? .fill : .none)
-                }
-                .toggleStyle(.button)
-                .help("Browse everything generated")
-            }
-        }
-    }
+struct LibraryDetail: View {
+    let model: LibraryViewModel
+    let selectedID: String?
 
-    @ViewBuilder
-    private var modelPane: some View {
+    var body: some View {
         if let record = model.record(id: selectedID) {
             if record.runtime.tier == .recipeNeeded {
                 RecipeNeededPane(record: record, shelf: model.records)
-            } else if record.capabilities.contains(.chat), record.runtime.id != nil {
-                ChatView(record: record, kernel: model.kernel)
-                    .id(record.id)
-            } else if record.capabilities.contains(.speak), record.runtime.id != nil {
-                VoiceView(record: record, kernel: model.kernel)
-                    .id(record.id)
-            } else if record.capabilities.contains(.image), record.runtime.id != nil {
-                ImageCanvasView(
-                    record: record,
-                    kernel: model.kernel,
-                    prefill: prefill(for: record)?.artifact
-                ) {
-                    showGallery = true
-                }
-                .id("\(record.id):\(prefill(for: record)?.id.uuidString ?? "")")
             } else {
                 ModelInfoPane(record: record)
             }
         } else {
             HeroPane(model: model)
         }
-    }
-
-    private func prefill(for record: ModelRecord) -> CanvasPrefill? {
-        guard let canvasPrefill, canvasPrefill.artifact.modelID == record.id else { return nil }
-        return canvasPrefill
-    }
-
-    private func openParams(_ artifact: Artifact) {
-        canvasPrefill = CanvasPrefill(artifact: artifact)
-        showGallery = false
-        selectedID = artifact.modelID
     }
 }
 
@@ -525,10 +442,10 @@ struct FoldersPopover: View {
 struct ResolutionSheet: View {
     let record: ModelRecord
     let library: LibraryViewModel
-    let onDismiss: () -> Void
+    let onDismiss: (Bool) -> Void
     @State private var chosen: String
 
-    init(record: ModelRecord, library: LibraryViewModel, onDismiss: @escaping () -> Void) {
+    init(record: ModelRecord, library: LibraryViewModel, onDismiss: @escaping (Bool) -> Void) {
         self.record = record
         self.library = library
         self.onDismiss = onDismiss
@@ -552,7 +469,7 @@ struct ResolutionSheet: View {
                 .pickerStyle(.radioGroup)
             }
             HStack {
-                Button("Cancel") { onDismiss() }
+                Button("Cancel") { onDismiss(false) }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Run") {
@@ -562,7 +479,7 @@ struct ResolutionSheet: View {
                         } else {
                             await library.overrideRuntime(record.id, to: chosen)
                         }
-                        onDismiss()
+                        onDismiss(true)
                     }
                 }
                 .keyboardShortcut(.defaultAction)

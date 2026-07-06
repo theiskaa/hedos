@@ -33,6 +33,35 @@ public struct TurnDraft: Sendable, Hashable {
         self.statsJSON = statsJSON
         self.artifactRefs = artifactRefs
     }
+
+    public init(
+        role: TurnRole,
+        content: String,
+        thinking: String? = nil,
+        modelID: String? = nil,
+        stats: GenerationStats?,
+        artifactRefs: [String] = []
+    ) {
+        self.init(
+            role: role,
+            content: content,
+            thinking: thinking,
+            modelID: modelID,
+            statsJSON: stats?.turnStatsJSON,
+            artifactRefs: artifactRefs)
+    }
+}
+
+extension GenerationStats {
+    public var turnStatsJSON: String? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    public static func fromTurnStatsJSON(_ json: String?) -> GenerationStats? {
+        guard let json, let data = json.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(GenerationStats.self, from: data)
+    }
 }
 
 public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
@@ -78,5 +107,9 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         self.contentHash = contentHash
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    public var stats: GenerationStats? {
+        GenerationStats.fromTurnStatsJSON(statsJSON)
     }
 }

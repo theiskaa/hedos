@@ -24,6 +24,26 @@ enum Design {
         }
     }
 
+    static func modeGlyph(_ mode: AppMode) -> String {
+        switch mode {
+        case .chat: "bubble.left"
+        case .images: "photo"
+        case .voice: "waveform"
+        case .library: "books.vertical"
+        case .settings: "gearshape"
+        }
+    }
+
+    static func modeTitle(_ mode: AppMode) -> String {
+        switch mode {
+        case .chat: "Chat"
+        case .images: "Images"
+        case .voice: "Voice"
+        case .library: "Library"
+        case .settings: "Settings"
+        }
+    }
+
     static func plaque(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .serif)
     }

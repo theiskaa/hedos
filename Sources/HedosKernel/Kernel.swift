@@ -99,6 +99,14 @@ public actor Kernel {
         _ = try await settings.removeWatchedFolder(path)
     }
 
+    public func shellState() async throws -> ShellState {
+        try await settings.shellState()
+    }
+
+    public func saveShellState(_ shell: ShellState) async throws {
+        try await settings.saveShellState(shell)
+    }
+
     public func resolve() async throws {
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
     }
