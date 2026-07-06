@@ -107,6 +107,41 @@ public actor Kernel {
         try await settings.saveShellState(shell)
     }
 
+    public func defaultChatModelID() async throws -> String? {
+        try await settings.defaultChatModelID()
+    }
+
+    public func setDefaultChatModel(_ modelID: String?) async throws {
+        try await settings.setDefaultChatModelID(modelID)
+    }
+
+    public func sendChat(sessionID: String, text: String) async throws -> AsyncThrowingStream<
+        CapabilityChunk, Error
+    > {
+        try await chatFlow().send(sessionID: sessionID, text: text)
+    }
+
+    public func continueChat(sessionID: String) async throws -> AsyncThrowingStream<
+        CapabilityChunk, Error
+    > {
+        try await chatFlow().continueSession(sessionID: sessionID)
+    }
+
+    public func autoTitleIfNeeded(sessionID: String) async throws -> String? {
+        try await chatFlow().autoTitleIfNeeded(sessionID: sessionID)
+    }
+
+    private func chatFlow() -> ChatFlow {
+        ChatFlow(
+            chats: chats,
+            stream: { modelID, messages in
+                try await self.chat(modelID, messages: messages)
+            },
+            shelf: {
+                try await self.shelf()
+            })
+    }
+
     public func resolve() async throws {
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
     }

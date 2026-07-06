@@ -36,11 +36,13 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         self.deletedAt = deletedAt
     }
 
+    public static let defaultTitle = "New Chat"
+
     public static func title(from content: String, limit: Int = 60) -> String {
         let firstLine =
             content.split(whereSeparator: \.isNewline).first.map(String.init) ?? content
         let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return "New Chat" }
+        guard !trimmed.isEmpty else { return defaultTitle }
         guard trimmed.count > limit else { return trimmed }
         return trimmed.prefix(limit).trimmingCharacters(in: .whitespaces) + "…"
     }

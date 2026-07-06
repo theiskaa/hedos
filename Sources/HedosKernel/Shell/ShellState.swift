@@ -28,8 +28,14 @@ public enum Launcher {
         return .library
     }
 
-    public static func defaultChatModel(in shelf: [ModelRecord]) -> ModelRecord? {
-        shelf.first { $0.state == .ready && destination(for: $0) == .chat }
+    public static func defaultChatModel(
+        in shelf: [ModelRecord], preferring id: String? = nil
+    ) -> ModelRecord? {
+        let candidates = shelf.filter { $0.state == .ready && destination(for: $0) == .chat }
+        if let id, let preferred = candidates.first(where: { $0.id == id }) {
+            return preferred
+        }
+        return candidates.first
     }
 
     public static func models(in shelf: [ModelRecord], for mode: AppMode) -> [ModelRecord] {

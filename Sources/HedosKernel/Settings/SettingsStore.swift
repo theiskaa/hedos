@@ -4,13 +4,16 @@ public struct HedosSettings: Codable, Sendable, Equatable {
     public var schemaVersion: Int
     public var watchedFolders: [String]
     public var shell: ShellState
+    public var defaultChatModelID: String?
 
     public init(
-        schemaVersion: Int = 1, watchedFolders: [String] = [], shell: ShellState = ShellState()
+        schemaVersion: Int = 1, watchedFolders: [String] = [], shell: ShellState = ShellState(),
+        defaultChatModelID: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.watchedFolders = watchedFolders
         self.shell = shell
+        self.defaultChatModelID = defaultChatModelID
     }
 
     public init(from decoder: Decoder) throws {
@@ -18,6 +21,8 @@ public struct HedosSettings: Codable, Sendable, Equatable {
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         watchedFolders = try container.decodeIfPresent([String].self, forKey: .watchedFolders) ?? []
         shell = try container.decodeIfPresent(ShellState.self, forKey: .shell) ?? ShellState()
+        defaultChatModelID = try container.decodeIfPresent(
+            String.self, forKey: .defaultChatModelID)
     }
 }
 
@@ -73,6 +78,17 @@ public actor SettingsStore {
         var settings = try load()
         guard settings.shell != shell else { return }
         settings.shell = shell
+        try save(settings)
+    }
+
+    public func defaultChatModelID() throws -> String? {
+        try load().defaultChatModelID
+    }
+
+    public func setDefaultChatModelID(_ modelID: String?) throws {
+        var settings = try load()
+        guard settings.defaultChatModelID != modelID else { return }
+        settings.defaultChatModelID = modelID
         try save(settings)
     }
 

@@ -41,7 +41,8 @@ public actor ChatStore {
     }
 
     public func createSession(
-        title: String = "New Chat", modelID: String? = nil, capabilityTags: [String] = []
+        title: String = ChatSession.defaultTitle, modelID: String? = nil,
+        capabilityTags: [String] = []
     ) throws -> ChatSession {
         let now = Self.now()
         let session = ChatSession(
@@ -187,6 +188,15 @@ public actor ChatStore {
         }
     }
 
+    public func rebindSession(id: String, modelID: String?) throws {
+        let now = Self.now()
+        try mutateSession(
+            id: id, at: now, write: .rebindSession(id: id, modelID: modelID, at: now)
+        ) {
+            $0.modelID = modelID
+        }
+    }
+
     public func setPinned(id: String, _ pinned: Bool) throws {
         let now = Self.now()
         try mutateSession(id: id, at: now, write: .setPinned(id: id, pinned: pinned, at: now)) {
@@ -246,6 +256,7 @@ public actor ChatStore {
         case insertTurn(ChatTurn, mergeTags: [String])
         case updateTurn(ChatTurn)
         case renameSession(id: String, title: String, at: Date)
+        case rebindSession(id: String, modelID: String?, at: Date)
         case setPinned(id: String, pinned: Bool, at: Date)
         case setArchived(id: String, archived: Bool, at: Date)
         case tombstoneSession(id: String, at: Date)
@@ -402,6 +413,14 @@ public actor ChatStore {
             try database.run(
                 "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
                 [.text(title), .real(at.timeIntervalSince1970), .text(id)])
+        case .rebindSession(let id, let modelID, let at):
+            try database.run(
+                "UPDATE sessions SET model_id = ?, updated_at = ? WHERE id = ?",
+                [
+                    modelID.map(SQLiteValue.text) ?? .null,
+                    .real(at.timeIntervalSince1970),
+                    .text(id),
+                ])
         case .setPinned(let id, let pinned, let at):
             try database.run(
                 "UPDATE sessions SET pinned = ?, updated_at = ? WHERE id = ?",
