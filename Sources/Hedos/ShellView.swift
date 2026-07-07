@@ -455,50 +455,81 @@ private struct BrandRow: View {
     @Binding var hovered: AppMode?
     let action: () -> Void
 
-    private var lit: Bool {
-        hovered == .settings
-    }
-
-    private var washColor: Color {
-        lit ? Design.ink.opacity(0.04) : .clear
-    }
+    @State private var hoverPoint: CGPoint?
 
     var body: some View {
         Button(action: action) {
             if collapsed {
-                LogoMark(size: 22)
-                    .frame(width: 44, height: 36)
-                    .background(
-                        RoundedRectangle(cornerRadius: Design.Radius.inner)
-                            .fill(washColor))
+                LogoMark(size: 30)
+                    .frame(width: 44, height: 44)
+                    .modifier(InkGlow(point: hoverPoint))
+                    .modifier(GlowTracking(point: $hoverPoint, hovered: $hovered))
                     .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
-                    .animation(Design.wash, value: lit)
             } else {
                 HStack(spacing: Design.Space.chipX) {
-                    LogoMark(size: 20)
-                        .frame(width: 22)
+                    LogoMark(size: 28)
+                        .frame(width: 30, alignment: .leading)
                     Text("Hedos")
-                        .font(Design.body)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(lit ? Design.ink : Design.inkSoft)
+                        .font(Design.paneTitle)
+                        .tracking(Design.tightTracking)
+                        .foregroundStyle(Design.ink)
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, Design.Space.l)
                 .padding(.vertical, Design.Space.s + 1)
-                .background(Capsule().fill(washColor))
+                .modifier(InkGlow(point: hoverPoint))
+                .modifier(GlowTracking(point: $hoverPoint, hovered: $hovered))
                 .contentShape(Capsule())
-                .animation(Design.wash, value: lit)
             }
         }
         .buttonStyle(.plain)
-        .onHover { inside in
-            if inside {
+        .accessibilityLabel("Settings")
+    }
+}
+
+private struct GlowTracking: ViewModifier {
+    @Binding var point: CGPoint?
+    @Binding var hovered: AppMode?
+
+    func body(content: Content) -> some View {
+        content.onContinuousHover(coordinateSpace: .local) { phase in
+            switch phase {
+            case .active(let location):
+                point = location
                 hovered = .settings
-            } else if hovered == .settings {
-                hovered = nil
+            case .ended:
+                point = nil
+                if hovered == .settings {
+                    hovered = nil
+                }
             }
         }
-        .accessibilityLabel("Settings")
+    }
+}
+
+private struct InkGlow: ViewModifier {
+    let point: CGPoint?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content.overlay {
+            if let point {
+                GeometryReader { geometry in
+                    RadialGradient(
+                        colors: [Design.paper.opacity(0.9), .clear],
+                        center: UnitPoint(
+                            x: point.x / max(geometry.size.width, 1),
+                            y: point.y / max(geometry.size.height, 1)),
+                        startRadius: 0,
+                        endRadius: 52)
+                }
+                .animation(
+                    reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.65),
+                    value: point)
+                .mask(content)
+                .allowsHitTesting(false)
+            }
+        }
     }
 }
 
