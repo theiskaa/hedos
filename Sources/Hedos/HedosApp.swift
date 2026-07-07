@@ -2,8 +2,55 @@ import AppKit
 import HedosKernel
 import SwiftUI
 
+final class FullScreenPresentationProxy: NSObject, NSWindowDelegate {
+    weak var base: NSWindowDelegate?
+
+    override func responds(to selector: Selector!) -> Bool {
+        super.responds(to: selector) || (base?.responds(to: selector) ?? false)
+    }
+
+    override func forwardingTarget(for selector: Selector!) -> Any? {
+        base
+    }
+
+    func window(
+        _ window: NSWindow,
+        willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions
+    ) -> NSApplication.PresentationOptions {
+        [.fullScreen, .autoHideMenuBar, .autoHideDock, .autoHideToolbar]
+    }
+}
+
 final class HedosAppDelegate: NSObject, NSApplicationDelegate {
+    private var proxies: [ObjectIdentifier: FullScreenPresentationProxy] = [:]
+    private var keyObserver: (any NSObjectProtocol)?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        keyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow,
+                window.styleMask.contains(.fullSizeContentView) || window.toolbar != nil
+            else { return }
+            let key = ObjectIdentifier(window)
+            if let proxy = self.proxies[key] {
+                if window.delegate !== proxy {
+                    proxy.base = window.delegate
+                    window.delegate = proxy
+                }
+                return
+            }
+            let proxy = FullScreenPresentationProxy()
+            proxy.base = window.delegate
+            window.delegate = proxy
+            self.proxies[key] = proxy
+        }
+        _ = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow else { return }
+            self.proxies.removeValue(forKey: ObjectIdentifier(window))
+        }
         if let iconURL = Bundle.module.url(forResource: "Resources/Hedos", withExtension: "icns")
             ?? Bundle.module.url(forResource: "Hedos", withExtension: "icns"),
             let icon = NSImage(contentsOf: iconURL)
@@ -47,6 +94,12 @@ struct HedosApp: App {
                     openWindow(id: "about")
                 }
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    shell.setMode(.settings)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") {
                     shell.newChat()
@@ -70,6 +123,15 @@ struct HedosApp: App {
                         KeyEquivalent(Character("\(mode.ordinal)")), modifiers: .command)
                 }
                 Divider()
+                Button(shell.sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar") {
+                    shell.setSidebarCollapsed(!shell.sidebarCollapsed)
+                }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+                Button("Toggle Full Screen") {
+                    (NSApp.keyWindow ?? NSApp.mainWindow)?.toggleFullScreen(nil)
+                }
+                .keyboardShortcut("f", modifiers: [.command, .control])
+                Divider()
             }
         }
 
@@ -83,21 +145,21 @@ struct HedosApp: App {
 struct AboutView: View {
     var body: some View {
         VStack(spacing: 14) {
-            HeptagonMark(size: 64, color: .primary.opacity(0.9))
+            HeptagonMark(size: 64, color: Design.ink)
             Text("Hedos")
                 .font(Design.plaque(26, weight: .semibold))
             Text("A home for every local model.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Design.inkSoft)
             Text("kernel \(Kernel.version)")
                 .font(Design.data(11))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Design.inkFaint)
             Text("ἕδος — a seat, an abode, a foundation.")
                 .font(Design.plaque(12))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 2)
+                .foregroundStyle(Design.inkFaint)
+                .padding(.top, Design.Space.xxs)
         }
-        .padding(36)
+        .padding(Design.Space.pane)
         .frame(width: 300)
     }
 }
