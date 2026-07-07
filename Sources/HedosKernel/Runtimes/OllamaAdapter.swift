@@ -1,5 +1,14 @@
 import Foundation
 
+public struct OllamaResident: Hashable, Sendable, Decodable {
+    public let name: String
+    public let size: Int64
+
+    public var sizeMB: Int {
+        Int(size >> 20)
+    }
+}
+
 public struct OllamaAdapter: RuntimeAdapter {
     public var id: String { "ollama" }
     public let baseURL: URL
@@ -27,6 +36,22 @@ public struct OllamaAdapter: RuntimeAdapter {
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
             .map { URL(fileURLWithPath: $0) }
+    }
+
+    public func loadedModels() async -> [OllamaResident] {
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/ps"))
+        request.timeoutInterval = 2
+        guard let (data, _) = try? await URLSession.shared.data(for: request) else {
+            return []
+        }
+        return Self.parseLoadedModels(data)
+    }
+
+    public static func parseLoadedModels(_ data: Data) -> [OllamaResident] {
+        struct Payload: Decodable {
+            let models: [OllamaResident]
+        }
+        return (try? JSONDecoder().decode(Payload.self, from: data))?.models ?? []
     }
 
     public func startDaemon() async throws {

@@ -35,6 +35,7 @@ public enum KernelError: Error, Sendable, LocalizedError {
 public actor Kernel {
     public static let version = "0.1.0"
 
+    public nonisolated let directory: URL
     public let registry: Registry
     public let settings: SettingsStore
     public let governor: MemoryGovernor
@@ -49,6 +50,7 @@ public actor Kernel {
         adapters: [any RuntimeAdapter]? = nil,
         governor: MemoryGovernor = .shared
     ) {
+        self.directory = directory
         let registry = Registry(directory: directory)
         let artifactStore = ArtifactStore(
             root: directory.appendingPathComponent("outputs", isDirectory: true))
@@ -223,8 +225,10 @@ public actor Kernel {
         guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
             throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
         }
+        let fallback = capability == .chat ? try? await chatSettings().defaultSystemPrompt : nil
         let configured = ModelConfiguration.merged(
-            record: record, capability: capability, payload: payload)
+            record: record, capability: capability, payload: payload,
+            fallbackPrompt: fallback ?? nil)
         return adapter.invoke(record, capability, payload: configured)
     }
 
@@ -257,7 +261,10 @@ public actor Kernel {
                 "\(adapter.id) cannot run \(capability.rawValue) as a job")
         }
         let seededPayload = Self.seeded(
-            ModelConfiguration.merged(record: record, capability: capability, payload: payload))
+            ModelConfiguration.merged(
+                record: record, capability: capability, payload: payload,
+                fallbackPrompt: capability == .chat
+                    ? ((try? await chatSettings().defaultSystemPrompt) ?? nil) : nil))
         return await scheduler.submit(
             modelID: modelID, capability: capability, payload: seededPayload
         ) {
@@ -308,6 +315,34 @@ public actor Kernel {
             jobID: "voice-\(UUID().uuidString.lowercased())",
             durationMs: SpeechAudio.durationMs(fromFloat32: pcm, sampleRate: sampleRate))
         return try await artifactStore.store(draft)
+    }
+
+    public struct ResidentEntry: Hashable, Sendable {
+        public enum Origin: Hashable, Sendable {
+            case governor
+            case ollama
+        }
+
+        public let modelID: String?
+        public let name: String
+        public let footprintMB: Int
+        public let origin: Origin
+    }
+
+    public func residentModels() async -> [ResidentEntry] {
+        var entries = await governor.resident().map { resident in
+            ResidentEntry(
+                modelID: resident.modelID, name: resident.name,
+                footprintMB: resident.footprintMB, origin: .governor)
+        }
+        if let ollama = adapters.compactMap({ $0 as? OllamaAdapter }).first {
+            entries += await ollama.loadedModels().map { resident in
+                ResidentEntry(
+                    modelID: nil, name: resident.name,
+                    footprintMB: resident.sizeMB, origin: .ollama)
+            }
+        }
+        return entries
     }
 
     public func artifacts() async throws -> [Artifact] {
