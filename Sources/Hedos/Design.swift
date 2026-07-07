@@ -27,6 +27,47 @@ enum Design {
 
     enum Rail {
         static let columnWidth: CGFloat = 248
+        static let expandedWidth: CGFloat = 224
+        static let collapsedWidth: CGFloat = 84
+    }
+
+    enum Window {
+        static let mainMin = CGSize(width: 860, height: 520)
+        static let settings = CGSize(width: 920, height: 560)
+        static let settingsMin = CGSize(width: 760, height: 520)
+        static let aboutWidth: CGFloat = 300
+    }
+
+    enum Sheet {
+        static let gallery = CGSize(width: 640, height: 520)
+        static let modelDetailWidth: CGFloat = 440
+        static let modelDetailHeight: CGFloat = 560
+        static let modelRecipeHeight: CGFloat = 420
+        static let promptWidth: CGFloat = 480
+        static let promptHeight: CGFloat = 520
+    }
+
+    enum Column {
+        static let settingsDetail: CGFloat = 640
+        static let control: CGFloat = 220
+        static let hero: CGFloat = 780
+        static let prose: CGFloat = 520
+        static let transcriptProse: CGFloat = 620
+        static let emptyCaption: CGFloat = 380
+    }
+
+    enum Popover {
+        static let menuWidth: CGFloat = 250
+        static let menuMaxHeight: CGFloat = 300
+        static let dropdownWidth: CGFloat = 200
+        static let dropdownMaxHeight: CGFloat = 240
+        static let paramsWidth: CGFloat = 260
+        static let form = CGSize(width: 300, height: 340)
+    }
+
+    enum Bubble {
+        static let promptMax: CGFloat = 520
+        static let imageMax: CGFloat = 360
     }
 
     static let conversationMaxWidth: CGFloat = 840
@@ -34,38 +75,103 @@ enum Design {
 
     static let wash = Animation.easeOut(duration: 0.18)
 
-    static let hero = Font.system(size: 34, weight: .semibold)
-    static let heroBody = Font.system(size: 16)
-    static let paneTitle = Font.title.weight(.semibold)
-    static let title = Font.title3.weight(.semibold)
-    static let body = Font.body
+    struct FontBook: Equatable {
+        var uiFamily: String?
+        var monoFamily: String?
+
+        var identity: String {
+            "\(uiFamily ?? "system")/\(monoFamily ?? "system")"
+        }
+    }
+
+    nonisolated(unsafe) static var fontBook = FontBook()
+
+    private static func ui(
+        _ size: CGFloat, _ weight: Font.Weight = .regular, relativeTo style: Font.TextStyle
+    ) -> Font {
+        guard let family = fontBook.uiFamily else {
+            return .system(size: scaledSize(size, relativeTo: style), weight: weight)
+        }
+        return .custom(family, size: size, relativeTo: style).weight(weight)
+    }
+
+    private static func uiStyled(
+        _ style: Font.TextStyle, size: CGFloat, weight: Font.Weight = .regular
+    ) -> Font {
+        guard let family = fontBook.uiFamily else {
+            return Font.system(style).weight(weight)
+        }
+        return .custom(family, size: size, relativeTo: style).weight(weight)
+    }
+
+    private static func mono(
+        _ size: CGFloat, _ weight: Font.Weight = .regular, relativeTo style: Font.TextStyle
+    ) -> Font {
+        guard let family = fontBook.monoFamily else {
+            return .system(
+                size: scaledSize(size, relativeTo: style), weight: weight, design: .monospaced)
+        }
+        return .custom(family, size: size, relativeTo: style).weight(weight)
+    }
+
+    static func scaledSize(_ base: CGFloat, relativeTo style: Font.TextStyle) -> CGFloat {
+        let (nsStyle, baseline) = anchor(for: style)
+        let current = NSFont.preferredFont(forTextStyle: nsStyle).pointSize
+        guard baseline > 0, current > 0 else { return base }
+        return (base * current / baseline).rounded()
+    }
+
+    private static func anchor(for style: Font.TextStyle) -> (NSFont.TextStyle, CGFloat) {
+        switch style {
+        case .largeTitle: (.largeTitle, 26)
+        case .title: (.title1, 22)
+        case .title2: (.title2, 17)
+        case .title3: (.title3, 15)
+        case .headline: (.headline, 13)
+        case .callout: (.callout, 12)
+        case .caption, .caption2: (.caption1, 10)
+        default: (.body, 13)
+        }
+    }
+
+    static var hero: Font { ui(34, .semibold, relativeTo: .largeTitle) }
+    static var heroBody: Font { ui(16, relativeTo: .body) }
+    static var paneTitle: Font { uiStyled(.title, size: 22, weight: .semibold) }
+    static var title: Font { uiStyled(.title3, size: 15, weight: .semibold) }
+    static var body: Font { uiStyled(.body, size: 13) }
     static let bodyLineSpacing: CGFloat = 3.5
-    static let caption = Font.callout
-    static let label = Font.caption
-    static let micro = Font.system(size: 11, weight: .medium, design: .monospaced)
+    static var caption: Font { uiStyled(.callout, size: 12) }
+    static var label: Font { uiStyled(.caption, size: 10) }
+    static var micro: Font { mono(11, .medium, relativeTo: .caption) }
     static let microTracking: CGFloat = 1.3
     static let tightTracking: CGFloat = -0.3
 
-    static let glyphNav = Font.system(size: 16, weight: .medium)
-    static let glyphPrimary = Font.system(size: 15, weight: .medium)
-    static let glyphInline = Font.system(size: 11)
-    static let glyphSmall = Font.system(size: 9, weight: .semibold)
-    static let glyphMicro = Font.system(size: 7, weight: .semibold)
+    static var glyphNav: Font { .system(size: scaledSize(16, relativeTo: .body), weight: .medium) }
+    static var glyphPrimary: Font {
+        .system(size: scaledSize(15, relativeTo: .body), weight: .medium)
+    }
+    static var glyphInline: Font { .system(size: scaledSize(11, relativeTo: .caption)) }
+    static var glyphSmall: Font {
+        .system(size: scaledSize(9, relativeTo: .caption), weight: .semibold)
+    }
+    static var glyphMicro: Font {
+        .system(size: scaledSize(7, relativeTo: .caption), weight: .semibold)
+    }
 
     static func plaque(_ size: CGFloat, weight: Font.Weight = .medium) -> Font {
         .system(size: size, weight: weight, design: .serif)
     }
 
     static func data(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .regular, design: .monospaced)
+        mono(size, relativeTo: .body)
     }
 
     static func markdownHeading(_ level: Int) -> Font {
         switch level {
-        case 1: .title2.weight(.semibold)
-        case 2: .title3.weight(.semibold)
-        case 3: .headline
-        default: .body.weight(.semibold)
+        case 1: uiStyled(.title2, size: 17, weight: .semibold)
+        case 2: uiStyled(.title3, size: 15, weight: .semibold)
+        case 3: uiStyled(.headline, size: 13, weight: .semibold)
+        default: uiStyled(.body, size: 13, weight: .semibold)
         }
     }
 
@@ -75,13 +181,40 @@ enum Design {
         reduceMotion ? nil : spring
     }
 
-    static let paper = warm(light: 0xF1EFEC, dark: 0x1E1D1B)
-    static let surface = warm(light: 0xFAF9F7, dark: 0x262523)
-    static let line = warm(light: 0xE2DFDA, dark: 0x3A3835)
-    static let ink = warm(light: 0x2B2A28, dark: 0xE8E6E1)
-    static let inkSoft = warm(light: 0x6F6C66, dark: 0xA29E96)
-    static let inkFaint = warm(light: 0x9B978F, dark: 0x6E6A63)
+    private enum Hex {
+        static let paper = (light: 0xF1EFEC, dark: 0x1E1D1B)
+        static let surface = (light: 0xFAF9F7, dark: 0x262523)
+        static let line = (light: 0xE2DFDA, dark: 0x3A3835)
+        static let ink = (light: 0x2B2A28, dark: 0xE8E6E1)
+        static let inkSoft = (light: 0x6F6C66, dark: 0xA29E96)
+        static let inkFaint = (light: 0x8A8680, dark: 0x7A766D)
+    }
+
+    static let paper = warm(light: Hex.paper.light, dark: Hex.paper.dark)
+    static let surface = warm(light: Hex.surface.light, dark: Hex.surface.dark)
+    static let line = warm(light: Hex.line.light, dark: Hex.line.dark)
+    static let ink = warm(light: Hex.ink.light, dark: Hex.ink.dark)
+    static let inkSoft = warm(light: Hex.inkSoft.light, dark: Hex.inkSoft.dark)
+    static let inkFaint = warm(light: Hex.inkFaint.light, dark: Hex.inkFaint.dark)
     static let inkWash = ink.opacity(0.06)
+
+    enum PreviewPalette {
+        static let lightPaper = fixed(Hex.paper.light)
+        static let lightSurface = fixed(Hex.surface.light)
+        static let lightInk = fixed(Hex.ink.light)
+        static let lightSoft = fixed(Hex.inkSoft.light)
+        static let darkPaper = fixed(Hex.paper.dark)
+        static let darkSurface = fixed(Hex.surface.dark)
+        static let darkInk = fixed(Hex.ink.dark)
+        static let darkSoft = fixed(Hex.inkSoft.dark)
+    }
+
+    private static func fixed(_ hex: Int) -> Color {
+        Color(
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255)
+    }
 
     private static func warm(light: Int, dark: Int) -> Color {
         Color(
@@ -99,6 +232,15 @@ enum Design {
                 }))
     }
 
+    static func editorFont(size: CGFloat = NSFont.systemFontSize) -> NSFont {
+        guard let family = fontBook.uiFamily,
+            let font = NSFont(name: family, size: size)
+                ?? NSFontManager.shared.font(
+                    withFamily: family, traits: [], weight: 5, size: size)
+        else { return .systemFont(ofSize: size) }
+        return font
+    }
+
     static let cardFill = AnyShapeStyle(surface)
     static let bubbleFill = AnyShapeStyle(inkWash)
     static let tableFill = AnyShapeStyle(surface)
@@ -106,7 +248,7 @@ enum Design {
     static let hairlineWidth: CGFloat = 1
     static let ruleWidth: CGFloat = 2
 
-    static let shadowColor = Color(red: 43 / 255, green: 42 / 255, blue: 40 / 255)
+    static let shadowColor = fixed(Hex.ink.light)
 
     static func modalityGlyph(_ modality: Modality) -> String {
         switch modality {
