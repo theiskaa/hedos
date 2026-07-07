@@ -1,6 +1,7 @@
 import Foundation
 
 public enum AppMode: String, Codable, CaseIterable, Sendable {
+    case home
     case chat
     case images
     case voice
@@ -8,12 +9,18 @@ public enum AppMode: String, Codable, CaseIterable, Sendable {
     case settings
 
     public var ordinal: Int {
-        Self.allCases.firstIndex(of: self)! + 1
+        switch self {
+        case .home: 0
+        case .chat: 1
+        case .images: 2
+        case .voice: 3
+        case .library: 4
+        case .settings: 5
+        }
     }
 
     public static func at(ordinal: Int) -> AppMode? {
-        guard ordinal >= 1, ordinal <= allCases.count else { return nil }
-        return allCases[ordinal - 1]
+        allCases.first { $0.ordinal == ordinal }
     }
 }
 
@@ -69,7 +76,7 @@ public struct ShellState: Codable, Sendable, Equatable {
     public var sidebarCollapsed: Bool
 
     public init(
-        mode: AppMode = .library,
+        mode: AppMode = .home,
         chatSessionID: String? = nil,
         imagesSelection: String? = nil,
         voiceModelID: String? = nil,
@@ -87,7 +94,7 @@ public struct ShellState: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let rawMode = try container.decodeIfPresent(String.self, forKey: .mode)
-        mode = rawMode.flatMap(AppMode.init(rawValue:)) ?? .library
+        mode = rawMode.flatMap(AppMode.init(rawValue:)) ?? .home
         chatSessionID = try container.decodeIfPresent(String.self, forKey: .chatSessionID)
         imagesSelection = try container.decodeIfPresent(String.self, forKey: .imagesSelection)
         voiceModelID = try container.decodeIfPresent(String.self, forKey: .voiceModelID)
@@ -102,7 +109,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         case .images: imagesSelection
         case .voice: voiceModelID
         case .library: libraryModelID
-        case .settings: nil
+        case .home, .settings: nil
         }
     }
 
@@ -112,7 +119,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         case .images: imagesSelection = id
         case .voice: voiceModelID = id
         case .library: libraryModelID = id
-        case .settings: break
+        case .home, .settings: break
         }
     }
 }

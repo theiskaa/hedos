@@ -19,6 +19,7 @@ final class ShellModel {
     var sidebarCollapsed = false
     var isFullscreen = false
     var settingsTarget: SettingsDestination?
+    var chatQuery = ""
     var chatSearchFocusTick = 0
     private var started = false
 
@@ -52,10 +53,10 @@ final class ShellModel {
             sidebarCollapsed = restored.sidebarCollapsed
         }
         if !settings.general.restoreLastSession {
-            mode = settings.general.fixedMode ?? .library
+            mode = settings.general.fixedMode ?? .home
         }
         if mode == .settings {
-            mode = .library
+            mode = .home
         }
         await refreshSessions()
         await library.rescan()
@@ -278,6 +279,9 @@ struct ShellView: View {
     @ViewBuilder
     private var pane: some View {
         switch shell.mode {
+        case .home:
+            HomePane(shell: shell)
+                .transition(.opacity)
         case .chat:
             ChatPane(shell: shell)
                 .transition(.opacity)
@@ -300,6 +304,7 @@ struct ShellView: View {
 struct HedosSidebar: View {
     @Bindable var shell: ShellModel
     @State private var hovered: AppMode?
+    @State private var railQuery = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private func groupTitle(_ title: String) -> some View {
@@ -318,12 +323,6 @@ struct HedosSidebar: View {
         } collapsedContent: {
             collapsedRail
         }
-        .overlay(alignment: .topLeading) {
-            LogoMark(size: 24)
-                .padding(.top, topClearance + (shell.sidebarCollapsed ? 0 : 2))
-                .padding(.leading, shell.sidebarCollapsed ? 30 : Design.Space.l * 2 - 1)
-                .accessibilityLabel("Hedos")
-        }
         .accessibilityIdentifier("shell-rail")
     }
 
@@ -340,25 +339,27 @@ struct HedosSidebar: View {
 
     private var expanded: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Design.Space.chipX) {
-                Color.clear
-                    .frame(width: 24, height: 24)
-                Text("Hedos")
-                    .font(.system(size: 17, weight: .semibold))
-                    .tracking(Design.tightTracking)
-                    .foregroundStyle(Design.ink)
-                Spacer(minLength: 0)
+            HStack(spacing: Design.Space.s) {
+                InkSearchField(placeholder: "Search", query: $railQuery)
                 collapser
             }
-            .padding(.leading, Design.Space.l)
-            .padding(.bottom, Design.Space.xl)
+            .padding(.bottom, Design.Space.l)
             VStack(alignment: .leading, spacing: Design.Space.xs) {
-                groupTitle("Surfaces")
-                modeRow(.chat, collapsedRow: false)
-                modeRow(.images, collapsedRow: false)
-                modeRow(.voice, collapsedRow: false)
-                groupTitle("Library")
-                modeRow(.library, collapsedRow: false)
+                if rowMatches("Home") || rowMatches("Hedos") {
+                    brandRow(collapsedRow: false)
+                }
+                if surfacesMatch {
+                    groupTitle("Surfaces")
+                }
+                ForEach([AppMode.chat, .images, .voice], id: \.self) { mode in
+                    if rowMatches(Design.modeTitle(mode)) {
+                        modeRow(mode, collapsedRow: false)
+                    }
+                }
+                if rowMatches(Design.modeTitle(.library)) {
+                    groupTitle("Library")
+                    modeRow(.library, collapsedRow: false)
+                }
             }
             Spacer(minLength: 0)
             settingsRow(collapsedRow: false)
@@ -371,12 +372,10 @@ struct HedosSidebar: View {
 
     private var collapsedRail: some View {
         VStack(alignment: .center, spacing: 0) {
-            Color.clear
-                .frame(width: 24, height: 24)
-                .padding(.bottom, Design.Space.l)
             collapser
                 .padding(.bottom, Design.Space.l)
             VStack(alignment: .center, spacing: Design.Space.xs) {
+                brandRow(collapsedRow: true)
                 modeRow(.chat, collapsedRow: true)
                 modeRow(.images, collapsedRow: true)
                 modeRow(.voice, collapsedRow: true)
@@ -405,10 +404,34 @@ struct HedosSidebar: View {
             collapsed: collapsedRow,
             hovered: $hovered
         ) {
+            railQuery = ""
             shell.setMode(mode)
         }
         .help("\(Design.modeTitle(mode)) — ⌘\(mode.ordinal)")
         .accessibilityIdentifier("rail-\(mode.rawValue)")
+    }
+
+    private func rowMatches(_ title: String) -> Bool {
+        railQuery.isEmpty || title.localizedCaseInsensitiveContains(railQuery)
+    }
+
+    private var surfacesMatch: Bool {
+        [AppMode.chat, .images, .voice].contains {
+            rowMatches(Design.modeTitle($0))
+        }
+    }
+
+    private func brandRow(collapsedRow: Bool) -> some View {
+        BrandRow(
+            selected: shell.mode == .home,
+            collapsed: collapsedRow,
+            hovered: $hovered
+        ) {
+            railQuery = ""
+            shell.setMode(.home)
+        }
+        .help("Home — ⌘0")
+        .accessibilityIdentifier("rail-home")
     }
 
     private func settingsRow(collapsedRow: Bool) -> some View {
@@ -424,6 +447,65 @@ struct HedosSidebar: View {
         }
         .help("Settings — ⌘,")
         .accessibilityIdentifier("rail-settings")
+    }
+}
+
+private struct BrandRow: View {
+    let selected: Bool
+    var collapsed: Bool = false
+    @Binding var hovered: AppMode?
+    let action: () -> Void
+
+    private var lit: Bool {
+        selected || hovered == .home
+    }
+
+    private var washColor: Color {
+        selected
+            ? Design.ink.opacity(0.08)
+            : hovered == .home ? Design.ink.opacity(0.04) : .clear
+    }
+
+    var body: some View {
+        Button(action: action) {
+            if collapsed {
+                LogoMark(size: 22)
+                    .frame(width: 44, height: 36)
+                    .background(
+                        RoundedRectangle(cornerRadius: Design.Radius.inner)
+                            .fill(washColor))
+                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+                    .animation(Design.wash, value: selected)
+                    .animation(Design.wash, value: hovered == .home)
+                    .help("Home")
+            } else {
+                HStack(spacing: Design.Space.chipX) {
+                    LogoMark(size: 20)
+                        .frame(width: 22)
+                    Text("Hedos")
+                        .font(Design.body)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(lit ? Design.ink : Design.inkSoft)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, Design.Space.l)
+                .padding(.vertical, Design.Space.s + 1)
+                .background(Capsule().fill(washColor))
+                .contentShape(Capsule())
+                .animation(Design.wash, value: selected)
+                .animation(Design.wash, value: hovered == .home)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside {
+                hovered = .home
+            } else if hovered == .home {
+                hovered = nil
+            }
+        }
+        .accessibilityLabel("Home")
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -473,12 +555,11 @@ struct ColumnDivider: View {
 
 struct ChatPane: View {
     @Bindable var shell: ShellModel
-    @State private var query = ""
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                ChatSessionsColumn(shell: shell, query: $query)
+                ChatSessionsColumn(shell: shell, query: $shell.chatQuery)
                     .frame(width: Design.Rail.columnWidth)
                 ColumnDivider()
                 detail

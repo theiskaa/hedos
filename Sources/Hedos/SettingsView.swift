@@ -1102,7 +1102,7 @@ struct SettingsRoot: View {
 }
 
 
-private struct ResidencyStrip: View {
+struct ResidencyStrip: View {
     let shell: ShellModel
     @State private var resident: [Kernel.ResidentEntry] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

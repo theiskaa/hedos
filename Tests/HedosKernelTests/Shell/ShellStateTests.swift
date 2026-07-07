@@ -4,7 +4,8 @@ import Testing
 @testable import HedosKernel
 
 @Test func modeOrderMatchesCommandShortcuts() {
-    #expect(AppMode.allCases == [.chat, .images, .voice, .library, .settings])
+    #expect(AppMode.allCases == [.home, .chat, .images, .voice, .library, .settings])
+    #expect(AppMode.home.ordinal == 0)
     #expect(AppMode.chat.ordinal == 1)
     #expect(AppMode.images.ordinal == 2)
     #expect(AppMode.voice.ordinal == 3)
@@ -13,8 +14,9 @@ import Testing
     for mode in AppMode.allCases {
         #expect(AppMode.at(ordinal: mode.ordinal) == mode)
     }
-    #expect(AppMode.at(ordinal: 0) == nil)
+    #expect(AppMode.at(ordinal: 0) == .home)
     #expect(AppMode.at(ordinal: 6) == nil)
+    #expect(AppMode(rawValue: "home") == .home)
 }
 
 @Test func launcherRoutesByCapabilityNotName() {
@@ -95,7 +97,7 @@ import Testing
 
 @Test func shellStateSelectionAccessorsCoverEveryMode() {
     var state = ShellState()
-    #expect(state.mode == .library)
+    #expect(state.mode == .home)
     for mode in AppMode.allCases {
         state.setSelection("id-\(mode.rawValue)", in: mode)
     }
@@ -178,7 +180,7 @@ import Testing
     #expect(decoded.sidebarCollapsed == false)
 }
 
-@Test func unknownShellModeFallsBackToLibrary() async throws {
+@Test func unknownShellModeFallsBackToHome() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let future = """
@@ -191,7 +193,7 @@ import Testing
     try Data(future.utf8).write(to: dir.appendingPathComponent("settings.json"))
 
     let state = await SettingsStore(directory: dir).shellState()
-    #expect(state.mode == .library)
+    #expect(state.mode == .home)
     #expect(state.chatSessionID == "s-1")
 }
 

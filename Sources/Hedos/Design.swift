@@ -34,6 +34,8 @@ enum Design {
 
     static let wash = Animation.easeOut(duration: 0.18)
 
+    static let hero = Font.system(size: 34, weight: .semibold)
+    static let heroBody = Font.system(size: 16)
     static let paneTitle = Font.title.weight(.semibold)
     static let title = Font.title3.weight(.semibold)
     static let body = Font.body
@@ -118,6 +120,7 @@ enum Design {
 
     static func modeGlyph(_ mode: AppMode) -> String {
         switch mode {
+        case .home: "house"
         case .chat: "message"
         case .images: "photo.stack"
         case .voice: "speaker.wave.2"
@@ -128,6 +131,7 @@ enum Design {
 
     static func modeTitle(_ mode: AppMode) -> String {
         switch mode {
+        case .home: "Home"
         case .chat: "Chat"
         case .images: "Images"
         case .voice: "Voice"

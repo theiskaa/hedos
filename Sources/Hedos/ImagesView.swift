@@ -110,6 +110,7 @@ final class ImagesViewModel {
     func generate() {
         let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isBusy, let modelID = boundModelID else { return }
+        prompt = ""
         let kernel = kernel
         let payload = form.payload(prompt: text)
         start(intending: payload) {
