@@ -116,10 +116,24 @@ private struct EnumControl: View {
     let set: (JSONValue?) -> Void
 
     var body: some View {
-        InkSegmented(
-            values: spec.values ?? [],
-            selection: stringValue(get()) ?? stringValue(spec.defaultValue),
-            onSelect: { set(.string($0)) })
+        let values = spec.values ?? []
+        if values.count > 4 {
+            InkDropdown(
+                options: values,
+                selection: stringValue(get()) ?? stringValue(spec.defaultValue),
+                allowsAuto: false,
+                accessibilityName: spec.key,
+                onSelect: { choice in
+                    if let choice {
+                        set(.string(choice))
+                    }
+                })
+        } else {
+            InkSegmented(
+                values: values,
+                selection: stringValue(get()) ?? stringValue(spec.defaultValue),
+                onSelect: { set(.string($0)) })
+        }
     }
 }
 

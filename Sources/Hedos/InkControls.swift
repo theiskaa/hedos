@@ -189,26 +189,315 @@ struct InkTextArea: View {
     let placeholder: String
     @Binding var text: String
     var lines: ClosedRange<Int> = 2...6
+    var resizable = false
     @FocusState private var focused: Bool
+    @State private var height: CGFloat = 88
+    @State private var dragBase: CGFloat?
 
     var body: some View {
-        TextField(
-            "", text: $text, prompt: Text(placeholder).foregroundStyle(Design.inkFaint),
-            axis: .vertical
-        )
-        .textFieldStyle(.plain)
-        .font(Design.caption)
-        .foregroundStyle(Design.ink)
-        .lineLimit(lines.lowerBound...lines.upperBound)
-        .focused($focused)
-        .padding(.horizontal, Design.Space.chipX)
-        .padding(.vertical, Design.Space.s)
+        Group {
+            if resizable {
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $text)
+                        .font(Design.caption)
+                        .foregroundStyle(Design.ink)
+                        .scrollContentBackground(.hidden)
+                        .focused($focused)
+                        .padding(.horizontal, Design.Space.s)
+                        .padding(.vertical, Design.Space.xs)
+                    if text.isEmpty {
+                        Text(placeholder)
+                            .font(Design.caption)
+                            .foregroundStyle(Design.inkFaint)
+                            .padding(.leading, Design.Space.chipX + 1)
+                            .padding(.top, Design.Space.m + 1)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .frame(height: height)
+                .overlay(alignment: .bottomTrailing) {
+                    ResizeGrip()
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { gesture in
+                                    let base = dragBase ?? height
+                                    dragBase = base
+                                    height = (base + gesture.translation.height)
+                                        .clamped(to: 56...360)
+                                }
+                                .onEnded { _ in
+                                    dragBase = nil
+                                })
+                        .accessibilityLabel("Resize")
+                }
+            } else {
+                TextField(
+                    "", text: $text,
+                    prompt: Text(placeholder).foregroundStyle(Design.inkFaint),
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .font(Design.caption)
+                .foregroundStyle(Design.ink)
+                .lineLimit(lines.lowerBound...lines.upperBound)
+                .focused($focused)
+                .padding(.horizontal, Design.Space.chipX)
+                .padding(.vertical, Design.Space.s)
+            }
+        }
         .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
         .overlay(
             RoundedRectangle(cornerRadius: Design.Radius.inner)
                 .strokeBorder(
                     focused ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
+    }
+}
+
+private struct ResizeGrip: View {
+    var body: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 10, y: 2))
+            path.addLine(to: CGPoint(x: 2, y: 10))
+            path.move(to: CGPoint(x: 10, y: 6))
+            path.addLine(to: CGPoint(x: 6, y: 10))
+        }
+        .stroke(Design.inkFaint, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+        .frame(width: 12, height: 12)
+        .padding(Design.Space.xs)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct InkMenuDismissKey: EnvironmentKey {
+    static let defaultValue: @MainActor () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var inkMenuDismiss: @MainActor () -> Void {
+        get { self[InkMenuDismissKey.self] }
+        set { self[InkMenuDismissKey.self] = newValue }
+    }
+}
+
+struct InkMenu<Content: View>: View {
+    let title: String
+    var accessibilityName: String = "menu"
+    @ViewBuilder let content: () -> Content
+    @State private var open = false
+
+    var body: some View {
+        Button {
+            open.toggle()
+        } label: {
+            HStack(spacing: Design.Space.xs) {
+                Text(title)
+                    .font(Design.label)
+                    .lineLimit(1)
+                    .foregroundStyle(Design.inkSoft)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Design.glyphSmall)
+                    .foregroundStyle(Design.inkFaint)
+            }
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.xs)
+            .background(Design.surface, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(
+                    open ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                    lineWidth: Design.hairlineWidth))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .popover(isPresented: $open, arrowEdge: .top) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    content()
+                }
+                .padding(Design.Space.s)
+            }
+            .frame(width: 250)
+            .frame(maxHeight: 300)
+            .presentationBackground(Design.paper)
+            .environment(\.inkMenuDismiss) { open = false }
+        }
+        .accessibilityLabel(accessibilityName)
+    }
+}
+
+struct InkMenuRow: View {
+    let title: String
+    var annotation: String? = nil
+    var selected = false
+    var disabled = false
+    let action: () -> Void
+    @Environment(\.inkMenuDismiss) private var dismissMenu
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            action()
+            dismissMenu()
+        } label: {
+            HStack(spacing: Design.Space.s) {
+                Text(title)
+                    .font(Design.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(disabled ? Design.inkFaint : Design.ink)
+                Spacer(minLength: Design.Space.s)
+                if let annotation {
+                    Text(annotation)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                }
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(Design.glyphSmall.weight(.bold))
+                        .foregroundStyle(Design.ink)
+                }
+            }
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                selected
+                    ? Design.ink.opacity(0.08)
+                    : hovering && !disabled ? Design.ink.opacity(0.04) : .clear,
+                in: RoundedRectangle(cornerRadius: Design.Radius.card))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { hovering = $0 }
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+struct InkMenuHeader: View {
+    let title: String
+
+    var body: some View {
+        MicroHeader(title: title)
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.top, Design.Space.s)
+            .padding(.bottom, Design.Space.xxs)
+    }
+}
+
+struct InkMenuDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Design.line)
+            .frame(height: Design.hairlineWidth)
+            .padding(.vertical, Design.Space.xxs)
+    }
+}
+
+struct InkDropdown: View {
+    let options: [String]
+    let selection: String?
+    var placeholder: String = "auto"
+    var allowsAuto = true
+    var accessibilityName: String = "option"
+    let onSelect: (String?) -> Void
+    @State private var open = false
+
+    var body: some View {
+        Button {
+            open.toggle()
+        } label: {
+            HStack(spacing: Design.Space.xs) {
+                Text(selection ?? placeholder)
+                    .font(Design.label)
+                    .lineLimit(1)
+                    .foregroundStyle(selection == nil ? Design.inkFaint : Design.ink)
+                Image(systemName: "chevron.down")
+                    .font(Design.glyphSmall)
+                    .foregroundStyle(Design.inkFaint)
+            }
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.xs + 1)
+            .background(Design.surface, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(
+                    open ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                    lineWidth: Design.hairlineWidth))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    if allowsAuto {
+                        dropdownRow(title: placeholder, value: nil, faint: true)
+                        Rectangle()
+                            .fill(Design.line)
+                            .frame(height: Design.hairlineWidth)
+                            .padding(.vertical, Design.Space.xxs)
+                    }
+                    ForEach(options, id: \.self) { candidate in
+                        dropdownRow(title: candidate, value: candidate, faint: false)
+                    }
+                }
+                .padding(Design.Space.s)
+            }
+            .frame(width: 200)
+            .frame(maxHeight: 240)
+            .presentationBackground(Design.paper)
+        }
+        .accessibilityLabel("Choose \(accessibilityName)")
+    }
+
+    private func dropdownRow(title: String, value: String?, faint: Bool) -> some View {
+        DropdownRow(
+            title: title,
+            selected: selection == value,
+            faint: faint
+        ) {
+            onSelect(value)
+            open = false
+        }
+    }
+}
+
+private struct DropdownRow: View {
+    let title: String
+    let selected: Bool
+    let faint: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Design.Space.s) {
+                Text(title)
+                    .font(Design.caption)
+                    .lineLimit(1)
+                    .foregroundStyle(faint ? Design.inkSoft : Design.ink)
+                Spacer(minLength: Design.Space.s)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(Design.glyphSmall.weight(.bold))
+                        .foregroundStyle(Design.ink)
+                }
+            }
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                selected
+                    ? Design.ink.opacity(0.08)
+                    : hovering ? Design.ink.opacity(0.04) : .clear,
+                in: RoundedRectangle(cornerRadius: Design.Radius.card))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
