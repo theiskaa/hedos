@@ -28,6 +28,12 @@ enum SettingsIndex {
             id: "general.defaultModel", section: "General", title: "Default chat model",
             keywords: ["model", "chat", "new chat"]),
         .init(
+            id: "general.quickAsk", section: "General", title: "Quick Ask shortcut",
+            keywords: ["hotkey", "shortcut", "global", "keyboard", "panel", "spotlight"]),
+        .init(
+            id: "general.menuBar", section: "General", title: "Menu bar item",
+            keywords: ["menu", "status", "bar", "tray", "icon"]),
+        .init(
             id: "models.keepWarm", section: "Models", title: "Keep models warm",
             keywords: ["warm", "residency", "memory", "unload", "idle"]),
         .init(
@@ -58,6 +64,9 @@ enum SettingsIndex {
             id: "voice.speed", section: "Voice", title: "Speed",
             keywords: ["voice", "rate", "speed", "tts"]),
         .init(
+            id: "voice.autoSpeak", section: "Voice", title: "Speak replies and narrations aloud",
+            keywords: ["auto", "speak", "read", "aloud", "voice", "reply"]),
+        .init(
             id: "appearance.theme", section: "Appearance", title: "Theme",
             keywords: ["dark", "light", "system", "appearance"]),
         .init(
@@ -67,12 +76,37 @@ enum SettingsIndex {
             id: "appearance.density", section: "Appearance", title: "Density",
             keywords: ["compact", "relaxed", "spacing"]),
         .init(
+            id: "appearance.fontUI", section: "Appearance", title: "App font",
+            keywords: ["font", "typeface", "typography", "family", "text"]),
+        .init(
+            id: "appearance.fontMono", section: "Appearance", title: "Mono font",
+            keywords: ["font", "monospace", "mono", "code", "typography"]),
+        .init(
+            id: "prompts.library", section: "Prompts", title: "Prompt library",
+            keywords: ["prompt", "slash", "template", "snippet", "insert", "placeholder"]),
+        .init(
             id: "advanced.history", section: "Advanced", title: "Job history length",
             keywords: ["jobs", "history", "limit"]),
         .init(
             id: "advanced.paths", section: "Advanced", title: "Data locations",
             keywords: ["path", "registry", "database", "reveal", "folder", "support"]),
     ]
+}
+
+enum FontCatalog {
+    static let uiFamilies: [String] = NSFontManager.shared.availableFontFamilies
+        .filter { !$0.hasPrefix(".") }
+        .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+
+    static let monoFamilies: [String] = uiFamilies.filter { family in
+        guard
+            let members = NSFontManager.shared.availableMembers(ofFontFamily: family),
+            let first = members.first,
+            let name = first.first as? String,
+            let font = NSFont(name: name, size: 12)
+        else { return false }
+        return font.isFixedPitch
+    }
 }
 
 @Observable
@@ -89,6 +123,7 @@ final class SettingsModel {
     var voice = VoiceSettings()
     var appearance = AppearanceSettings()
     var advanced = AdvancedSettings()
+    var prompts: [Prompt] = []
     var voices: [String] = []
     var previewing = false
     private(set) var loaded = false
@@ -107,12 +142,44 @@ final class SettingsModel {
         voice = await kernel.voiceSettings()
         appearance = await kernel.appearanceSettings()
         advanced = await kernel.advancedSettings()
+        prompts = await kernel.prompts()
         loaded = true
         applyTheme()
+        applyShellIntegrations()
+    }
+
+    func updatePrompt(_ prompt: Prompt) {
+        if let index = prompts.firstIndex(where: { $0.id == prompt.id }) {
+            prompts[index] = prompt
+        } else {
+            prompts.append(prompt)
+        }
+        let value = prompt
+        persist("prompt-\(prompt.id)") { kernel in
+            guard !value.title.isEmpty || !value.body.isEmpty else { return }
+            try? await kernel.savePrompt(value)
+        }
+    }
+
+    func deletePrompt(_ prompt: Prompt) {
+        saveTasks["prompt-\(prompt.id)"]?.cancel()
+        prompts.removeAll { $0.id == prompt.id }
+        let kernel = kernel
+        let id = prompt.id
+        Task {
+            await kernel.deletePrompt(id: id)
+        }
     }
 
     func applyTheme() {
         NSApp.appearance = appearance.theme.nsAppearance
+        Design.fontBook = Design.FontBook(
+            uiFamily: appearance.uiFont, monoFamily: appearance.monoFont)
+    }
+
+    func applyShellIntegrations() {
+        HotkeyCenter.shared.apply(general.quickAskHotkey)
+        MenuBarController.shared.apply(general.menuBarItem)
     }
 
     func loadVoices(from records: [ModelRecord]) async {
@@ -128,6 +195,7 @@ final class SettingsModel {
     }
 
     func saveGeneral() {
+        applyShellIntegrations()
         let value = general
         persist("general") { kernel in
             try? await kernel.updateGeneralSettings(value)
@@ -207,10 +275,19 @@ final class SettingsModel {
     }
 
     func flush() async {
+        let dirtyPromptIDs = saveTasks.keys
+            .filter { $0.hasPrefix("prompt-") }
+            .map { String($0.dropFirst("prompt-".count)) }
         for task in saveTasks.values {
             task.cancel()
         }
         saveTasks = [:]
+        for id in dirtyPromptIDs {
+            guard let prompt = prompts.first(where: { $0.id == id }),
+                !prompt.title.isEmpty || !prompt.body.isEmpty
+            else { continue }
+            try? await kernel.savePrompt(prompt)
+        }
         try? await kernel.updateGeneralSettings(general)
         try? await kernel.updateModelsSettings(models)
         try? await kernel.updateChatSettings(chat)
@@ -262,6 +339,7 @@ private struct SettingRow<Control: View>: View {
 enum SettingsSection: String, CaseIterable {
     case general
     case models
+    case prompts
     case chat
     case voice
     case appearance
@@ -271,6 +349,7 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .general: "General"
         case .models: "Models"
+        case .prompts: "Prompts"
         case .chat: "Chat"
         case .voice: "Voice"
         case .appearance: "Appearance"
@@ -282,6 +361,7 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .general: "gearshape"
         case .models: "square.stack.3d.up"
+        case .prompts: "text.quote"
         case .chat: "message"
         case .voice: "speaker.wave.2"
         case .appearance: "paintpalette"
@@ -293,6 +373,7 @@ enum SettingsSection: String, CaseIterable {
         switch self {
         case .general: "App behavior and launch."
         case .models: "Residency, memory, and discovery."
+        case .prompts: "Reusable prompts, inserted from the composer with /."
         case .chat: "Prompts, sending, and exports."
         case .voice: "Voices, speed, and speaking."
         case .appearance: "Theme and layout. Previews always show both palettes."
@@ -337,10 +418,32 @@ struct SettingsRoot: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .id(Design.fontBook.identity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
         .scrollEdgeEffectStyle(.none, for: .top)
         .background(Design.paper.ignoresSafeArea())
+        .modalScrim(
+            isPresented: promptDraft != nil,
+            onDismiss: { promptDraft = nil }
+        ) {
+            if let draft = promptDraft {
+                PromptSheet(
+                    prompt: draft,
+                    isNew: promptDraftIsNew,
+                    onSave: { updated in
+                        shell.settings.updatePrompt(updated)
+                        promptDraft = nil
+                    },
+                    onDelete: promptDraftIsNew
+                        ? nil
+                        : {
+                            shell.settings.deletePrompt(draft)
+                            promptDraft = nil
+                        },
+                    onClose: { promptDraft = nil })
+            }
+        }
         .task {
             if !shell.settings.loaded {
                 await shell.settings.load()
@@ -383,7 +486,7 @@ struct SettingsRoot: View {
                 VStack(alignment: .leading, spacing: Design.Space.xs) {
                     expandedGroup("App", [.general, .appearance])
                     expandedGroup("Surfaces", [.chat, .voice])
-                    expandedGroup("Library", [.models])
+                    expandedGroup("Library", [.models, .prompts])
                     expandedGroup("System", [.advanced])
                 }
                 .padding(.bottom, Design.Space.l)
@@ -404,7 +507,7 @@ struct SettingsRoot: View {
                 VStack(alignment: .center, spacing: Design.Space.xs) {
                     collapsedGroup([.general, .appearance], first: true)
                     collapsedGroup([.chat, .voice])
-                    collapsedGroup([.models])
+                    collapsedGroup([.models, .prompts])
                     collapsedGroup([.advanced])
                 }
                 .padding(.bottom, Design.Space.l)
@@ -491,6 +594,8 @@ struct SettingsRoot: View {
     }
 
     @State private var pendingScroll: String?
+    @State private var promptDraft: Prompt?
+    @State private var promptDraftIsNew = false
 
     private var detail: some View {
         ScrollViewReader { proxy in
@@ -514,6 +619,7 @@ struct SettingsRoot: View {
                         case .chat: chatSection
                         case .voice: voiceSection
                         case .appearance: appearanceSection
+                        case .prompts: promptsSection
                         case .advanced: advancedSection
                         }
                     }
@@ -521,7 +627,7 @@ struct SettingsRoot: View {
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.top, Design.Space.pane)
                 .padding(.bottom, Design.Space.xxl)
-                .frame(maxWidth: 640, alignment: .leading)
+                .frame(maxWidth: Design.Column.settingsDetail, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onChange(of: pendingScroll) { _, anchor in
@@ -625,6 +731,24 @@ struct SettingsRoot: View {
                     })
             }
         }
+            group("Anywhere") {
+                settingRow("general.quickAsk", "Quick Ask shortcut") {
+                    HotkeyRecorder(hotkey: model.general.quickAskHotkey) { hotkey in
+                        model.general.quickAskHotkey = hotkey
+                        model.saveGeneral()
+                    }
+                }
+                Divider()
+                settingRow("general.menuBar", "Menu bar item") {
+                    InkToggle(
+                        isOn: model.general.menuBarItem, isSet: true,
+                        onToggle: { value in
+                            model.general.menuBarItem = value
+                            model.saveGeneral()
+                        },
+                        label: "Menu bar item")
+                }
+            }
         }
     }
 
@@ -677,7 +801,7 @@ struct SettingsRoot: View {
                             model.models.ramBudgetMB == nil ? Design.inkFaint : Design.ink)
                         .frame(minWidth: 44, alignment: .trailing)
                     }
-                    .frame(width: 220)
+                    .frame(width: Design.Column.control)
                 }
                 .disabled(model.models.eviction != .budgeted)
                 .opacity(model.models.eviction == .budgeted ? 1 : 0.4)
@@ -844,6 +968,17 @@ struct SettingsRoot: View {
                 }
             }
             Divider()
+            settingRow("voice.autoSpeak", "Speak replies and narrations aloud") {
+                InkToggle(
+                    isOn: model.voice.autoSpeak,
+                    isSet: true,
+                    onToggle: { value in
+                        model.voice.autoSpeak = value
+                        model.saveVoice()
+                    },
+                    label: "Speak replies and narrations aloud")
+            }
+            Divider()
             settingRow("voice.speed", "Speed") {
                 HStack(spacing: Design.Space.m) {
                     InkSlider(
@@ -865,7 +1000,7 @@ struct SettingsRoot: View {
                         .foregroundStyle(Design.ink)
                         .frame(minWidth: 34, alignment: .trailing)
                 }
-                .frame(width: 220)
+                .frame(width: Design.Column.control)
             }
         }
     }
@@ -906,6 +1041,41 @@ struct SettingsRoot: View {
                         ThemePreview(variant: .dark)
                     }
                 }
+            }
+            group("Type") {
+                settingRow("appearance.fontUI", "App font") {
+                    InkDropdown(
+                        options: FontCatalog.uiFamilies,
+                        selection: model.appearance.uiFont,
+                        placeholder: "San Francisco",
+                        accessibilityName: "app font",
+                        onSelect: { family in
+                            model.appearance.uiFont = family
+                            model.saveAppearance()
+                        })
+                }
+                settingRow("appearance.fontMono", "Mono font") {
+                    InkDropdown(
+                        options: FontCatalog.monoFamilies,
+                        selection: model.appearance.monoFont,
+                        placeholder: "SF Mono",
+                        accessibilityName: "mono font",
+                        onSelect: { family in
+                            model.appearance.monoFont = family
+                            model.saveAppearance()
+                        })
+                }
+                VStack(alignment: .leading, spacing: Design.Space.xs) {
+                    Text("Sphinx of black quartz, judge my vow.")
+                        .font(Design.body)
+                        .foregroundStyle(Design.ink)
+                    Text("SAMPLE 0123456789".uppercased())
+                        .font(Design.micro)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
+                }
+                .padding(.vertical, Design.Space.chipX)
+                .padding(.horizontal, Design.Space.s)
             }
             group("Layout") {
                 HStack(alignment: .top, spacing: Design.Space.gutter) {
@@ -975,6 +1145,41 @@ struct SettingsRoot: View {
         .background(highlightBackground(id))
     }
 
+    private var promptsSection: some View {
+        VStack(alignment: .leading, spacing: Design.Space.l) {
+            if shell.settings.prompts.isEmpty {
+                VStack(alignment: .leading, spacing: Design.Space.xs) {
+                    Text("No prompts yet.")
+                        .font(Design.caption)
+                        .foregroundStyle(Design.inkSoft)
+                    Text(
+                        "A prompt is a reusable message. Type / in any composer to insert one; {selection} pulls in whatever you had already drafted."
+                    )
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+                }
+                .padding(.vertical, Design.Space.chipX)
+            }
+            ForEach(shell.settings.prompts) { prompt in
+                PromptCard(prompt: prompt) {
+                    promptDraft = prompt
+                    promptDraftIsNew = false
+                } onDelete: {
+                    shell.settings.deletePrompt(prompt)
+                }
+            }
+            Button("New Prompt") {
+                promptDraft = Prompt(title: "", body: "")
+                promptDraftIsNew = true
+            }
+            .buttonStyle(QuietButtonStyle())
+            .padding(.vertical, Design.Space.s)
+            .accessibilityIdentifier("prompts-new")
+        }
+        .id("prompts.library")
+        .background(highlightBackground("prompts.library"))
+    }
+
     private var advancedSection: some View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
@@ -1000,7 +1205,7 @@ struct SettingsRoot: View {
                             .foregroundStyle(Design.ink)
                             .frame(minWidth: 34, alignment: .trailing)
                     }
-                    .frame(width: 220)
+                    .frame(width: Design.Column.control)
                 }
             }
             group("Data locations") {
@@ -1199,6 +1404,181 @@ private struct BudgetBar: View {
                 }
                 try? await Task.sleep(for: .seconds(8))
             }
+        }
+    }
+}
+
+private func promptCapabilityLabel(_ capability: Capability?) -> String? {
+    switch capability {
+    case .some(.chat): "Chat"
+    case .some(.speak): "Speak"
+    case .some(.image): "Image"
+    case .some(let other): other.rawValue.capitalized
+    case nil: nil
+    }
+}
+
+private func promptAnnotation(_ prompt: Prompt) -> String {
+    var parts = [promptCapabilityLabel(prompt.capability) ?? "Any surface"]
+    if !prompt.placeholderNames.isEmpty {
+        parts.append("{\(prompt.placeholderNames.joined(separator: "} {"))}")
+    }
+    return parts.joined(separator: " · ")
+}
+
+private struct PromptCard: View {
+    let prompt: Prompt
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                HStack(spacing: Design.Space.m) {
+                    Image(systemName: "text.quote")
+                        .font(Design.glyphInline)
+                        .foregroundStyle(Design.inkSoft)
+                    Text(prompt.title.isEmpty ? "Untitled" : prompt.title)
+                        .font(Design.body.weight(.medium))
+                        .lineLimit(1)
+                        .foregroundStyle(Design.ink)
+                    Spacer(minLength: Design.Space.m)
+                    Text(promptAnnotation(prompt).uppercased())
+                        .font(Design.micro)
+                        .tracking(Design.microTracking)
+                        .lineLimit(1)
+                        .foregroundStyle(Design.inkFaint)
+                }
+                if !prompt.body.isEmpty {
+                    Text(prompt.body)
+                        .font(Design.caption)
+                        .foregroundStyle(Design.inkSoft)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .padding(Design.Space.tile)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+        }
+        .buttonStyle(.plain)
+        .tile(hovering: hovering)
+        .onHover { hovering = $0 }
+        .contextMenu {
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+        .accessibilityLabel(prompt.title.isEmpty ? "Untitled prompt" : prompt.title)
+        .accessibilityIdentifier("prompt-card-\(prompt.id)")
+    }
+}
+
+private struct PromptSheet: View {
+    let isNew: Bool
+    let onSave: (Prompt) -> Void
+    let onDelete: (() -> Void)?
+    let onClose: () -> Void
+    @State private var draft: Prompt
+
+    init(
+        prompt: Prompt, isNew: Bool, onSave: @escaping (Prompt) -> Void,
+        onDelete: (() -> Void)?, onClose: @escaping () -> Void
+    ) {
+        self.isNew = isNew
+        self.onSave = onSave
+        self.onDelete = onDelete
+        self.onClose = onClose
+        _draft = State(initialValue: prompt)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+                .padding(.horizontal, Design.Space.gutter)
+                .padding(.top, Design.Space.gutter)
+                .padding(.bottom, Design.Space.xl)
+            ScrollView {
+                VStack(alignment: .leading, spacing: Design.Space.xl) {
+                    VStack(alignment: .leading, spacing: Design.Space.m) {
+                        MicroHeader(title: "Title")
+                        InkField(placeholder: "How the / menu lists it", text: $draft.title)
+                    }
+                    VStack(alignment: .leading, spacing: Design.Space.m) {
+                        MicroHeader(title: "Message")
+                        InkTextArea(
+                            placeholder: "The message to insert",
+                            text: $draft.body,
+                            resizable: true)
+                        Text("{selection} is replaced with whatever you had drafted before the slash.")
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    VStack(alignment: .leading, spacing: Design.Space.m) {
+                        MicroHeader(title: "Surface")
+                        InkDropdown(
+                            options: ["Chat", "Speak", "Image"],
+                            selection: promptCapabilityLabel(draft.capability),
+                            placeholder: "any surface",
+                            accessibilityName: "prompt surface",
+                            onSelect: { label in
+                                draft.capability = label.map { Capability(rawValue: $0.lowercased()) }
+                            })
+                    }
+                }
+                .padding(.horizontal, Design.Space.gutter)
+                .padding(.bottom, Design.Space.xl)
+            }
+            footer
+                .padding(.horizontal, Design.Space.gutter)
+                .padding(.bottom, Design.Space.gutter)
+        }
+        .frame(width: Design.Sheet.promptWidth, height: Design.Sheet.promptHeight)
+        .accessibilityIdentifier("prompt-sheet")
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: Design.Space.l) {
+            Image(systemName: "text.quote")
+                .font(Design.glyphPrimary)
+                .foregroundStyle(Design.inkSoft)
+                .frame(width: 40, height: 40)
+                .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
+            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                Text(isNew ? "New prompt" : "Edit prompt")
+                    .font(Design.title)
+                    .lineLimit(1)
+                Text("Inserted from any composer with /.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(Design.glyphSmall.weight(.bold))
+                    .foregroundStyle(Design.inkSoft)
+                    .frame(width: 24, height: 24)
+                    .background(Design.cardFill, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityLabel("Close")
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: Design.Space.m) {
+            if let onDelete {
+                Button("Delete", action: onDelete)
+                    .buttonStyle(QuietButtonStyle())
+            }
+            Spacer()
+            Button("Save") {
+                onSave(draft)
+            }
+            .buttonStyle(InkButtonStyle())
+            .keyboardShortcut(.defaultAction)
+            .disabled(draft.title.isEmpty && draft.body.isEmpty)
+            .accessibilityIdentifier("prompt-save")
         }
     }
 }
