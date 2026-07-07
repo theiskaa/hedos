@@ -299,6 +299,7 @@ final class ImagesViewModel {
         phase = .idle
         if let landed = result.first {
             onLanded?(landed)
+            Haptics.completion()
         }
     }
 
@@ -342,6 +343,10 @@ struct ImagesSurface: View {
             notice: model.notice,
             onSend: { model.generate() },
             onStop: { model.cancel() },
+            slash: SlashSetup(kernel: shell.kernel, capability: .image),
+            dictation: DictationSetup(
+                kernel: shell.kernel,
+                records: { [weak shell] in shell?.library.records ?? [] }),
             transcript: { transcript },
             aux: { paramsControl },
             chip: { modelChip }
@@ -403,12 +408,22 @@ struct ImagesSurface: View {
                 .frame(maxWidth: conversationWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
+            .onAppear {
+                land(proxy)
+            }
             .onChange(of: model.arranged.count) {
-                proxy.scrollTo("images-tail", anchor: .bottom)
+                if shell.pendingImageReveal == nil {
+                    proxy.scrollTo("images-tail", anchor: .bottom)
+                }
             }
             .onChange(of: model.isBusy) {
                 if model.isBusy {
                     proxy.scrollTo("images-tail", anchor: .bottom)
+                }
+            }
+            .onChange(of: shell.pendingImageReveal) { _, pending in
+                if pending != nil {
+                    land(proxy)
                 }
             }
             .onChange(of: shell.imagesSelection) { _, selection in
@@ -421,6 +436,26 @@ struct ImagesSurface: View {
                     }
                 }
             }
+        }
+    }
+
+    private func land(_ proxy: ScrollViewProxy) {
+        aim(proxy)
+        Task {
+            try? await Task.sleep(for: .milliseconds(120))
+            aim(proxy)
+            shell.pendingImageReveal = nil
+        }
+    }
+
+    private func aim(_ proxy: ScrollViewProxy) {
+        if let pending = shell.pendingImageReveal,
+            let artifact = model.artifact(id: pending)
+        {
+            proxy.scrollTo(pending, anchor: .center)
+            model.adoptParams(from: artifact, records: shell.library.records)
+        } else {
+            proxy.scrollTo("images-tail", anchor: .bottom)
         }
     }
 
@@ -476,7 +511,7 @@ struct ImagesSurface: View {
                     ProgressView(value: model.progress.fraction)
                         .progressViewStyle(.linear)
                         .controlSize(.small)
-                        .frame(maxWidth: 220)
+                        .frame(maxWidth: Design.Column.control)
                     if let step = model.progress.step, let total = model.progress.totalSteps {
                         Text("step \(step) / \(total)")
                             .font(Design.data(10))
@@ -529,18 +564,13 @@ struct ImagesSurface: View {
     }
 
     private var emptyTranscript: some View {
-        Text(emptyCaption)
-            .font(Design.caption)
-            .foregroundStyle(Design.inkFaint)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 100)
-    }
-
-    private var emptyCaption: String {
-        if model.runnableModels(in: shell.library.records).isEmpty {
-            return "When an image model lands on your shelf, its canvas opens here."
-        }
-        return "A sentence in, an image out — describe one below."
+        TranscriptEmptyState(
+            eyebrow: "Images · Local",
+            headline: model.runnableModels(in: shell.library.records).isEmpty
+                ? "No image model yet." : "Describe something.",
+            caption: model.runnableModels(in: shell.library.records).isEmpty
+                ? "When an image model lands on your shelf, its canvas opens here."
+                : "A sentence in, an image out — steps, size, and seed live next to the send button.")
     }
 
     private func canRun(_ artifact: Artifact) -> Bool {
@@ -618,7 +648,7 @@ struct ImageParamsForm: View {
             }
         }
         .padding(Design.Space.xl)
-        .frame(width: 260)
+        .frame(width: Design.Popover.paramsWidth)
         .disabled(model.isBusy)
     }
 

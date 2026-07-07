@@ -33,7 +33,7 @@ struct HomePane: View {
                 }
                 .padding(.horizontal, Design.Space.gutter + Design.Space.m)
                 .padding(.bottom, Design.Space.pane)
-                .frame(maxWidth: 780, alignment: .leading)
+                .frame(maxWidth: Design.Column.hero, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -62,14 +62,23 @@ struct HomePane: View {
                 .font(Design.heroBody)
                 .foregroundStyle(Design.inkSoft)
                 .lineSpacing(5)
-                .frame(maxWidth: 520, alignment: .leading)
+                .frame(maxWidth: Design.Column.prose, alignment: .leading)
                 .padding(.bottom, Design.Space.gutter)
             HStack(spacing: Design.Space.xxl) {
-                Button("New Chat") {
-                    shell.newChat()
+                if Launcher.defaultChatModel(in: shell.library.records) != nil {
+                    Button("New Chat") {
+                        shell.newChat()
+                    }
+                    .buttonStyle(InkButtonStyle())
                 }
-                .buttonStyle(InkButtonStyle())
-                .disabled(Launcher.defaultChatModel(in: shell.library.records) == nil)
+                if let summary, summary.totalCount == 0 {
+                    Button("Watch a folder…") {
+                        shell.settingsTarget = SettingsDestination(
+                            section: .models, anchor: "models.folders")
+                        SettingsWindowController.shared.show(shell: shell)
+                    }
+                    .buttonStyle(InkButtonStyle())
+                }
                 Button {
                     shell.setMode(.library)
                 } label: {
@@ -83,6 +92,23 @@ struct HomePane: View {
                 .accessibilityLabel("Browse models")
             }
             .padding(.bottom, Design.Space.xl)
+            if let pick = Fit.recommendation(in: shell.library.records),
+                pick.fit?.verdict != .tooLarge
+            {
+                Button {
+                    shell.startChat(bound: pick)
+                } label: {
+                    Text("\(pick.displayName) fits this Mac best — start there →")
+                        .font(Design.caption.weight(.medium))
+                        .foregroundStyle(recommendHovering ? Design.ink : Design.inkSoft)
+                        .animation(Design.wash, value: recommendHovering)
+                }
+                .buttonStyle(.plain)
+                .onHover { recommendHovering = $0 }
+                .accessibilityLabel("Start a chat with \(pick.displayName)")
+                .accessibilityIdentifier("home-recommendation")
+                .padding(.bottom, Design.Space.xl)
+            }
             Text("Images ⌘2 · Voice ⌘3 · Models ⌘4".uppercased())
                 .font(Design.micro)
                 .tracking(Design.microTracking)
@@ -91,6 +117,7 @@ struct HomePane: View {
     }
 
     @State private var browseHovering = false
+    @State private var recommendHovering = false
 
     @ViewBuilder
     private var headline: some View {
@@ -103,6 +130,11 @@ struct HomePane: View {
                 Text(failure)
                     .font(Design.caption)
                     .foregroundStyle(Design.inkSoft)
+                Button("Scan again") {
+                    Task { await shell.library.rescan() }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .disabled(shell.library.isScanning)
             }
         } else if let summary, summary.totalCount > 0 {
             HStack(alignment: .firstTextBaseline, spacing: 0) {

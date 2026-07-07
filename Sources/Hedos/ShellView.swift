@@ -13,6 +13,7 @@ final class ShellModel {
     var mode: AppMode = .library
     var chatSelection: String?
     var imagesSelection: String?
+    var pendingImageReveal: String?
     var voiceSelection: String?
     var librarySelection: String?
     var sessions: [ChatSession] = []
@@ -60,6 +61,20 @@ final class ShellModel {
         }
         await refreshSessions()
         await library.rescan()
+    }
+
+    func selectAdjacentChat(_ offset: Int) {
+        if mode != .chat {
+            setMode(.chat)
+        }
+        let list = filteredSessions
+        guard !list.isEmpty else { return }
+        guard let current = list.firstIndex(where: { $0.id == chatSelection }) else {
+            selectChat(offset > 0 ? list.first?.id : list.last?.id)
+            return
+        }
+        let target = min(max(current + offset, 0), list.count - 1)
+        selectChat(list[target].id)
     }
 
     func focusChatSearch() {
@@ -126,6 +141,7 @@ final class ShellModel {
     func showArtifact(_ id: String?) {
         if let id, images.artifact(id: id) != nil {
             imagesSelection = id
+            pendingImageReveal = id
         } else if imagesSelection == nil || images.artifact(id: imagesSelection) == nil {
             imagesSelection = images.arranged.first?.id
         }
@@ -198,7 +214,7 @@ final class ShellModel {
         }
     }
 
-    private func startChat(bound record: ModelRecord) {
+    func startChat(bound record: ModelRecord) {
         let kernel = kernel
         Task {
             let session = try? await kernel.chats.createSession(modelID: record.id)
@@ -240,9 +256,10 @@ struct ShellView: View {
                     Design.paper.ignoresSafeArea()
                 }
         }
+        .id(Design.fontBook.identity)
         .ignoresSafeArea(.container, edges: .top)
         .scrollEdgeEffectStyle(.none, for: .top)
-        .frame(minWidth: 860, minHeight: 520)
+        .frame(minWidth: Design.Window.mainMin.width, minHeight: Design.Window.mainMin.height)
         .containerBackground(Design.paper, for: .window)
         .environment(
             \.conversationWidth,
@@ -345,8 +362,8 @@ struct HedosSidebar: View {
             }
             .padding(.bottom, Design.Space.l)
             VStack(alignment: .leading, spacing: Design.Space.xs) {
-                if rowMatches("Home") || rowMatches("Hedos") {
-                    brandRow(collapsedRow: false)
+                if rowMatches(Design.modeTitle(.home)) {
+                    modeRow(.home, collapsedRow: false)
                 }
                 if surfacesMatch {
                     groupTitle("Surfaces")
@@ -375,7 +392,7 @@ struct HedosSidebar: View {
             collapser
                 .padding(.bottom, Design.Space.l)
             VStack(alignment: .center, spacing: Design.Space.xs) {
-                brandRow(collapsedRow: true)
+                modeRow(.home, collapsedRow: true)
                 modeRow(.chat, collapsedRow: true)
                 modeRow(.images, collapsedRow: true)
                 modeRow(.voice, collapsedRow: true)
@@ -421,25 +438,8 @@ struct HedosSidebar: View {
         }
     }
 
-    private func brandRow(collapsedRow: Bool) -> some View {
-        BrandRow(
-            selected: shell.mode == .home,
-            collapsed: collapsedRow,
-            hovered: $hovered
-        ) {
-            railQuery = ""
-            shell.setMode(.home)
-        }
-        .help("Home — ⌘0")
-        .accessibilityIdentifier("rail-home")
-    }
-
     private func settingsRow(collapsedRow: Bool) -> some View {
-        InkSidebarRow(
-            id: AppMode.settings,
-            glyph: "gearshape",
-            title: "Settings",
-            selected: false,
+        BrandRow(
             collapsed: collapsedRow,
             hovered: $hovered
         ) {
@@ -451,19 +451,16 @@ struct HedosSidebar: View {
 }
 
 private struct BrandRow: View {
-    let selected: Bool
     var collapsed: Bool = false
     @Binding var hovered: AppMode?
     let action: () -> Void
 
     private var lit: Bool {
-        selected || hovered == .home
+        hovered == .settings
     }
 
     private var washColor: Color {
-        selected
-            ? Design.ink.opacity(0.08)
-            : hovered == .home ? Design.ink.opacity(0.04) : .clear
+        lit ? Design.ink.opacity(0.04) : .clear
     }
 
     var body: some View {
@@ -475,9 +472,7 @@ private struct BrandRow: View {
                         RoundedRectangle(cornerRadius: Design.Radius.inner)
                             .fill(washColor))
                     .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
-                    .animation(Design.wash, value: selected)
-                    .animation(Design.wash, value: hovered == .home)
-                    .help("Home")
+                    .animation(Design.wash, value: lit)
             } else {
                 HStack(spacing: Design.Space.chipX) {
                     LogoMark(size: 20)
@@ -492,20 +487,18 @@ private struct BrandRow: View {
                 .padding(.vertical, Design.Space.s + 1)
                 .background(Capsule().fill(washColor))
                 .contentShape(Capsule())
-                .animation(Design.wash, value: selected)
-                .animation(Design.wash, value: hovered == .home)
+                .animation(Design.wash, value: lit)
             }
         }
         .buttonStyle(.plain)
         .onHover { inside in
             if inside {
-                hovered = .home
-            } else if hovered == .home {
+                hovered = .settings
+            } else if hovered == .settings {
                 hovered = nil
             }
         }
-        .accessibilityLabel("Home")
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel("Settings")
     }
 }
 
@@ -579,6 +572,9 @@ struct ChatPane: View {
                 },
                 onOpenArtifacts: { [weak shell] reference in
                     shell?.showArtifact(reference)
+                },
+                onNewChat: { [weak shell] in
+                    shell?.newChat()
                 }
             )
             .id(session.id)
@@ -1008,7 +1004,7 @@ struct GallerySheet: View {
                 .padding(Design.Space.gutter)
             }
         }
-        .frame(width: 640, height: 520)
+        .frame(width: Design.Sheet.gallery.width, height: Design.Sheet.gallery.height)
         .confirmationDialog(
             "Move this image to the Trash?",
             isPresented: Binding(
@@ -1125,7 +1121,7 @@ struct ModeEmptyState<Extra: View>: View {
                 .foregroundStyle(Design.inkSoft)
                 .lineSpacing(2.5)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
+                .frame(maxWidth: Design.Column.emptyCaption)
             extra()
                 .padding(.top, Design.Space.l)
         }
