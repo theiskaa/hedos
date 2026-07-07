@@ -111,3 +111,41 @@ import Testing
         _ = try await kernel.resolvePrompt(id: prompt.id)
     }
 }
+
+@Test func composerTokenDetectionRespectsWordBoundaries() {
+    #expect(PromptComposer.query(in: "/") == "")
+    #expect(PromptComposer.query(in: "/sum") == "sum")
+    #expect(PromptComposer.query(in: "draft text /sum") == "sum")
+    #expect(PromptComposer.query(in: "line one\n/tr") == "tr")
+    #expect(PromptComposer.query(in: "foo/bar") == nil)
+    #expect(PromptComposer.query(in: "see https://example.com") == nil)
+    #expect(PromptComposer.query(in: "/summarize this") == nil)
+    #expect(PromptComposer.query(in: "no slash here") == nil)
+}
+
+@Test func composerMatchRanksPrefixOverSubstringOverSubsequence() {
+    #expect(PromptComposer.matchScore("", against: "Summarize") == 3)
+    #expect(PromptComposer.matchScore("sum", against: "Summarize") == 0)
+    #expect(PromptComposer.matchScore("mar", against: "Summarize") == 1)
+    #expect(PromptComposer.matchScore("sze", against: "Summarize") == 2)
+    #expect(PromptComposer.matchScore("xyz", against: "Summarize") == nil)
+}
+
+@Test func composerInsertResolvesSelectionFromTheDraft() {
+    let wrap = Prompt(title: "Summarize", body: "Summarize this:\n\n{selection}")
+    #expect(
+        PromptComposer.inserting(wrap, into: "hello world /sum")
+            == "Summarize this:\n\nhello world")
+    #expect(PromptComposer.inserting(wrap, into: "/sum") == "Summarize this:\n\n")
+
+    let plain = Prompt(title: "Greet", body: "Say hi warmly.")
+    #expect(PromptComposer.inserting(plain, into: "keep this /gr") == "keep this Say hi warmly.")
+
+    let manual = Prompt(title: "Translate", body: "Translate {selection} to {language}")
+    #expect(
+        PromptComposer.inserting(manual, into: "bonjour /tr")
+            == "Translate bonjour to {language}")
+
+    #expect(PromptComposer.clearingToken(from: "keep this /model") == "keep this ")
+    #expect(PromptComposer.clearingToken(from: "/model") == "")
+}
