@@ -106,7 +106,7 @@ struct SlashMenuPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: Design.Radius.tile)
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .shadow(color: Design.shadowColor.opacity(0.18), radius: 24, x: 0, y: 10)
+        .shade(Design.Elevation.floating)
         .accessibilityIdentifier("slash-menu")
     }
 
@@ -118,7 +118,7 @@ struct SlashMenuPanel: View {
                 Image(systemName: entry.glyph)
                     .font(Design.glyphInline)
                     .foregroundStyle(Design.inkSoft)
-                    .frame(width: 18)
+                    .frame(width: 18, alignment: .leading)
                 Text(entry.title)
                     .font(Design.caption.weight(.medium))
                     .lineLimit(1)

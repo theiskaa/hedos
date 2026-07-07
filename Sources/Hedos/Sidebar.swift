@@ -39,7 +39,7 @@ struct InkSearchField: View {
             Capsule()
                 .strokeBorder(
                     focused
-                        ? AnyShapeStyle(Design.ink.opacity(0.35))
+                        ? AnyShapeStyle(Design.accent.opacity(0.55))
                         : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
         .onExitCommand { query = "" }
@@ -55,12 +55,25 @@ struct InkSidebarRow<ID: Hashable>: View {
     let glyph: String
     let title: String
     var annotation: String? = nil
+    var liveAnnotation = false
     let selected: Bool
     var collapsed: Bool = false
     @Binding var hovered: ID?
     let action: () -> Void
 
     var body: some View {
+        Group {
+            if collapsed {
+                button.inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+            } else {
+                button.inkFocusRing(Capsule())
+            }
+        }
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var button: some View {
         Button(action: action) {
             if collapsed {
                 tile
@@ -76,8 +89,6 @@ struct InkSidebarRow<ID: Hashable>: View {
                 hovered = nil
             }
         }
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var lit: Bool {
@@ -97,9 +108,9 @@ struct InkSidebarRow<ID: Hashable>: View {
             .foregroundStyle(lit ? Design.ink : Design.inkSoft)
             .frame(width: 44, height: 36)
             .background(
-                RoundedRectangle(cornerRadius: Design.Radius.inner)
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(washColor))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             .animation(Design.wash, value: selected)
             .animation(Design.wash, value: hovered == id)
             .help(title)
@@ -121,7 +132,7 @@ struct InkSidebarRow<ID: Hashable>: View {
                 Text(annotation.uppercased())
                     .font(Design.micro)
                     .tracking(Design.microTracking)
-                    .foregroundStyle(Design.inkFaint)
+                    .foregroundStyle(liveAnnotation ? Design.accentText : Design.inkFaint)
             }
         }
         .padding(.horizontal, Design.Space.l)
@@ -150,6 +161,7 @@ struct SidebarCollapseToggle: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .inkFocusRing(Circle())
         .help(collapsed ? "Expand the sidebar" : "Collapse the sidebar")
         .accessibilityLabel(collapsed ? "Expand the sidebar" : "Collapse the sidebar")
     }
@@ -175,8 +187,9 @@ struct QuietIconButton: View {
                 .opacity(enabled ? 1 : 0.4)
                 .animation(Design.wash, value: hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
+        .inkFocusRing(Circle())
     }
 }
 

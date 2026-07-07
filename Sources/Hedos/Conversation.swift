@@ -82,19 +82,6 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             }
             .padding(.top, Design.Space.xs)
             .padding(.horizontal, Design.Space.xs)
-            .overlay(alignment: .top) {
-                if slashActive && !slashEntries.isEmpty {
-                    SlashMenuPanel(
-                        entries: slashEntries,
-                        highlighted: slashHighlight,
-                        onAccept: acceptSlash,
-                        onHighlight: { slashHighlight = $0 }
-                    )
-                    .alignmentGuide(.top) { dimensions in
-                        dimensions[.bottom] + Design.Space.l + Design.Space.s
-                    }
-                }
-            }
             HStack(spacing: Design.Space.m) {
                 if let notice = dictationController.notice {
                     Text(notice)
@@ -122,7 +109,22 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
         }
         .padding(Design.Space.l)
         .surfaceCard()
-        .shadow(color: Design.shadowColor.opacity(0.12), radius: 24, x: 0, y: 10)
+        .shade(Design.Elevation.lift)
+        .overlay(alignment: .top) {
+            Color.clear
+                .frame(height: 1)
+                .overlay(alignment: .bottom) {
+                    if slashActive && !slashEntries.isEmpty {
+                        SlashMenuPanel(
+                            entries: slashEntries,
+                            highlighted: slashHighlight,
+                            onAccept: acceptSlash,
+                            onHighlight: { slashHighlight = $0 }
+                        )
+                        .offset(y: -Design.Space.s)
+                    }
+                }
+        }
         .frame(maxWidth: conversationWidth)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, Design.Space.xxl)
@@ -149,6 +151,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                     ? "stop.fill"
                     : dictationController.phase == .transcribing ? "ellipsis" : "mic",
                 prominent: dictationController.phase == .recording,
+                live: dictationController.phase == .recording,
                 label: dictationController.phase == .recording
                     ? "Stop dictation"
                     : dictationController.phase == .transcribing
@@ -242,9 +245,11 @@ struct TranscriptEmptyState: View {
 struct CircleControl: View {
     let glyph: String
     var prominent = false
+    var live = false
     let label: String
     let action: () -> Void
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var hovering = false
 
@@ -255,36 +260,62 @@ struct CircleControl: View {
                 .foregroundStyle(prominent ? Design.paper : Design.inkSoft)
                 .frame(width: 28, height: 28)
                 .background(
-                    prominent ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface),
+                    live
+                        ? AnyShapeStyle(Design.accent)
+                        : prominent ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface),
                     in: Circle())
                 .overlay {
-                    if prominent {
+                    if prominent || live {
                         Circle()
                             .strokeBorder(
                                 LinearGradient(
-                                    colors: [Color.white.opacity(0.16), .clear],
+                                    colors: [
+                                        Color.white.opacity(colorScheme == .dark ? 0.10 : 0.18),
+                                        .clear,
+                                    ],
                                     startPoint: .top, endPoint: .center),
-                                lineWidth: 1)
+                                lineWidth: Design.hairlineWidth)
                     } else {
                         Circle()
                             .strokeBorder(Design.line, lineWidth: Design.hairlineWidth)
                     }
                 }
-                .shadow(
-                    color: prominent
-                        ? Design.shadowColor.opacity(hovering ? 0.30 : 0.20) : .clear,
-                    radius: hovering ? 14 : 9,
-                    x: 0,
-                    y: hovering ? 7 : 4)
-                .offset(y: hovering && prominent ? -1 : 0)
                 .contentShape(Circle())
                 .opacity(isEnabled ? 1 : 0.4)
-                .animation(.easeOut(duration: 0.2), value: hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(CirclePressStyle(prominent: prominent, hovering: hovering))
         .onHover { hovering = $0 }
+        .inkFocusRing(Circle())
         .help(label)
         .accessibilityLabel(label)
+    }
+}
+
+private struct CirclePressStyle: ButtonStyle {
+    let prominent: Bool
+    let hovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .shadow(
+                color: prominent
+                    ? Design.shadowColor.opacity(
+                        configuration.isPressed
+                            ? 0.14
+                            : hovering
+                                ? Design.Elevation.buttonHover.opacity
+                                : Design.Elevation.button.opacity)
+                    : .clear,
+                radius: hovering && !configuration.isPressed
+                    ? Design.Elevation.buttonHover.radius : Design.Elevation.button.radius,
+                x: 0,
+                y: configuration.isPressed
+                    ? 4
+                    : hovering ? Design.Elevation.buttonHover.y : Design.Elevation.button.y)
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .offset(y: configuration.isPressed ? 0 : hovering && prominent ? -1 : 0)
+            .animation(.easeOut(duration: 0.2), value: hovering)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

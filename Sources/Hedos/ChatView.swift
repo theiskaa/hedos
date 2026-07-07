@@ -444,12 +444,8 @@ struct ChatView: View {
     private var voiceLoopControl: some View {
         if VoiceConversationController.participants(in: library.records) != nil {
             if voiceConversation.active, let status = voiceConversation.status {
-                Text(status.uppercased())
-                    .font(Design.micro)
-                    .tracking(Design.microTracking)
-                    .lineLimit(1)
+                ShimmerText(text: status.uppercased())
                     .truncationMode(.tail)
-                    .foregroundStyle(Design.inkSoft)
                     .frame(maxWidth: Design.Column.control, alignment: .trailing)
             }
             CircleControl(
@@ -488,7 +484,7 @@ struct ChatView: View {
 
     private var contextNotice: String? {
         guard model.transcriptCharacterCount > 16000 else { return nil }
-        return "This conversation is getting long — early turns may drop out of context."
+        return "This conversation is getting long; early turns may drop out of context."
     }
 
     private var transcript: some View {
@@ -561,7 +557,7 @@ struct ChatView: View {
                     thinkingBlock(entry)
                 }
                 if !entry.text.isEmpty {
-                    MarkdownTurnView(text: displayText(entry))
+                    MarkdownTurnView(text: displayText(entry), cursor: showsCursor(entry))
                         .contextMenu {
                             Button("Copy") { copy(entry.text) }
                             if canReadAloud(entry) {
@@ -577,10 +573,9 @@ struct ChatView: View {
                             }
                         }
                 } else if model.isStreaming && entry.thinking.isEmpty {
-                    Text(model.streamStatus ?? "…")
-                        .font(Design.caption)
-                        .foregroundStyle(Design.inkFaint)
-                        .contentTransition(.opacity)
+                    ShimmerText(
+                        text: (model.streamStatus ?? "Streaming…").uppercased(),
+                        font: Design.micro)
                 }
                 ForEach(entry.artifactRefs, id: \.self) { reference in
                     artifactCard(reference)
@@ -711,9 +706,13 @@ struct ChatView: View {
                 .leftRule()
                 .padding(.top, Design.Space.xs)
         } label: {
-            Text(streaming ? "Thinking…" : "Thought")
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
+            if streaming {
+                ShimmerText(text: "Thinking…", font: Design.label, tracked: false)
+            } else {
+                Text("Thought")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
         }
         .disclosureGroupStyle(QuietDisclosureStyle())
         .accessibilityLabel(streaming ? "Model thinking" : "Model thoughts")
@@ -734,17 +733,23 @@ struct ChatView: View {
             }
             parts.append("\(tokens) tok")
         }
-        return Text(parts.joined(separator: " · "))
-            .font(Design.data(10))
-            .foregroundStyle(Design.inkFaint.opacity(0.7))
+        return HStack(spacing: Design.Space.xs) {
+            ForEach(parts, id: \.self) { part in
+                TintChip(text: part)
+            }
+        }
     }
 
     private func displayText(_ entry: ChatViewModel.Entry) -> String {
         let isLive =
             model.isStreaming && !entry.persisted && entry.id == model.transcript.last?.id
         guard isLive else { return entry.text }
-        let balanced = MarkdownBalancer.balanced(entry.text)
-        return model.showsStreamCursor ? balanced + "▍" : balanced
+        return MarkdownBalancer.balanced(entry.text)
+    }
+
+    private func showsCursor(_ entry: ChatViewModel.Entry) -> Bool {
+        model.isStreaming && !entry.persisted && entry.id == model.transcript.last?.id
+            && model.showsStreamCursor
     }
 
     private func canReadAloud(_ entry: ChatViewModel.Entry) -> Bool {
@@ -777,7 +782,7 @@ struct ChatView: View {
             eyebrow: "Chat · Local",
             headline: boundRecord != nil ? "Say the first thing." : "Pick a model to begin.",
             caption: boundRecord.map {
-                "\($0.displayName) is loaded and listening — nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
+                "\($0.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
             }
                 ?? "Every ready chat model on this Mac lives in the chip below the composer.")
     }

@@ -131,6 +131,10 @@ struct ModelsPane: View {
         return list
     }
 
+    private func isWarm(_ record: ModelRecord) -> Bool {
+        shell.resident.contains { $0.modelID == record.id || $0.name == record.name }
+    }
+
     private var filtered: [ModelRecord] {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         return shell.library.records.filter { record in
@@ -153,12 +157,12 @@ struct ModelsPane: View {
             ScrollView {
                 LazyVGrid(
                     columns: [
-                        GridItem(.adaptive(minimum: 260), spacing: Design.Space.l, alignment: .top)
+                        GridItem(.adaptive(minimum: 280), spacing: Design.Space.l, alignment: .top)
                     ],
                     spacing: Design.Space.xxl
                 ) {
                     ForEach(filtered) { record in
-                        ModelCard(record: record) {
+                        ModelCard(record: record, warm: isWarm(record)) {
                             presented = record.id
                             shell.selectLibrary(record.id)
                         }
@@ -184,22 +188,26 @@ struct ModelsPane: View {
             if let failure = shell.library.errorMessage {
                 Text("The scan hit a problem.")
                     .font(Design.title)
+                    .tracking(Design.tightTracking)
                     .foregroundStyle(Design.ink)
                 Text(failure)
                     .font(Design.caption)
                     .foregroundStyle(Design.inkSoft)
                     .multilineTextAlignment(.center)
+                    .lineSpacing(Design.bodyLineSpacing)
                     .frame(maxWidth: 420)
                     .padding(.top, Design.Space.s)
             } else if let summary = shell.library.summary {
                 Text(summary.headline)
                     .font(Design.paneTitle)
+                    .tracking(Design.tightTracking)
                     .multilineTextAlignment(.center)
                     .lineSpacing(5)
                     .frame(maxWidth: 430)
             } else {
                 Text("Looking for models on this Mac…")
                     .font(Design.paneTitle)
+                    .tracking(Design.tightTracking)
                     .foregroundStyle(Design.inkSoft)
                 ProgressView()
                     .controlSize(.small)
@@ -225,6 +233,7 @@ struct ModelsPane: View {
 
 struct ModelCard: View {
     let record: ModelRecord
+    var warm = false
     let onOpen: () -> Void
     @State private var hovering = false
 
@@ -232,10 +241,20 @@ struct ModelCard: View {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: Design.Space.l) {
                 HStack(alignment: .top, spacing: Design.Space.l) {
-                    glyphTile
+                    IconPlaque(size: 44) {
+                        SourceMark(kind: record.source.kind, size: 24)
+                            .foregroundStyle(Design.inkSoft)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if warm {
+                            AccentDot()
+                                .offset(x: 2, y: -2)
+                        }
+                    }
                     VStack(alignment: .leading, spacing: Design.Space.xxs) {
                         Text(record.name)
                             .font(Design.title)
+                            .tracking(Design.tightTracking)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                         Text(
@@ -245,10 +264,14 @@ struct ModelCard: View {
                         .foregroundStyle(Design.inkFaint)
                     }
                     Spacer(minLength: 0)
+                }
+                HStack(spacing: Design.Space.s) {
+                    ForEach(capabilities, id: \.self) { mode in
+                        TintChip(text: Design.modeTitle(mode), glyph: Design.modeGlyph(mode))
+                    }
+                    FitChip(record: record)
                     if record.state == .missing {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(Design.glyphSmall)
-                            .foregroundStyle(Design.inkSoft)
+                        TintChip(text: "missing", glyph: "exclamationmark.triangle", faint: true)
                             .help("No longer found on disk")
                     }
                 }
@@ -259,36 +282,39 @@ struct ModelCard: View {
                             DiscoverySummary.formatBytes(Int64($0) << 20)
                         } ?? "size unknown"
                     )
-                    .font(Design.data(11))
-                    .foregroundStyle(Design.inkSoft)
+                    .font(Design.data(15))
+                    .monospacedDigit()
+                    .foregroundStyle(Design.ink)
                     Spacer()
-                    Text(
-                        [MetaGrid.tierWord(record.runtime.tier), Fit.short(record)]
-                            .compactMap { $0 }
-                            .joined(separator: " · ")
-                            .uppercased()
-                    )
-                    .font(Design.micro)
-                    .tracking(Design.microTracking)
-                    .foregroundStyle(Design.inkFaint)
+                    Text(MetaGrid.tierWord(record.runtime.tier).uppercased())
+                        .font(Design.micro)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
                 }
             }
             .padding(Design.Space.tile)
-            .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
-            .tile(hovering: hovering)
+            .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
         .help("Show details")
         .accessibilityLabel(record.displayName)
         .accessibilityIdentifier("model-card-\(record.id)")
     }
 
-    private var glyphTile: some View {
-        SourceMark(kind: record.source.kind, size: 20)
-            .foregroundStyle(Design.inkSoft)
-            .frame(width: 36, height: 36)
-            .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
+    private var capabilities: [AppMode] {
+        [AppMode.chat, .images, .voice].filter {
+            !Launcher.models(in: [record], for: $0).isEmpty
+        }
     }
 }
 
@@ -312,6 +338,7 @@ struct ModelDetailSheet: View {
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.top, Design.Space.gutter)
                 .padding(.bottom, Design.Space.xl)
+            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xl) {
                     if record.runtime.tier == .recipeNeeded {
@@ -319,39 +346,30 @@ struct ModelDetailSheet: View {
                             .font(Design.body)
                             .foregroundStyle(Design.inkSoft)
                             .lineSpacing(Design.bodyLineSpacing)
+                            .frame(maxWidth: Design.Column.prose, alignment: .leading)
                     }
                     specs
                     if needsConfirmation {
                         VStack(alignment: .leading, spacing: Design.Space.m) {
                             MicroHeader(title: "Runtime")
-                            Picker("Runtime", selection: $chosenRuntime) {
-                                Text(runtimeLabel(record.runtime.id ?? ""))
-                                    .tag(record.runtime.id ?? "")
-                                ForEach(record.runtime.alternatives, id: \.self) { alt in
-                                    Text(runtimeLabel(alt)).tag(alt)
-                                }
-                            }
-                            .pickerStyle(.radioGroup)
-                            .labelsHidden()
+                            InkRadioGroup(
+                                options: runtimeOptions, selection: $chosenRuntime)
                             Text("Nothing runs until you open it.")
                                 .font(Design.label)
                                 .foregroundStyle(Design.inkFaint)
                         }
                     }
                     if record.runtime.tier != .recipeNeeded {
-                        Rectangle()
-                            .fill(Design.hairline)
-                            .frame(height: Design.hairlineWidth)
-                            .padding(.vertical, Design.Space.xs)
                         ModelConfigureSection(record: record, shell: shell)
                     }
                 }
                 .padding(.horizontal, Design.Space.gutter)
-                .padding(.bottom, Design.Space.xl)
+                .padding(.vertical, Design.Space.xl)
             }
+            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             footer
                 .padding(.horizontal, Design.Space.gutter)
-                .padding(.bottom, Design.Space.gutter)
+                .padding(.vertical, Design.Space.xl)
         }
         .frame(width: Design.Sheet.modelDetailWidth, height: record.runtime.tier == .recipeNeeded ? Design.Sheet.modelRecipeHeight : Design.Sheet.modelDetailHeight)
         .task(id: record.id) {
@@ -367,43 +385,48 @@ struct ModelDetailSheet: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: Design.Space.l) {
-            SourceMark(kind: record.source.kind, size: 22)
-                .foregroundStyle(Design.inkSoft)
-                .frame(width: 40, height: 40)
-                .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+        HStack(alignment: .top, spacing: Design.Space.l) {
+            IconPlaque(size: 44) {
+                SourceMark(kind: record.source.kind, size: 24)
+                    .foregroundStyle(Design.inkSoft)
+            }
+            VStack(alignment: .leading, spacing: Design.Space.s) {
                 Text(record.displayName)
                     .font(Design.title)
+                    .tracking(Design.tightTracking)
                     .lineLimit(1)
-                Text(headerSubtitle)
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
+                HStack(spacing: Design.Space.s) {
+                    FitChip(record: record)
+                    TintChip(text: MetaGrid.tierWord(record.runtime.tier))
+                    if let runtime = record.runtime.id {
+                        TintChip(text: runtime)
+                    }
+                }
             }
             Spacer()
-            Button {
-                onClose()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(Design.glyphSmall.weight(.bold))
-                    .foregroundStyle(Design.inkSoft)
-                    .frame(width: 24, height: 24)
-                    .background(Design.cardFill, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .accessibilityLabel("Close")
+            SheetCloseButton(action: onClose)
         }
     }
 
-    private var headerSubtitle: String {
-        if let runtime = record.runtime.id {
-            return "runs via \(runtime) · \(MetaGrid.tierWord(record.runtime.tier))"
+    private var runtimeOptions: [(value: String, label: String)] {
+        var options = [(value: record.runtime.id ?? "", label: runtimeLabel(record.runtime.id ?? ""))]
+        for alt in record.runtime.alternatives {
+            options.append((value: alt, label: runtimeLabel(alt)))
         }
-        return MetaGrid.tierWord(record.runtime.tier)
+        return options
     }
 
     private var specs: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "Details")
+            specRows
+                .padding(.horizontal, Design.Space.tile)
+                .padding(.vertical, Design.Space.xs)
+                .surfaceCard(radius: Design.Radius.tile)
+        }
+    }
+
+    private var specRows: some View {
         VStack(alignment: .leading, spacing: 0) {
             if record.displayName != record.name {
                 HStack(alignment: .firstTextBaseline) {
@@ -457,10 +480,11 @@ struct ModelDetailSheet: View {
                 .tracking(Design.microTracking)
                 .foregroundStyle(Design.inkFaint)
             Text(
-                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")) — \(DiscoverySummary.formatBytes(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
+                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")), \(DiscoverySummary.formatBytes(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
             )
             .font(Design.caption)
             .foregroundStyle(Design.inkSoft)
+            .lineSpacing(Design.bodyLineSpacing)
             .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, Design.Space.m)
@@ -475,6 +499,7 @@ struct ModelDetailSheet: View {
                 .frame(width: 72, alignment: .leading)
             Text(value)
                 .font(mono ? Design.data(12) : Design.caption)
+                .monospacedDigit()
                 .foregroundStyle(Design.ink)
                 .textSelection(.enabled)
                 .lineLimit(2)
@@ -533,7 +558,7 @@ struct ModelDetailSheet: View {
     }
 
     private func runtimeLabel(_ id: String) -> String {
-        id == record.runtime.id ? "\(id) — suggested" : id
+        id == record.runtime.id ? "\(id) · suggested" : id
     }
 
     private func confirmAndOpen() {
@@ -564,11 +589,11 @@ enum RecipeReason {
         switch format {
         case .unknown:
             return record.primaryWeightPath == nil
-                ? "This model's weights are in a format none of the built-in runtimes can execute — no safetensors or GGUF detected, likely PyTorch or another framework's format."
+                ? "This model's weights are in a format none of the built-in runtimes can execute. No safetensors or GGUF detected, likely PyTorch or another framework's format."
                 : "Hedos found this model but could not identify what kind it is."
         case .diffusers:
             if let pipelineClass {
-                return "This is a diffusers \(pipelineClass) bundle — no built-in runtime serves it yet."
+                return "This is a diffusers \(pipelineClass) bundle; no built-in runtime serves it yet."
             }
             return "This is an image-generation pipeline the built-in image runtime cannot serve yet."
         case .safetensors, .mlxSafetensors:
@@ -591,9 +616,17 @@ struct ModelConfigureSection: View {
     @State private var flush: Task<Void, Never>?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
             MicroHeader(title: "Configure")
-                .padding(.bottom, Design.Space.m)
+            configureRows
+                .padding(.horizontal, Design.Space.tile)
+                .padding(.vertical, Design.Space.xs)
+                .surfaceCard(radius: Design.Radius.tile)
+        }
+    }
+
+    private var configureRows: some View {
+        VStack(alignment: .leading, spacing: 0) {
             row("Display name") {
                 InkField(
                     placeholder: record.name,
@@ -644,7 +677,7 @@ struct ModelConfigureSection: View {
                 }
                 .padding(.vertical, Design.Space.m)
             }
-            Text("Auto means the model decides — nothing is sent unless you set it.")
+            Text("Auto means the model decides. Nothing is sent unless you set it.")
                 .font(Design.label)
                 .foregroundStyle(Design.inkFaint)
                 .padding(.top, Design.Space.m)

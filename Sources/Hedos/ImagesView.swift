@@ -325,6 +325,7 @@ struct ImagesSurface: View {
     @Bindable var shell: ShellModel
     @State private var showParams = false
     @State private var confirmingDelete: Artifact?
+    @State private var hoveredRow: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.transcriptSpacing) private var transcriptSpacing
@@ -376,7 +377,7 @@ struct ImagesSurface: View {
                 confirmingDelete = nil
             }
         } message: {
-            Text("The file moves to the Trash — it is not deleted outright.")
+            Text("The file moves to the Trash, not deleted outright.")
         }
     }
 
@@ -467,6 +468,33 @@ struct ImagesSurface: View {
                 caption: Provenance.line(for: artifact, schema: schema(for: artifact)),
                 isLoading: model.thumbnail(artifact) == nil
             )
+            .overlay(alignment: .topTrailing) {
+                if hoveredRow == artifact.id {
+                    HStack(spacing: Design.Space.xs) {
+                        if canRun(artifact) && !model.isBusy {
+                            CircleControl(glyph: "arrow.clockwise", label: "Re-run") {
+                                model.rerun(artifact)
+                            }
+                            CircleControl(glyph: "wand.and.sparkles", label: "Vary") {
+                                model.vary(artifact)
+                            }
+                        }
+                        CircleControl(glyph: "arrow.down", label: "Download") {
+                            model.download(artifact)
+                        }
+                    }
+                    .padding(Design.Space.m + Design.Space.xs)
+                    .transition(.opacity)
+                }
+            }
+            .onHover { inside in
+                if inside {
+                    hoveredRow = artifact.id
+                } else if hoveredRow == artifact.id {
+                    hoveredRow = nil
+                }
+            }
+            .animation(Design.wash, value: hoveredRow)
             .task(id: artifact.id) {
                 await model.loadThumbnail(artifact)
             }
@@ -475,10 +503,20 @@ struct ImagesSurface: View {
                     model.rerun(artifact)
                 }
                 .disabled(model.isBusy || !canRun(artifact))
+                .help(
+                    model.isBusy
+                        ? "Wait for the current generation to finish."
+                        : canRun(artifact)
+                            ? "" : "The model that made this image is not ready.")
                 Button("Vary") {
                     model.vary(artifact)
                 }
                 .disabled(model.isBusy || !canRun(artifact))
+                .help(
+                    model.isBusy
+                        ? "Wait for the current generation to finish."
+                        : canRun(artifact)
+                            ? "" : "The model that made this image is not ready.")
                 Divider()
                 Button("Download…") {
                     model.download(artifact)
@@ -492,8 +530,8 @@ struct ImagesSurface: View {
                 RoundedRectangle(cornerRadius: Design.Radius.bubble)
                     .strokeBorder(
                         shell.imagesSelection == artifact.id
-                            ? AnyShapeStyle(Design.inkFaint) : AnyShapeStyle(.clear),
-                        lineWidth: Design.hairlineWidth))
+                            ? AnyShapeStyle(Design.accent.opacity(0.6)) : AnyShapeStyle(.clear),
+                        lineWidth: 1.5))
             .onTapGesture {
                 shell.selectImages(artifact.id)
             }
@@ -510,10 +548,13 @@ struct ImagesSurface: View {
                 HStack(spacing: Design.Space.l) {
                     ProgressView(value: model.progress.fraction)
                         .progressViewStyle(.linear)
+                        .tint(Design.accent)
                         .controlSize(.small)
                         .frame(maxWidth: Design.Column.control)
                     if let step = model.progress.step, let total = model.progress.totalSteps {
                         Text("step \(step) / \(total)")
+                            .contentTransition(.numericText())
+                            .animation(Design.spring, value: step)
                             .font(Design.data(10))
                             .foregroundStyle(Design.inkSoft)
                             .monospacedDigit()
@@ -538,7 +579,7 @@ struct ImagesSurface: View {
     private var statusLine: String? {
         switch model.phase {
         case .queued(let reason): reason ?? model.status ?? "Waiting to run"
-        case .preparing: "Preparing image runtime — first use only"
+        case .preparing: "Preparing image runtime, first use only"
         default: model.status
         }
     }
@@ -549,6 +590,8 @@ struct ImagesSurface: View {
                 Text(message)
                     .font(Design.caption)
                     .foregroundStyle(Design.inkSoft)
+                    .lineSpacing(Design.bodyLineSpacing)
+                    .frame(maxWidth: Design.Column.prose, alignment: .leading)
                     .textSelection(.enabled)
             } icon: {
                 Image(systemName: "exclamationmark.triangle")
@@ -570,7 +613,7 @@ struct ImagesSurface: View {
                 ? "No image model yet." : "Describe something.",
             caption: model.runnableModels(in: shell.library.records).isEmpty
                 ? "When an image model lands on your shelf, its canvas opens here."
-                : "A sentence in, an image out — steps, size, and seed live next to the send button.")
+                : "A sentence in, an image out. Steps, size, and seed live next to the send button.")
     }
 
     private func canRun(_ artifact: Artifact) -> Bool {

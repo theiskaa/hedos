@@ -398,7 +398,7 @@ private struct QuickAskView: View {
         .overlay(
             RoundedRectangle(cornerRadius: Design.Radius.surface)
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .shadow(color: Design.shadowColor.opacity(0.30), radius: 40, x: 0, y: 18)
+        .shade(Design.Elevation.modal)
         .onAppear { focused = true }
         .accessibilityIdentifier("quick-ask")
     }
@@ -415,7 +415,7 @@ final class MenuBarController {
         if enabled {
             guard item == nil else { return }
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-            item.button?.image = Self.icon(active: false)
+            item.button?.image = Self.icon()
             item.menu = buildMenu()
             self.item = item
             watchActivity()
@@ -457,19 +457,48 @@ final class MenuBarController {
         QuickAskController.shared.toggle()
     }
 
+    private var activityLayer: CALayer?
+
     private func watchActivity() {
         activityTask?.cancel()
         activityTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, let shell = self.shell else { return }
                 let active = await shell.kernel.activeJobs().count > 0
-                self.item?.button?.image = Self.icon(active: active)
+                self.setActivityDot(visible: active)
                 try? await Task.sleep(for: .seconds(3))
             }
         }
     }
 
-    private static func icon(active: Bool) -> NSImage {
+    private func setActivityDot(visible: Bool) {
+        guard let button = item?.button else { return }
+        if visible {
+            guard activityLayer == nil else { return }
+            button.wantsLayer = true
+            let dot = CALayer()
+            dot.backgroundColor = NSColor(Design.accent).cgColor
+            dot.cornerRadius = 2.5
+            dot.frame = CGRect(
+                x: button.bounds.maxX - 9, y: button.bounds.minY + 3, width: 5, height: 5)
+            let blink = CABasicAnimation(keyPath: "opacity")
+            blink.fromValue = 1.0
+            blink.toValue = 0.25
+            blink.duration = 0.9
+            blink.autoreverses = true
+            blink.repeatCount = .infinity
+            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                dot.add(blink, forKey: "blink")
+            }
+            button.layer?.addSublayer(dot)
+            activityLayer = dot
+        } else {
+            activityLayer?.removeFromSuperlayer()
+            activityLayer = nil
+        }
+    }
+
+    private static func icon() -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
             let path = NSBezierPath()
@@ -489,11 +518,6 @@ final class MenuBarController {
             path.close()
             NSColor.black.setFill()
             path.fill()
-            if active {
-                let dot = NSBezierPath(
-                    ovalIn: NSRect(x: rect.maxX - 5, y: rect.minY, width: 5, height: 5))
-                dot.fill()
-            }
             return true
         }
         image.isTemplate = true

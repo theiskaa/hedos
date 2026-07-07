@@ -124,7 +124,7 @@ final class DictationController {
             let granted = await AVCaptureDevice.requestAccess(for: .audio)
             guard let self else { return }
             guard granted else {
-                notice = "Hedos needs microphone access to dictate — grant it in System Settings."
+                notice = "Hedos needs microphone access to dictate. Grant it in System Settings."
                 return
             }
             beginCapture()

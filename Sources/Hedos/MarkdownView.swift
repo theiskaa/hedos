@@ -4,13 +4,20 @@ import SwiftUI
 
 struct MarkdownTurnView: View {
     let text: String
+    var cursor = false
 
     var body: some View {
+        let blocks = MarkdownBlocks.parse(text)
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(
-                Array(MarkdownBlocks.parse(text).enumerated()), id: \.offset
-            ) { _, block in
-                MarkdownBlockView(block: block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                MarkdownBlockView(
+                    block: block,
+                    cursor: cursor && index == blocks.count - 1)
+            }
+            if cursor && (blocks.isEmpty || !MarkdownBlockView.carriesCursor(blocks[blocks.count - 1])) {
+                Text(verbatim: "▍")
+                    .font(Design.body)
+                    .foregroundStyle(Design.accent)
             }
         }
     }
@@ -18,16 +25,28 @@ struct MarkdownTurnView: View {
 
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
+    var cursor = false
+
+    static func carriesCursor(_ block: MarkdownBlock) -> Bool {
+        switch block {
+        case .paragraph, .heading: true
+        default: false
+        }
+    }
+
+    private var cursorText: Text {
+        cursor ? Text(verbatim: "▍").foregroundStyle(Design.accent) : Text(verbatim: "")
+    }
 
     var body: some View {
         switch block {
         case .paragraph(let text):
-            inline(text)
+            Text("\(inline(text))\(cursorText)")
                 .font(Design.body)
                 .lineSpacing(Design.bodyLineSpacing)
                 .textSelection(.enabled)
         case .heading(let level, let text):
-            inline(text)
+            Text("\(inline(text))\(cursorText)")
                 .font(Design.markdownHeading(level))
                 .textSelection(.enabled)
                 .padding(.top, Design.Space.xs)

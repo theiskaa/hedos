@@ -11,7 +11,11 @@ struct PromptBubble: View {
             .textSelection(.enabled)
             .padding(.horizontal, Design.Space.l)
             .padding(.vertical, Design.Space.m)
-            .background(Design.bubbleFill, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
+            .background(
+                Design.accentWash, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                    .strokeBorder(Design.accentEdge, lineWidth: Design.hairlineWidth))
             .frame(maxWidth: Design.Bubble.promptMax, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -66,10 +70,7 @@ struct VoiceBubble: View {
                     .foregroundStyle(Design.inkSoft)
                     .monospacedDigit()
                 if let voice = VoiceSurfaceModel.voiceName(of: artifact) {
-                    Text(voice.uppercased())
-                        .font(Design.micro)
-                        .tracking(Design.microTracking)
-                        .foregroundStyle(Design.inkFaint)
+                    TintChip(text: voice, live: isSounding)
                 }
             }
         }
@@ -128,7 +129,7 @@ struct WaveformBars: View {
         guard emphasized else { return AnyShapeStyle(Design.inkSoft) }
         guard let progress else { return AnyShapeStyle(Design.ink) }
         let played = Double(index + 1) / Double(max(1, displayPeaks.count)) <= progress
-        return AnyShapeStyle(played ? Design.ink : Design.inkFaint)
+        return AnyShapeStyle(played ? Design.accent : Design.inkFaint)
     }
 
     private var displayPeaks: [Double] {
@@ -150,15 +151,12 @@ struct ImageBubble: View {
                         .interpolation(.high)
                         .scaledToFit()
                         .clipShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+                } else if isLoading {
+                    SkeletonPulse()
+                        .aspectRatio(1, contentMode: .fit)
                 } else {
                     RoundedRectangle(cornerRadius: Design.Radius.card)
                         .fill(Design.cardFill)
-                        .overlay {
-                            if isLoading {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
                         .aspectRatio(1, contentMode: .fit)
                 }
             }

@@ -310,19 +310,29 @@ final class SettingsModel {
 private struct SettingRow<Control: View>: View {
     let id: String
     let label: String
+    var caption: String? = nil
     let highlighted: Bool
     @ViewBuilder let control: () -> Control
     @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .center) {
-            Text(label)
-                .font(Design.caption)
-                .foregroundStyle(Design.inkSoft)
+            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                Text(label)
+                    .font(Design.caption.weight(.medium))
+                    .foregroundStyle(Design.ink)
+                if let caption {
+                    Text(caption)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .lineSpacing(1.5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Spacer(minLength: Design.Space.l)
             control()
         }
-        .padding(.vertical, Design.Space.chipX)
+        .padding(.vertical, Design.Space.l)
         .padding(.horizontal, Design.Space.s)
         .background(
             RoundedRectangle(cornerRadius: Design.Radius.card)
@@ -403,7 +413,6 @@ struct SettingsRoot: View {
     @State private var highlighted: String?
     @State private var selected: SettingsSection = .general
     @State private var hoveredSection: SettingsSection?
-    @State private var warmCount = 0
     @State private var collapsed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -449,15 +458,6 @@ struct SettingsRoot: View {
                 await shell.settings.load()
             }
             await shell.settings.loadVoices(from: shell.library.records)
-        }
-        .task {
-            while !Task.isCancelled {
-                let fresh = await shell.kernel.residentModels().count
-                if fresh != warmCount {
-                    warmCount = fresh
-                }
-                try? await Task.sleep(for: .seconds(10))
-            }
         }
         .onChange(of: shell.settingsTarget) { _, target in
             guard let target else { return }
@@ -569,8 +569,9 @@ struct SettingsRoot: View {
             id: section,
             glyph: section.glyph,
             title: section.title,
-            annotation: section == .models && warmCount > 0
-                ? "\(warmCount) warm" : nil,
+            annotation: section == .models && !shell.resident.isEmpty
+                ? "\(shell.resident.count) warm" : nil,
+            liveAnnotation: section == .models && !shell.resident.isEmpty,
             selected: selected == section && query.isEmpty,
             collapsed: collapsedRow,
             hovered: $hoveredSection
@@ -604,14 +605,21 @@ struct SettingsRoot: View {
                     if !query.isEmpty {
                         searchResults(proxy: proxy)
                     } else {
-                        VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                            Text(selected.title)
-                                .font(Design.title)
-                                .tracking(Design.tightTracking)
-                                .foregroundStyle(Design.ink)
-                            Text(selected.blurb)
-                                .font(Design.caption)
-                                .foregroundStyle(Design.inkSoft)
+                        HStack(alignment: .center, spacing: Design.Space.l) {
+                            IconPlaque(size: 40) {
+                                Image(systemName: selected.glyph)
+                                    .font(Design.glyphNav)
+                                    .foregroundStyle(Design.inkSoft)
+                            }
+                            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                                Text(selected.title)
+                                    .font(Design.paneTitle)
+                                    .tracking(Design.tightTracking)
+                                    .foregroundStyle(Design.ink)
+                                Text(selected.blurb)
+                                    .font(Design.caption)
+                                    .foregroundStyle(Design.inkSoft)
+                            }
                         }
                         switch selected {
                         case .general: generalSection
@@ -685,7 +693,9 @@ struct SettingsRoot: View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
             group("Launch") {
-            settingRow("general.restore", "Restore last session") {
+            settingRow(
+                "general.restore", "Restore last session",
+                caption: "Reopen where you left off at launch.") {
                 InkToggle(
                     isOn: model.general.restoreLastSession, isSet: true,
                     onToggle: { value in
@@ -718,7 +728,9 @@ struct SettingsRoot: View {
                 value: model.general.restoreLastSession)
             }
             group("Defaults") {
-            settingRow("general.defaultModel", "Default chat model") {
+            settingRow(
+                "general.defaultModel", "Default chat model",
+                caption: "New chats start bound to this model.") {
                 InkDropdown(
                     options: readyChatModels.map(\.displayName),
                     selection: defaultChatModelName,
@@ -732,14 +744,18 @@ struct SettingsRoot: View {
             }
         }
             group("Anywhere") {
-                settingRow("general.quickAsk", "Quick Ask shortcut") {
+                settingRow(
+                    "general.quickAsk", "Quick Ask shortcut",
+                    caption: "Summons a small ask panel from anywhere on this Mac.") {
                     HotkeyRecorder(hotkey: model.general.quickAskHotkey) { hotkey in
                         model.general.quickAskHotkey = hotkey
                         model.saveGeneral()
                     }
                 }
                 Divider()
-                settingRow("general.menuBar", "Menu bar item") {
+                settingRow(
+                    "general.menuBar", "Menu bar item",
+                    caption: "A quiet bear in the menu bar; the dot means work is running.") {
                     InkToggle(
                         isOn: model.general.menuBarItem, isSet: true,
                         onToggle: { value in
@@ -756,8 +772,16 @@ struct SettingsRoot: View {
     private var modelsSection: some View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
-            group("Residency") {
-                settingRow("models.keepWarm", "Keep models warm") {
+            group("Memory") {
+                warmRows
+                if model.models.eviction == .budgeted {
+                    budgetBar
+                        .transition(.opacity)
+                }
+                Divider()
+                settingRow(
+                "models.keepWarm", "Keep models warm",
+                caption: "How long a model stays in memory after its last reply.") {
                     InkSegmented(
                         values: ["5 min", "15 min", "1 h", "Never"],
                         selection: keepWarmLabel(model.models.keepWarm),
@@ -766,9 +790,10 @@ struct SettingsRoot: View {
                             model.saveModels()
                         })
                 }
-                residencyStrip
                 Divider()
-                settingRow("models.eviction", "Eviction") {
+                settingRow(
+                "models.eviction", "Eviction",
+                caption: "Single keeps one model warm; Budgeted packs what fits.") {
                     InkSegmented(
                         values: ["Single", "Budgeted"],
                         selection: model.models.eviction == .strictSingle
@@ -780,7 +805,9 @@ struct SettingsRoot: View {
                         })
                 }
                 Divider()
-                settingRow("models.budget", "RAM budget") {
+                settingRow(
+                "models.budget", "RAM budget",
+                caption: "The ceiling for warm models under Budgeted eviction.") {
                     HStack(spacing: Design.Space.m) {
                         InkSlider(
                             range: 4...64,
@@ -808,10 +835,6 @@ struct SettingsRoot: View {
                 .animation(
                     Design.motion(reduceMotion: reduceMotion),
                     value: model.models.eviction)
-                if model.models.eviction == .budgeted {
-                    budgetBar
-                        .transition(.opacity)
-                }
             }
             group("Watched folders") {
                 foldersRows
@@ -819,7 +842,7 @@ struct SettingsRoot: View {
         }
     }
 
-    private var residencyStrip: some View {
+    private var warmRows: some View {
         ResidencyStrip(shell: shell)
     }
 
@@ -832,12 +855,8 @@ struct SettingsRoot: View {
             HStack {
                 Spacer()
                 Button("Add…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseDirectories = true
-                    panel.canChooseFiles = false
-                    panel.allowsMultipleSelection = false
-                    if panel.runModal() == .OK, let url = panel.url {
-                        let shell = shell
+                    let shell = shell
+                    FolderRow.pickFolder { url in
                         Task {
                             await shell.library.addFolder(url)
                         }
@@ -846,27 +865,11 @@ struct SettingsRoot: View {
                 .buttonStyle(QuietButtonStyle())
             }
             ForEach(shell.library.watchedFolders, id: \.self) { path in
-                HStack(spacing: Design.Space.s) {
-                    SourceMark(kind: .folder, size: 12)
-                        .foregroundStyle(Design.inkFaint)
-                    Text((path as NSString).abbreviatingWithTildeInPath)
-                        .font(Design.label)
-                        .foregroundStyle(Design.ink)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Button {
-                        let shell = shell
-                        Task {
-                            await shell.library.removeFolder(path)
-                        }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(Design.glyphInline)
-                            .foregroundStyle(Design.inkFaint)
+                FolderRow(path: path) {
+                    let shell = shell
+                    Task {
+                        await shell.library.removeFolder(path)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Stop watching \(path)")
                 }
             }
             if shell.library.watchedFolders.isEmpty {
@@ -910,7 +913,9 @@ struct SettingsRoot: View {
                         label: "Send with Return")
                 }
                 Divider()
-                settingRow("chat.stats", "Show generation stats") {
+                settingRow(
+                "chat.stats", "Show generation stats",
+                caption: "Time to first token and speed under each reply.") {
                     InkToggle(
                         isOn: model.chat.showStats, isSet: true,
                         onToggle: { value in
@@ -965,10 +970,15 @@ struct SettingsRoot: View {
                     }
                     .buttonStyle(QuietButtonStyle())
                     .disabled(model.voices.isEmpty || model.previewing)
+                    .help(
+                        model.voices.isEmpty
+                            ? "Voices appear when a speech model is ready." : "")
                 }
             }
             Divider()
-            settingRow("voice.autoSpeak", "Speak replies and narrations aloud") {
+            settingRow(
+                "voice.autoSpeak", "Speak replies and narrations aloud",
+                caption: "Replies and narrations play as soon as they finish.") {
                 InkToggle(
                     isOn: model.voice.autoSpeak,
                     isSet: true,
@@ -979,7 +989,9 @@ struct SettingsRoot: View {
                     label: "Speak replies and narrations aloud")
             }
             Divider()
-            settingRow("voice.speed", "Speed") {
+            settingRow(
+                "voice.speed", "Speed",
+                caption: "Playback rate for every voice.") {
                 HStack(spacing: Design.Space.m) {
                     InkSlider(
                         range: 0.5...2.0,
@@ -1157,24 +1169,30 @@ struct SettingsRoot: View {
                     )
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
+                    .lineSpacing(2.5)
+                    .frame(maxWidth: Design.Column.prose, alignment: .leading)
                 }
                 .padding(.vertical, Design.Space.chipX)
             }
-            ForEach(shell.settings.prompts) { prompt in
-                PromptCard(prompt: prompt) {
-                    promptDraft = prompt
-                    promptDraftIsNew = false
-                } onDelete: {
-                    shell.settings.deletePrompt(prompt)
+            LazyVGrid(
+                columns: [
+                    GridItem(.adaptive(minimum: 250), spacing: Design.Space.l, alignment: .top)
+                ],
+                spacing: Design.Space.l
+            ) {
+                ForEach(shell.settings.prompts) { prompt in
+                    PromptCard(prompt: prompt) {
+                        promptDraft = prompt
+                        promptDraftIsNew = false
+                    } onDelete: {
+                        shell.settings.deletePrompt(prompt)
+                    }
+                }
+                NewPromptCard {
+                    promptDraft = Prompt(title: "", body: "")
+                    promptDraftIsNew = true
                 }
             }
-            Button("New Prompt") {
-                promptDraft = Prompt(title: "", body: "")
-                promptDraftIsNew = true
-            }
-            .buttonStyle(QuietButtonStyle())
-            .padding(.vertical, Design.Space.s)
-            .accessibilityIdentifier("prompts-new")
         }
         .id("prompts.library")
         .background(highlightBackground("prompts.library"))
@@ -1184,7 +1202,9 @@ struct SettingsRoot: View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
             group("Jobs") {
-                settingRow("advanced.history", "Job history length") {
+                settingRow(
+                "advanced.history", "Job history length",
+                caption: "How many finished jobs stay in the log.") {
                     HStack(spacing: Design.Space.m) {
                         InkSlider(
                             range: 10...500,
@@ -1228,22 +1248,24 @@ struct SettingsRoot: View {
     }
 
     private func pathRow(_ label: String, _ path: String) -> some View {
-        HStack(spacing: Design.Space.s) {
-            Text(label)
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
-                .frame(width: 110, alignment: .leading)
-            Text((path as NSString).abbreviatingWithTildeInPath)
-                .font(Design.data(10))
-                .foregroundStyle(Design.ink)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
+        HStack(alignment: .center, spacing: Design.Space.l) {
+            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                Text(label)
+                    .font(Design.caption.weight(.medium))
+                    .foregroundStyle(Design.ink)
+                Text((path as NSString).abbreviatingWithTildeInPath)
+                    .font(Design.data(10))
+                    .foregroundStyle(Design.inkFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: Design.Space.l)
             Button("Reveal") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             }
             .buttonStyle(QuietButtonStyle())
         }
+        .padding(.vertical, Design.Space.m)
     }
 
     private func group(
@@ -1257,14 +1279,16 @@ struct SettingsRoot: View {
             .padding(.horizontal, Design.Space.tile)
             .padding(.vertical, Design.Space.xs)
             .surfaceCard(radius: Design.Radius.tile)
-            .shadow(color: Design.shadowColor.opacity(0.06), radius: 14, x: 0, y: 5)
         }
     }
 
     private func settingRow<Control: View>(
-        _ id: String, _ label: String, @ViewBuilder control: @escaping () -> Control
+        _ id: String, _ label: String, caption: String? = nil,
+        @ViewBuilder control: @escaping () -> Control
     ) -> some View {
-        SettingRow(id: id, label: label, highlighted: highlighted == id, control: control)
+        SettingRow(
+            id: id, label: label, caption: caption, highlighted: highlighted == id,
+            control: control)
     }
 
     private func highlightBackground(_ id: String) -> some View {
@@ -1309,27 +1333,42 @@ struct SettingsRoot: View {
 
 struct ResidencyStrip: View {
     let shell: ShellModel
-    @State private var resident: [Kernel.ResidentEntry] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private var resident: [Kernel.ResidentEntry] {
+        shell.resident
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.Space.xs) {
-            HStack(spacing: Design.Space.s) {
-                Circle()
-                    .fill(resident.isEmpty ? Design.inkFaint : Design.ink)
-                    .frame(width: 5, height: 5)
-                if resident.isEmpty {
-                    Text("Nothing resident right now.")
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            if resident.isEmpty {
+                HStack(spacing: Design.Space.s) {
+                    Circle()
+                        .fill(Design.inkFaint)
+                        .frame(width: 5, height: 5)
+                    Text("Nothing warm right now.")
                         .font(Design.label)
                         .foregroundStyle(Design.inkFaint)
-                } else {
-                    Text(line)
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkSoft)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    Spacer()
                 }
-                Spacer()
+            } else {
+                ForEach(resident, id: \.self) { entry in
+                    HStack(spacing: Design.Space.chipX) {
+                        AccentDot()
+                        Text(name(entry))
+                            .font(Design.caption.weight(.medium))
+                            .foregroundStyle(Design.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                            .font(Design.data(11))
+                            .foregroundStyle(Design.inkFaint)
+                        if entry.origin == .ollama {
+                            TintChip(text: "via Ollama")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
             }
             if resident.contains(where: { $0.origin == .ollama }) {
                 Text("Ollama models follow Ollama's own keep-alive, not these settings.")
@@ -1337,52 +1376,39 @@ struct ResidencyStrip: View {
                     .foregroundStyle(Design.inkFaint)
             }
         }
-        .padding(.bottom, Design.Space.m)
+        .padding(.vertical, Design.Space.m)
+        .monospacedDigit()
         .animation(Design.motion(reduceMotion: reduceMotion), value: resident)
-        .task {
-            while !Task.isCancelled {
-                let fresh = await shell.kernel.residentModels()
-                if fresh != resident {
-                    resident = fresh
-                }
-                try? await Task.sleep(for: .seconds(8))
-            }
-        }
     }
 
-    private var line: String {
-        let parts = resident.map { entry in
-            let name =
-                entry.modelID.flatMap { shell.library.record(id: $0)?.displayName }
-                ?? shell.library.records.first { $0.name == entry.name }?.displayName
-                ?? entry.name
-            let size = DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20)
-            let origin = entry.origin == .ollama ? " · via Ollama" : ""
-            return "\(name) · \(size)\(origin)"
-        }
-        return "Warm now: " + parts.joined(separator: "   ")
+    private func name(_ entry: Kernel.ResidentEntry) -> String {
+        entry.modelID.flatMap { shell.library.record(id: $0)?.displayName }
+            ?? shell.library.records.first { $0.name == entry.name }?.displayName
+            ?? entry.name
     }
 }
 
 private struct BudgetBar: View {
     let shell: ShellModel
-    @State private var usedMB = 0
-    @State private var fallbackBudgetMB = Int(ProcessInfo.processInfo.physicalMemory >> 20)
 
     var body: some View {
         let totalMB = Int(ProcessInfo.processInfo.physicalMemory >> 20)
-        let budgetMB = shell.settings.models.ramBudgetMB ?? fallbackBudgetMB
+        let fallbackMB =
+            shell.residencyBudgetMB > 0
+            ? shell.residencyBudgetMB : Int(ProcessInfo.processInfo.physicalMemory >> 20)
+        let budgetMB = shell.settings.models.ramBudgetMB ?? fallbackMB
+        let usedMB = shell.residentUsedMB
         GeometryReader { proxy in
             let width = proxy.size.width
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Design.line)
-                    .frame(height: 5)
+                    .frame(height: 8)
                 Capsule()
-                    .fill(Design.inkSoft)
+                    .fill(Design.accent)
                     .frame(
                         width: min(max(0, width * CGFloat(usedMB) / CGFloat(totalMB)), width),
-                        height: 5)
+                        height: 8)
                 Rectangle()
                     .fill(Design.ink)
                     .frame(width: 2, height: 11)
@@ -1394,17 +1420,6 @@ private struct BudgetBar: View {
         .padding(.bottom, Design.Space.m)
         .accessibilityLabel(
             "Resident \(usedMB >> 10) of \(totalMB >> 10) gigabytes, budget \(budgetMB >> 10)")
-        .task {
-            fallbackBudgetMB = await shell.kernel.governor.defaultBudgetMB
-            while !Task.isCancelled {
-                let fresh = await shell.kernel.residentModels()
-                    .reduce(0) { $0 + $1.footprintMB }
-                if fresh != usedMB {
-                    usedMB = fresh
-                }
-                try? await Task.sleep(for: .seconds(8))
-            }
-        }
     }
 }
 
@@ -1434,42 +1449,103 @@ private struct PromptCard: View {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: Design.Space.m) {
-                HStack(spacing: Design.Space.m) {
-                    Image(systemName: "text.quote")
-                        .font(Design.glyphInline)
-                        .foregroundStyle(Design.inkSoft)
-                    Text(prompt.title.isEmpty ? "Untitled" : prompt.title)
-                        .font(Design.body.weight(.medium))
-                        .lineLimit(1)
-                        .foregroundStyle(Design.ink)
-                    Spacer(minLength: Design.Space.m)
-                    Text(promptAnnotation(prompt).uppercased())
-                        .font(Design.micro)
-                        .tracking(Design.microTracking)
-                        .lineLimit(1)
-                        .foregroundStyle(Design.inkFaint)
+            VStack(alignment: .leading, spacing: Design.Space.l) {
+                HStack(alignment: .center, spacing: Design.Space.l) {
+                    IconPlaque(size: 44) {
+                        Image(systemName: promptGlyph(prompt))
+                            .font(Design.glyphNav)
+                            .foregroundStyle(Design.inkSoft)
+                    }
+                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                        Text(prompt.title.isEmpty ? "Untitled" : prompt.title)
+                            .font(Design.title)
+                            .tracking(Design.tightTracking)
+                            .lineLimit(1)
+                            .foregroundStyle(Design.ink)
+                        Text(scopeLine)
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    Spacer(minLength: 0)
                 }
-                if !prompt.body.isEmpty {
-                    Text(prompt.body)
-                        .font(Design.caption)
-                        .foregroundStyle(Design.inkSoft)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
+                HStack(spacing: Design.Space.s) {
+                    TintChip(text: promptCapabilityLabel(prompt.capability) ?? "Any surface")
+                    ForEach(prompt.placeholderNames, id: \.self) { name in
+                        TintChip(text: "{\(name)}")
+                    }
                 }
+                Text(prompt.body.isEmpty ? "No message yet." : prompt.body)
+                    .font(Design.caption)
+                    .foregroundStyle(prompt.body.isEmpty ? Design.inkFaint : Design.inkSoft)
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
             }
             .padding(Design.Space.tile)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
             .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
-        .tile(hovering: hovering)
         .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
         .contextMenu {
             Button("Delete", role: .destructive, action: onDelete)
         }
         .accessibilityLabel(prompt.title.isEmpty ? "Untitled prompt" : prompt.title)
         .accessibilityIdentifier("prompt-card-\(prompt.id)")
+    }
+
+    private var scopeLine: String {
+        promptCapabilityLabel(prompt.capability).map { "\($0) only" } ?? "Any surface"
+    }
+}
+
+private func promptGlyph(_ prompt: Prompt) -> String {
+    switch prompt.capability {
+    case .some(.chat): "message"
+    case .some(.image): "photo.stack"
+    case .some(.speak): "speaker.wave.2"
+    default: "text.quote"
+    }
+}
+
+private struct NewPromptCard: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: Design.Space.m) {
+                Image(systemName: "plus")
+                    .font(Design.glyphNav)
+                    .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                Text("New prompt")
+                    .font(Design.caption.weight(.medium))
+                    .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+            }
+            .frame(maxWidth: .infinity, minHeight: 132, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    .fill(hovering ? Design.inkWash : .clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        style: StrokeStyle(lineWidth: Design.hairlineWidth, dash: [5, 4])))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+        }
+        .buttonStyle(PressDipStyle())
+        .onHover { hovering = $0 }
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.tile))
+        .animation(Design.wash, value: hovering)
+        .accessibilityLabel("New prompt")
+        .accessibilityIdentifier("prompts-new")
     }
 }
 
@@ -1497,72 +1573,85 @@ private struct PromptSheet: View {
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.top, Design.Space.gutter)
                 .padding(.bottom, Design.Space.xl)
+            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xl) {
                     VStack(alignment: .leading, spacing: Design.Space.m) {
-                        MicroHeader(title: "Title")
-                        InkField(placeholder: "How the / menu lists it", text: $draft.title)
-                    }
-                    VStack(alignment: .leading, spacing: Design.Space.m) {
-                        MicroHeader(title: "Message")
-                        InkTextArea(
-                            placeholder: "The message to insert",
-                            text: $draft.body,
-                            resizable: true)
-                        Text("{selection} is replaced with whatever you had drafted before the slash.")
+                        MicroHeader(title: "Prompt")
+                        VStack(alignment: .leading, spacing: Design.Space.m) {
+                            InkField(placeholder: "How the / menu lists it", text: $draft.title)
+                            InkTextArea(
+                                placeholder: "The message to insert",
+                                text: $draft.body,
+                                resizable: true)
+                            Text(
+                                "{selection} is replaced with whatever you had drafted before the slash."
+                            )
                             .font(Design.label)
                             .foregroundStyle(Design.inkFaint)
+                            .lineSpacing(1.5)
+                        }
+                        .padding(Design.Space.tile)
+                        .surfaceCard(radius: Design.Radius.tile)
                     }
                     VStack(alignment: .leading, spacing: Design.Space.m) {
-                        MicroHeader(title: "Surface")
-                        InkDropdown(
-                            options: ["Chat", "Speak", "Image"],
-                            selection: promptCapabilityLabel(draft.capability),
-                            placeholder: "any surface",
-                            accessibilityName: "prompt surface",
-                            onSelect: { label in
-                                draft.capability = label.map { Capability(rawValue: $0.lowercased()) }
-                            })
+                        MicroHeader(title: "Scope")
+                        InkRadioGroup(options: scopeOptions, selection: scopeSelection)
+                            .padding(Design.Space.m)
+                            .surfaceCard(radius: Design.Radius.tile)
                     }
                 }
                 .padding(.horizontal, Design.Space.gutter)
-                .padding(.bottom, Design.Space.xl)
+                .padding(.vertical, Design.Space.xl)
             }
+            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             footer
                 .padding(.horizontal, Design.Space.gutter)
-                .padding(.bottom, Design.Space.gutter)
+                .padding(.vertical, Design.Space.xl)
         }
-        .frame(width: Design.Sheet.promptWidth, height: Design.Sheet.promptHeight)
+        .frame(width: Design.Sheet.promptWidth)
+        .frame(maxHeight: Design.Sheet.promptHeight)
         .accessibilityIdentifier("prompt-sheet")
+    }
+
+    private var scopeOptions: [(value: String, label: String)] {
+        [
+            (value: "any", label: "Any surface"),
+            (value: "chat", label: "Chat"),
+            (value: "speak", label: "Speak"),
+            (value: "image", label: "Image"),
+        ]
+    }
+
+    private var scopeSelection: Binding<String> {
+        Binding(
+            get: { draft.capability?.rawValue ?? "any" },
+            set: { value in
+                draft.capability = value == "any" ? nil : Capability(rawValue: value)
+            })
     }
 
     private var header: some View {
         HStack(alignment: .center, spacing: Design.Space.l) {
-            Image(systemName: "text.quote")
-                .font(Design.glyphPrimary)
-                .foregroundStyle(Design.inkSoft)
-                .frame(width: 40, height: 40)
-                .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
+            IconPlaque(size: 44) {
+                Image(systemName: promptGlyph(draft))
+                    .font(Design.glyphNav)
+                    .foregroundStyle(Design.inkSoft)
+                    .contentTransition(.symbolEffect(.replace))
+            }
             VStack(alignment: .leading, spacing: Design.Space.xxs) {
                 Text(isNew ? "New prompt" : "Edit prompt")
                     .font(Design.title)
+                    .tracking(Design.tightTracking)
                     .lineLimit(1)
                 Text("Inserted from any composer with /.")
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
             }
             Spacer()
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(Design.glyphSmall.weight(.bold))
-                    .foregroundStyle(Design.inkSoft)
-                    .frame(width: 24, height: 24)
-                    .background(Design.cardFill, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .accessibilityLabel("Close")
+            SheetCloseButton(action: onClose)
         }
+        .animation(Design.spring, value: draft.capability)
     }
 
     private var footer: some View {

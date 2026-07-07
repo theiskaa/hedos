@@ -7,6 +7,7 @@ struct InkSlider: View {
     let onChange: (Double) -> Void
     var label: String = "Value"
     @State private var hovering = false
+    @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var fraction: Double {
@@ -31,7 +32,7 @@ struct InkSlider: View {
                     .overlay(
                         Circle().strokeBorder(
                             isSet ? Design.paper.opacity(0.35) : Design.inkFaint,
-                            lineWidth: 1))
+                            lineWidth: Design.hairlineWidth))
                     .frame(width: 14, height: 14)
                     .shadow(
                         color: Design.shadowColor.opacity(isSet ? 0.25 : 0.10),
@@ -53,6 +54,24 @@ struct InkSlider: View {
             .onHover { hovering = $0 }
         }
         .frame(height: 18)
+        .focusable(interactions: .activate)
+        .focused($focused)
+        .focusEffectDisabled()
+        .overlay {
+            if focused {
+                Capsule()
+                    .inset(by: -3)
+                    .stroke(Design.ink.opacity(0.35), lineWidth: Design.hairlineWidth)
+            }
+        }
+        .onKeyPress(.leftArrow) {
+            nudge(-1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            nudge(1)
+            return .handled
+        }
         .accessibilityElement()
         .accessibilityLabel(label)
         .accessibilityValue(isSet ? String(format: "%.2f", value) : "auto")
@@ -64,6 +83,11 @@ struct InkSlider: View {
             @unknown default: break
             }
         }
+    }
+
+    private func nudge(_ direction: Double) {
+        let step = (range.upperBound - range.lowerBound) / 20
+        onChange((value + direction * step).clamped(to: range))
     }
 }
 
@@ -100,10 +124,21 @@ struct InkToggle: View {
             .animation(
                 reduceMotion ? nil : .easeOut(duration: 0.15), value: isOn)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TogglePressStyle(reduceMotion: reduceMotion))
+        .inkFocusRing(Capsule())
         .accessibilityLabel(label)
         .accessibilityValue(isSet ? (isOn ? "on" : "off") : "auto")
         .accessibilityAddTraits(.isToggle)
+    }
+}
+
+private struct TogglePressStyle: ButtonStyle {
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -111,6 +146,8 @@ struct InkSegmented: View {
     let values: [String]
     let selection: String?
     let onSelect: (String) -> Void
+
+    @State private var hoveredValue: String?
 
     var body: some View {
         HStack(spacing: Design.Space.xs) {
@@ -123,12 +160,17 @@ struct InkSegmented: View {
                         .lineLimit(1)
                         .fixedSize()
                         .foregroundStyle(
-                            selection == candidate ? Design.paper : Design.inkSoft)
+                            selection == candidate
+                                ? Design.paper
+                                : hoveredValue == candidate ? Design.ink : Design.inkSoft)
                         .padding(.horizontal, Design.Space.m)
                         .padding(.vertical, Design.Space.xs)
                         .background(
                             selection == candidate
-                                ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface),
+                                ? AnyShapeStyle(Design.ink)
+                                : hoveredValue == candidate
+                                    ? AnyShapeStyle(Design.inkWash)
+                                    : AnyShapeStyle(Design.surface),
                             in: Capsule())
                         .overlay(
                             Capsule().strokeBorder(
@@ -136,7 +178,16 @@ struct InkSegmented: View {
                                 lineWidth: Design.hairlineWidth))
                         .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressDipStyle())
+                .onHover { inside in
+                    if inside {
+                        hoveredValue = candidate
+                    } else if hoveredValue == candidate {
+                        hoveredValue = nil
+                    }
+                }
+                .inkFocusRing(Capsule())
+                .animation(Design.wash, value: hoveredValue)
                 .accessibilityLabel(candidate)
                 .accessibilityAddTraits(selection == candidate ? .isSelected : [])
             }
@@ -170,7 +221,7 @@ struct InkField: View {
             .background(Design.surface, in: fieldShape)
             .overlay(
                 fieldShape.strokeBorder(
-                    focused ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                    focused ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { onFocusLost?() }
@@ -179,7 +230,7 @@ struct InkField: View {
 
     private var fieldShape: AnyInsettableShape {
         switch shape {
-        case .rounded: AnyInsettableShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+        case .rounded: AnyInsettableShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         case .capsule: AnyInsettableShape(Capsule())
         }
     }
@@ -241,11 +292,11 @@ struct InkTextArea: View {
                 .padding(.vertical, Design.Space.s)
             }
         }
-        .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
+        .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.inner)
+            RoundedRectangle(cornerRadius: Design.Radius.control)
                 .strokeBorder(
-                    focused ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                    focused ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
     }
 }
@@ -306,11 +357,12 @@ struct InkMenu<Content: View>: View {
             .overlay(
                 Capsule().strokeBorder(
                     open.wrappedValue
-                        ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                        ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .inkFocusRing(Capsule())
         .fixedSize()
         .popover(isPresented: open, arrowEdge: .top) {
             ScrollView {
@@ -442,11 +494,12 @@ struct InkDropdown: View {
             .background(Design.surface, in: Capsule())
             .overlay(
                 Capsule().strokeBorder(
-                    open ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                    open ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .inkFocusRing(Capsule())
         .popover(isPresented: $open, arrowEdge: .bottom) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xxs) {
@@ -590,23 +643,23 @@ struct InkChoiceCard<Preview: View>: View {
             VStack(spacing: Design.Space.s) {
                 preview()
                     .frame(width: 96, height: 62)
-                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Design.Radius.inner)
+                        RoundedRectangle(cornerRadius: Design.Radius.control)
                             .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
                 Text(label)
                     .font(Design.label.weight(selected ? .semibold : .regular))
                     .foregroundStyle(selected ? Design.ink : Design.inkSoft)
             }
             .padding(Design.Space.s)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.inner)
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .strokeBorder(
-                        selected ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.line),
+                        selected ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.line),
                         lineWidth: selected ? 1.5 : Design.hairlineWidth))
             .offset(y: hovering && !reduceMotion ? -2 : 0)
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             .animation(.easeOut(duration: 0.15), value: hovering)
         }
         .buttonStyle(.plain)
@@ -630,31 +683,37 @@ struct ThemePreview: View {
         case .light:
             mock(
                 paper: Design.PreviewPalette.lightPaper, surface: Design.PreviewPalette.lightSurface,
-                ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft)
+                ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft,
+                accent: Design.PreviewPalette.lightAccent)
         case .dark:
             mock(
                 paper: Design.PreviewPalette.darkPaper, surface: Design.PreviewPalette.darkSurface,
-                ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft)
+                ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft,
+                accent: Design.PreviewPalette.darkAccent)
         case .system:
             ZStack {
                 mock(
                     paper: Design.PreviewPalette.lightPaper, surface: Design.PreviewPalette.lightSurface,
-                    ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft)
+                    ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft,
+                    accent: Design.PreviewPalette.lightAccent)
                 mock(
                     paper: Design.PreviewPalette.darkPaper, surface: Design.PreviewPalette.darkSurface,
-                    ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft)
+                    ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft,
+                    accent: Design.PreviewPalette.darkAccent)
                 .clipShape(DiagonalHalf())
             }
         }
     }
 
-    private func mock(paper: Color, surface: Color, ink: Color, soft: Color) -> some View {
+    private func mock(
+        paper: Color, surface: Color, ink: Color, soft: Color, accent: Color
+    ) -> some View {
         ZStack(alignment: .topLeading) {
             paper
             HStack(spacing: 4) {
                 VStack(alignment: .leading, spacing: 3) {
                     Circle()
-                        .fill(ink)
+                        .fill(accent)
                         .frame(width: 5, height: 5)
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(soft.opacity(0.55))

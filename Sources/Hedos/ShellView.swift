@@ -22,6 +22,9 @@ final class ShellModel {
     var settingsTarget: SettingsDestination?
     var chatQuery = ""
     var chatSearchFocusTick = 0
+    var resident: [Kernel.ResidentEntry] = []
+    var residencyBudgetMB = 0
+    private var residencyTask: Task<Void, Never>?
     private var started = false
 
     var kernel: Kernel { library.kernel }
@@ -60,7 +63,29 @@ final class ShellModel {
             mode = .home
         }
         await refreshSessions()
+        watchResidency()
         await library.rescan()
+    }
+
+    private func watchResidency() {
+        residencyTask?.cancel()
+        residencyTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if self.residencyBudgetMB == 0 {
+                    self.residencyBudgetMB = await self.kernel.governor.defaultBudgetMB
+                }
+                let fresh = await self.kernel.residentModels()
+                if fresh != self.resident {
+                    self.resident = fresh
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    var residentUsedMB: Int {
+        resident.reduce(0) { $0 + $1.footprintMB }
     }
 
     func selectAdjacentChat(_ offset: Int) {
@@ -464,7 +489,7 @@ private struct BrandRow: View {
                     .frame(width: 44, height: 44)
                     .modifier(InkGlow(point: hoverPoint))
                     .modifier(GlowTracking(point: $hoverPoint, hovered: $hovered))
-                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             } else {
                 HStack(spacing: Design.Space.chipX) {
                     LogoMark(size: 28)
@@ -713,14 +738,14 @@ struct ChatSessionsColumn: View {
                                     .padding(.vertical, Design.Space.s)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background(
-                                        RoundedRectangle(cornerRadius: Design.Radius.inner)
+                                        RoundedRectangle(cornerRadius: Design.Radius.control)
                                             .fill(
                                                 hoveredHit == hit.turnID
                                                     ? Design.ink.opacity(0.04) : .clear)
                                             .animation(
                                                 Design.wash,
                                                 value: hoveredHit == hit.turnID))
-                                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+                                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                                 }
                                 .buttonStyle(.plain)
                                 .onHover { inside in
@@ -760,6 +785,11 @@ struct ChatSessionsColumn: View {
                 .padding(.horizontal, Design.Space.m)
                 .padding(.top, Design.Space.s)
                 .padding(.bottom, Design.Space.l)
+                .animation(
+                    Design.motion(
+                        reduceMotion: NSWorkspace.shared
+                            .accessibilityDisplayShouldReduceMotion),
+                    value: shell.filteredSessions.map(\.id))
             }
         }
         .task { await shell.refreshSessions() }
@@ -906,7 +936,7 @@ private struct ChatSessionRow: View {
             HStack(spacing: Design.Space.s) {
                 VStack(alignment: .leading, spacing: Design.Space.xxs) {
                     Text(session.title)
-                        .font(Design.body.weight(.medium))
+                        .font(Design.body.weight(selected ? .semibold : .medium))
                         .foregroundStyle(Design.ink)
                         .lineLimit(1)
                     Text(subtitle)
@@ -930,14 +960,14 @@ private struct ChatSessionRow: View {
                 }
             }
             .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.s)
+            .padding(.vertical, Design.Space.m)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 selected
                     ? Design.ink.opacity(0.08)
                     : hovering ? Design.ink.opacity(0.04) : .clear,
-                in: RoundedRectangle(cornerRadius: Design.Radius.inner))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+                in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         }
         .buttonStyle(.plain)
         .onHover { inside in
@@ -995,32 +1025,32 @@ struct GallerySheet: View {
     @Bindable var shell: ShellModel
     let onClose: () -> Void
     @State private var deleting: Artifact?
+    @State private var hoveredCell: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: Design.Space.m) {
-                Text("Gallery")
-                    .font(Design.title)
-                Text(countLine)
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
-                Spacer()
-                Button {
-                    onClose()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(Design.glyphSmall.weight(.bold))
-                        .foregroundStyle(Design.inkSoft)
-                        .frame(width: 24, height: 24)
-                        .background(Design.cardFill, in: Circle())
+            HStack(alignment: .center, spacing: Design.Space.l) {
+                Image(systemName: "photo.stack")
+                    .font(Design.glyphPrimary)
+                    .foregroundStyle(Design.inkSoft)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        Design.cardFill,
+                        in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    Text("Gallery")
+                        .font(Design.title)
+                        .tracking(Design.tightTracking)
+                    Text(countLine)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .accessibilityLabel("Close")
+                Spacer()
+                SheetCloseButton(action: onClose)
             }
             .padding(.horizontal, Design.Space.gutter)
-            .padding(.vertical, Design.Space.xl)
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
+            .padding(.top, Design.Space.gutter)
+            .padding(.bottom, Design.Space.xl)
             ScrollView {
                 LazyVGrid(
                     columns: [
@@ -1055,7 +1085,7 @@ struct GallerySheet: View {
                 deleting = nil
             }
         } message: {
-            Text("The file moves to the Trash — it is not deleted outright.")
+            Text("The file moves to the Trash, not deleted outright.")
         }
     }
 
@@ -1076,7 +1106,7 @@ struct GallerySheet: View {
                             .resizable()
                             .scaledToFill()
                     } else {
-                        Rectangle().fill(Design.cardFill)
+                        SkeletonPulse()
                     }
                 }
                 .frame(width: 140, height: 140)
@@ -1085,10 +1115,19 @@ struct GallerySheet: View {
                     .font(Design.label)
                     .foregroundStyle(Design.inkSoft)
                     .lineLimit(1)
+                    .opacity(hoveredCell == artifact.id ? 1 : 0)
                     .frame(maxWidth: 140, alignment: .leading)
             }
         }
         .buttonStyle(.plain)
+        .onHover { inside in
+            if inside {
+                hoveredCell = artifact.id
+            } else if hoveredCell == artifact.id {
+                hoveredCell = nil
+            }
+        }
+        .animation(Design.wash, value: hoveredCell)
         .task(id: artifact.id) {
             await shell.images.loadThumbnail(artifact)
         }
@@ -1143,7 +1182,7 @@ struct ModeEmptyState<Extra: View>: View {
                     .foregroundStyle(Design.inkFaint)
             }
             Text(headline)
-                .font(.title2.weight(.semibold))
+                .font(Design.markdownHeading(1))
                 .tracking(Design.tightTracking)
                 .foregroundStyle(Design.ink)
                 .multilineTextAlignment(.center)

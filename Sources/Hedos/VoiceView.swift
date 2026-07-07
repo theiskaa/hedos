@@ -376,7 +376,7 @@ struct VoiceSurface: View {
                 deleting = nil
             }
         } message: {
-            Text("The file moves to the Trash — it is not deleted outright.")
+            Text("The file moves to the Trash, not deleted outright.")
         }
     }
 

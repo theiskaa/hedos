@@ -101,56 +101,90 @@ struct FoldersPopover: View {
     var onOpenSettings: (() -> Void)? = nil
 
     var body: some View {
-        Form {
-            Section {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "Watched folders")
+            if model.watchedFolders.isEmpty {
+                Text("No extra folders yet.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+                    .padding(.vertical, Design.Space.xs)
+            }
+            VStack(alignment: .leading, spacing: Design.Space.xxs) {
                 ForEach(model.watchedFolders, id: \.self) { path in
-                    LabeledContent {
-                        Button {
-                            Task { await model.removeFolder(path) }
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(Design.glyphSmall.weight(.bold))
-                                .foregroundStyle(Design.inkFaint)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Stop watching")
-                        .accessibilityLabel("Stop watching folder")
-                    } label: {
-                        Text((path as NSString).abbreviatingWithTildeInPath)
-                            .font(Design.label)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                Button("Add Folder…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseDirectories = true
-                    panel.canChooseFiles = false
-                    panel.allowsMultipleSelection = false
-                    panel.prompt = "Watch Folder"
-                    if panel.runModal() == .OK, let url = panel.url {
-                        Task { await model.addFolder(url) }
-                    }
-                }
-            } header: {
-                Text("Watched folders")
-            } footer: {
-                VStack(alignment: .leading, spacing: Design.Space.s) {
-                    Text("Hedos scans Downloads, Models, and any folders added here.")
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkSoft)
-                    if let onOpenSettings {
-                        Button("Manage in Settings…") {
-                            onOpenSettings()
-                        }
-                        .buttonStyle(QuietButtonStyle())
+                    FolderRow(path: path) {
+                        Task { await model.removeFolder(path) }
                     }
                 }
             }
+            Button("Add Folder…") {
+                FolderRow.pickFolder { url in
+                    Task { await model.addFolder(url) }
+                }
+            }
+            .buttonStyle(QuietButtonStyle())
+            Rectangle()
+                .fill(Design.hairline)
+                .frame(height: Design.hairlineWidth)
+                .padding(.vertical, Design.Space.xs)
+            Text("Hedos scans Downloads, Models, and any folders added here.")
+                .font(Design.label)
+                .foregroundStyle(Design.inkSoft)
+                .lineSpacing(2)
+            if let onOpenSettings {
+                Button("Manage in Settings…") {
+                    onOpenSettings()
+                }
+                .buttonStyle(QuietButtonStyle())
+            }
         }
-        .formStyle(.grouped)
+        .padding(Design.Space.xl)
         .frame(width: Design.Popover.form.width)
-        .frame(maxHeight: Design.Popover.form.height)
+        .background(Design.paper)
+    }
+}
+
+struct FolderRow: View {
+    let path: String
+    let onRemove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: Design.Space.chipX) {
+            SourceMark(kind: .folder, size: 12)
+                .foregroundStyle(Design.inkSoft)
+            Text((path as NSString).abbreviatingWithTildeInPath)
+                .font(Design.data(11))
+                .foregroundStyle(Design.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: Design.Space.m)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(Design.glyphInline)
+                    .foregroundStyle(hovering ? Design.inkSoft : Design.inkFaint)
+            }
+            .buttonStyle(PressDipStyle())
+            .help("Stop watching")
+            .accessibilityLabel("Stop watching folder")
+        }
+        .padding(.horizontal, Design.Space.m)
+        .padding(.vertical, Design.Space.s)
+        .background(
+            RoundedRectangle(cornerRadius: Design.Radius.control)
+                .fill(hovering ? Design.inkWash : .clear))
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+    }
+
+    static func pickFolder(_ onPick: @escaping (URL) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Watch Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            onPick(url)
+        }
     }
 }
 
