@@ -156,6 +156,18 @@ public actor Kernel {
         try await chatFlow().regenerate(sessionID: sessionID, turnID: turnID)
     }
 
+    public func attachSpokenArtifact(
+        sessionID: String, turnID: String, artifactID: String
+    ) async throws {
+        guard let transcript = try await chats.session(id: sessionID),
+            let turn = transcript.turns.first(where: { $0.id == turnID })
+        else { throw ChatStoreError.turnNotFound(turnID) }
+        guard !turn.artifactRefs.contains(artifactID) else { return }
+        var updated = turn
+        updated.artifactRefs.append(artifactID)
+        _ = try await chats.updateTurn(updated, mergingCapabilityTags: [SessionTag.spoke])
+    }
+
     private func chatFlow() -> ChatFlow {
         ChatFlow(
             chats: chats,

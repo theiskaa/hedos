@@ -88,3 +88,71 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     let header = try Data(contentsOf: #require(url)).prefix(4)
     #expect(String(data: header, encoding: .ascii) == "RIFF")
 }
+
+@Test func attachSpokenArtifactAppendsRefAndTagsSessionSpoke() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir, adapters: [])
+    var record = Fixtures.gguf(path: "~/models/reader.gguf")
+    record.modality = .speech
+    record.capabilities = [.speak]
+    record.runtime = RuntimeRef(id: "python:mlx-audio", resolved: .auto, tier: .managed)
+    record.state = .ready
+    try await kernel.registry.register(record)
+
+    let session = try await kernel.chats.createSession(modelID: "chatty")
+    _ = try await kernel.chats.appendTurn(
+        TurnDraft(role: .user, content: "say something"), to: session.id)
+    let answer = try await kernel.chats.appendTurn(
+        TurnDraft(role: .assistant, content: "something spoken", modelID: "chatty"),
+        to: session.id)
+
+    let artifact = try await kernel.saveSpeech(
+        modelID: record.id, voice: "af_heart", text: "something spoken",
+        sampleRate: 24000, pcm: sineWave(samples: 2400))
+    try await kernel.attachSpokenArtifact(
+        sessionID: session.id, turnID: answer.id, artifactID: artifact.id)
+    try await kernel.attachSpokenArtifact(
+        sessionID: session.id, turnID: answer.id, artifactID: artifact.id)
+
+    let reloaded = try #require(try await kernel.chats.session(id: session.id))
+    let turn = try #require(reloaded.turns.first { $0.id == answer.id })
+    #expect(turn.artifactRefs == [artifact.id])
+    #expect(reloaded.session.capabilityTags.contains(SessionTag.spoke))
+
+    await #expect(throws: (any Error).self) {
+        try await kernel.attachSpokenArtifact(
+            sessionID: session.id, turnID: "missing", artifactID: artifact.id)
+    }
+}
+
+@Test func speakableTextStripsMarkdownForTheEar() {
+    let markdown = """
+        ## Heading
+
+        Some **bold** and _italic_ with `inline code` and a [link](https://x.y).
+
+        ```swift
+        let hidden = true
+        ```
+
+        - first item
+        - second item
+
+        | a | b |
+        | - | - |
+
+        > quoted wisdom
+        """
+    let spoken = SpeechText.speakable(markdown)
+    #expect(!spoken.contains("#"))
+    #expect(!spoken.contains("*"))
+    #expect(!spoken.contains("`"))
+    #expect(!spoken.contains("hidden"))
+    #expect(!spoken.contains("|"))
+    #expect(spoken.contains("Heading"))
+    #expect(spoken.contains("Some bold and italic with inline code and a link."))
+    #expect(spoken.contains("first item"))
+    #expect(spoken.contains("quoted wisdom"))
+    #expect(SpeechText.speakable("") == "")
+}
