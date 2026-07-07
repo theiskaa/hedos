@@ -17,6 +17,11 @@ enum ModelFacet: Hashable {
         }
     }
 
+    var storeKind: SourceKind? {
+        if case .store(let kind) = self { return kind }
+        return nil
+    }
+
     func matches(_ record: ModelRecord) -> Bool {
         switch self {
         case .all:
@@ -96,7 +101,11 @@ struct ModelsPane: View {
                         .frame(width: 180)
                 }
                 ForEach(facets, id: \.self) { candidate in
-                    FilterChip(label: candidate.label, isOn: facet == candidate) {
+                    FilterChip(
+                        label: candidate.label,
+                        isOn: facet == candidate,
+                        mark: candidate.storeKind
+                    ) {
                         facet = facet == candidate ? .all : candidate
                     }
                 }
@@ -274,8 +283,7 @@ struct ModelCard: View {
     }
 
     private var glyphTile: some View {
-        Image(systemName: Design.modalityGlyph(record.modality))
-            .font(Design.glyphPrimary)
+        SourceMark(kind: record.source.kind, size: 20)
             .foregroundStyle(Design.inkSoft)
             .frame(width: 36, height: 36)
             .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
@@ -355,8 +363,7 @@ struct ModelDetailSheet: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: Design.Space.l) {
-            Image(systemName: Design.modalityGlyph(record.modality))
-                .font(Design.glyphPrimary)
+            SourceMark(kind: record.source.kind, size: 22)
                 .foregroundStyle(Design.inkSoft)
                 .frame(width: 40, height: 40)
                 .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
@@ -394,7 +401,22 @@ struct ModelDetailSheet: View {
     private var specs: some View {
         VStack(alignment: .leading, spacing: 0) {
             if record.displayName != record.name {
-                specRow("Source", record.name)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Source")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .frame(width: 72, alignment: .leading)
+                    SourceMark(kind: record.source.kind, size: 12)
+                        .foregroundStyle(Design.inkFaint)
+                    Text(record.name)
+                        .font(Design.caption)
+                        .foregroundStyle(Design.ink)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, Design.Space.m)
                 Divider()
             }
             specRow("Modality", record.modality.rawValue)
@@ -529,6 +551,9 @@ struct ModelConfigureSection: View {
     @State private var promptDraft = ""
     @State private var seeded = false
     @State private var promptCommit: Task<Void, Never>?
+    @State private var voices: [String] = []
+    @State private var pending: [String: JSONValue?] = [:]
+    @State private var flush: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -555,7 +580,7 @@ struct ModelConfigureSection: View {
                             .font(Design.label)
                             .foregroundStyle(Design.inkFaint.opacity(0.7))
                     }
-                    InkTextArea(placeholder: "Optional", text: $promptDraft)
+                    InkTextArea(placeholder: "Optional", text: $promptDraft, resizable: true)
                         .accessibilityLabel("System prompt")
                 }
                 .padding(.vertical, Design.Space.m)
@@ -590,6 +615,10 @@ struct ModelConfigureSection: View {
                 .padding(.top, Design.Space.m)
         }
         .onAppear { seedDrafts() }
+        .task(id: record.id) {
+            guard record.capabilities.contains(.speak) else { return }
+            voices = (try? await shell.kernel.voices(record.id)) ?? []
+        }
         .onChange(of: record.id) {
             seeded = false
             seedDrafts()
@@ -628,21 +657,15 @@ struct ModelConfigureSection: View {
         if spec.type == .enumeration {
             VStack(alignment: .leading, spacing: Design.Space.s) {
                 parameterLabel(spec)
-                ParamControl(
-                    spec: spec,
-                    get: { record.paramValues[spec.key] },
-                    set: { value in write(spec.key, value) })
+                parameterControl(spec)
             }
             .padding(.vertical, Design.Space.chipX)
         } else {
             HStack(alignment: .center, spacing: Design.Space.s) {
                 parameterLabel(spec)
                 Spacer(minLength: Design.Space.l)
-                ParamControl(
-                    spec: spec,
-                    get: { record.paramValues[spec.key] },
-                    set: { value in write(spec.key, value) })
-                    .frame(width: 190)
+                parameterControl(spec)
+                    .frame(width: 190, alignment: .trailing)
             }
             .padding(.vertical, Design.Space.chipX)
         }
@@ -652,9 +675,8 @@ struct ModelConfigureSection: View {
         HStack(spacing: Design.Space.s) {
             Text(humanized(spec.key))
                 .font(Design.caption)
-                .foregroundStyle(
-                    record.paramValues[spec.key] != nil ? Design.ink : Design.inkSoft)
-            if record.paramValues[spec.key] != nil {
+                .foregroundStyle(effective(spec.key) != nil ? Design.ink : Design.inkSoft)
+            if effective(spec.key) != nil {
                 Circle()
                     .fill(Design.ink)
                     .frame(width: 5, height: 5)
@@ -679,12 +701,54 @@ struct ModelConfigureSection: View {
             .joined(separator: " ")
     }
 
+    @ViewBuilder
+    private func parameterControl(_ spec: ParamSpec) -> some View {
+        if spec.key == "voice", !voices.isEmpty {
+            InkDropdown(
+                options: voices,
+                selection: storedVoice,
+                accessibilityName: "voice",
+                onSelect: { choice in
+                    write("voice", choice.map(JSONValue.string))
+                })
+        } else {
+            ParamControl(
+                spec: spec,
+                get: { effective(spec.key) },
+                set: { value in write(spec.key, value) })
+        }
+    }
+
+    private func effective(_ key: String) -> JSONValue? {
+        if let queued = pending[key] {
+            return queued
+        }
+        return record.paramValues[key]
+    }
+
+    private var storedVoice: String? {
+        if case .string(let value)? = effective("voice") {
+            return value
+        }
+        return nil
+    }
+
     private func write(_ key: String, _ value: JSONValue?) {
+        let spec = record.params.first { $0.key == key }
+        let normalized = value == spec?.defaultValue ? nil : value
+        pending[key] = normalized
+        flush?.cancel()
         let shell = shell
         let id = record.id
-        Task {
-            try? await shell.kernel.setParamValue(id, key: key, to: value)
+        flush = Task {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let batch = pending
+            for (key, value) in batch {
+                try? await shell.kernel.setParamValue(id, key: key, to: value)
+            }
             await shell.library.refreshShelf()
+            pending = pending.filter { !batch.keys.contains($0.key) }
         }
     }
 

@@ -567,33 +567,35 @@ struct ImagesSurface: View {
     }
 
     private var modelChip: some View {
-        ChipMenu(title: boundRecord?.displayName ?? "Choose model") {
+        InkMenu(
+            title: boundRecord?.displayName ?? "Choose model",
+            accessibilityName: "Image model"
+        ) {
             let runnable = model.runnableModels(in: shell.library.records)
             let waiting = model.waitingModels(in: shell.library.records)
             if runnable.isEmpty && waiting.isEmpty {
-                Text("No image model is ready.")
+                InkMenuRow(title: "No image model is ready.", disabled: true) {}
             }
             ForEach(runnable) { record in
-                Button {
+                InkMenuRow(
+                    title: record.displayName,
+                    selected: record.id == model.boundModelID
+                ) {
                     model.bind(to: record)
-                } label: {
-                    if record.id == model.boundModelID {
-                        Label(record.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(record.displayName)
-                    }
                 }
             }
             if !waiting.isEmpty {
-                Divider()
+                InkMenuDivider()
                 ForEach(waiting) { record in
-                    Button("\(record.displayName) · needs recipe") {}
-                        .disabled(true)
+                    InkMenuRow(
+                        title: record.displayName,
+                        annotation: "needs recipe",
+                        disabled: true
+                    ) {}
                 }
             }
         }
         .disabled(model.isBusy)
-        .accessibilityLabel("Image model")
     }
 }
 

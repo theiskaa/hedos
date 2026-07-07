@@ -144,34 +144,6 @@ struct CircleControl: View {
     }
 }
 
-struct ChipMenu<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        Menu {
-            content()
-        } label: {
-            HStack(spacing: Design.Space.xs) {
-                Text(title)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(Design.glyphSmall)
-            }
-            .font(Design.label)
-            .foregroundStyle(Design.inkSoft)
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.xs)
-            .background(Design.surface, in: Capsule())
-            .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-    }
-}
-
 @MainActor
 private final class ArtifactBubblePlayback: NSObject, AVAudioPlayerDelegate {
     var player: AVAudioPlayer?

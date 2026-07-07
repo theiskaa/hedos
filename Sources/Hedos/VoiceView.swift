@@ -114,7 +114,11 @@ final class VoiceSurfaceModel {
         guard boundModelID != record.id || voices.isEmpty else { return }
         boundModelID = record.id
         voices = (try? await kernel.voices(record.id)) ?? []
-        if !voices.contains(voice), let first = voices.first {
+        if case .string(let configured)? = record.paramValues["voice"],
+            voices.contains(configured)
+        {
+            voice = configured
+        } else if !voices.contains(voice), let first = voices.first {
             voice = first
         }
     }
@@ -401,46 +405,38 @@ struct VoiceSurface: View {
     }
 
     private var modelChip: some View {
-        ChipMenu(title: boundRecord?.displayName ?? "Choose model") {
+        InkMenu(
+            title: boundRecord?.displayName ?? "Choose model",
+            accessibilityName: "Voice model"
+        ) {
             let runnable = model.runnableModels(in: shell.library.records)
             if runnable.isEmpty {
-                Text("No voice model is ready.")
+                InkMenuRow(title: "No voice model is ready.", disabled: true) {}
             }
             ForEach(runnable) { record in
-                Button {
+                InkMenuRow(
+                    title: record.displayName,
+                    selected: record.id == model.boundModelID
+                ) {
                     let shell = shell
                     Task {
                         await shell.voice.bind(to: record)
                         shell.selectVoice(record.id)
                     }
-                } label: {
-                    if record.id == model.boundModelID {
-                        Label(record.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(record.displayName)
-                    }
                 }
             }
         }
         .disabled(model.isSpeaking)
-        .accessibilityLabel("Voice model")
     }
 
     private var voiceChip: some View {
-        ChipMenu(title: model.voice) {
+        InkMenu(title: model.voice, accessibilityName: "Voice") {
             ForEach(model.voices, id: \.self) { candidate in
-                Button {
+                InkMenuRow(title: candidate, selected: candidate == model.voice) {
                     model.voice = candidate
-                } label: {
-                    if candidate == model.voice {
-                        Label(candidate, systemImage: "checkmark")
-                    } else {
-                        Text(candidate)
-                    }
                 }
             }
         }
         .disabled(model.voices.isEmpty || model.isSpeaking)
-        .accessibilityLabel("Voice")
     }
 }

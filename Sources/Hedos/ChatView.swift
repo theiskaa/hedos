@@ -503,34 +503,33 @@ struct ChatView: View {
     }
 
     private var modelChip: some View {
-        ChipMenu(title: boundRecord?.displayName ?? "Choose model") {
+        InkMenu(
+            title: boundRecord?.displayName ?? "Choose model",
+            accessibilityName: "Chat model"
+        ) {
             if chatGroups.isEmpty {
-                Text("No chat-capable model is ready.")
+                InkMenuRow(title: "No chat-capable model is ready.", disabled: true) {}
             }
             ForEach(chatGroups, id: \.section) { group in
-                Section(group.section) {
-                    ForEach(group.records) { record in
-                        Button {
-                            model.rebind(to: record)
-                        } label: {
-                            if record.id == model.boundModelID {
-                                Label(menuTitle(record), systemImage: "checkmark")
-                            } else {
-                                Text(menuTitle(record))
-                            }
-                        }
+                InkMenuHeader(title: group.section)
+                ForEach(group.records) { record in
+                    InkMenuRow(
+                        title: record.displayName,
+                        annotation: menuAnnotation(record),
+                        selected: record.id == model.boundModelID
+                    ) {
+                        model.rebind(to: record)
                     }
                 }
             }
             if let bound = boundRecord, bound.id != model.defaultModelID {
-                Divider()
-                Button("Make \(bound.displayName) the Default") {
+                InkMenuDivider()
+                InkMenuRow(title: "Make \(bound.displayName) the Default") {
                     model.makeDefault(bound)
                 }
             }
         }
         .disabled(model.isStreaming)
-        .accessibilityLabel("Chat model")
     }
 
     private var chatGroups: [(section: String, records: [ModelRecord])] {
@@ -540,8 +539,8 @@ struct ChatView: View {
             })
     }
 
-    private func menuTitle(_ record: ModelRecord) -> String {
-        var parts = [record.displayName]
+    private func menuAnnotation(_ record: ModelRecord) -> String? {
+        var parts: [String] = []
         parts.append(record.runtime.tier == .native ? "native" : "managed")
         if record.id == model.defaultModelID {
             parts.append("default")
