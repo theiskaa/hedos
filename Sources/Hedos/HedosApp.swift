@@ -87,6 +87,12 @@ struct HedosApp: App {
             ShellView(shell: shell)
                 .onAppear {
                     NSApp.activate(ignoringOtherApps: true)
+                    QuickAskController.shared.shell = shell
+                    MenuBarController.shared.shell = shell
+                    HotkeyCenter.shared.onSummon = {
+                        QuickAskController.shared.toggle()
+                    }
+                    SettingsWindowController.shared.prewarm(shell: shell)
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -107,6 +113,14 @@ struct HedosApp: App {
                     shell.focusChatSearch()
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                Button("Next Chat") {
+                    shell.selectAdjacentChat(1)
+                }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Previous Chat") {
+                    shell.selectAdjacentChat(-1)
+                }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") {
@@ -168,6 +182,6 @@ struct AboutView: View {
                 .padding(.top, Design.Space.xxs)
         }
         .padding(Design.Space.pane)
-        .frame(width: 300)
+        .frame(width: Design.Window.aboutWidth)
     }
 }
