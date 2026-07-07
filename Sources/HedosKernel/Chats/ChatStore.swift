@@ -571,7 +571,7 @@ public actor ChatStore {
 
     private static func ftsQuery(_ raw: String) -> String {
         raw.split(whereSeparator: \.isWhitespace)
-            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+            .map { "\"\($0.replacingOccurrences(of: "\"", with: "\"\""))\"*" }
             .joined(separator: " ")
     }
 

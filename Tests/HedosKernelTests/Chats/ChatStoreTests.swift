@@ -127,6 +127,10 @@ private func makeStore(in directory: URL) -> ChatStore {
     #expect(hit.sessionTitle == "Night dive log")
     #expect(hit.snippet.contains("[bioluminescent]"))
 
+    let prefixHits = try await store.searchChats(query: "biolum")
+    #expect(prefixHits.count == 1)
+    #expect(prefixHits.first?.sessionID == session.id)
+
     let transcript = try await store.session(id: session.id)
     #expect(transcript?.turns[2].id == hit.turnID)
 }
