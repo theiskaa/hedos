@@ -7,10 +7,20 @@ final class SettingsWindowController {
     private var window: NSWindow?
     private weak var shell: ShellModel?
 
-    func show(shell: ShellModel) {
-        if window == nil {
+    func prewarm(shell: ShellModel) {
+        guard window == nil else { return }
+        build()
+        let hosting = NSHostingController(rootView: SettingsWindowRoot(shell: shell))
+        hosting.sizingOptions = []
+        window?.contentViewController = hosting
+        self.shell = shell
+    }
+
+    private func build() {
+        guard window == nil else { return }
+        do {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 920, height: 560),
+                contentRect: NSRect(origin: .zero, size: Design.Window.settings),
                 styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                 backing: .buffered,
                 defer: false)
@@ -21,12 +31,12 @@ final class SettingsWindowController {
             window.isRestorable = false
             window.collectionBehavior = [.fullScreenNone]
             window.standardWindowButton(.zoomButton)?.isEnabled = false
-            window.contentMinSize = NSSize(width: 760, height: 520)
+            window.contentMinSize = NSSize(width: Design.Window.settingsMin.width, height: Design.Window.settingsMin.height)
             let hadSavedFrame =
                 UserDefaults.standard.string(forKey: "NSWindow Frame HedosSettings") != nil
             window.setFrameAutosaveName("HedosSettings")
             if !hadSavedFrame {
-                window.setContentSize(NSSize(width: 920, height: 560))
+                window.setContentSize(NSSize(width: Design.Window.settings.width, height: Design.Window.settings.height))
                 window.center()
             }
             NotificationCenter.default.addObserver(
@@ -34,6 +44,10 @@ final class SettingsWindowController {
                 name: NSWindow.willCloseNotification, object: window)
             self.window = window
         }
+    }
+
+    func show(shell: ShellModel) {
+        build()
         if window?.contentViewController == nil || self.shell !== shell {
             let frame = window?.frame
             let hosting = NSHostingController(rootView: SettingsWindowRoot(shell: shell))
