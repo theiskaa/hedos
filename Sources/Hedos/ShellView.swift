@@ -631,6 +631,16 @@ struct ChatPane: View {
                 },
                 onNewChat: { [weak shell] in
                     shell?.newChat()
+                },
+                onNarrate: { [weak shell] text, turnID in
+                    guard let shell else { return }
+                    let sessionID = session.id
+                    shell.setMode(.voice)
+                    Task {
+                        await shell.voice.narrate(
+                            text, records: shell.library.records,
+                            attach: (sessionID: sessionID, turnID: turnID))
+                    }
                 }
             )
             .id(session.id)

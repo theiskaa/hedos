@@ -60,6 +60,10 @@ final class SettingsWindowController {
         }
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
+        let window = window
+        DispatchQueue.main.async {
+            window?.makeFirstResponder(nil)
+        }
     }
 
     @objc private func windowWillClose() {

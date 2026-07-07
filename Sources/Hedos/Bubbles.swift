@@ -53,34 +53,83 @@ struct VoiceBubble: View {
     }
 
     var body: some View {
-        HStack(spacing: Design.Space.l) {
-            CircleControl(
-                glyph: isSounding ? "pause.fill" : "play.fill",
-                prominent: true,
-                label: isSounding ? "Pause" : isActive ? "Resume" : "Play",
-                action: onToggle)
-            WaveformBars(
+        HStack(spacing: Design.Space.chipX) {
+            playButton
+            WavePlayerBars(
                 peaks: VoiceSurfaceModel.peaks(of: artifact),
-                emphasized: isActive,
-                progress: isActive ? clips.progress : nil,
-                onSeek: isActive ? { clips.seek(to: $0) } : nil)
-            VStack(alignment: .trailing, spacing: Design.Space.xxs) {
-                Text(timeText)
-                    .font(Design.data(10))
-                    .foregroundStyle(Design.inkSoft)
-                    .monospacedDigit()
-                if let voice = VoiceSurfaceModel.voiceName(of: artifact) {
-                    TintChip(text: voice, live: isSounding)
+                fraction: isActive ? clips.progress : 0,
+                onSeek: { fraction in
+                    if isActive {
+                        clips.seek(to: fraction)
+                    } else {
+                        onToggle()
+                    }
+                })
+            Text(timeText)
+                .font(Design.data(10))
+                .monospacedDigit()
+                .foregroundStyle(Design.inkSoft)
+                .lineLimit(1)
+                .fixedSize()
+            rateChip
+        }
+        .padding(.vertical, Design.Space.s)
+        .padding(.leading, Design.Space.s)
+        .padding(.trailing, Design.Space.l)
+        .background(Design.surface, in: Capsule())
+        .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .frame(maxWidth: Design.Bubble.promptMax)
+        .help(VoiceSurfaceModel.voiceName(of: artifact).map { "Voice: \($0)" } ?? "Narration")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Narration, \(durationText)")
+    }
+
+    private var playButton: some View {
+        Button(action: onToggle) {
+            Image(systemName: isSounding ? "pause.fill" : "play.fill")
+                .font(Design.caption.weight(.semibold))
+                .foregroundStyle(Design.paper)
+                .frame(width: 34, height: 34)
+                .background(Design.ink, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressDipStyle())
+        .inkFocusRing(Circle())
+        .help(isSounding ? "Pause" : isActive ? "Resume" : "Play")
+        .accessibilityLabel(isSounding ? "Pause" : "Play")
+    }
+
+    private var rateChip: some View {
+        Button {
+            clips.cycleRate()
+        } label: {
+            Text(clips.rateLabel)
+                .font(Design.data(10).weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(clips.rate == 1.0 ? Design.inkSoft : Design.accentText)
+                .padding(.horizontal, Design.Space.m)
+                .padding(.vertical, Design.Space.xs)
+                .background(
+                    clips.rate == 1.0
+                        ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.accentWash),
+                    in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressDipStyle())
+        .fixedSize()
+        .help("Playback speed · click to cycle")
+        .contextMenu {
+            ForEach(AudioClipController.rates, id: \.self) { candidate in
+                Button(String(format: "%g×", candidate)) {
+                    clips.setRate(candidate)
                 }
             }
         }
-        .responseShell()
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Spoken recording, \(durationText)")
+        .accessibilityLabel("Playback speed \(clips.rateLabel)")
     }
 
     private var timeText: String {
-        isActive ? "\(Self.clock(clips.elapsed)) · \(durationText)" : durationText
+        "\(Self.clock(isActive ? clips.elapsed : 0)) / \(durationText)"
     }
 
     private var durationText: String {
@@ -93,47 +142,74 @@ struct VoiceBubble: View {
     }
 }
 
-struct WaveformBars: View {
+struct WavePlayerBars: View {
     let peaks: [Double]
-    let emphasized: Bool
-    var progress: Double? = nil
+    let fraction: Double
     var onSeek: ((Double) -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(Array(displayPeaks.enumerated()), id: \.offset) { index, peak in
-                Capsule()
-                    .fill(barStyle(index))
-                    .frame(width: 2.5, height: 4 + CGFloat(peak) * 18)
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                bars(AnyShapeStyle(Design.ink.opacity(0.2)))
+                bars(AnyShapeStyle(Design.accent))
+                    .mask(alignment: .leading) {
+                        Rectangle()
+                            .frame(width: max(0, geometry.size.width * fraction))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .animation(.linear(duration: 0.11), value: fraction)
+                    }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        guard geometry.size.width > 0 else { return }
+                        onSeek?(
+                            min(max(value.location.x / geometry.size.width, 0), 1))
+                    })
         }
-        .frame(height: 24)
-        .overlay {
-            if let onSeek {
-                GeometryReader { geometry in
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in
-                                    guard geometry.size.width > 0 else { return }
-                                    onSeek(value.location.x / geometry.size.width)
-                                })
-                }
-            }
-        }
+        .frame(height: 26)
         .accessibilityHidden(true)
     }
 
-    private func barStyle(_ index: Int) -> AnyShapeStyle {
-        guard emphasized else { return AnyShapeStyle(Design.inkSoft) }
-        guard let progress else { return AnyShapeStyle(Design.ink) }
-        let played = Double(index + 1) / Double(max(1, displayPeaks.count)) <= progress
-        return AnyShapeStyle(played ? Design.accent : Design.inkFaint)
+    private func bars(_ style: AnyShapeStyle) -> some View {
+        let normalized = displayPeaks
+        return HStack(alignment: .center, spacing: 1.5) {
+            ForEach(Array(normalized.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(style)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: (0.14 + 0.86 * level) * 26)
+            }
+        }
     }
 
     private var displayPeaks: [Double] {
-        peaks.isEmpty ? Array(repeating: 0.4, count: 28) : peaks
+        let source = peaks.isEmpty ? Array(repeating: 0.4, count: 80) : peaks
+        let resampled = Self.resample(source, to: 80)
+        let low = resampled.min() ?? 0
+        let range = max((resampled.max() ?? 1) - low, 0.001)
+        return resampled.map { ($0 - low) / range }
+    }
+
+    private static func resample(_ source: [Double], to target: Int) -> [Double] {
+        guard source.count != target, !source.isEmpty else { return source }
+        if source.count > target {
+            let bucket = Double(source.count) / Double(target)
+            return (0..<target).map { index in
+                let start = Int(Double(index) * bucket)
+                let end = min(Int(Double(index + 1) * bucket), source.count)
+                let slice = source[start..<max(end, start + 1)]
+                return slice.max() ?? 0
+            }
+        }
+        return (0..<target).map { index in
+            let position = Double(index) * Double(source.count - 1) / Double(target - 1)
+            let low = Int(position)
+            let high = min(low + 1, source.count - 1)
+            let t = position - Double(low)
+            return source[low] * (1 - t) + source[high] * t
+        }
     }
 }
 

@@ -93,6 +93,10 @@ struct HedosApp: App {
                         QuickAskController.shared.toggle()
                     }
                     SettingsWindowController.shared.prewarm(shell: shell)
+                    FocusJanitor.shared.install()
+                    DispatchQueue.main.async {
+                        NSApp.keyWindow?.makeFirstResponder(nil)
+                    }
                 }
         }
         .windowStyle(.hiddenTitleBar)
@@ -183,5 +187,30 @@ struct AboutView: View {
         }
         .padding(Design.Space.pane)
         .frame(width: Design.Window.aboutWidth)
+    }
+}
+
+@MainActor
+final class FocusJanitor {
+    static let shared = FocusJanitor()
+    private var monitor: Any?
+
+    func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            guard let window = event.window,
+                let textView = window.firstResponder as? NSTextView
+            else { return event }
+            let owner: NSView = (textView.delegate as? NSTextField) ?? textView
+            var view = window.contentView?.superview?.hitTest(event.locationInWindow)
+            while let current = view {
+                if current === owner || current is NSTextView || current is NSTextField {
+                    return event
+                }
+                view = current.superview
+            }
+            window.makeFirstResponder(nil)
+            return event
+        }
     }
 }

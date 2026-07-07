@@ -117,7 +117,7 @@ private struct EnumControl: View {
 
     var body: some View {
         let values = spec.values ?? []
-        if values.count > 4 {
+        if values.count > 4 || values.contains(where: { $0.count > 6 }) {
             InkDropdown(
                 options: values,
                 selection: stringValue(get()) ?? stringValue(spec.defaultValue),

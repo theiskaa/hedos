@@ -221,8 +221,30 @@ final class VoiceSurfaceModel {
 
     func speak() {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, !isSpeaking, let modelID = boundModelID else { return }
+        guard !content.isEmpty, !isSpeaking, boundModelID != nil else { return }
         draft = ""
+        generate(content: content, attach: nil, playWhenSaved: false, restoresDraft: true)
+    }
+
+    func narrate(
+        _ content: String, records: [ModelRecord], attach: (sessionID: String, turnID: String)?
+    ) async {
+        if boundModelID == nil {
+            await start(records: records, preferring: nil)
+        }
+        guard boundModelID != nil else {
+            notice = "Narrating needs a ready voice model."
+            return
+        }
+        guard !isSpeaking else { return }
+        generate(content: content, attach: attach, playWhenSaved: true, restoresDraft: false)
+    }
+
+    private func generate(
+        content: String, attach: (sessionID: String, turnID: String)?,
+        playWhenSaved: Bool, restoresDraft: Bool
+    ) {
+        guard let modelID = boundModelID else { return }
         notice = nil
         pendingText = content
         isSpeaking = true
@@ -231,7 +253,10 @@ final class VoiceSurfaceModel {
             guard let self else { return }
             var pcm = Data()
             var sampleRate = 24000
-            let liveOutput = await kernel.voiceSettings().autoSpeak
+            var liveOutput = false
+            if !playWhenSaved {
+                liveOutput = await kernel.voiceSettings().autoSpeak
+            }
             do {
                 var payload: [String: JSONValue] = [
                     "text": .string(content),
@@ -261,16 +286,28 @@ final class VoiceSurfaceModel {
                     }
                 }
                 if !pcm.isEmpty {
-                    _ = try? await kernel.saveSpeech(
+                    let artifact = try? await kernel.saveSpeech(
                         modelID: modelID, voice: voice, text: content,
                         sampleRate: sampleRate, pcm: pcm)
-                    await load()
+                    if let artifact {
+                        if let attach {
+                            try? await kernel.attachSpokenArtifact(
+                                sessionID: attach.sessionID, turnID: attach.turnID,
+                                artifactID: artifact.id)
+                        }
+                        await load()
+                        if playWhenSaved {
+                            togglePlayback(artifact)
+                        }
+                    }
                     Haptics.completion()
                 }
             } catch is CancellationError {
             } catch {
                 notice = error.localizedDescription
-                draft = content
+                if restoresDraft {
+                    draft = content
+                }
             }
             status = nil
             pendingText = nil

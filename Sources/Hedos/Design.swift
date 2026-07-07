@@ -76,7 +76,7 @@ enum Design {
         static let menuMaxHeight: CGFloat = 300
         static let dropdownWidth: CGFloat = 200
         static let dropdownMaxHeight: CGFloat = 240
-        static let paramsWidth: CGFloat = 260
+        static let paramsWidth: CGFloat = 280
         static let form = CGSize(width: 300, height: 340)
     }
 

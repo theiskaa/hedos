@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -19,12 +20,16 @@ private final class ClipFinishRelay: NSObject, AVAudioPlayerDelegate {
 final class AudioClipController {
     private var player: AVAudioPlayer?
     private var ticker: Task<Void, Never>?
+    private var spaceMonitor: Any?
     private let relay = ClipFinishRelay()
 
     var playingID: String?
     var isPaused = false
     var progress: Double = 0
     var elapsed: TimeInterval = 0
+    var rate: Float = 1.0
+
+    static let rates: [Float] = [1.0, 1.25, 1.5, 2.0]
 
     func isActive(_ id: String) -> Bool {
         playingID == id
@@ -53,11 +58,52 @@ final class AudioClipController {
             self?.stop()
         }
         fresh.delegate = relay
+        fresh.enableRate = true
+        fresh.rate = rate
         player = fresh
         playingID = id
         isPaused = false
         fresh.play()
         startTicker()
+        installSpaceMonitor()
+    }
+
+    private func installSpaceMonitor() {
+        guard spaceMonitor == nil else { return }
+        spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            guard let self, let playingID = self.playingID,
+                event.charactersIgnoringModifiers == " ",
+                event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                !(NSApp.keyWindow?.firstResponder is NSTextView)
+            else { return event }
+            self.toggle(id: playingID)
+            return nil
+        }
+    }
+
+    private func removeSpaceMonitor() {
+        if let spaceMonitor {
+            NSEvent.removeMonitor(spaceMonitor)
+            self.spaceMonitor = nil
+        }
+    }
+
+    func setRate(_ newRate: Float) {
+        rate = newRate
+        player?.rate = newRate
+    }
+
+    func cycleRate() {
+        let rates = Self.rates
+        let index = rates.firstIndex(of: rate) ?? 1
+        setRate(rates[(index + 1) % rates.count])
+    }
+
+    var rateLabel: String {
+        rate == rate.rounded()
+            ? "\(Int(rate))×"
+            : String(format: "%g×", rate)
     }
 
     func seek(to fraction: Double) {
@@ -76,6 +122,7 @@ final class AudioClipController {
         isPaused = false
         progress = 0
         elapsed = 0
+        removeSpaceMonitor()
     }
 
     private func startTicker() {

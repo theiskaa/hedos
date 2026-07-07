@@ -381,6 +381,7 @@ struct ChatView: View {
     let kernel: Kernel
     let onOpenArtifacts: ((String) -> Void)?
     let onNewChat: (() -> Void)?
+    let onNarrate: ((String, String) -> Void)?
     @Environment(\.chatShowsStats) private var showsStats
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.transcriptSpacing) private var transcriptSpacing
@@ -397,13 +398,15 @@ struct ChatView: View {
         session: ChatSession, library: LibraryViewModel, kernel: Kernel,
         onSessionsChanged: (() -> Void)? = nil,
         onOpenArtifacts: ((String) -> Void)? = nil,
-        onNewChat: (() -> Void)? = nil
+        onNewChat: (() -> Void)? = nil,
+        onNarrate: ((String, String) -> Void)? = nil
     ) {
         self.session = session
         self.library = library
         self.kernel = kernel
         self.onOpenArtifacts = onOpenArtifacts
         self.onNewChat = onNewChat
+        self.onNarrate = onNarrate
         let viewModel = ChatViewModel(kernel: kernel, session: session)
         viewModel.onSessionsChanged = onSessionsChanged
         viewModel.recordsProvider = { [weak library] in library?.records ?? [] }
@@ -563,9 +566,9 @@ struct ChatView: View {
                             if canReadAloud(entry) {
                                 Button(
                                     model.speakingEntryID == entry.id
-                                        ? "Stop Reading" : "Read Aloud"
+                                        ? "Stop Reading" : "Narrate"
                                 ) {
-                                    model.toggleReadAloud(entry)
+                                    narrate(entry)
                                 }
                             }
                             if entry.persisted && !model.isStreaming {
@@ -761,7 +764,7 @@ struct ChatView: View {
         let speaking = model.speakingEntryID == entry.id
         return HStack(spacing: Design.Space.s) {
             Button {
-                model.toggleReadAloud(entry)
+                narrate(entry)
             } label: {
                 Image(systemName: speaking ? "stop.fill" : "speaker.wave.2")
                     .font(Design.glyphInline)
@@ -769,11 +772,23 @@ struct ChatView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(speaking ? "Stop reading" : "Read aloud")
-            .accessibilityLabel(speaking ? "Stop reading" : "Read aloud")
+            .help(speaking ? "Stop reading" : "Narrate in Voice")
+            .accessibilityLabel(speaking ? "Stop reading" : "Narrate in Voice")
             if speaking {
                 SpeakingIndicator()
             }
+        }
+    }
+
+    private func narrate(_ entry: ChatViewModel.Entry) {
+        if model.speakingEntryID == entry.id {
+            model.toggleReadAloud(entry)
+            return
+        }
+        if let onNarrate {
+            onNarrate(SpeechText.speakable(entry.text), entry.id)
+        } else {
+            model.toggleReadAloud(entry)
         }
     }
 
