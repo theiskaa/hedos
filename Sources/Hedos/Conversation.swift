@@ -17,6 +17,9 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     @ViewBuilder let aux: () -> Aux
     @ViewBuilder let chip: () -> Chip
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.conversationWidth) private var conversationWidth
+    @Environment(\.sendWithEnter) private var sendWithEnter
+    @State private var composerHeight: CGFloat = 22
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,22 +52,29 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            TextField(placeholder, text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(Design.body)
-                .lineLimit(1...6)
-                .onSubmit {
+            ZStack(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text(placeholder)
+                        .font(Design.body)
+                        .foregroundStyle(Design.inkFaint)
+                        .padding(.leading, 3)
+                        .padding(.top, 2)
+                        .allowsHitTesting(false)
+                }
+                ComposerTextView(
+                    text: $draft,
+                    sendWithEnter: sendWithEnter,
+                    measuredHeight: $composerHeight
+                ) {
                     if canSend && !isWorking {
                         onSend()
                     }
                 }
-                .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.contains(.shift) else { return .ignored }
-                    draft += "\n"
-                    return .handled
-                }
-                .padding(.top, Design.Space.xs)
-                .padding(.horizontal, Design.Space.xs)
+                .frame(height: composerHeight)
+                .accessibilityLabel(placeholder)
+            }
+            .padding(.top, Design.Space.xs)
+            .padding(.horizontal, Design.Space.xs)
             HStack(spacing: Design.Space.m) {
                 Spacer(minLength: 0)
                 aux()
@@ -79,14 +89,13 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                         glyph: "arrow.up", prominent: true, label: "Send", action: onSend
                     )
                     .disabled(!canSend)
-                    .keyboardShortcut(.defaultAction)
                 }
             }
         }
         .padding(Design.Space.l)
         .surfaceCard()
         .shadow(color: Design.shadowColor.opacity(0.12), radius: 24, x: 0, y: 10)
-        .frame(maxWidth: Design.conversationMaxWidth)
+        .frame(maxWidth: conversationWidth)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, Design.Space.xxl)
         .padding(.bottom, Design.Space.xxl)
@@ -219,6 +228,93 @@ struct ArtifactExchangeView: View {
             player.delegate = playback
             player.play()
             isPlaying = true
+        }
+    }
+}
+
+private struct ComposerTextView: NSViewRepresentable {
+    @Binding var text: String
+    let sendWithEnter: Bool
+    @Binding var measuredHeight: CGFloat
+    let onSend: () -> Void
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: ComposerTextView
+
+        init(parent: ComposerTextView) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            parent.text = view.string
+            parent.remeasure(view)
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            let flags = NSApp.currentEvent?.modifierFlags ?? []
+            if flags.contains(.command) {
+                parent.onSend()
+                return true
+            }
+            if flags.contains(.shift) || !parent.sendWithEnter {
+                return false
+            }
+            parent.onSend()
+            return true
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        if let view = scroll.documentView as? NSTextView {
+            view.delegate = context.coordinator
+            view.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            view.drawsBackground = false
+            view.isRichText = false
+            view.allowsUndo = true
+            view.textContainerInset = NSSize(width: 0, height: 2)
+            view.textContainer?.lineFragmentPadding = 3
+            view.string = text
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let view = scroll.documentView as? NSTextView else { return }
+        if view.string != text {
+            view.string = text
+        }
+        let ink = NSColor(Design.ink)
+        if view.textColor != ink {
+            view.textColor = ink
+            view.insertionPointColor = ink
+        }
+        remeasure(view)
+    }
+
+    func remeasure(_ view: NSTextView) {
+        guard let container = view.textContainer, let manager = view.layoutManager else { return }
+        manager.ensureLayout(for: container)
+        let inset = view.textContainerInset.height * 2
+        let used = manager.usedRect(for: container).height + inset
+        let line = view.font?.boundingRectForFont.height ?? 18
+        let floor = ceil(line) + inset
+        let ceilHeight = ceil(line * 6) + inset
+        let target = min(max(used, floor), ceilHeight)
+        guard abs(measuredHeight - target) > 0.5 else { return }
+        DispatchQueue.main.async {
+            measuredHeight = target
         }
     }
 }
