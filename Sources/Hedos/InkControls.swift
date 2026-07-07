@@ -198,11 +198,7 @@ struct InkTextArea: View {
         Group {
             if resizable {
                 ZStack(alignment: .topLeading) {
-                    TextEditor(text: $text)
-                        .font(Design.caption)
-                        .foregroundStyle(Design.ink)
-                        .scrollContentBackground(.hidden)
-                        .focused($focused)
+                    InkTextViewRepresentable(text: $text, focused: $focused)
                         .padding(.horizontal, Design.Space.s)
                         .padding(.vertical, Design.Space.xs)
                     if text.isEmpty {
@@ -555,5 +551,251 @@ struct AnyInsettableShape: InsettableShape {
 extension Comparable {
     func clamped(to range: ClosedRange<Self>) -> Self {
         min(max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+struct InkChoiceCard<Preview: View>: View {
+    let label: String
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let preview: () -> Preview
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: Design.Space.s) {
+                preview()
+                    .frame(width: 96, height: 62)
+                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Design.Radius.inner)
+                            .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                Text(label)
+                    .font(Design.label.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Design.ink : Design.inkSoft)
+            }
+            .padding(Design.Space.s)
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.inner)
+                    .strokeBorder(
+                        selected ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.line),
+                        lineWidth: selected ? 1.5 : Design.hairlineWidth))
+            .offset(y: hovering && !reduceMotion ? -2 : 0)
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+            .animation(.easeOut(duration: 0.15), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+enum PreviewPalette {
+    static let lightPaper = Color(red: 0xF1 / 255, green: 0xEF / 255, blue: 0xEC / 255)
+    static let lightSurface = Color(red: 0xFA / 255, green: 0xF9 / 255, blue: 0xF7 / 255)
+    static let lightInk = Color(red: 0x2B / 255, green: 0x2A / 255, blue: 0x28 / 255)
+    static let lightSoft = Color(red: 0x6F / 255, green: 0x6C / 255, blue: 0x66 / 255)
+    static let darkPaper = Color(red: 0x1E / 255, green: 0x1D / 255, blue: 0x1B / 255)
+    static let darkSurface = Color(red: 0x26 / 255, green: 0x25 / 255, blue: 0x23 / 255)
+    static let darkInk = Color(red: 0xE8 / 255, green: 0xE6 / 255, blue: 0xE1 / 255)
+    static let darkSoft = Color(red: 0xA2 / 255, green: 0x9E / 255, blue: 0x96 / 255)
+}
+
+struct ThemePreview: View {
+    enum Variant {
+        case system
+        case light
+        case dark
+    }
+
+    let variant: Variant
+
+    var body: some View {
+        switch variant {
+        case .light:
+            mock(
+                paper: PreviewPalette.lightPaper, surface: PreviewPalette.lightSurface,
+                ink: PreviewPalette.lightInk, soft: PreviewPalette.lightSoft)
+        case .dark:
+            mock(
+                paper: PreviewPalette.darkPaper, surface: PreviewPalette.darkSurface,
+                ink: PreviewPalette.darkInk, soft: PreviewPalette.darkSoft)
+        case .system:
+            ZStack {
+                mock(
+                    paper: PreviewPalette.lightPaper, surface: PreviewPalette.lightSurface,
+                    ink: PreviewPalette.lightInk, soft: PreviewPalette.lightSoft)
+                mock(
+                    paper: PreviewPalette.darkPaper, surface: PreviewPalette.darkSurface,
+                    ink: PreviewPalette.darkInk, soft: PreviewPalette.darkSoft)
+                .clipShape(DiagonalHalf())
+            }
+        }
+    }
+
+    private func mock(paper: Color, surface: Color, ink: Color, soft: Color) -> some View {
+        ZStack(alignment: .topLeading) {
+            paper
+            HStack(spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Circle()
+                        .fill(ink)
+                        .frame(width: 5, height: 5)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(soft.opacity(0.55))
+                        .frame(width: 14, height: 3)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(soft.opacity(0.35))
+                        .frame(width: 12, height: 3)
+                    Spacer()
+                }
+                .padding(4)
+                .frame(width: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 2).fill(surface))
+                .padding(.vertical, 4)
+                VStack(alignment: .leading, spacing: 4) {
+                    Capsule()
+                        .fill(ink.opacity(0.85))
+                        .frame(width: 26, height: 6)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 2) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(soft.opacity(0.55))
+                            .frame(width: 34, height: 3)
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(soft.opacity(0.4))
+                            .frame(width: 28, height: 3)
+                    }
+                    Spacer()
+                    Capsule()
+                        .fill(surface)
+                        .overlay(Capsule().strokeBorder(soft.opacity(0.3), lineWidth: 0.5))
+                        .frame(height: 8)
+                        .overlay(alignment: .trailing) {
+                            Circle()
+                                .fill(ink)
+                                .frame(width: 5, height: 5)
+                                .padding(.trailing, 2)
+                        }
+                }
+                .padding(.vertical, 5)
+                .padding(.trailing, 5)
+            }
+            .padding(.leading, 4)
+        }
+    }
+}
+
+private struct DiagonalHalf: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+struct WidthPreview: View {
+    let wide: Bool
+
+    var body: some View {
+        ZStack {
+            Design.paper
+            VStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Design.inkSoft.opacity(0.5))
+                        .frame(
+                            width: wide ? 60 : 36,
+                            height: 4)
+                        .frame(maxWidth: .infinity)
+                        .opacity(index == 2 ? 0.6 : 1)
+                }
+            }
+            .padding(.horizontal, 6)
+        }
+    }
+}
+
+struct DensityPreview: View {
+    let compact: Bool
+
+    var body: some View {
+        ZStack {
+            Design.paper
+            VStack(spacing: compact ? 3 : 7) {
+                ForEach(0..<4, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Design.inkSoft.opacity(0.5))
+                        .frame(width: 48, height: 4)
+                }
+            }
+        }
+    }
+}
+
+
+private struct InkTextViewRepresentable: NSViewRepresentable {
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: InkTextViewRepresentable
+
+        init(parent: InkTextViewRepresentable) {
+            self.parent = parent
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            parent.text = view.string
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            parent.focused.wrappedValue = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.focused.wrappedValue = false
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.hasVerticalScroller = false
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        if let view = scroll.documentView as? NSTextView {
+            view.delegate = context.coordinator
+            view.font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small) + 1)
+            view.drawsBackground = false
+            view.isRichText = false
+            view.allowsUndo = true
+            view.textContainerInset = NSSize(width: 2, height: 4)
+            view.string = text
+        }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let view = scroll.documentView as? NSTextView else { return }
+        if view.string != text {
+            view.string = text
+        }
+        let inkColor = NSColor(Design.ink)
+        if view.textColor != inkColor {
+            view.textColor = inkColor
+        }
     }
 }

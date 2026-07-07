@@ -30,6 +30,9 @@ enum Design {
     }
 
     static let conversationMaxWidth: CGFloat = 840
+    static let conversationWideWidth: CGFloat = 1040
+
+    static let wash = Animation.easeOut(duration: 0.18)
 
     static let paneTitle = Font.title.weight(.semibold)
     static let title = Font.title3.weight(.semibold)
@@ -115,10 +118,10 @@ enum Design {
 
     static func modeGlyph(_ mode: AppMode) -> String {
         switch mode {
-        case .chat: "bubble.left"
-        case .images: "photo"
-        case .voice: "waveform"
-        case .library: "books.vertical"
+        case .chat: "message"
+        case .images: "photo.stack"
+        case .voice: "speaker.wave.2"
+        case .library: "square.stack.3d.up"
         case .settings: "gearshape"
         }
     }
@@ -367,6 +370,32 @@ extension View {
 
 }
 
+struct LogoMark: View {
+    let size: CGFloat
+    var color: Color = Design.ink
+
+    private static let artwork: NSImage? = {
+        guard
+            let url = Bundle.module.url(forResource: "Resources/logo", withExtension: "svg")
+                ?? Bundle.module.url(forResource: "logo", withExtension: "svg"),
+            let image = NSImage(contentsOf: url)
+        else { return nil }
+        return image
+    }()
+
+    var body: some View {
+        if let artwork = Self.artwork {
+            Image(nsImage: artwork)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else {
+            HeptagonMark(size: size, color: color)
+        }
+    }
+}
+
 struct HeptagonMark: View {
     var size: CGFloat
     var color: Color = Design.ink
@@ -426,5 +455,43 @@ struct SpeakingIndicator: View {
 
     private func barHeight(_ index: Int) -> CGFloat {
         [9, 14, 16, 12, 8][index]
+    }
+}
+
+private struct ConversationWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = Design.conversationMaxWidth
+}
+
+private struct TranscriptSpacingKey: EnvironmentKey {
+    static let defaultValue: CGFloat = Design.Space.xxl
+}
+
+private struct ChatShowsStatsKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+private struct SendWithEnterKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var conversationWidth: CGFloat {
+        get { self[ConversationWidthKey.self] }
+        set { self[ConversationWidthKey.self] = newValue }
+    }
+
+    var transcriptSpacing: CGFloat {
+        get { self[TranscriptSpacingKey.self] }
+        set { self[TranscriptSpacingKey.self] = newValue }
+    }
+
+    var chatShowsStats: Bool {
+        get { self[ChatShowsStatsKey.self] }
+        set { self[ChatShowsStatsKey.self] = newValue }
+    }
+
+    var sendWithEnter: Bool {
+        get { self[SendWithEnterKey.self] }
+        set { self[SendWithEnterKey.self] = newValue }
     }
 }
