@@ -569,7 +569,7 @@ struct ImagesSurface: View {
     }
 
     private var modelChip: some View {
-        ChipMenu(title: boundRecord?.name ?? "Choose model") {
+        ChipMenu(title: boundRecord?.displayName ?? "Choose model") {
             let runnable = model.runnableModels(in: shell.library.records)
             let waiting = model.waitingModels(in: shell.library.records)
             if runnable.isEmpty && waiting.isEmpty {
@@ -580,16 +580,16 @@ struct ImagesSurface: View {
                     model.bind(to: record)
                 } label: {
                     if record.id == model.boundModelID {
-                        Label(record.name, systemImage: "checkmark")
+                        Label(record.displayName, systemImage: "checkmark")
                     } else {
-                        Text(record.name)
+                        Text(record.displayName)
                     }
                 }
             }
             if !waiting.isEmpty {
                 Divider()
                 ForEach(waiting) { record in
-                    Button("\(record.name) · needs recipe") {}
+                    Button("\(record.displayName) · needs recipe") {}
                         .disabled(true)
                 }
             }
@@ -610,7 +610,7 @@ struct ImageParamsForm: View {
                         .font(Design.micro)
                         .tracking(Design.microTracking)
                         .foregroundStyle(Design.inkFaint)
-                    control(for: spec)
+                    formControl(spec)
                 }
             }
         }
@@ -619,139 +619,21 @@ struct ImageParamsForm: View {
         .disabled(model.isBusy)
     }
 
-    @ViewBuilder
-    private func control(for spec: ParamSpec) -> some View {
-        switch spec.type {
-        case .int where spec.intRange != nil:
-            intSlider(spec, range: spec.intRange!)
-        case .int:
-            seedField(spec)
-        case .float:
-            floatSlider(spec)
-        case .enumeration:
-            enumPicker(spec)
-        case .bool:
-            boolToggle(spec)
-        case .string:
-            stringField(spec)
+    private func formControl(_ spec: ParamSpec) -> ParamControl {
+        var roll: (() -> Void)?
+        if spec.type == .int && spec.intRange == nil {
+            roll = { model.form.roll(spec.key) }
         }
-    }
-
-    private func intSlider(_ spec: ParamSpec, range: ClosedRange<Int>) -> some View {
-        HStack(spacing: Design.Space.m) {
-            Slider(
-                value: Binding(
-                    get: { Double(model.form.int(spec.key) ?? range.lowerBound) },
-                    set: { model.form.set(spec.key, to: .int(Int($0.rounded()))) }),
-                in: Double(range.lowerBound)...Double(range.upperBound),
-                step: 1
-            ) {
-                Text(spec.key)
-            }
-            .labelsHidden()
-            .controlSize(.small)
-            Text("\(model.form.int(spec.key) ?? range.lowerBound)")
-                .font(Design.data(11))
-                .monospacedDigit()
-                .frame(minWidth: 24, alignment: .trailing)
-        }
-    }
-
-    private func floatSlider(_ spec: ParamSpec) -> some View {
-        let range = spec.doubleRange ?? 0...1
-        let step = spec.doubleStep ?? ParamSpec.step(across: range)
-        let decimals = ParamSpec.decimals(forStep: step)
-        return HStack(spacing: Design.Space.m) {
-            Slider(
-                value: Binding(
-                    get: { model.form.double(spec.key) ?? range.lowerBound },
-                    set: { model.form.set(spec.key, to: .double(($0 / step).rounded() * step)) }),
-                in: range,
-                step: step
-            ) {
-                Text(spec.key)
-            }
-            .labelsHidden()
-            .controlSize(.small)
-            Text(
-                String(
-                    format: "%.\(decimals)f", model.form.double(spec.key) ?? range.lowerBound)
-            )
-            .font(Design.data(11))
-            .monospacedDigit()
-            .frame(minWidth: 28, alignment: .trailing)
-        }
-    }
-
-    private func enumPicker(_ spec: ParamSpec) -> some View {
-        Picker(
-            spec.key,
-            selection: Binding(
-                get: { model.form.string(spec.key) ?? spec.values?.first ?? "" },
-                set: { model.form.set(spec.key, to: .string($0)) })
-        ) {
-            ForEach(spec.values ?? [], id: \.self) { value in
-                Text(value).tag(value)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
-    }
-
-    private func boolToggle(_ spec: ParamSpec) -> some View {
-        Toggle(
-            spec.key,
-            isOn: Binding(
-                get: { model.form.bool(spec.key) ?? false },
-                set: { model.form.set(spec.key, to: .bool($0)) })
-        )
-        .toggleStyle(.switch)
-        .labelsHidden()
-        .controlSize(.small)
-    }
-
-    private func stringField(_ spec: ParamSpec) -> some View {
-        TextField(
-            spec.key,
-            text: Binding(
-                get: { model.form.string(spec.key) ?? "" },
-                set: { model.form.set(spec.key, to: .string($0)) })
-        )
-        .textFieldStyle(.roundedBorder)
-        .labelsHidden()
-        .controlSize(.small)
-    }
-
-    private func seedField(_ spec: ParamSpec) -> some View {
-        HStack(spacing: Design.Space.s) {
-            TextField(
-                spec.key,
-                text: Binding(
-                    get: { model.form.int(spec.key).map(String.init) ?? "" },
-                    set: { raw in
-                        if let value = Int(raw.trimmingCharacters(in: .whitespaces)) {
-                            model.form.set(spec.key, to: .int(value))
-                        } else if raw.isEmpty {
-                            model.form.clear(spec.key)
-                        }
-                    }),
-                prompt: Text("random")
-            )
-            .textFieldStyle(.roundedBorder)
-            .font(Design.data(11))
-            .labelsHidden()
-            .controlSize(.small)
-            Button {
-                model.form.roll(spec.key)
-            } label: {
-                Image(systemName: "dice")
-                    .font(Design.label)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Design.inkSoft)
-            .help("Roll a random \(spec.key)")
-            .accessibilityLabel("Roll a random \(spec.key)")
-        }
+        return ParamControl(
+            spec: spec,
+            get: { model.form.value(spec.key) },
+            set: { value in
+                if let value {
+                    model.form.set(spec.key, to: value)
+                } else {
+                    model.form.clear(spec.key)
+                }
+            },
+            roll: roll)
     }
 }
