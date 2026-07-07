@@ -205,7 +205,9 @@ final class ChatViewModel {
                 dropEmptyAssistantTail()
             }
             isStreaming = false
+            guard !Task.isCancelled else { return }
             _ = try? await kernel.autoTitleIfNeeded(sessionID: sessionID)
+            guard !Task.isCancelled else { return }
             if let stored = try? await kernel.chats.session(id: sessionID) {
                 apply(stored)
             }
@@ -223,22 +225,23 @@ final class ChatViewModel {
 struct ChatView: View {
     let session: ChatSession
     let library: LibraryViewModel
-    let onOpenArtifacts: (() -> Void)?
+    let kernel: Kernel
+    let onOpenArtifacts: ((String) -> Void)?
     @State private var model: ChatViewModel
     @State private var followsStream = true
     @State private var expandedThinking: Set<String> = []
     @State private var expandedVersions: Set<String> = []
-    @State private var showModelPicker = false
     @State private var editingEntryID: String?
     @State private var editText = ""
 
     init(
         session: ChatSession, library: LibraryViewModel, kernel: Kernel,
         onSessionsChanged: (() -> Void)? = nil,
-        onOpenArtifacts: (() -> Void)? = nil
+        onOpenArtifacts: ((String) -> Void)? = nil
     ) {
         self.session = session
         self.library = library
+        self.kernel = kernel
         self.onOpenArtifacts = onOpenArtifacts
         let viewModel = ChatViewModel(kernel: kernel, session: session)
         viewModel.onSessionsChanged = onSessionsChanged
@@ -250,22 +253,32 @@ struct ChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcript
-            if let notice = model.notice {
-                noticeBar(notice)
-            }
-            composer
-        }
-        .navigationTitle(session.title)
-        .navigationSubtitle(boundRecord?.runtime.id ?? "")
+        ConversationScaffold(
+            placeholder: placeholder,
+            draft: $model.draft,
+            isWorking: model.isStreaming,
+            canSend: sendable,
+            notice: contextNotice ?? model.notice,
+            noticeActionLabel: model.canStartOllama ? "Start Ollama" : nil,
+            noticeAction: model.canStartOllama ? { model.startOllamaAndRetry() } : nil,
+            onSend: { model.send() },
+            onStop: { model.stop() },
+            transcript: { transcript },
+            aux: {},
+            chip: { modelChip }
+        )
         .task(id: session.id) { await model.load() }
+    }
+
+    private var contextNotice: String? {
+        guard model.transcriptCharacterCount > 16000 else { return nil }
+        return "This conversation is getting long — early turns may drop out of context."
     }
 
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: Design.Space.xxl) {
                     if model.transcript.isEmpty {
                         emptyTranscript
                     }
@@ -274,9 +287,9 @@ struct ChatView: View {
                     }
                     Color.clear.frame(height: 1).id("tail")
                 }
-                .padding(.horizontal, 28)
-                .padding(.vertical, 20)
-                .frame(maxWidth: 720, alignment: .leading)
+                .padding(.horizontal, Design.Space.xxl)
+                .padding(.vertical, Design.Space.xxl)
+                .frame(maxWidth: Design.conversationMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -300,13 +313,7 @@ struct ChatView: View {
                 if editingEntryID == entry.id {
                     editField(entry)
                 } else {
-                    Text(entry.text)
-                        .font(.system(size: 13))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 8)
-                        .background(
-                            .quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+                    PromptBubble(text: entry.text)
                         .contextMenu {
                             Button("Copy") { copy(entry.text) }
                             if entry.persisted && !model.isStreaming {
@@ -319,7 +326,6 @@ struct ChatView: View {
                 }
                 previousVersionsAffordance(entry)
             }
-            .frame(maxWidth: 420, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -336,7 +342,7 @@ struct ChatView: View {
                         }
                 } else if model.isStreaming && entry.thinking.isEmpty {
                     Text("…")
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Design.inkFaint)
                 }
                 ForEach(entry.artifactRefs, id: \.self) { reference in
                     artifactCard(reference)
@@ -354,23 +360,24 @@ struct ChatView: View {
         VStack(alignment: .trailing, spacing: 6) {
             TextField("Edit message", text: $editText, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(Design.body)
                 .lineLimit(1...8)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, Design.Space.l)
+                .padding(.vertical, Design.Space.m)
+                .background(Design.bubbleFill, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(.tertiary, lineWidth: 1))
+                    RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                        .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
             HStack(spacing: 8) {
                 Button("Cancel") { editingEntryID = nil }
                     .controlSize(.small)
+                    .buttonStyle(.bordered)
                 Button("Send") {
                     editingEntryID = nil
                     model.edit(entry, text: editText)
                 }
                 .controlSize(.small)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .disabled(
                     editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -380,75 +387,56 @@ struct ChatView: View {
     @ViewBuilder
     private func previousVersionsAffordance(_ entry: ChatViewModel.Entry) -> some View {
         if let versions = model.previousVersions[entry.id], !versions.isEmpty {
-            VStack(
-                alignment: entry.role == .user ? .trailing : .leading, spacing: 6
+            DisclosureGroup(
+                isExpanded: Binding(
+                    get: { expandedVersions.contains(entry.id) },
+                    set: { expanded in
+                        if expanded {
+                            expandedVersions.insert(entry.id)
+                        } else {
+                            expandedVersions.remove(entry.id)
+                        }
+                    })
             ) {
-                Button {
-                    if expandedVersions.contains(entry.id) {
-                        expandedVersions.remove(entry.id)
-                    } else {
-                        expandedVersions.insert(entry.id)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 8))
-                        Text(
-                            versions.count == 1
-                                ? "Previous version" : "\(versions.count) previous versions")
-                        Image(
-                            systemName: expandedVersions.contains(entry.id)
-                                ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 7, weight: .semibold))
-                    }
-                    .font(.system(size: 10))
-                    .foregroundStyle(.quaternary)
-                }
-                .buttonStyle(.plain)
-                if expandedVersions.contains(entry.id) {
+                VStack(alignment: .leading, spacing: Design.Space.s) {
                     ForEach(versions) { version in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(version.role.rawValue.capitalized)
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.quaternary)
+                        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                            Text(version.role.rawValue.uppercased())
+                                .font(Design.micro)
+                                .tracking(Design.microTracking)
+                                .foregroundStyle(Design.inkFaint)
                             Text(version.content)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.tertiary)
+                                .font(Design.caption)
+                                .foregroundStyle(Design.inkFaint)
                                 .textSelection(.enabled)
                         }
-                        .padding(.leading, 10)
-                        .overlay(alignment: .leading) {
-                            Rectangle()
-                                .fill(.quaternary)
-                                .frame(width: 2)
-                        }
+                        .leftRule()
                     }
                 }
+                .padding(.top, Design.Space.xs)
+            } label: {
+                HStack(spacing: Design.Space.xs) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(Design.glyphSmall)
+                    Text(
+                        versions.count == 1
+                            ? "Previous version" : "\(versions.count) previous versions")
+                }
+                .font(Design.label)
+                .foregroundStyle(Design.inkFaint)
             }
+            .disclosureGroupStyle(QuietDisclosureStyle())
+            .accessibilityLabel("Previous versions")
         }
     }
 
     private func artifactCard(_ reference: String) -> some View {
-        Button {
-            onOpenArtifacts?()
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "photo.stack")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text("Generated artifact")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+        ArtifactExchangeView(reference: reference, kernel: kernel)
+            .contextMenu {
+                Button("Show in Images") {
+                    onOpenArtifacts?(reference)
+                }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 9))
-        }
-        .buttonStyle(.plain)
-        .help("Open in the gallery")
     }
 
     private func copy(_ text: String) {
@@ -459,39 +447,31 @@ struct ChatView: View {
     @ViewBuilder
     private func thinkingBlock(_ entry: ChatViewModel.Entry) -> some View {
         let streaming = entry.text.isEmpty && model.isStreaming
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                if expandedThinking.contains(entry.id) {
-                    expandedThinking.remove(entry.id)
-                } else {
-                    expandedThinking.insert(entry.id)
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Text(streaming ? "Thinking…" : "Thought")
-                    Image(
-                        systemName: expandedThinking.contains(entry.id)
-                            ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 8, weight: .semibold))
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-            if expandedThinking.contains(entry.id) {
-                Text(entry.thinking)
-                    .font(.system(size: 11.5))
-                    .lineSpacing(3)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .padding(.leading, 10)
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(.quaternary)
-                            .frame(width: 2)
+        return DisclosureGroup(
+            isExpanded: Binding(
+                get: { expandedThinking.contains(entry.id) },
+                set: { expanded in
+                    if expanded {
+                        expandedThinking.insert(entry.id)
+                    } else {
+                        expandedThinking.remove(entry.id)
                     }
-            }
+                })
+        ) {
+            Text(entry.thinking)
+                .font(Design.label)
+                .lineSpacing(Design.bodyLineSpacing)
+                .foregroundStyle(Design.inkSoft)
+                .textSelection(.enabled)
+                .leftRule()
+                .padding(.top, Design.Space.xs)
+        } label: {
+            Text(streaming ? "Thinking…" : "Thought")
+                .font(Design.label)
+                .foregroundStyle(Design.inkFaint)
         }
+        .disclosureGroupStyle(QuietDisclosureStyle())
+        .accessibilityLabel(streaming ? "Model thinking" : "Model thoughts")
     }
 
     private func statsLine(_ stats: GenerationStats) -> some View {
@@ -511,7 +491,7 @@ struct ChatView: View {
         }
         return Text(parts.joined(separator: " · "))
             .font(Design.data(10))
-            .foregroundStyle(.quaternary)
+            .foregroundStyle(Design.inkFaint.opacity(0.7))
     }
 
     private var emptyTranscript: some View {
@@ -519,125 +499,56 @@ struct ChatView: View {
             boundRecord.map { "Chatting with \($0.name), locally." }
                 ?? "Pick a model to start this conversation."
         )
-        .font(.system(size: 12))
-        .foregroundStyle(.tertiary)
-        .frame(maxWidth: .infinity)
-        .padding(.top, 100)
-    }
-
-    private func noticeBar(_ notice: String) -> some View {
-        HStack(spacing: 10) {
-            Text(notice)
-                .font(.system(size: 12))
-                .foregroundStyle(Design.warn)
-            if model.canStartOllama {
-                Button("Start Ollama") {
-                    model.startOllamaAndRetry()
-                }
-                .controlSize(.small)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 28)
-        .padding(.bottom, 6)
-    }
-
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if model.transcriptCharacterCount > 16000 {
-                Text("This conversation is getting long — early turns may drop out of context.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.quaternary)
-                    .padding(.leading, 6)
-            }
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(placeholder, text: $model.draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .lineLimit(1...8)
-                    .onSubmit { model.send() }
-                    .onKeyPress(.return, phases: .down) { press in
-                        guard press.modifiers.contains(.shift) else { return .ignored }
-                        model.draft += "\n"
-                        return .handled
-                    }
-                    .padding(.leading, 6)
-                    .padding(.vertical, 3)
-                if model.isStreaming {
-                    Button {
-                        model.stop()
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 26, height: 26)
-                            .background(Design.warn, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Stop generating")
-                } else {
-                    Button {
-                        model.send()
-                    } label: {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(sendable ? .white : .secondary)
-                            .frame(width: 26, height: 26)
-                            .background(
-                                sendable
-                                    ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.quaternary),
-                                in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!sendable)
-                    .help("Send")
-                }
-            }
-            modelChip
-                .padding(.leading, 4)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 22))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22)
-                .strokeBorder(.quaternary, lineWidth: 1))
-        .padding(.horizontal, 20)
-        .padding(.bottom, 16)
-        .padding(.top, 8)
+        .font(Design.caption)
+        .foregroundStyle(Design.inkFaint)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var modelChip: some View {
-        Button {
-            showModelPicker = true
-        } label: {
-            HStack(spacing: 4) {
-                Text(boundRecord?.name ?? "Choose model")
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
+        ChipMenu(title: boundRecord?.name ?? "Choose model") {
+            if chatGroups.isEmpty {
+                Text("No chat-capable model is ready.")
             }
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(.quaternary.opacity(0.5), in: Capsule())
+            ForEach(chatGroups, id: \.section) { group in
+                Section(group.section) {
+                    ForEach(group.records) { record in
+                        Button {
+                            model.rebind(to: record)
+                        } label: {
+                            if record.id == model.boundModelID {
+                                Label(menuTitle(record), systemImage: "checkmark")
+                            } else {
+                                Text(menuTitle(record))
+                            }
+                        }
+                    }
+                }
+            }
+            if let bound = boundRecord, bound.id != model.defaultModelID {
+                Divider()
+                Button("Make \(bound.name) the Default") {
+                    model.makeDefault(bound)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .help("Switch the model behind this chat")
         .disabled(model.isStreaming)
-        .popover(isPresented: $showModelPicker, arrowEdge: .top) {
-            ChatModelPicker(
-                library: library,
-                boundID: model.boundModelID,
-                defaultID: model.defaultModelID
-            ) { record in
-                showModelPicker = false
-                model.rebind(to: record)
-            } onMakeDefault: { record in
-                model.makeDefault(record)
-            }
+        .accessibilityLabel("Chat model")
+    }
+
+    private var chatGroups: [(section: String, records: [ModelRecord])] {
+        LibraryViewModel.grouped(
+            library.records.filter {
+                $0.state == .ready && Launcher.destination(for: $0) == .chat
+            })
+    }
+
+    private func menuTitle(_ record: ModelRecord) -> String {
+        var parts = [record.name]
+        parts.append(record.runtime.tier == .native ? "native" : "managed")
+        if record.id == model.defaultModelID {
+            parts.append("default")
         }
+        return parts.joined(separator: " · ")
     }
 
     private var placeholder: String {
@@ -650,77 +561,3 @@ struct ChatView: View {
     }
 }
 
-struct ChatModelPicker: View {
-    let library: LibraryViewModel
-    let boundID: String?
-    let defaultID: String?
-    let onPick: (ModelRecord) -> Void
-    let onMakeDefault: (ModelRecord) -> Void
-
-    private var groups: [(section: String, records: [ModelRecord])] {
-        LibraryViewModel.grouped(
-            library.records.filter {
-                $0.state == .ready && Launcher.destination(for: $0) == .chat
-            })
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                if groups.isEmpty {
-                    Text("No chat-capable model is ready.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
-                        .padding(6)
-                }
-                ForEach(groups, id: \.section) { group in
-                    Text(group.section.uppercased())
-                        .font(.system(size: 10, weight: .medium))
-                        .tracking(0.8)
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 6)
-                        .padding(.top, 8)
-                    ForEach(group.records) { record in
-                        row(record)
-                    }
-                }
-            }
-            .padding(8)
-        }
-        .frame(width: 280)
-        .frame(maxHeight: 340)
-    }
-
-    private func row(_ record: ModelRecord) -> some View {
-        Button {
-            onPick(record)
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .opacity(record.id == boundID ? 1 : 0)
-                Text(record.name)
-                    .font(.system(size: 12))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                if record.id == defaultID {
-                    Text("default")
-                        .font(Design.data(9))
-                        .foregroundStyle(.tertiary)
-                }
-                Text(record.runtime.tier == .native ? "native" : "managed")
-                    .font(Design.data(9))
-                    .foregroundStyle(.quaternary)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button("Make Default") {
-                onMakeDefault(record)
-            }
-        }
-    }
-}

@@ -23,14 +23,14 @@ struct MarkdownBlockView: View {
         switch block {
         case .paragraph(let text):
             inline(text)
-                .font(.system(size: 13))
-                .lineSpacing(3.5)
+                .font(Design.body)
+                .lineSpacing(Design.bodyLineSpacing)
                 .textSelection(.enabled)
         case .heading(let level, let text):
             inline(text)
-                .font(.system(size: headingSize(level), weight: .semibold))
+                .font(Design.markdownHeading(level))
                 .textSelection(.enabled)
-                .padding(.top, 4)
+                .padding(.top, Design.Space.xs)
         case .code(let language, let code, _):
             CodeBlockView(language: language, code: code)
         case .list(let items, let ordered):
@@ -38,34 +38,29 @@ struct MarkdownBlockView: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text(ordered ? "\(index + 1)." : "•")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.tertiary)
+                            .font(Design.body)
+                            .foregroundStyle(Design.inkFaint)
                         inline(item)
-                            .font(.system(size: 13))
-                            .lineSpacing(3.5)
+                            .font(Design.body)
+                            .lineSpacing(Design.bodyLineSpacing)
                             .textSelection(.enabled)
                     }
                 }
             }
         case .quote(let text):
             inline(text)
-                .font(.system(size: 13))
-                .lineSpacing(3.5)
-                .foregroundStyle(.secondary)
+                .font(Design.body)
+                .lineSpacing(Design.bodyLineSpacing)
+                .foregroundStyle(Design.inkSoft)
                 .textSelection(.enabled)
-                .padding(.leading, 10)
-                .overlay(alignment: .leading) {
-                    Rectangle()
-                        .fill(.quaternary)
-                        .frame(width: 2)
-                }
+                .leftRule()
         case .table(let header, let rows):
             ScrollView(.horizontal) {
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {
                     GridRow {
                         ForEach(Array(header.enumerated()), id: \.offset) { _, cell in
                             inline(cell)
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(Design.caption.weight(.semibold))
                         }
                     }
                     Divider()
@@ -73,32 +68,23 @@ struct MarkdownBlockView: View {
                         GridRow {
                             ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
                                 inline(cell)
-                                    .font(.system(size: 12))
+                                    .font(Design.caption)
                                     .textSelection(.enabled)
                             }
                         }
                     }
                 }
-                .padding(10)
+                .padding(Design.Space.l)
             }
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+            .background(Design.tableFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
         case .rule:
             Divider()
-                .padding(.vertical, 2)
+                .padding(.vertical, Design.Space.xxs)
         }
     }
 
     private func inline(_ text: String) -> Text {
         Text(Self.attributed(text))
-    }
-
-    private func headingSize(_ level: Int) -> CGFloat {
-        switch level {
-        case 1: 19
-        case 2: 16.5
-        case 3: 14.5
-        default: 13.5
-        }
     }
 
     static func attributed(_ text: String) -> AttributedString {
@@ -121,7 +107,7 @@ struct CodeBlockView: View {
             HStack {
                 Text(language ?? "code")
                     .font(Design.data(10))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Design.inkFaint)
                 Spacer()
                 Button {
                     NSPasteboard.general.clearContents()
@@ -133,27 +119,28 @@ struct CodeBlockView: View {
                     }
                 } label: {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        .font(Design.glyphInline)
+                        .foregroundStyle(Design.inkFaint)
                 }
                 .buttonStyle(.plain)
                 .help("Copy code")
+                .accessibilityLabel("Copy code")
                 .opacity(hovering || copied ? 1 : 0)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
+            .padding(.horizontal, Design.Space.l)
+            .padding(.top, Design.Space.m)
+            .padding(.bottom, Design.Space.s)
             ScrollView(.horizontal) {
                 highlighted
                     .font(Design.data(12))
                     .lineSpacing(2.5)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
+                    .padding(.horizontal, Design.Space.l)
+                    .padding(.bottom, Design.Space.l)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+        .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
         .onHover { hovering = $0 }
     }
 
@@ -171,11 +158,11 @@ struct CodeBlockView: View {
         case .keyword:
             Text(verbatim: token.text).fontWeight(.semibold)
         case .string:
-            Text(verbatim: token.text).foregroundStyle(.secondary)
+            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
         case .comment:
-            Text(verbatim: token.text).foregroundStyle(.tertiary)
+            Text(verbatim: token.text).foregroundStyle(Design.inkFaint)
         case .number:
-            Text(verbatim: token.text).foregroundStyle(.secondary)
+            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
         }
     }
 }
