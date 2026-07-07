@@ -26,17 +26,20 @@ public struct GeneralSettings: SettingsDomain {
     public static let domainName = "general"
 
     public var restoreLastSession: Bool
+    public var fixedMode: AppMode?
 
     public init() {
         restoreLastSession = true
+        fixedMode = nil
     }
 
-    public init(restoreLastSession: Bool) {
+    public init(restoreLastSession: Bool, fixedMode: AppMode? = nil) {
         self.restoreLastSession = restoreLastSession
+        self.fixedMode = fixedMode
     }
 
     enum CodingKeys: String, CodingKey {
-        case restoreLastSession
+        case restoreLastSession, fixedMode
     }
 
     public init(from decoder: any Decoder) throws {
@@ -47,6 +50,7 @@ public struct GeneralSettings: SettingsDomain {
         }
         restoreLastSession = container.lenient(
             Bool.self, .restoreLastSession, fallback: defaults.restoreLastSession)
+        fixedMode = container.lenient(AppMode.self, .fixedMode)
     }
 }
 
@@ -114,33 +118,57 @@ public struct ModelsSettings: SettingsDomain {
     }
 }
 
+public enum ChatExportFormat: String, Codable, Sendable, CaseIterable {
+    case markdown
+    case json
+}
+
 public struct ChatSettings: SettingsDomain {
     public static let domainName = "chat"
 
     public var defaultModelID: String?
     public var defaultSystemPrompt: String?
+    public var showStats: Bool
+    public var sendWithEnter: Bool
+    public var exportFormat: ChatExportFormat
 
     public init() {
         defaultModelID = nil
         defaultSystemPrompt = nil
+        showStats = true
+        sendWithEnter = true
+        exportFormat = .markdown
     }
 
-    public init(defaultModelID: String? = nil, defaultSystemPrompt: String? = nil) {
+    public init(
+        defaultModelID: String? = nil, defaultSystemPrompt: String? = nil,
+        showStats: Bool = true, sendWithEnter: Bool = true,
+        exportFormat: ChatExportFormat = .markdown
+    ) {
         self.defaultModelID = defaultModelID
         self.defaultSystemPrompt = defaultSystemPrompt
+        self.showStats = showStats
+        self.sendWithEnter = sendWithEnter
+        self.exportFormat = exportFormat
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultModelID, defaultSystemPrompt
+        case defaultModelID, defaultSystemPrompt, showStats, sendWithEnter, exportFormat
     }
 
     public init(from decoder: any Decoder) throws {
+        let defaults = Self()
         guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
-            self = Self()
+            self = defaults
             return
         }
         defaultModelID = container.lenient(String.self, .defaultModelID)
         defaultSystemPrompt = container.lenient(String.self, .defaultSystemPrompt)
+        showStats = container.lenient(Bool.self, .showStats, fallback: defaults.showStats)
+        sendWithEnter = container.lenient(
+            Bool.self, .sendWithEnter, fallback: defaults.sendWithEnter)
+        exportFormat = container.lenient(
+            ChatExportFormat.self, .exportFormat, fallback: defaults.exportFormat)
     }
 
     public static func compatibilityRead(from directory: URL) -> ChatSettings? {

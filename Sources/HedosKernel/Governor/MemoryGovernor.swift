@@ -45,6 +45,10 @@ public actor MemoryGovernor {
         self.residency = ResidencyManager(defaultWarmWindow: defaultWarmWindow)
     }
 
+    public var defaultBudgetMB: Int {
+        Int(Double(totalMemoryMB) * tightFraction)
+    }
+
     @discardableResult
     public func admit(
         modelID: String,

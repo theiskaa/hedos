@@ -243,3 +243,66 @@ private func waitUntil(
 
     #expect(await kernel.scheduler.history.limit == 2)
 }
+
+@Test func chatAndGeneralSettingsCarryTheirNewFields() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SettingsStore(directory: dir)
+
+    var chat = await store.chat()
+    #expect(chat.showStats)
+    #expect(chat.sendWithEnter)
+    #expect(chat.exportFormat == .markdown)
+    chat.showStats = false
+    chat.sendWithEnter = false
+    chat.exportFormat = .json
+    try await store.save(chat)
+
+    var general = await store.general()
+    #expect(general.fixedMode == nil)
+    general.restoreLastSession = false
+    general.fixedMode = AppMode.images
+    try await store.save(general)
+
+    let reloaded = SettingsStore(directory: dir)
+    let chatBack = await reloaded.chat()
+    #expect(chatBack.showStats == false)
+    #expect(chatBack.sendWithEnter == false)
+    #expect(chatBack.exportFormat == .json)
+    let generalBack = await reloaded.general()
+    #expect(generalBack.restoreLastSession == false)
+    #expect(generalBack.fixedMode == AppMode.images)
+}
+
+@Test func residentModelsSurfaceThroughTheKernel() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let governor = MemoryGovernor(
+        totalMemoryMB: 65536, heavyThresholdMB: 1024, defaultWarmWindow: .seconds(300))
+    let kernel = Kernel(directory: dir, adapters: [], governor: governor)
+
+    #expect(await kernel.residentModels().isEmpty)
+    await governor.markLoaded(modelID: "llm", name: "llm", footprintMB: 4000) {}
+    let resident = await kernel.residentModels()
+    #expect(resident.map(\.modelID) == ["llm"])
+    #expect(resident.map(\.origin) == [.governor])
+}
+
+@Test func ollamaLoadedModelsParseTheApiPsPayload() {
+    let payload = """
+        {"models":[{"name":"gemma4:latest","model":"gemma4:latest",\
+        "size":10473229515,"digest":"abc"},{"name":"qwen3.5:latest",\
+        "model":"qwen3.5:latest","size":5242880000}]}
+        """
+    let parsed = OllamaAdapter.parseLoadedModels(Data(payload.utf8))
+    #expect(parsed.map(\.name) == ["gemma4:latest", "qwen3.5:latest"])
+    #expect(parsed[0].sizeMB == 9988)
+    #expect(OllamaAdapter.parseLoadedModels(Data("nonsense".utf8)).isEmpty)
+}
+
+@Test func governorExposesItsDefaultBudget() async {
+    let governor = MemoryGovernor(
+        totalMemoryMB: 32768, heavyThresholdMB: 1024, tightFraction: 0.8,
+        defaultWarmWindow: .seconds(300))
+    #expect(await governor.defaultBudgetMB == 26214)
+}
