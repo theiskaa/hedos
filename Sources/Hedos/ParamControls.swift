@@ -57,41 +57,26 @@ private struct IntSliderControl: View {
     let get: () -> JSONValue?
     let set: (JSONValue?) -> Void
 
-    private var current: Int {
-        intValue(get()) ?? intValue(spec.defaultValue) ?? range.lowerBound
+    private var stored: Int? { intValue(get()) }
+
+    private var thumb: Int {
+        stored ?? intValue(spec.defaultValue)
+            ?? (range.lowerBound + (range.upperBound - range.lowerBound) / 2)
     }
 
     var body: some View {
-        let span = range.upperBound - range.lowerBound
         HStack(spacing: Design.Space.m) {
-            if span <= 128 {
-                Slider(
-                    value: Binding(
-                        get: { Double(current) },
-                        set: { set(.int(Int($0.rounded()))) }),
-                    in: Double(range.lowerBound)...Double(range.upperBound),
-                    step: 1
-                ) {
-                    Text(spec.key)
-                }
-                .labelsHidden()
-                .controlSize(.small)
-            } else {
-                Slider(
-                    value: Binding(
-                        get: { Double(current) },
-                        set: { set(.int(Int($0.rounded()))) }),
-                    in: Double(range.lowerBound)...Double(range.upperBound)
-                ) {
-                    Text(spec.key)
-                }
-                .labelsHidden()
-                .controlSize(.small)
-            }
-            Text("\(current)")
+            InkSlider(
+                range: Double(range.lowerBound)...Double(range.upperBound),
+                value: Double(thumb),
+                isSet: stored != nil,
+                onChange: { set(.int(Int($0.rounded()))) },
+                label: spec.key)
+            Text(stored.map(String.init) ?? "auto")
                 .font(Design.data(11))
                 .monospacedDigit()
-                .frame(minWidth: 24, alignment: .trailing)
+                .foregroundStyle(stored == nil ? Design.inkFaint : Design.ink)
+                .frame(minWidth: 34, alignment: .trailing)
         }
     }
 }
@@ -105,24 +90,22 @@ private struct FloatSliderControl: View {
         let range = spec.doubleRange ?? 0...1
         let step = spec.doubleStep ?? ParamSpec.step(across: range)
         let decimals = ParamSpec.decimals(forStep: step)
-        let current =
-            doubleValue(get()) ?? doubleValue(spec.defaultValue) ?? range.lowerBound
+        let stored = doubleValue(get())
+        let thumb =
+            stored ?? doubleValue(spec.defaultValue)
+            ?? (range.lowerBound + range.upperBound) / 2
         HStack(spacing: Design.Space.m) {
-            Slider(
-                value: Binding(
-                    get: { current },
-                    set: { set(.double(($0 / step).rounded() * step)) }),
-                in: range,
-                step: step
-            ) {
-                Text(spec.key)
-            }
-            .labelsHidden()
-            .controlSize(.small)
-            Text(String(format: "%.\(decimals)f", current))
+            InkSlider(
+                range: range,
+                value: thumb,
+                isSet: stored != nil,
+                onChange: { set(.double(($0 / step).rounded() * step)) },
+                label: spec.key)
+            Text(stored.map { String(format: "%.\(decimals)f", $0) } ?? "auto")
                 .font(Design.data(11))
                 .monospacedDigit()
-                .frame(minWidth: 28, alignment: .trailing)
+                .foregroundStyle(stored == nil ? Design.inkFaint : Design.ink)
+                .frame(minWidth: 34, alignment: .trailing)
         }
     }
 }
@@ -133,22 +116,10 @@ private struct EnumControl: View {
     let set: (JSONValue?) -> Void
 
     var body: some View {
-        Picker(
-            spec.key,
-            selection: Binding(
-                get: {
-                    stringValue(get()) ?? stringValue(spec.defaultValue)
-                        ?? spec.values?.first ?? ""
-                },
-                set: { set(.string($0)) })
-        ) {
-            ForEach(spec.values ?? [], id: \.self) { value in
-                Text(value).tag(value)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
+        InkSegmented(
+            values: spec.values ?? [],
+            selection: stringValue(get()) ?? stringValue(spec.defaultValue),
+            onSelect: { set(.string($0)) })
     }
 }
 
@@ -158,15 +129,18 @@ private struct BoolControl: View {
     let set: (JSONValue?) -> Void
 
     var body: some View {
-        Toggle(
-            spec.key,
-            isOn: Binding(
-                get: { boolValue(get()) ?? boolValue(spec.defaultValue) ?? false },
-                set: { set(.bool($0)) })
-        )
-        .toggleStyle(.switch)
-        .labelsHidden()
-        .controlSize(.small)
+        HStack(spacing: Design.Space.m) {
+            if boolValue(get()) == nil {
+                Text("auto")
+                    .font(Design.data(11))
+                    .foregroundStyle(Design.inkFaint)
+            }
+            InkToggle(
+                isOn: boolValue(get()) ?? boolValue(spec.defaultValue) ?? false,
+                isSet: boolValue(get()) != nil,
+                onToggle: { set(.bool($0)) },
+                label: spec.key)
+        }
     }
 }
 
@@ -174,20 +148,26 @@ private struct StringControl: View {
     let spec: ParamSpec
     let get: () -> JSONValue?
     let set: (JSONValue?) -> Void
+    @State private var draft = ""
+    @State private var seeded = false
 
     var body: some View {
-        TextField(
-            spec.key,
-            text: Binding(
-                get: { stringValue(get()) ?? "" },
-                set: { set($0.isEmpty ? nil : .string($0)) })
+        InkField(
+            placeholder: spec.key,
+            text: $draft,
+            onSubmit: { commit() },
+            onFocusLost: { commit() }
         )
-        .textFieldStyle(.plain)
-        .font(Design.caption)
-        .padding(.horizontal, Design.Space.m)
-        .padding(.vertical, Design.Space.xs)
-        .surfaceCard(radius: Design.Radius.card)
-        .labelsHidden()
+        .onAppear {
+            guard !seeded else { return }
+            draft = stringValue(get()) ?? ""
+            seeded = true
+        }
+        .accessibilityLabel(spec.key)
+    }
+
+    private func commit() {
+        set(draft.isEmpty ? nil : .string(draft))
     }
 }
 
@@ -196,28 +176,30 @@ private struct FreeIntControl: View {
     let get: () -> JSONValue?
     let set: (JSONValue?) -> Void
     let roll: (() -> Void)?
+    @State private var draft = ""
+    @State private var seeded = false
 
     var body: some View {
         HStack(spacing: Design.Space.s) {
-            TextField(
-                spec.key,
-                text: Binding(
-                    get: { intValue(get()).map(String.init) ?? "" },
-                    set: { raw in
-                        if let value = Int(raw.trimmingCharacters(in: .whitespaces)) {
-                            set(.int(value))
-                        } else if raw.isEmpty {
-                            set(nil)
-                        }
-                    }),
-                prompt: Text(roll == nil ? "unset" : "random")
+            InkField(
+                placeholder: roll == nil ? "unset" : "random",
+                text: $draft,
+                font: Design.data(11),
+                onSubmit: { commit() },
+                onFocusLost: { commit() }
             )
-            .textFieldStyle(.plain)
-            .font(Design.data(11))
-            .padding(.horizontal, Design.Space.m)
-            .padding(.vertical, Design.Space.xs)
-            .surfaceCard(radius: Design.Radius.card)
-            .labelsHidden()
+            .onAppear {
+                guard !seeded else { return }
+                draft = intValue(get()).map(String.init) ?? ""
+                seeded = true
+            }
+            .onChange(of: intValue(get())) { _, fresh in
+                let current = Int(draft.trimmingCharacters(in: .whitespaces))
+                if fresh != current {
+                    draft = fresh.map(String.init) ?? ""
+                }
+            }
+            .accessibilityLabel(spec.key)
             if let roll {
                 Button(action: roll) {
                     Image(systemName: "dice")
@@ -228,6 +210,15 @@ private struct FreeIntControl: View {
                 .help("Roll a random \(spec.key)")
                 .accessibilityLabel("Roll a random \(spec.key)")
             }
+        }
+    }
+
+    private func commit() {
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        if let value = Int(trimmed) {
+            set(.int(value))
+        } else if trimmed.isEmpty {
+            set(nil)
         }
     }
 }

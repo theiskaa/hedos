@@ -92,16 +92,9 @@ struct ModelsPane: View {
                     Image(systemName: "magnifyingglass")
                         .font(Design.glyphInline)
                         .foregroundStyle(Design.inkFaint)
-                    TextField("Filter by name", text: $query)
-                        .textFieldStyle(.plain)
-                        .font(Design.caption)
-                        .frame(width: 160)
+                    InkField(placeholder: "Filter by name", text: $query, shape: .capsule)
+                        .frame(width: 180)
                 }
-                .padding(.horizontal, Design.Space.chipX)
-                .padding(.vertical, Design.Space.s)
-                .background(Design.cardFill, in: Capsule())
-                .overlay(
-                    Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
                 ForEach(facets, id: \.self) { candidate in
                     FilterChip(label: candidate.label, isOn: facet == candidate) {
                         facet = facet == candidate ? .all : candidate
@@ -536,41 +529,34 @@ struct ModelConfigureSection: View {
     @State private var promptDraft = ""
     @State private var seeded = false
     @State private var promptCommit: Task<Void, Never>?
-    @FocusState private var aliasFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MicroHeader(title: "Configure")
                 .padding(.bottom, Design.Space.m)
             row("Display name") {
-                TextField(record.name, text: $aliasDraft)
-                    .textFieldStyle(.plain)
-                    .font(Design.caption)
-                    .foregroundStyle(Design.ink)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 190)
-                    .focused($aliasFocused)
-                    .onSubmit { commitAlias() }
-                    .accessibilityLabel("Display name")
+                InkField(
+                    placeholder: record.name,
+                    text: $aliasDraft,
+                    onSubmit: { commitAlias() },
+                    onFocusLost: { commitAlias() }
+                )
+                .frame(width: 200)
+                .accessibilityLabel("Display name")
             }
             if record.capabilities.contains(.chat) {
                 Divider()
                 VStack(alignment: .leading, spacing: Design.Space.xs) {
-                    Text("System prompt")
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkFaint)
-                    TextField(
-                        "Prepended to every conversation — optional",
-                        text: $promptDraft, axis: .vertical
-                    )
-                    .textFieldStyle(.plain)
-                    .font(Design.caption)
-                    .foregroundStyle(Design.ink)
-                    .lineLimit(2...6)
-                    .padding(.horizontal, Design.Space.chipX)
-                    .padding(.vertical, Design.Space.s)
-                    .surfaceCard(radius: Design.Radius.inner)
-                    .accessibilityLabel("System prompt")
+                    HStack(spacing: Design.Space.s) {
+                        Text("System prompt")
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint)
+                        Text("· prepended to every conversation")
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint.opacity(0.7))
+                    }
+                    InkTextArea(placeholder: "Optional", text: $promptDraft)
+                        .accessibilityLabel("System prompt")
                 }
                 .padding(.vertical, Design.Space.m)
             }
@@ -581,6 +567,9 @@ struct ModelConfigureSection: View {
             if !record.params.isEmpty {
                 Divider()
                 HStack {
+                    Text("Overrides apply to the next generation.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
                     Spacer()
                     Button("Reset to model defaults") {
                         let shell = shell
@@ -590,14 +579,12 @@ struct ModelConfigureSection: View {
                             await shell.library.refreshShelf()
                         }
                     }
-                    .buttonStyle(.plain)
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkSoft)
+                    .buttonStyle(QuietButtonStyle())
                     .disabled(record.paramValues.isEmpty)
                 }
                 .padding(.vertical, Design.Space.m)
             }
-            Text("Unset values are left to the model — nothing is sent unless you set it.")
+            Text("Auto means the model decides — nothing is sent unless you set it.")
                 .font(Design.label)
                 .foregroundStyle(Design.inkFaint)
                 .padding(.top, Design.Space.m)
@@ -606,9 +593,6 @@ struct ModelConfigureSection: View {
         .onChange(of: record.id) {
             seeded = false
             seedDrafts()
-        }
-        .onChange(of: aliasFocused) { _, focused in
-            if !focused { commitAlias() }
         }
         .onChange(of: promptDraft) {
             guard seeded else { return }
@@ -639,12 +623,37 @@ struct ModelConfigureSection: View {
         .padding(.vertical, Design.Space.m)
     }
 
+    @ViewBuilder
     private func parameterRow(_ spec: ParamSpec) -> some View {
-        HStack(alignment: .center, spacing: Design.Space.s) {
-            Text(spec.key.uppercased())
-                .font(Design.micro)
-                .tracking(Design.microTracking)
-                .foregroundStyle(Design.inkFaint)
+        if spec.type == .enumeration {
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                parameterLabel(spec)
+                ParamControl(
+                    spec: spec,
+                    get: { record.paramValues[spec.key] },
+                    set: { value in write(spec.key, value) })
+            }
+            .padding(.vertical, Design.Space.chipX)
+        } else {
+            HStack(alignment: .center, spacing: Design.Space.s) {
+                parameterLabel(spec)
+                Spacer(minLength: Design.Space.l)
+                ParamControl(
+                    spec: spec,
+                    get: { record.paramValues[spec.key] },
+                    set: { value in write(spec.key, value) })
+                    .frame(width: 190)
+            }
+            .padding(.vertical, Design.Space.chipX)
+        }
+    }
+
+    private func parameterLabel(_ spec: ParamSpec) -> some View {
+        HStack(spacing: Design.Space.s) {
+            Text(humanized(spec.key))
+                .font(Design.caption)
+                .foregroundStyle(
+                    record.paramValues[spec.key] != nil ? Design.ink : Design.inkSoft)
             if record.paramValues[spec.key] != nil {
                 Circle()
                     .fill(Design.ink)
@@ -661,14 +670,13 @@ struct ModelConfigureSection: View {
                 .help("Clear the override")
                 .accessibilityLabel("Clear \(spec.key) override")
             }
-            Spacer(minLength: Design.Space.l)
-            ParamControl(
-                spec: spec,
-                get: { record.paramValues[spec.key] },
-                set: { value in write(spec.key, value) })
-                .frame(width: 190)
         }
-        .padding(.vertical, Design.Space.m)
+    }
+
+    private func humanized(_ key: String) -> String {
+        key.split(separator: "_")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
     }
 
     private func write(_ key: String, _ value: JSONValue?) {
