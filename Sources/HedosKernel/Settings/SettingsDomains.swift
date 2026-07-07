@@ -22,24 +22,43 @@ extension KeyedDecodingContainer {
     }
 }
 
+public struct QuickAskHotkey: Codable, Sendable, Hashable {
+    public var keyCode: Int
+    public var modifiers: Int
+
+    public init(keyCode: Int, modifiers: Int) {
+        self.keyCode = keyCode
+        self.modifiers = modifiers
+    }
+}
+
 public struct GeneralSettings: SettingsDomain {
     public static let domainName = "general"
 
     public var restoreLastSession: Bool
     public var fixedMode: AppMode?
+    public var quickAskHotkey: QuickAskHotkey?
+    public var menuBarItem: Bool
 
     public init() {
         restoreLastSession = true
         fixedMode = nil
+        quickAskHotkey = nil
+        menuBarItem = false
     }
 
-    public init(restoreLastSession: Bool, fixedMode: AppMode? = nil) {
+    public init(
+        restoreLastSession: Bool, fixedMode: AppMode? = nil,
+        quickAskHotkey: QuickAskHotkey? = nil, menuBarItem: Bool = false
+    ) {
         self.restoreLastSession = restoreLastSession
         self.fixedMode = fixedMode
+        self.quickAskHotkey = quickAskHotkey
+        self.menuBarItem = menuBarItem
     }
 
     enum CodingKeys: String, CodingKey {
-        case restoreLastSession, fixedMode
+        case restoreLastSession, fixedMode, quickAskHotkey, menuBarItem
     }
 
     public init(from decoder: any Decoder) throws {
@@ -51,6 +70,9 @@ public struct GeneralSettings: SettingsDomain {
         restoreLastSession = container.lenient(
             Bool.self, .restoreLastSession, fallback: defaults.restoreLastSession)
         fixedMode = container.lenient(AppMode.self, .fixedMode)
+        quickAskHotkey = container.lenient(QuickAskHotkey.self, .quickAskHotkey)
+        menuBarItem = container.lenient(
+            Bool.self, .menuBarItem, fallback: defaults.menuBarItem)
     }
 }
 
@@ -275,25 +297,33 @@ public struct AppearanceSettings: SettingsDomain {
     public var theme: Theme
     public var chatWidth: ChatWidth
     public var density: Density
+    public var uiFont: String?
+    public var monoFont: String?
 
     public init() {
         theme = .system
         chatWidth = .comfortable
         density = .relaxed
+        uiFont = nil
+        monoFont = nil
     }
 
     public init(
         theme: Theme = .system,
         chatWidth: ChatWidth = .comfortable,
-        density: Density = .relaxed
+        density: Density = .relaxed,
+        uiFont: String? = nil,
+        monoFont: String? = nil
     ) {
         self.theme = theme
         self.chatWidth = chatWidth
         self.density = density
+        self.uiFont = uiFont
+        self.monoFont = monoFont
     }
 
     enum CodingKeys: String, CodingKey {
-        case theme, chatWidth, density
+        case theme, chatWidth, density, uiFont, monoFont
     }
 
     public init(from decoder: any Decoder) throws {
@@ -305,6 +335,8 @@ public struct AppearanceSettings: SettingsDomain {
         theme = container.lenient(Theme.self, .theme, fallback: defaults.theme)
         chatWidth = container.lenient(ChatWidth.self, .chatWidth, fallback: defaults.chatWidth)
         density = container.lenient(Density.self, .density, fallback: defaults.density)
+        uiFont = container.lenient(String.self, .uiFont)
+        monoFont = container.lenient(String.self, .monoFont)
     }
 }
 

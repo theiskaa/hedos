@@ -36,6 +36,8 @@ private func waitUntil(
     appearance.theme = .dark
     appearance.chatWidth = .wide
     appearance.density = .compact
+    appearance.uiFont = "Avenir Next"
+    appearance.monoFont = "Menlo"
     var advanced = AdvancedSettings()
     advanced.jobHistoryLimit = 200
 
@@ -244,6 +246,31 @@ private func waitUntil(
     #expect(await kernel.scheduler.history.limit == 2)
 }
 
+@Test func appearanceFontPairIsSparseAndLenient() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let settingsDir = dir.appendingPathComponent("settings")
+    try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+    try """
+        {"theme": "dark", "uiFont": 42, "monoFont": ["Menlo"]}
+        """.write(
+        to: settingsDir.appendingPathComponent("appearance.json"), atomically: true,
+        encoding: .utf8)
+
+    let store = SettingsStore(directory: dir)
+    let appearance = await store.appearance()
+    #expect(appearance.theme == .dark)
+    #expect(appearance.uiFont == nil)
+    #expect(appearance.monoFont == nil)
+
+    var chosen = appearance
+    chosen.uiFont = "Charter"
+    try await store.save(chosen)
+    let reloaded = await SettingsStore(directory: dir).appearance()
+    #expect(reloaded.uiFont == "Charter")
+    #expect(reloaded.monoFont == nil)
+}
+
 @Test func chatAndGeneralSettingsCarryTheirNewFields() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -260,8 +287,12 @@ private func waitUntil(
 
     var general = await store.general()
     #expect(general.fixedMode == nil)
+    #expect(general.quickAskHotkey == nil)
+    #expect(general.menuBarItem == false)
     general.restoreLastSession = false
     general.fixedMode = AppMode.images
+    general.quickAskHotkey = QuickAskHotkey(keyCode: 49, modifiers: 768)
+    general.menuBarItem = true
     try await store.save(general)
 
     let reloaded = SettingsStore(directory: dir)
@@ -272,6 +303,8 @@ private func waitUntil(
     let generalBack = await reloaded.general()
     #expect(generalBack.restoreLastSession == false)
     #expect(generalBack.fixedMode == AppMode.images)
+    #expect(generalBack.quickAskHotkey == QuickAskHotkey(keyCode: 49, modifiers: 768))
+    #expect(generalBack.menuBarItem == true)
 }
 
 @Test func residentModelsSurfaceThroughTheKernel() async throws {
