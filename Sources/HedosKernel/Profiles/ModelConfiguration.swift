@@ -19,10 +19,13 @@ extension ModelRecord {
 
 enum ModelConfiguration {
     static func merged(
-        record: ModelRecord, capability: Capability, payload: JSONValue
+        record: ModelRecord, capability: Capability, payload: JSONValue,
+        fallbackPrompt: String? = nil
     ) -> JSONValue {
         let overrides = record.normalizedParamValues()
-        let prompt = capability == .chat ? trimmedSystemPrompt(record) : nil
+        let prompt =
+            capability == .chat
+            ? (trimmedSystemPrompt(record) ?? trimmed(fallbackPrompt)) : nil
         guard !overrides.isEmpty || prompt != nil else { return payload }
         guard var fields = objectFields(payload) else { return payload }
         for (key, value) in overrides where fields[key] == nil {
@@ -35,9 +38,13 @@ enum ModelConfiguration {
     }
 
     private static func trimmedSystemPrompt(_ record: ModelRecord) -> String? {
-        guard let prompt = record.systemPrompt else { return nil }
-        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        trimmed(record.systemPrompt)
+    }
+
+    private static func trimmed(_ prompt: String?) -> String? {
+        guard let prompt else { return nil }
+        let cleaned = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     private static func objectFields(_ payload: JSONValue) -> [String: JSONValue]? {

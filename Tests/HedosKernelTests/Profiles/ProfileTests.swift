@@ -335,3 +335,42 @@ private func speechRecord() -> ModelRecord {
     #expect(body["think"] as? Bool == true)
     #expect(body["temperature"] == nil)
 }
+
+@Test func globalDefaultPromptFallsBackWhenModelHasNone() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let log = PayloadLog()
+    let kernel = Kernel(directory: dir, adapters: [CapturingAdapter(log: log)])
+    let record = capturedTextRecord()
+    try await kernel.registry.register(record)
+
+    var chat = await kernel.chatSettings()
+    chat.defaultSystemPrompt = "Answer in one sentence."
+    try await kernel.updateChatSettings(chat)
+
+    let stream = try await kernel.chat(record.id, messages: [.init(role: .user, content: "hi")])
+    for try await _ in stream {}
+    var fields = try #require(log.lastFields)
+    guard case .array(let turns)? = fields["messages"] else {
+        Issue.record("expected messages array")
+        return
+    }
+    #expect(
+        turns.first
+            == .object([
+                "role": .string("system"), "content": .string("Answer in one sentence."),
+            ]))
+
+    try await kernel.setSystemPrompt(record.id, to: "Be brief.")
+    let second = try await kernel.chat(
+        record.id, messages: [.init(role: .user, content: "hi again")])
+    for try await _ in second {}
+    fields = try #require(log.lastFields)
+    guard case .array(let secondTurns)? = fields["messages"] else {
+        Issue.record("expected messages array")
+        return
+    }
+    #expect(
+        secondTurns.first
+            == .object(["role": .string("system"), "content": .string("Be brief.")]))
+}
