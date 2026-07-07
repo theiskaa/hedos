@@ -324,6 +324,8 @@ struct ImagesSurface: View {
     @State private var showParams = false
     @State private var confirmingDelete: Artifact?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.conversationWidth) private var conversationWidth
+    @Environment(\.transcriptSpacing) private var transcriptSpacing
 
     private var model: ImagesViewModel { shell.images }
     private var boundRecord: ModelRecord? {
@@ -379,7 +381,7 @@ struct ImagesSurface: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Design.Space.xxl) {
+                LazyVStack(alignment: .leading, spacing: transcriptSpacing) {
                     if chronological.isEmpty && !model.isBusy {
                         emptyTranscript
                     }
@@ -397,7 +399,7 @@ struct ImagesSurface: View {
                 }
                 .padding(.horizontal, Design.Space.xxl)
                 .padding(.vertical, Design.Space.xxl)
-                .frame(maxWidth: Design.conversationMaxWidth, alignment: .leading)
+                .frame(maxWidth: conversationWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .onChange(of: model.arranged.count) {

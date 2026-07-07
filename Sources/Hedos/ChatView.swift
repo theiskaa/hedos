@@ -227,6 +227,9 @@ struct ChatView: View {
     let library: LibraryViewModel
     let kernel: Kernel
     let onOpenArtifacts: ((String) -> Void)?
+    @Environment(\.chatShowsStats) private var showsStats
+    @Environment(\.conversationWidth) private var conversationWidth
+    @Environment(\.transcriptSpacing) private var transcriptSpacing
     @State private var model: ChatViewModel
     @State private var followsStream = true
     @State private var expandedThinking: Set<String> = []
@@ -278,7 +281,7 @@ struct ChatView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Design.Space.xxl) {
+                LazyVStack(alignment: .leading, spacing: transcriptSpacing) {
                     if model.transcript.isEmpty {
                         emptyTranscript
                     }
@@ -289,7 +292,7 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, Design.Space.xxl)
                 .padding(.vertical, Design.Space.xxl)
-                .frame(maxWidth: Design.conversationMaxWidth, alignment: .leading)
+                .frame(maxWidth: conversationWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -347,7 +350,7 @@ struct ChatView: View {
                 ForEach(entry.artifactRefs, id: \.self) { reference in
                     artifactCard(reference)
                 }
-                if let stats = entry.stats, !entry.text.isEmpty {
+                if showsStats, let stats = entry.stats, !entry.text.isEmpty {
                     statsLine(stats)
                 }
                 previousVersionsAffordance(entry)

@@ -82,6 +82,7 @@ final class VoiceSurfaceModel {
     var voice = "af_heart"
     var voices: [String] = []
     var boundModelID: String?
+    private var boundSpeedIsConfigured = false
     var pendingText: String?
     var status: String?
     var notice: String?
@@ -113,11 +114,15 @@ final class VoiceSurfaceModel {
     func bind(to record: ModelRecord) async {
         guard boundModelID != record.id || voices.isEmpty else { return }
         boundModelID = record.id
+        boundSpeedIsConfigured = record.paramValues["speed"] != nil
         voices = (try? await kernel.voices(record.id)) ?? []
+        let fallback = (try? await kernel.voiceSettings().defaultVoice) ?? nil
         if case .string(let configured)? = record.paramValues["voice"],
             voices.contains(configured)
         {
             voice = configured
+        } else if let fallback, voices.contains(fallback) {
+            voice = fallback
         } else if !voices.contains(voice), let first = voices.first {
             voice = first
         }
@@ -173,12 +178,18 @@ final class VoiceSurfaceModel {
             var pcm = Data()
             var sampleRate = 24000
             do {
+                var payload: [String: JSONValue] = [
+                    "text": .string(content),
+                    "voice": .string(voice),
+                ]
+                if !boundSpeedIsConfigured {
+                    let speed = (try? await kernel.voiceSettings().speed) ?? 1.0
+                    if speed != 1.0 {
+                        payload["speed"] = .double(speed)
+                    }
+                }
                 let stream = try await kernel.invoke(
-                    modelID, .speak,
-                    payload: .object([
-                        "text": .string(content),
-                        "voice": .string(voice),
-                    ]))
+                    modelID, .speak, payload: .object(payload))
                 for try await chunk in stream {
                     switch chunk {
                     case .status(let message):
@@ -273,6 +284,8 @@ struct VoiceSurface: View {
     @Bindable var shell: ShellModel
     @State private var deleting: Artifact?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.conversationWidth) private var conversationWidth
+    @Environment(\.transcriptSpacing) private var transcriptSpacing
 
     private var model: VoiceSurfaceModel { shell.voice }
     private var boundRecord: ModelRecord? {
@@ -320,7 +333,7 @@ struct VoiceSurface: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Design.Space.xxl) {
+                LazyVStack(alignment: .leading, spacing: transcriptSpacing) {
                     if model.utterances.isEmpty && model.pendingText == nil {
                         emptyTranscript
                     }
@@ -334,7 +347,7 @@ struct VoiceSurface: View {
                 }
                 .padding(.horizontal, Design.Space.xxl)
                 .padding(.vertical, Design.Space.xxl)
-                .frame(maxWidth: Design.conversationMaxWidth, alignment: .leading)
+                .frame(maxWidth: conversationWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
             .onChange(of: model.utterances.count) {
