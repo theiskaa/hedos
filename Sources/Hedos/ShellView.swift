@@ -469,7 +469,7 @@ struct ChatPane: View {
             ) {
                 VStack(spacing: Design.Space.l) {
                     if let record = Launcher.defaultChatModel(in: shell.library.records) {
-                        Button("New chat with \(record.name)") {
+                        Button("New chat with \(record.displayName)") {
                             shell.newChat()
                         }
                         .buttonStyle(InkButtonStyle())
@@ -493,7 +493,7 @@ struct ChatPane: View {
 
     private var newChatHelp: String {
         if let record = Launcher.defaultChatModel(in: shell.library.records) {
-            return "Start a new chat with \(record.name)"
+            return "Start a new chat with \(record.displayName)"
         }
         return "No chat-capable model is ready yet"
     }
@@ -762,7 +762,7 @@ private struct ChatSessionRow: View {
     private var subtitle: String {
         var parts: [String] = []
         if let modelID = session.modelID {
-            parts.append(shell.library.record(id: modelID)?.name ?? modelID)
+            parts.append(shell.library.record(id: modelID)?.displayName ?? modelID)
         }
         parts.append(session.updatedAt.formatted(.relative(presentation: .named)))
         return parts.joined(separator: " · ")

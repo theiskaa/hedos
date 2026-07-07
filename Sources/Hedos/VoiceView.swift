@@ -383,7 +383,7 @@ struct VoiceSurface: View {
     private var emptyTranscript: some View {
         Text(
             boundRecord.map {
-                "Give \($0.name) something to say — every take lands here, playable and downloadable."
+                "Give \($0.displayName) something to say — every take lands here, playable and downloadable."
             } ?? "When a voice model lands on your shelf, it speaks from here."
         )
         .font(Design.caption)
@@ -392,7 +392,7 @@ struct VoiceSurface: View {
     }
 
     private var placeholder: String {
-        boundRecord.map { "What should \($0.name) say?" } ?? "What should your Mac say?"
+        boundRecord.map { "What should \($0.displayName) say?" } ?? "What should your Mac say?"
     }
 
     private var speakable: Bool {
@@ -401,7 +401,7 @@ struct VoiceSurface: View {
     }
 
     private var modelChip: some View {
-        ChipMenu(title: boundRecord?.name ?? "Choose model") {
+        ChipMenu(title: boundRecord?.displayName ?? "Choose model") {
             let runnable = model.runnableModels(in: shell.library.records)
             if runnable.isEmpty {
                 Text("No voice model is ready.")
@@ -415,9 +415,9 @@ struct VoiceSurface: View {
                     }
                 } label: {
                     if record.id == model.boundModelID {
-                        Label(record.name, systemImage: "checkmark")
+                        Label(record.displayName, systemImage: "checkmark")
                     } else {
-                        Text(record.name)
+                        Text(record.displayName)
                     }
                 }
             }

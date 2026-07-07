@@ -496,7 +496,7 @@ struct ChatView: View {
 
     private var emptyTranscript: some View {
         Text(
-            boundRecord.map { "Chatting with \($0.name), locally." }
+            boundRecord.map { "Chatting with \($0.displayName), locally." }
                 ?? "Pick a model to start this conversation."
         )
         .font(Design.caption)
@@ -505,7 +505,7 @@ struct ChatView: View {
     }
 
     private var modelChip: some View {
-        ChipMenu(title: boundRecord?.name ?? "Choose model") {
+        ChipMenu(title: boundRecord?.displayName ?? "Choose model") {
             if chatGroups.isEmpty {
                 Text("No chat-capable model is ready.")
             }
@@ -526,7 +526,7 @@ struct ChatView: View {
             }
             if let bound = boundRecord, bound.id != model.defaultModelID {
                 Divider()
-                Button("Make \(bound.name) the Default") {
+                Button("Make \(bound.displayName) the Default") {
                     model.makeDefault(bound)
                 }
             }
@@ -543,7 +543,7 @@ struct ChatView: View {
     }
 
     private func menuTitle(_ record: ModelRecord) -> String {
-        var parts = [record.name]
+        var parts = [record.displayName]
         parts.append(record.runtime.tier == .native ? "native" : "managed")
         if record.id == model.defaultModelID {
             parts.append("default")
@@ -552,7 +552,7 @@ struct ChatView: View {
     }
 
     private var placeholder: String {
-        boundRecord.map { "Message \($0.name)…" } ?? "Pick a model first…"
+        boundRecord.map { "Message \($0.displayName)…" } ?? "Pick a model first…"
     }
 
     private var sendable: Bool {
