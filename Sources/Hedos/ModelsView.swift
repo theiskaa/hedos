@@ -262,10 +262,15 @@ struct ModelCard: View {
                     .font(Design.data(11))
                     .foregroundStyle(Design.inkSoft)
                     Spacer()
-                    Text(MetaGrid.tierWord(record.runtime.tier).uppercased())
-                        .font(Design.micro)
-                        .tracking(Design.microTracking)
-                        .foregroundStyle(Design.inkFaint)
+                    Text(
+                        [MetaGrid.tierWord(record.runtime.tier), Fit.short(record)]
+                            .compactMap { $0 }
+                            .joined(separator: " · ")
+                            .uppercased()
+                    )
+                    .font(Design.micro)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(Design.inkFaint)
                 }
             }
             .padding(Design.Space.tile)
@@ -348,7 +353,7 @@ struct ModelDetailSheet: View {
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.bottom, Design.Space.gutter)
         }
-        .frame(width: 440, height: record.runtime.tier == .recipeNeeded ? 420 : 560)
+        .frame(width: Design.Sheet.modelDetailWidth, height: record.runtime.tier == .recipeNeeded ? Design.Sheet.modelRecipeHeight : Design.Sheet.modelDetailHeight)
         .task(id: record.id) {
             guard record.runtime.tier == .recipeNeeded else { return }
             let record = record
@@ -427,11 +432,36 @@ struct ModelDetailSheet: View {
                 Divider()
                 specRow("Size", DiscoverySummary.formatBytes(Int64(mb) << 20), mono: true)
             }
+            if let fit = Fit.label(record) {
+                Divider()
+                specRow("Fit", fit)
+            }
             if let path = record.primaryWeightPath ?? record.source.path as String? {
                 Divider()
                 specRow("Path", (path as NSString).abbreviatingWithTildeInPath)
             }
+            if let group = Fit.duplicateInsight(record, in: shell.library.summary) {
+                Divider()
+                duplicateCard(group)
+            }
         }
+    }
+
+    private func duplicateCard(_ group: DuplicateGroup) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.xs) {
+            Text("Shared weights".uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+            Text(
+                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")) — \(DiscoverySummary.formatBytes(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
+            )
+            .font(Design.caption)
+            .foregroundStyle(Design.inkSoft)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, Design.Space.m)
+        .accessibilityIdentifier("duplicate-insight")
     }
 
     private func specRow(_ label: String, _ value: String, mono: Bool = false) -> some View {

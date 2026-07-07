@@ -149,8 +149,8 @@ struct FoldersPopover: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 300)
-        .frame(maxHeight: 340)
+        .frame(width: Design.Popover.form.width)
+        .frame(maxHeight: Design.Popover.form.height)
     }
 }
 
