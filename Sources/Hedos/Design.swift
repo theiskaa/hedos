@@ -269,7 +269,18 @@ struct InkButtonStyle: ButtonStyle {
 struct FilterChip: View {
     let label: String
     let isOn: Bool
+    var mark: SourceKind? = nil
     let action: () -> Void
+
+    init(
+        label: String, isOn: Bool, mark: SourceKind? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.label = label
+        self.isOn = isOn
+        self.mark = mark
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {
@@ -277,6 +288,9 @@ struct FilterChip: View {
                 if isOn {
                     Image(systemName: "checkmark")
                         .font(Design.glyphSmall.weight(.bold))
+                }
+                if let mark {
+                    SourceMark(kind: mark, size: 12)
                 }
                 Text(label)
                     .font(Design.caption.weight(isOn ? .semibold : .medium))
