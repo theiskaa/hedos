@@ -490,8 +490,7 @@ struct ImagesSurface: View {
                     Button("Cancel") {
                         model.cancel()
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(QuietButtonStyle())
                     .keyboardShortcut(.cancelAction)
                 }
             }
@@ -521,8 +520,7 @@ struct ImagesSurface: View {
             Button("Copy details") {
                 model.copyFailureDetails()
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(QuietButtonStyle())
         }
         .responseShell()
     }

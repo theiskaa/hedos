@@ -39,8 +39,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                 .foregroundStyle(Design.inkSoft)
             if let noticeActionLabel, let noticeAction {
                 Button(noticeActionLabel, action: noticeAction)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(QuietButtonStyle())
             }
             Spacer()
         }

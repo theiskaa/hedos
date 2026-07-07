@@ -370,14 +370,12 @@ struct ChatView: View {
                         .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
             HStack(spacing: 8) {
                 Button("Cancel") { editingEntryID = nil }
-                    .controlSize(.small)
-                    .buttonStyle(.bordered)
+                    .buttonStyle(QuietButtonStyle())
                 Button("Send") {
                     editingEntryID = nil
                     model.edit(entry, text: editText)
                 }
-                .controlSize(.small)
-                .buttonStyle(.bordered)
+                .buttonStyle(QuietButtonStyle())
                 .disabled(
                     editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
