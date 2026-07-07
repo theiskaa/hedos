@@ -45,39 +45,36 @@ struct ModelsPane: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            filterRow
-                .padding(.top, Design.Space.l)
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
-            grid
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .navigationTitle("Models")
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
+            PaneHeader(title: "Models") {
                 if shell.library.isScanning {
                     ProgressView()
                         .controlSize(.small)
                 }
-                Button {
+                QuietIconButton(glyph: "folder.badge.plus") {
                     showFolders.toggle()
-                } label: {
-                    Image(systemName: "folder.badge.plus")
                 }
                 .help("Watched folders")
                 .accessibilityLabel("Watched folders")
                 .popover(isPresented: $showFolders, arrowEdge: .bottom) {
-                    FoldersPopover(model: shell.library)
+                    FoldersPopover(model: shell.library) {
+                        showFolders = false
+                        shell.settingsTarget = SettingsDestination(
+                            section: .models, anchor: "models.folders")
+                        SettingsWindowController.shared.show(shell: shell)
+                    }
                 }
-                Button {
+                QuietIconButton(glyph: "arrow.clockwise") {
                     Task { await shell.library.rescan() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
                 }
                 .disabled(shell.library.isScanning)
                 .help("Scan the machine again")
                 .accessibilityLabel("Rescan")
             }
+            filterRow
+            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
+            grid
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .modalScrim(
             isPresented: shell.library.record(id: presented) != nil,
             onDismiss: { presented = nil }

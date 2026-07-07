@@ -61,6 +61,7 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
+            await SettingsModel.active?.flush()
             await MemoryGovernor.shared.suspendForQuit()
             await SidecarSupervisor.shared.terminateAll()
             await MainActor.run {
@@ -88,6 +89,7 @@ struct HedosApp: App {
                     NSApp.activate(ignoringOtherApps: true)
                 }
         }
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Hedos") {
@@ -96,9 +98,15 @@ struct HedosApp: App {
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
-                    shell.setMode(.settings)
+                    SettingsWindowController.shared.show(shell: shell)
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+            CommandGroup(after: .textEditing) {
+                Button("Find Chats") {
+                    shell.focusChatSearch()
+                }
+                .keyboardShortcut("f", modifiers: .command)
             }
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") {
@@ -115,7 +123,7 @@ struct HedosApp: App {
                 }
             }
             CommandGroup(before: .toolbar) {
-                ForEach(AppMode.allCases, id: \.self) { mode in
+                ForEach(AppMode.allCases.filter { $0 != .settings }, id: \.self) { mode in
                     Button(Design.modeTitle(mode)) {
                         shell.setMode(mode)
                     }
@@ -123,7 +131,7 @@ struct HedosApp: App {
                         KeyEquivalent(Character("\(mode.ordinal)")), modifiers: .command)
                 }
                 Divider()
-                Button(shell.sidebarCollapsed ? "Show Sidebar" : "Hide Sidebar") {
+                Button(shell.sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar") {
                     shell.setSidebarCollapsed(!shell.sidebarCollapsed)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])

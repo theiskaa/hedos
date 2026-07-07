@@ -8,6 +8,7 @@ final class ShellModel {
     let library: LibraryViewModel
     let images: ImagesViewModel
     let voice: VoiceSurfaceModel
+    let settings: SettingsModel
 
     var mode: AppMode = .library
     var chatSelection: String?
@@ -17,6 +18,9 @@ final class ShellModel {
     var sessions: [ChatSession] = []
     var sidebarCollapsed = false
     var isFullscreen = false
+    var settingsTarget: SettingsDestination?
+    var chatSearchFocusTick = 0
+    private var started = false
 
     var kernel: Kernel { library.kernel }
 
@@ -25,15 +29,20 @@ final class ShellModel {
         self.library = library
         self.images = ImagesViewModel(kernel: library.kernel)
         self.voice = VoiceSurfaceModel(kernel: library.kernel)
+        self.settings = SettingsModel(kernel: library.kernel)
     }
 
     init(library: LibraryViewModel) {
         self.library = library
         self.images = ImagesViewModel(kernel: library.kernel)
         self.voice = VoiceSurfaceModel(kernel: library.kernel)
+        self.settings = SettingsModel(kernel: library.kernel)
     }
 
     func start() async {
+        guard !started else { return }
+        started = true
+        await settings.load()
         if let restored = try? await kernel.shellState() {
             mode = restored.mode
             chatSelection = restored.chatSessionID
@@ -42,18 +51,37 @@ final class ShellModel {
             librarySelection = restored.libraryModelID
             sidebarCollapsed = restored.sidebarCollapsed
         }
+        if !settings.general.restoreLastSession {
+            mode = settings.general.fixedMode ?? .library
+        }
+        if mode == .settings {
+            mode = .library
+        }
         await refreshSessions()
         await library.rescan()
     }
 
+    func focusChatSearch() {
+        if mode != .chat {
+            setMode(.chat)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            chatSearchFocusTick += 1
+        }
+    }
+
     func setSidebarCollapsed(_ collapsed: Bool) {
         guard sidebarCollapsed != collapsed else { return }
-        sidebarCollapsed = collapsed
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+            sidebarCollapsed = collapsed
+        }
         persist()
     }
 
     func setMode(_ newMode: AppMode) {
-        guard mode != newMode else { return }
+        guard mode != newMode, newMode != .settings else { return }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         withAnimation(Design.motion(reduceMotion: reduceMotion)) {
             mode = newMode
@@ -199,31 +227,34 @@ final class ShellModel {
 struct ShellView: View {
     @Bindable var shell: ShellModel
 
-    @State private var hoveredMode: AppMode?
-
     var body: some View {
-        NavigationSplitView(
-            columnVisibility: Binding(
-                get: { shell.sidebarCollapsed ? .detailOnly : .all },
-                set: { shell.setSidebarCollapsed($0 == .detailOnly) })
-        ) {
-            sidebar
-                .padding(.top, shell.isFullscreen ? Design.Space.l : 0)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
-        } detail: {
+        HStack(spacing: 0) {
+            HedosSidebar(shell: shell)
+            Rectangle()
+                .fill(Design.line)
+                .frame(width: 1)
             pane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
                     Design.paper.ignoresSafeArea()
                 }
         }
+        .ignoresSafeArea(.container, edges: .top)
+        .scrollEdgeEffectStyle(.none, for: .top)
         .frame(minWidth: 860, minHeight: 520)
         .containerBackground(Design.paper, for: .window)
-        .toolbarBackground(
-            shell.isFullscreen ? AnyShapeStyle(Design.paper) : AnyShapeStyle(.clear),
-            for: .windowToolbar
+        .environment(
+            \.conversationWidth,
+            shell.settings.appearance.chatWidth == .wide
+                ? Design.conversationWideWidth : Design.conversationMaxWidth
         )
-        .toolbarBackgroundVisibility(
-            shell.isFullscreen ? .visible : .automatic, for: .windowToolbar)
+        .environment(
+            \.transcriptSpacing,
+            shell.settings.appearance.density == .compact
+                ? Design.Space.l : Design.Space.xxl
+        )
+        .environment(\.chatShowsStats, shell.settings.chat.showStats)
+        .environment(\.sendWithEnter, shell.settings.chat.sendWithEnter)
         .tint(Design.ink)
         .onReceive(
             NotificationCenter.default.publisher(
@@ -244,49 +275,6 @@ struct ShellView: View {
         .task { await shell.start() }
     }
 
-    private var sidebar: some View {
-        List {
-            ForEach([AppMode.chat, .images, .voice, .library], id: \.self) { mode in
-                RailRow(shell: shell, mode: mode, hovered: $hoveredMode)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(
-                        EdgeInsets(
-                            top: Design.Space.xxs, leading: -Design.Space.chipX,
-                            bottom: Design.Space.xxs, trailing: Design.Space.m))
-            }
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: Design.Space.chipX) {
-                    HeptagonMark(size: 22, color: Design.ink)
-                    Text("Hedos")
-                        .font(.system(size: 17, weight: .semibold))
-                        .tracking(Design.tightTracking)
-                        .foregroundStyle(Design.ink)
-                    Spacer()
-                }
-                .padding(.horizontal, Design.Space.xl)
-                .padding(.top, Design.Space.s)
-                .padding(.bottom, Design.Space.xl)
-                .accessibilityLabel("Hedos")
-                Rectangle()
-                    .fill(Design.line)
-                    .frame(height: Design.hairlineWidth)
-                    .padding(.horizontal, Design.Space.l)
-                Color.clear.frame(height: Design.Space.m)
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            RailRow(shell: shell, mode: .settings, hovered: $hoveredMode)
-                .padding(.leading, Design.Space.s)
-                .padding(.trailing, Design.Space.m)
-                .padding(.vertical, Design.Space.l)
-        }
-        .accessibilityIdentifier("shell-rail")
-    }
-
     @ViewBuilder
     private var pane: some View {
         switch shell.mode {
@@ -303,56 +291,139 @@ struct ShellView: View {
             ModelsPane(shell: shell)
                 .transition(.opacity)
         case .settings:
-            SettingsPane()
+            ModelsPane(shell: shell)
                 .transition(.opacity)
         }
     }
 }
 
-struct RailRow: View {
-    let shell: ShellModel
-    let mode: AppMode
-    @Binding var hovered: AppMode?
+struct HedosSidebar: View {
+    @Bindable var shell: ShellModel
+    @State private var hovered: AppMode?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var selected: Bool { shell.mode == mode }
-    private var hovering: Bool { hovered == mode }
+    private func groupTitle(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(Design.micro)
+            .tracking(Design.microTracking)
+            .foregroundStyle(Design.inkFaint)
+            .padding(.horizontal, Design.Space.l)
+            .padding(.top, Design.Space.l)
+            .padding(.bottom, Design.Space.xxs)
+    }
 
     var body: some View {
-        Button {
-            shell.setMode(mode)
-        } label: {
-            HStack(spacing: Design.Space.chipX) {
-                Image(systemName: Design.modeGlyph(mode))
-                    .symbolVariant(selected ? .fill : .none)
-                    .font(Design.glyphNav)
-                    .foregroundStyle(selected ? Design.ink : Design.inkSoft)
-                    .frame(width: 24)
-                Text(Design.modeTitle(mode))
-                    .font(Design.body.weight(.medium))
-                    .foregroundStyle(selected ? Design.ink : Design.inkSoft)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.s + 1)
-            .background(
-                selected
-                    ? Design.ink.opacity(0.08)
-                    : hovering ? Design.ink.opacity(0.04) : .clear,
-                in: RoundedRectangle(cornerRadius: Design.Radius.inner))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
+        CollapsingSidebar(collapsed: shell.sidebarCollapsed) {
+            expanded
+        } collapsedContent: {
+            collapsedRail
         }
-        .buttonStyle(.plain)
-        .onHover { inside in
-            if inside {
-                hovered = mode
-            } else if hovered == mode {
-                hovered = nil
+        .overlay(alignment: .topLeading) {
+            LogoMark(size: 24)
+                .padding(.top, topClearance + (shell.sidebarCollapsed ? 0 : 2))
+                .padding(.leading, shell.sidebarCollapsed ? 30 : Design.Space.l * 2 - 1)
+                .accessibilityLabel("Hedos")
+        }
+        .accessibilityIdentifier("shell-rail")
+    }
+
+    private var topClearance: CGFloat {
+        shell.isFullscreen ? Design.Space.l : Design.Space.pane + Design.Space.l
+    }
+
+    private var collapser: some View {
+        SidebarCollapseToggle(collapsed: shell.sidebarCollapsed) {
+            shell.setSidebarCollapsed(!shell.sidebarCollapsed)
+        }
+        .accessibilityIdentifier("shell-collapse")
+    }
+
+    private var expanded: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Design.Space.chipX) {
+                Color.clear
+                    .frame(width: 24, height: 24)
+                Text("Hedos")
+                    .font(.system(size: 17, weight: .semibold))
+                    .tracking(Design.tightTracking)
+                    .foregroundStyle(Design.ink)
+                Spacer(minLength: 0)
+                collapser
             }
+            .padding(.leading, Design.Space.l)
+            .padding(.bottom, Design.Space.xl)
+            VStack(alignment: .leading, spacing: Design.Space.xs) {
+                groupTitle("Surfaces")
+                modeRow(.chat, collapsedRow: false)
+                modeRow(.images, collapsedRow: false)
+                modeRow(.voice, collapsedRow: false)
+                groupTitle("Library")
+                modeRow(.library, collapsedRow: false)
+            }
+            Spacer(minLength: 0)
+            settingsRow(collapsedRow: false)
+                .padding(.bottom, Design.Space.l)
+        }
+        .padding(.top, topClearance)
+        .padding(.horizontal, Design.Space.l)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var collapsedRail: some View {
+        VStack(alignment: .center, spacing: 0) {
+            Color.clear
+                .frame(width: 24, height: 24)
+                .padding(.bottom, Design.Space.l)
+            collapser
+                .padding(.bottom, Design.Space.l)
+            VStack(alignment: .center, spacing: Design.Space.xs) {
+                modeRow(.chat, collapsedRow: true)
+                modeRow(.images, collapsedRow: true)
+                modeRow(.voice, collapsedRow: true)
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(width: 28, height: Design.hairlineWidth)
+                    .padding(.vertical, Design.Space.s)
+                    .accessibilityHidden(true)
+                modeRow(.library, collapsedRow: true)
+            }
+            Spacer(minLength: 0)
+            settingsRow(collapsedRow: true)
+                .padding(.bottom, Design.Space.l)
+        }
+        .padding(.top, topClearance)
+        .padding(.horizontal, Design.Space.m)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private func modeRow(_ mode: AppMode, collapsedRow: Bool) -> some View {
+        InkSidebarRow(
+            id: mode,
+            glyph: Design.modeGlyph(mode),
+            title: Design.modeTitle(mode),
+            selected: shell.mode == mode,
+            collapsed: collapsedRow,
+            hovered: $hovered
+        ) {
+            shell.setMode(mode)
         }
         .help("\(Design.modeTitle(mode)) — ⌘\(mode.ordinal)")
-        .accessibilityLabel(Design.modeTitle(mode))
-        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("rail-\(mode.rawValue)")
+    }
+
+    private func settingsRow(collapsedRow: Bool) -> some View {
+        InkSidebarRow(
+            id: AppMode.settings,
+            glyph: "gearshape",
+            title: "Settings",
+            selected: false,
+            collapsed: collapsedRow,
+            hovered: $hovered
+        ) {
+            SettingsWindowController.shared.show(shell: shell)
+        }
+        .help("Settings — ⌘,")
+        .accessibilityIdentifier("rail-settings")
     }
 }
 
@@ -370,11 +441,11 @@ struct SearchSnippet: View {
         for character in snippet {
             switch character {
             case "[" where !marked:
-                result = result + Text(current)
+                result = Text("\(result)\(Text(current))")
                 current = ""
                 marked = true
             case "]" where marked:
-                result = result + Text(current).fontWeight(.semibold).foregroundStyle(Design.inkSoft)
+                result = Text("\(result)\(highlighted(current))")
                 current = ""
                 marked = false
             default:
@@ -382,13 +453,13 @@ struct SearchSnippet: View {
             }
         }
         if !current.isEmpty {
-            result =
-                result
-                + (marked
-                    ? Text(current).fontWeight(.semibold).foregroundStyle(Design.inkSoft)
-                    : Text(current))
+            result = Text("\(result)\(marked ? highlighted(current) : Text(current))")
         }
         return result
+    }
+
+    private func highlighted(_ value: String) -> Text {
+        Text(value).fontWeight(.semibold).foregroundStyle(Design.inkSoft)
     }
 }
 
@@ -412,37 +483,6 @@ struct ChatPane: View {
                 ColumnDivider()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .navigationTitle("Chat")
-        .searchable(text: $query, placement: .toolbar, prompt: "Search chats")
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Menu {
-                    Picker(
-                        "Show",
-                        selection: Binding(
-                            get: { shell.sessionFilter },
-                            set: { shell.setSessionFilter($0) })
-                    ) {
-                        Text("Active").tag(ChatSessionFilter.active)
-                        Text("Archived").tag(ChatSessionFilter.archived)
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Image(systemName: "archivebox")
-                }
-                .menuIndicator(.hidden)
-                .accessibilityLabel("Filter conversations")
-                .help("Switch between active and archived chats")
-                Button {
-                    shell.newChat()
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .disabled(Launcher.defaultChatModel(in: shell.library.records) == nil)
-                .help(newChatHelp)
-                .accessibilityLabel("New chat")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -491,13 +531,6 @@ struct ChatPane: View {
         }
     }
 
-    private var newChatHelp: String {
-        if let record = Launcher.defaultChatModel(in: shell.library.records) {
-            return "Start a new chat with \(record.displayName)"
-        }
-        return "No chat-capable model is ready yet"
-    }
-
     private var emptyCaption: String {
         if Launcher.defaultChatModel(in: shell.library.records) != nil {
             return "Local, private, yours."
@@ -514,9 +547,37 @@ struct ChatSessionsColumn: View {
     @State private var deleting: ChatSession?
     @State private var hits: [SearchHit] = []
     @State private var hoveredSession: String?
+    @State private var hoveredHit: String?
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: Design.Space.s) {
+                InkSearchField(
+                    placeholder: "Search chats", query: $query, fill: Design.surface,
+                    focusTick: shell.chatSearchFocusTick)
+                QuietIconButton(
+                    glyph: "archivebox",
+                    fill: shell.sessionFilter == .archived
+                ) {
+                    shell.setSessionFilter(
+                        shell.sessionFilter == .active ? .archived : .active)
+                }
+                .help(
+                    shell.sessionFilter == .archived
+                        ? "Showing archived chats" : "Show archived chats")
+                .accessibilityLabel("Filter conversations")
+                QuietIconButton(glyph: "square.and.pencil") {
+                    shell.newChat()
+                }
+                .disabled(Launcher.defaultChatModel(in: shell.library.records) == nil)
+                .help(
+                    Launcher.defaultChatModel(in: shell.library.records) == nil
+                        ? "No chat-capable model is ready yet" : "New chat")
+                .accessibilityLabel("New chat")
+            }
+            .padding(.horizontal, Design.Space.m)
+            .padding(.top, Design.Space.xxl)
+            .padding(.bottom, Design.Space.s)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Design.Space.xxs) {
                     if !query.isEmpty {
@@ -543,9 +604,24 @@ struct ChatSessionsColumn: View {
                                     .padding(.horizontal, Design.Space.chipX)
                                     .padding(.vertical, Design.Space.s)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: Design.Radius.inner)
+                                            .fill(
+                                                hoveredHit == hit.turnID
+                                                    ? Design.ink.opacity(0.04) : .clear)
+                                            .animation(
+                                                Design.wash,
+                                                value: hoveredHit == hit.turnID))
                                     .contentShape(RoundedRectangle(cornerRadius: Design.Radius.inner))
                                 }
                                 .buttonStyle(.plain)
+                                .onHover { inside in
+                                    if inside {
+                                        hoveredHit = hit.turnID
+                                    } else if hoveredHit == hit.turnID {
+                                        hoveredHit = nil
+                                    }
+                                }
                             }
                         }
                     } else if shell.filteredSessions.isEmpty {
@@ -635,11 +711,20 @@ struct ChatSessionsColumn: View {
             setArchived(session, !session.archived)
         }
         Divider()
-        Button("Export as Markdown…") {
-            export(session, json: false)
-        }
-        Button("Export as JSON…") {
-            export(session, json: true)
+        if shell.settings.chat.exportFormat == .json {
+            Button("Export as JSON…") {
+                export(session, json: true)
+            }
+            Button("Export as Markdown…") {
+                export(session, json: false)
+            }
+        } else {
+            Button("Export as Markdown…") {
+                export(session, json: false)
+            }
+            Button("Export as JSON…") {
+                export(session, json: true)
+            }
         }
         Divider()
         Button("Delete…", role: .destructive) {
@@ -713,7 +798,7 @@ private struct ChatSessionRow: View {
             HStack(spacing: Design.Space.s) {
                 VStack(alignment: .leading, spacing: Design.Space.xxs) {
                     Text(session.title)
-                        .font(Design.body.weight(selected ? .medium : .regular))
+                        .font(Design.body.weight(.medium))
                         .foregroundStyle(Design.ink)
                         .lineLimit(1)
                     Text(subtitle)
@@ -775,21 +860,18 @@ struct ImagesPane: View {
     @State private var showGallery = false
 
     var body: some View {
-        ImagesSurface(shell: shell)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Images")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+        VStack(spacing: 0) {
+            PaneHeader(title: "Images") {
                 if !shell.images.arranged.isEmpty {
-                    Button {
+                    QuietIconButton(glyph: "square.grid.2x2") {
                         showGallery = true
-                    } label: {
-                        Image(systemName: "square.grid.2x2")
                     }
                     .help("All generations")
                     .accessibilityLabel("Gallery")
                 }
             }
+            ImagesSurface(shell: shell)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task { await shell.images.load() }
         .modalScrim(isPresented: showGallery, onDismiss: { showGallery = false }) {
@@ -919,21 +1001,13 @@ struct VoicePane: View {
     @Bindable var shell: ShellModel
 
     var body: some View {
-        VoiceSurface(shell: shell)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Voice")
+        VStack(spacing: 0) {
+            PaneHeader(title: "Voice")
+            VoiceSurface(shell: shell)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
 
-}
-
-struct SettingsPane: View {
-    var body: some View {
-        ModeEmptyState(
-            eyebrow: "Coming with customization",
-            headline: "Nothing to set yet.",
-            caption: "Customization arrives here — every model, configurable.")
-            .navigationTitle("Settings")
-    }
 }
 
 struct ModeEmptyState<Extra: View>: View {

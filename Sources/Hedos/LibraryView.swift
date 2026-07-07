@@ -98,6 +98,7 @@ enum MetaGrid {
 
 struct FoldersPopover: View {
     let model: LibraryViewModel
+    var onOpenSettings: (() -> Void)? = nil
 
     var body: some View {
         Form {
@@ -134,9 +135,17 @@ struct FoldersPopover: View {
             } header: {
                 Text("Watched folders")
             } footer: {
-                Text("Hedos scans Downloads, Models, and any folders added here.")
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkSoft)
+                VStack(alignment: .leading, spacing: Design.Space.s) {
+                    Text("Hedos scans Downloads, Models, and any folders added here.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkSoft)
+                    if let onOpenSettings {
+                        Button("Manage in Settings…") {
+                            onOpenSettings()
+                        }
+                        .buttonStyle(QuietButtonStyle())
+                    }
+                }
             }
         }
         .formStyle(.grouped)
