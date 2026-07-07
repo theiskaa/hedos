@@ -136,7 +136,8 @@ struct ModelsPane: View {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
         return shell.library.records.filter { record in
             facet.matches(record)
-                && (needle.isEmpty || record.name.lowercased().contains(needle))
+                && (needle.isEmpty || record.name.lowercased().contains(needle)
+                    || record.displayName.lowercased().contains(needle))
         }
     }
 
@@ -275,7 +276,7 @@ struct ModelCard: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Show details")
-        .accessibilityLabel(record.name)
+        .accessibilityLabel(record.displayName)
         .accessibilityIdentifier("model-card-\(record.id)")
     }
 
@@ -334,6 +335,13 @@ struct ModelDetailSheet: View {
                                 .foregroundStyle(Design.inkFaint)
                         }
                     }
+                    if record.runtime.tier != .recipeNeeded {
+                        Rectangle()
+                            .fill(Design.hairline)
+                            .frame(height: Design.hairlineWidth)
+                            .padding(.vertical, Design.Space.xs)
+                        ModelConfigureSection(record: record, shell: shell)
+                    }
                 }
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.bottom, Design.Space.xl)
@@ -342,8 +350,7 @@ struct ModelDetailSheet: View {
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.bottom, Design.Space.gutter)
         }
-        .frame(width: 440)
-        .frame(minHeight: 360, maxHeight: 520)
+        .frame(width: 440, height: record.runtime.tier == .recipeNeeded ? 420 : 560)
         .task(id: record.id) {
             guard record.runtime.tier == .recipeNeeded else { return }
             let record = record
@@ -361,7 +368,7 @@ struct ModelDetailSheet: View {
                 .frame(width: 40, height: 40)
                 .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.inner))
             VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                Text(record.name)
+                Text(record.displayName)
                     .font(Design.title)
                     .lineLimit(1)
                 Text(headerSubtitle)
@@ -393,6 +400,10 @@ struct ModelDetailSheet: View {
 
     private var specs: some View {
         VStack(alignment: .leading, spacing: 0) {
+            if record.displayName != record.name {
+                specRow("Source", record.name)
+                Divider()
+            }
             specRow("Modality", record.modality.rawValue)
             Divider()
             specRow("Kind", record.source.kind.rawValue)
@@ -515,5 +526,175 @@ enum RecipeReason {
         default:
             return "No built-in runtime can execute this model yet."
         }
+    }
+}
+
+struct ModelConfigureSection: View {
+    let record: ModelRecord
+    let shell: ShellModel
+    @State private var aliasDraft = ""
+    @State private var promptDraft = ""
+    @State private var seeded = false
+    @State private var promptCommit: Task<Void, Never>?
+    @FocusState private var aliasFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            MicroHeader(title: "Configure")
+                .padding(.bottom, Design.Space.m)
+            row("Display name") {
+                TextField(record.name, text: $aliasDraft)
+                    .textFieldStyle(.plain)
+                    .font(Design.caption)
+                    .foregroundStyle(Design.ink)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 190)
+                    .focused($aliasFocused)
+                    .onSubmit { commitAlias() }
+                    .accessibilityLabel("Display name")
+            }
+            if record.capabilities.contains(.chat) {
+                Divider()
+                VStack(alignment: .leading, spacing: Design.Space.xs) {
+                    Text("System prompt")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                    TextField(
+                        "Prepended to every conversation — optional",
+                        text: $promptDraft, axis: .vertical
+                    )
+                    .textFieldStyle(.plain)
+                    .font(Design.caption)
+                    .foregroundStyle(Design.ink)
+                    .lineLimit(2...6)
+                    .padding(.horizontal, Design.Space.chipX)
+                    .padding(.vertical, Design.Space.s)
+                    .surfaceCard(radius: Design.Radius.inner)
+                    .accessibilityLabel("System prompt")
+                }
+                .padding(.vertical, Design.Space.m)
+            }
+            ForEach(record.params, id: \.key) { spec in
+                Divider()
+                parameterRow(spec)
+            }
+            if !record.params.isEmpty {
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Reset to model defaults") {
+                        let shell = shell
+                        let id = record.id
+                        Task {
+                            try? await shell.kernel.resetParamValues(id)
+                            await shell.library.refreshShelf()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkSoft)
+                    .disabled(record.paramValues.isEmpty)
+                }
+                .padding(.vertical, Design.Space.m)
+            }
+            Text("Unset values are left to the model — nothing is sent unless you set it.")
+                .font(Design.label)
+                .foregroundStyle(Design.inkFaint)
+                .padding(.top, Design.Space.m)
+        }
+        .onAppear { seedDrafts() }
+        .onChange(of: record.id) {
+            seeded = false
+            seedDrafts()
+        }
+        .onChange(of: aliasFocused) { _, focused in
+            if !focused { commitAlias() }
+        }
+        .onChange(of: promptDraft) {
+            guard seeded else { return }
+            promptCommit?.cancel()
+            let shell = shell
+            let id = record.id
+            let draft = promptDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard draft != (record.systemPrompt ?? "") else { return }
+            promptCommit = Task {
+                try? await Task.sleep(for: .milliseconds(700))
+                guard !Task.isCancelled else { return }
+                try? await shell.kernel.setSystemPrompt(id, to: draft.isEmpty ? nil : draft)
+                await shell.library.refreshShelf()
+            }
+        }
+    }
+
+    private func row(
+        _ label: String, @ViewBuilder control: () -> some View
+    ) -> some View {
+        HStack(alignment: .center) {
+            Text(label)
+                .font(Design.label)
+                .foregroundStyle(Design.inkFaint)
+            Spacer(minLength: Design.Space.l)
+            control()
+        }
+        .padding(.vertical, Design.Space.m)
+    }
+
+    private func parameterRow(_ spec: ParamSpec) -> some View {
+        HStack(alignment: .center, spacing: Design.Space.s) {
+            Text(spec.key.uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+            if record.paramValues[spec.key] != nil {
+                Circle()
+                    .fill(Design.ink)
+                    .frame(width: 5, height: 5)
+                    .accessibilityLabel("Overridden")
+                Button {
+                    write(spec.key, nil)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(Design.inkFaint)
+                }
+                .buttonStyle(.plain)
+                .help("Clear the override")
+                .accessibilityLabel("Clear \(spec.key) override")
+            }
+            Spacer(minLength: Design.Space.l)
+            ParamControl(
+                spec: spec,
+                get: { record.paramValues[spec.key] },
+                set: { value in write(spec.key, value) })
+                .frame(width: 190)
+        }
+        .padding(.vertical, Design.Space.m)
+    }
+
+    private func write(_ key: String, _ value: JSONValue?) {
+        let shell = shell
+        let id = record.id
+        Task {
+            try? await shell.kernel.setParamValue(id, key: key, to: value)
+            await shell.library.refreshShelf()
+        }
+    }
+
+    private func commitAlias() {
+        let trimmed = aliasDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != (record.alias ?? "") else { return }
+        let shell = shell
+        let id = record.id
+        Task {
+            try? await shell.kernel.setAlias(id, to: trimmed.isEmpty ? nil : trimmed)
+            await shell.library.refreshShelf()
+        }
+    }
+
+    private func seedDrafts() {
+        guard !seeded else { return }
+        aliasDraft = record.alias ?? ""
+        promptDraft = record.systemPrompt ?? ""
+        seeded = true
     }
 }
