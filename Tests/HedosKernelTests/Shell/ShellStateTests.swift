@@ -152,6 +152,32 @@ import Testing
     #expect(await store.shellState() == ShellState())
 }
 
+@Test func sidebarCollapsedPersistsAndDefaultsToFalse() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SettingsStore(directory: dir)
+
+    #expect(await store.shellState().sidebarCollapsed == false)
+
+    var state = ShellState(mode: .chat)
+    state.sidebarCollapsed = true
+    try await store.saveShellState(state)
+    #expect(await SettingsStore(directory: dir).shellState().sidebarCollapsed == true)
+
+    let legacy = """
+        {"shell": {"mode": "voice"}}
+        """
+    let fresh = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: fresh) }
+    try FileManager.default.createDirectory(
+        at: fresh.appendingPathComponent("settings"), withIntermediateDirectories: true)
+    try Data(legacy.utf8).write(
+        to: fresh.appendingPathComponent("settings/shell.json"))
+    let decoded = await SettingsStore(directory: fresh).shellState()
+    #expect(decoded.mode == .voice)
+    #expect(decoded.sidebarCollapsed == false)
+}
+
 @Test func unknownShellModeFallsBackToLibrary() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

@@ -66,19 +66,22 @@ public struct ShellState: Codable, Sendable, Equatable {
     public var imagesSelection: String?
     public var voiceModelID: String?
     public var libraryModelID: String?
+    public var sidebarCollapsed: Bool
 
     public init(
         mode: AppMode = .library,
         chatSessionID: String? = nil,
         imagesSelection: String? = nil,
         voiceModelID: String? = nil,
-        libraryModelID: String? = nil
+        libraryModelID: String? = nil,
+        sidebarCollapsed: Bool = false
     ) {
         self.mode = mode
         self.chatSessionID = chatSessionID
         self.imagesSelection = imagesSelection
         self.voiceModelID = voiceModelID
         self.libraryModelID = libraryModelID
+        self.sidebarCollapsed = sidebarCollapsed
     }
 
     public init(from decoder: Decoder) throws {
@@ -89,6 +92,8 @@ public struct ShellState: Codable, Sendable, Equatable {
         imagesSelection = try container.decodeIfPresent(String.self, forKey: .imagesSelection)
         voiceModelID = try container.decodeIfPresent(String.self, forKey: .voiceModelID)
         libraryModelID = try container.decodeIfPresent(String.self, forKey: .libraryModelID)
+        sidebarCollapsed =
+            (try container.decodeIfPresent(Bool.self, forKey: .sidebarCollapsed)) ?? false
     }
 
     public func selection(in mode: AppMode) -> String? {
