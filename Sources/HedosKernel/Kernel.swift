@@ -285,6 +285,31 @@ public actor Kernel {
         await scheduler.active()
     }
 
+    public func saveSpeech(
+        modelID: String, voice: String, text: String, sampleRate: Int, pcm: Data
+    ) async throws -> Artifact {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        let wav = SpeechAudio.wavData(fromFloat32: pcm, sampleRate: sampleRate)
+        let peaks = SpeechAudio.peaks(fromFloat32: pcm)
+        let draft = ArtifactDraft(
+            data: wav,
+            fileExtension: "wav",
+            model: record.name,
+            modelID: modelID,
+            runtime: record.runtime.id ?? "",
+            capability: .speak,
+            params: .object([
+                "text": .string(text),
+                "voice": .string(voice),
+                "peaks": .array(peaks.map { .double($0) }),
+            ]),
+            jobID: "voice-\(UUID().uuidString.lowercased())",
+            durationMs: SpeechAudio.durationMs(fromFloat32: pcm, sampleRate: sampleRate))
+        return try await artifactStore.store(draft)
+    }
+
     public func artifacts() async throws -> [Artifact] {
         try await artifactStore.list()
     }
