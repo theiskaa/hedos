@@ -639,6 +639,7 @@ struct ChatPane: View {
                     Task {
                         await shell.voice.narrate(
                             text, records: shell.library.records,
+                            preferring: shell.voiceSelection,
                             attach: (sessionID: sessionID, turnID: turnID))
                     }
                 }

@@ -125,6 +125,9 @@ final class VoiceSurfaceModel {
     }
 
     func start(records: [ModelRecord], preferring preferred: String?) async {
+        if let inFlight = bindInFlight {
+            await inFlight.value
+        }
         let runnable = runnableModels(in: records)
         if boundModelID == nil || !runnable.contains(where: { $0.id == boundModelID }) {
             let candidate =
@@ -136,21 +139,32 @@ final class VoiceSurfaceModel {
         await load()
     }
 
+    private var bindInFlight: Task<Void, Never>?
+
     func bind(to record: ModelRecord) async {
-        guard boundModelID != record.id || voices.isEmpty else { return }
-        boundModelID = record.id
-        boundSpeedIsConfigured = record.paramValues["speed"] != nil
-        voices = (try? await kernel.voices(record.id)) ?? []
-        let fallback = (try? await kernel.voiceSettings().defaultVoice) ?? nil
-        if case .string(let configured)? = record.paramValues["voice"],
-            voices.contains(configured)
-        {
-            voice = configured
-        } else if let fallback, voices.contains(fallback) {
-            voice = fallback
-        } else if !voices.contains(voice), let first = voices.first {
-            voice = first
+        if let inFlight = bindInFlight {
+            await inFlight.value
         }
+        guard boundModelID != record.id || voices.isEmpty else { return }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            boundModelID = record.id
+            boundSpeedIsConfigured = record.paramValues["speed"] != nil
+            voices = (try? await kernel.voices(record.id)) ?? []
+            let fallback = (try? await kernel.voiceSettings().defaultVoice) ?? nil
+            if case .string(let configured)? = record.paramValues["voice"],
+                voices.contains(configured)
+            {
+                voice = configured
+            } else if let fallback, voices.contains(fallback) {
+                voice = fallback
+            } else if !voices.contains(voice), let first = voices.first {
+                voice = first
+            }
+        }
+        bindInFlight = task
+        await task.value
+        bindInFlight = nil
     }
 
     func load() async {
@@ -227,11 +241,10 @@ final class VoiceSurfaceModel {
     }
 
     func narrate(
-        _ content: String, records: [ModelRecord], attach: (sessionID: String, turnID: String)?
+        _ content: String, records: [ModelRecord], preferring preferred: String?,
+        attach: (sessionID: String, turnID: String)?
     ) async {
-        if boundModelID == nil {
-            await start(records: records, preferring: nil)
-        }
+        await start(records: records, preferring: preferred)
         guard boundModelID != nil else {
             notice = "Narrating needs a ready voice model."
             return

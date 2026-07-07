@@ -393,6 +393,7 @@ struct ChatView: View {
     @State private var editText = ""
     @State private var modelMenuOpen = false
     @State private var voiceConversation = VoiceConversationController()
+    @State private var copiedEntryID: String?
 
     init(
         session: ChatSession, library: LibraryViewModel, kernel: Kernel,
@@ -583,10 +584,9 @@ struct ChatView: View {
                 ForEach(entry.artifactRefs, id: \.self) { reference in
                     artifactCard(reference)
                 }
-                if !entry.text.isEmpty
-                    && (canReadAloud(entry) || (showsStats && entry.stats != nil))
-                {
+                if !entry.text.isEmpty && !(model.isStreaming && !entry.persisted) {
                     HStack(spacing: Design.Space.l) {
+                        copyControl(entry)
                         if canReadAloud(entry) {
                             readAloudControl(entry)
                         }
@@ -778,6 +778,28 @@ struct ChatView: View {
                 SpeakingIndicator()
             }
         }
+    }
+
+    private func copyControl(_ entry: ChatViewModel.Entry) -> some View {
+        Button {
+            copy(entry.text)
+            copiedEntryID = entry.id
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                if copiedEntryID == entry.id {
+                    copiedEntryID = nil
+                }
+            }
+        } label: {
+            Image(systemName: copiedEntryID == entry.id ? "checkmark" : "doc.on.doc")
+                .font(Design.glyphInline)
+                .foregroundStyle(copiedEntryID == entry.id ? Design.ink : Design.inkFaint)
+                .contentTransition(.symbolEffect(.replace))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressDipStyle())
+        .help("Copy the reply")
+        .accessibilityLabel(copiedEntryID == entry.id ? "Copied" : "Copy the reply")
     }
 
     private func narrate(_ entry: ChatViewModel.Entry) {
