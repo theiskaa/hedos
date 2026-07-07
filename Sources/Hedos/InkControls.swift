@@ -279,12 +279,17 @@ extension EnvironmentValues {
 struct InkMenu<Content: View>: View {
     let title: String
     var accessibilityName: String = "menu"
+    var externalOpen: Binding<Bool>? = nil
     @ViewBuilder let content: () -> Content
-    @State private var open = false
+    @State private var localOpen = false
+
+    private var open: Binding<Bool> {
+        externalOpen ?? $localOpen
+    }
 
     var body: some View {
         Button {
-            open.toggle()
+            open.wrappedValue.toggle()
         } label: {
             HStack(spacing: Design.Space.xs) {
                 Text(title)
@@ -300,23 +305,24 @@ struct InkMenu<Content: View>: View {
             .background(Design.surface, in: Capsule())
             .overlay(
                 Capsule().strokeBorder(
-                    open ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
+                    open.wrappedValue
+                        ? AnyShapeStyle(Design.ink.opacity(0.35)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .fixedSize()
-        .popover(isPresented: $open, arrowEdge: .top) {
+        .popover(isPresented: open, arrowEdge: .top) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xxs) {
                     content()
                 }
                 .padding(Design.Space.s)
             }
-            .frame(width: 250)
-            .frame(maxHeight: 300)
+            .frame(width: Design.Popover.menuWidth)
+            .frame(maxHeight: Design.Popover.menuMaxHeight)
             .presentationBackground(Design.paper)
-            .environment(\.inkMenuDismiss) { open = false }
+            .environment(\.inkMenuDismiss) { open.wrappedValue = false }
         }
         .accessibilityLabel(accessibilityName)
     }
@@ -327,6 +333,8 @@ struct InkMenuRow: View {
     var annotation: String? = nil
     var selected = false
     var disabled = false
+    var previewing = false
+    var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @Environment(\.inkMenuDismiss) private var dismissMenu
     @State private var hovering = false
@@ -348,6 +356,20 @@ struct InkMenuRow: View {
                         .font(Design.label)
                         .foregroundStyle(Design.inkFaint)
                         .lineLimit(1)
+                }
+                if let onPreview {
+                    Button(action: onPreview) {
+                        Image(systemName: previewing ? "waveform" : "play.circle")
+                            .font(Design.glyphInline)
+                            .foregroundStyle(
+                                previewing
+                                    ? Design.ink
+                                    : hovering ? Design.inkSoft : Design.inkFaint)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Preview \(title)")
+                    .accessibilityLabel("Preview \(title)")
                 }
                 if selected {
                     Image(systemName: "checkmark")
@@ -441,8 +463,8 @@ struct InkDropdown: View {
                 }
                 .padding(Design.Space.s)
             }
-            .frame(width: 200)
-            .frame(maxHeight: 240)
+            .frame(width: Design.Popover.dropdownWidth)
+            .frame(maxHeight: Design.Popover.dropdownMaxHeight)
             .presentationBackground(Design.paper)
         }
         .accessibilityLabel("Choose \(accessibilityName)")
@@ -493,6 +515,7 @@ private struct DropdownRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -593,17 +616,6 @@ struct InkChoiceCard<Preview: View>: View {
     }
 }
 
-enum PreviewPalette {
-    static let lightPaper = Color(red: 0xF1 / 255, green: 0xEF / 255, blue: 0xEC / 255)
-    static let lightSurface = Color(red: 0xFA / 255, green: 0xF9 / 255, blue: 0xF7 / 255)
-    static let lightInk = Color(red: 0x2B / 255, green: 0x2A / 255, blue: 0x28 / 255)
-    static let lightSoft = Color(red: 0x6F / 255, green: 0x6C / 255, blue: 0x66 / 255)
-    static let darkPaper = Color(red: 0x1E / 255, green: 0x1D / 255, blue: 0x1B / 255)
-    static let darkSurface = Color(red: 0x26 / 255, green: 0x25 / 255, blue: 0x23 / 255)
-    static let darkInk = Color(red: 0xE8 / 255, green: 0xE6 / 255, blue: 0xE1 / 255)
-    static let darkSoft = Color(red: 0xA2 / 255, green: 0x9E / 255, blue: 0x96 / 255)
-}
-
 struct ThemePreview: View {
     enum Variant {
         case system
@@ -617,20 +629,20 @@ struct ThemePreview: View {
         switch variant {
         case .light:
             mock(
-                paper: PreviewPalette.lightPaper, surface: PreviewPalette.lightSurface,
-                ink: PreviewPalette.lightInk, soft: PreviewPalette.lightSoft)
+                paper: Design.PreviewPalette.lightPaper, surface: Design.PreviewPalette.lightSurface,
+                ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft)
         case .dark:
             mock(
-                paper: PreviewPalette.darkPaper, surface: PreviewPalette.darkSurface,
-                ink: PreviewPalette.darkInk, soft: PreviewPalette.darkSoft)
+                paper: Design.PreviewPalette.darkPaper, surface: Design.PreviewPalette.darkSurface,
+                ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft)
         case .system:
             ZStack {
                 mock(
-                    paper: PreviewPalette.lightPaper, surface: PreviewPalette.lightSurface,
-                    ink: PreviewPalette.lightInk, soft: PreviewPalette.lightSoft)
+                    paper: Design.PreviewPalette.lightPaper, surface: Design.PreviewPalette.lightSurface,
+                    ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft)
                 mock(
-                    paper: PreviewPalette.darkPaper, surface: PreviewPalette.darkSurface,
-                    ink: PreviewPalette.darkInk, soft: PreviewPalette.darkSoft)
+                    paper: Design.PreviewPalette.darkPaper, surface: Design.PreviewPalette.darkSurface,
+                    ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft)
                 .clipShape(DiagonalHalf())
             }
         }
@@ -777,7 +789,7 @@ private struct InkTextViewRepresentable: NSViewRepresentable {
         scroll.borderType = .noBorder
         if let view = scroll.documentView as? NSTextView {
             view.delegate = context.coordinator
-            view.font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small) + 1)
+            view.font = Design.editorFont(size: NSFont.systemFontSize(for: .small) + 1)
             view.drawsBackground = false
             view.isRichText = false
             view.allowsUndo = true

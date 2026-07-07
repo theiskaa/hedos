@@ -12,7 +12,7 @@ struct PromptBubble: View {
             .padding(.horizontal, Design.Space.l)
             .padding(.vertical, Design.Space.m)
             .background(Design.bubbleFill, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
-            .frame(maxWidth: 520, alignment: .trailing)
+            .frame(maxWidth: Design.Bubble.promptMax, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
@@ -37,21 +37,31 @@ extension View {
 
 struct VoiceBubble: View {
     let artifact: Artifact
-    let isPlaying: Bool
-    let onTogglePlayback: () -> Void
+    let clips: AudioClipController
+    let onToggle: () -> Void
+
+    private var isActive: Bool {
+        clips.isActive(artifact.id)
+    }
+
+    private var isSounding: Bool {
+        clips.isSounding(artifact.id)
+    }
 
     var body: some View {
         HStack(spacing: Design.Space.l) {
             CircleControl(
-                glyph: isPlaying ? "pause.fill" : "play.fill",
+                glyph: isSounding ? "pause.fill" : "play.fill",
                 prominent: true,
-                label: isPlaying ? "Pause" : "Play",
-                action: onTogglePlayback)
+                label: isSounding ? "Pause" : isActive ? "Resume" : "Play",
+                action: onToggle)
             WaveformBars(
                 peaks: VoiceSurfaceModel.peaks(of: artifact),
-                emphasized: isPlaying)
+                emphasized: isActive,
+                progress: isActive ? clips.progress : nil,
+                onSeek: isActive ? { clips.seek(to: $0) } : nil)
             VStack(alignment: .trailing, spacing: Design.Space.xxs) {
-                Text(durationText)
+                Text(timeText)
                     .font(Design.data(10))
                     .foregroundStyle(Design.inkSoft)
                     .monospacedDigit()
@@ -68,26 +78,57 @@ struct VoiceBubble: View {
         .accessibilityLabel("Spoken recording, \(durationText)")
     }
 
+    private var timeText: String {
+        isActive ? "\(Self.clock(clips.elapsed)) · \(durationText)" : durationText
+    }
+
     private var durationText: String {
-        let seconds = max(1, artifact.durationMs / 1000)
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        Self.clock(Double(max(1000, artifact.durationMs)) / 1000)
+    }
+
+    private static func clock(_ seconds: TimeInterval) -> String {
+        let whole = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", whole / 60, whole % 60)
     }
 }
 
 struct WaveformBars: View {
     let peaks: [Double]
     let emphasized: Bool
+    var progress: Double? = nil
+    var onSeek: ((Double) -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 2) {
-            ForEach(Array(displayPeaks.enumerated()), id: \.offset) { _, peak in
+            ForEach(Array(displayPeaks.enumerated()), id: \.offset) { index, peak in
                 Capsule()
-                    .fill(emphasized ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.inkSoft))
+                    .fill(barStyle(index))
                     .frame(width: 2.5, height: 4 + CGFloat(peak) * 18)
             }
         }
         .frame(height: 24)
+        .overlay {
+            if let onSeek {
+                GeometryReader { geometry in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    guard geometry.size.width > 0 else { return }
+                                    onSeek(value.location.x / geometry.size.width)
+                                })
+                }
+            }
+        }
         .accessibilityHidden(true)
+    }
+
+    private func barStyle(_ index: Int) -> AnyShapeStyle {
+        guard emphasized else { return AnyShapeStyle(Design.inkSoft) }
+        guard let progress else { return AnyShapeStyle(Design.ink) }
+        let played = Double(index + 1) / Double(max(1, displayPeaks.count)) <= progress
+        return AnyShapeStyle(played ? Design.ink : Design.inkFaint)
     }
 
     private var displayPeaks: [Double] {
@@ -121,14 +162,14 @@ struct ImageBubble: View {
                         .aspectRatio(1, contentMode: .fit)
                 }
             }
-            .frame(maxWidth: 360, maxHeight: 360)
+            .frame(maxWidth: Design.Bubble.imageMax, maxHeight: Design.Bubble.imageMax)
             if let caption, !caption.isEmpty {
                 Text(caption)
                     .font(Design.data(10))
                     .foregroundStyle(Design.inkFaint)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 360)
+                    .frame(maxWidth: Design.Bubble.imageMax)
             }
         }
         .padding(Design.Space.m)
@@ -136,5 +177,10 @@ struct ImageBubble: View {
         .overlay(
             RoundedRectangle(cornerRadius: Design.Radius.bubble)
                 .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            isLoading
+                ? "Image generating"
+                : "Generated image" + (caption.map { ", \($0)" } ?? ""))
     }
 }

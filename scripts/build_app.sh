@@ -54,6 +54,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>MIT License</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Hedos records from the microphone only while you dictate, and the audio never leaves this Mac.</string>
 </dict>
 </plist>
 PLIST

@@ -13,6 +13,8 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     var noticeAction: (() -> Void)? = nil
     let onSend: () -> Void
     let onStop: () -> Void
+    var slash: SlashSetup? = nil
+    var dictation: DictationSetup? = nil
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let aux: () -> Aux
     @ViewBuilder let chip: () -> Chip
@@ -20,6 +22,10 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.sendWithEnter) private var sendWithEnter
     @State private var composerHeight: CGFloat = 22
+    @State private var slashPrompts: [Prompt] = []
+    @State private var slashHighlight = 0
+    @State private var slashSuppressed = false
+    @State private var dictationController = DictationController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -64,7 +70,8 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                 ComposerTextView(
                     text: $draft,
                     sendWithEnter: sendWithEnter,
-                    measuredHeight: $composerHeight
+                    measuredHeight: $composerHeight,
+                    onCommand: interceptCommand
                 ) {
                     if canSend && !isWorking {
                         onSend()
@@ -75,8 +82,29 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             }
             .padding(.top, Design.Space.xs)
             .padding(.horizontal, Design.Space.xs)
+            .overlay(alignment: .top) {
+                if slashActive && !slashEntries.isEmpty {
+                    SlashMenuPanel(
+                        entries: slashEntries,
+                        highlighted: slashHighlight,
+                        onAccept: acceptSlash,
+                        onHighlight: { slashHighlight = $0 }
+                    )
+                    .alignmentGuide(.top) { dimensions in
+                        dimensions[.bottom] + Design.Space.l + Design.Space.s
+                    }
+                }
+            }
             HStack(spacing: Design.Space.m) {
+                if let notice = dictationController.notice {
+                    Text(notice)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkSoft)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 Spacer(minLength: 0)
+                micControl
                 aux()
                 chip()
                 if isWorking {
@@ -101,6 +129,113 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
         .padding(.bottom, Design.Space.xxl)
         .padding(.top, Design.Space.m)
         .animation(Design.motion(reduceMotion: reduceMotion), value: isWorking)
+        .onChange(of: slashQuery) { _, query in
+            slashHighlight = 0
+            if query == nil {
+                slashSuppressed = false
+            }
+        }
+        .task(id: slashActive) {
+            guard slashActive, let slash else { return }
+            slashPrompts = await slash.kernel.prompts()
+        }
+    }
+
+    @ViewBuilder
+    private var micControl: some View {
+        if let dictation, DictationController.transcriber(in: dictation.records()) != nil {
+            CircleControl(
+                glyph: dictationController.phase == .recording
+                    ? "stop.fill"
+                    : dictationController.phase == .transcribing ? "ellipsis" : "mic",
+                prominent: dictationController.phase == .recording,
+                label: dictationController.phase == .recording
+                    ? "Stop dictation"
+                    : dictationController.phase == .transcribing
+                        ? "Cancel transcription" : "Dictate"
+            ) {
+                dictationController.toggle(setup: dictation) { delta in
+                    draft += delta
+                }
+            }
+            .accessibilityIdentifier("composer-mic")
+        }
+    }
+
+    private var slashQuery: String? {
+        guard slash != nil, !isWorking else { return nil }
+        return PromptComposer.query(in: draft)
+    }
+
+    private var slashActive: Bool {
+        slashQuery != nil && !slashSuppressed
+    }
+
+    private var slashEntries: [SlashEntry] {
+        guard let slash, let query = slashQuery, !slashSuppressed else { return [] }
+        return SlashMenu.entries(
+            query: query, prompts: slashPrompts, commands: slash.commands,
+            capability: slash.capability)
+    }
+
+    private func acceptSlash(_ entry: SlashEntry) {
+        switch entry.kind {
+        case .command(let command):
+            draft = PromptComposer.clearingToken(from: draft)
+            command.perform()
+        case .prompt(let prompt):
+            draft = PromptComposer.inserting(prompt, into: draft)
+        }
+    }
+
+    private func interceptCommand(_ selector: Selector) -> Bool {
+        guard slashActive else { return false }
+        let entries = slashEntries
+        guard !entries.isEmpty else { return false }
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)):
+            slashHighlight = (slashHighlight - 1 + entries.count) % entries.count
+            return true
+        case #selector(NSResponder.moveDown(_:)):
+            slashHighlight = (slashHighlight + 1) % entries.count
+            return true
+        case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+            acceptSlash(entries[min(slashHighlight, entries.count - 1)])
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            slashSuppressed = true
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+struct TranscriptEmptyState: View {
+    let eyebrow: String
+    let headline: String
+    let caption: String
+
+    var body: some View {
+        VStack(spacing: Design.Space.m) {
+            Text(eyebrow.uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+            Text(headline)
+                .font(Design.title)
+                .tracking(Design.tightTracking)
+                .foregroundStyle(Design.ink)
+            Text(caption)
+                .font(Design.caption)
+                .foregroundStyle(Design.inkSoft)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2.5)
+                .frame(maxWidth: Design.Column.emptyCaption)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 120)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -153,35 +288,19 @@ struct CircleControl: View {
     }
 }
 
-@MainActor
-private final class ArtifactBubblePlayback: NSObject, AVAudioPlayerDelegate {
-    var player: AVAudioPlayer?
-    var onFinish: (() -> Void)?
-
-    nonisolated func audioPlayerDidFinishPlaying(
-        _ player: AVAudioPlayer, successfully flag: Bool
-    ) {
-        Task { @MainActor in
-            self.onFinish?()
-        }
-    }
-}
-
 struct ArtifactExchangeView: View {
     let reference: String
     let kernel: Kernel
     @State private var artifact: Artifact?
     @State private var image: NSImage?
-    @State private var isPlaying = false
-    @State private var isLoadingPlayback = false
-    @State private var playback = ArtifactBubblePlayback()
+    @State private var clips = AudioClipController()
 
     var body: some View {
         Group {
             if let artifact {
                 switch artifact.capability {
                 case .speak:
-                    VoiceBubble(artifact: artifact, isPlaying: isPlaying) {
+                    VoiceBubble(artifact: artifact, clips: clips) {
                         togglePlayback(artifact)
                     }
                 case .image:
@@ -204,30 +323,20 @@ struct ArtifactExchangeView: View {
                 }
             }
         }
+        .onDisappear {
+            clips.stop()
+        }
     }
 
     private func togglePlayback(_ artifact: Artifact) {
-        if isPlaying {
-            playback.player?.stop()
-            playback.player = nil
-            isPlaying = false
+        if clips.isActive(artifact.id) {
+            clips.toggle(id: artifact.id)
             return
         }
-        guard !isLoadingPlayback else { return }
-        isLoadingPlayback = true
         let kernel = kernel
         Task { @MainActor in
-            defer { isLoadingPlayback = false }
-            guard let url = try? await kernel.artifactURL(id: artifact.id),
-                let player = try? AVAudioPlayer(contentsOf: url)
-            else { return }
-            playback.player = player
-            playback.onFinish = {
-                isPlaying = false
-            }
-            player.delegate = playback
-            player.play()
-            isPlaying = true
+            guard let url = try? await kernel.artifactURL(id: artifact.id) else { return }
+            clips.toggle(id: artifact.id, url: url)
         }
     }
 }
@@ -236,6 +345,7 @@ private struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     let sendWithEnter: Bool
     @Binding var measuredHeight: CGFloat
+    var onCommand: ((Selector) -> Bool)? = nil
     let onSend: () -> Void
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -252,6 +362,9 @@ private struct ComposerTextView: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            if let onCommand = parent.onCommand, onCommand(selector) {
+                return true
+            }
             guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
             let flags = NSApp.currentEvent?.modifierFlags ?? []
             if flags.contains(.command) {
@@ -278,7 +391,7 @@ private struct ComposerTextView: NSViewRepresentable {
         scroll.borderType = .noBorder
         if let view = scroll.documentView as? NSTextView {
             view.delegate = context.coordinator
-            view.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            view.font = Design.editorFont()
             view.drawsBackground = false
             view.isRichText = false
             view.allowsUndo = true
@@ -294,6 +407,7 @@ private struct ComposerTextView: NSViewRepresentable {
         guard let view = scroll.documentView as? NSTextView else { return }
         if view.string != text {
             view.string = text
+            view.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         }
         let ink = NSColor(Design.ink)
         if view.textColor != ink {

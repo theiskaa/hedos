@@ -60,22 +60,13 @@ final class PCMPlayer {
     }
 }
 
-private final class UtterancePlaybackDelegate: NSObject, AVAudioPlayerDelegate {
-    var onFinish: (@Sendable () -> Void)?
-
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        onFinish?()
-    }
-}
-
 @Observable
 @MainActor
 final class VoiceSurfaceModel {
     private let kernel: Kernel
     private var speakTask: Task<Void, Never>?
     private let player = PCMPlayer()
-    private var audioPlayer: AVAudioPlayer?
-    private let playbackDelegate = UtterancePlaybackDelegate()
+    let clips = AudioClipController()
 
     var utterances: [Artifact] = []
     var draft = ""
@@ -87,10 +78,44 @@ final class VoiceSurfaceModel {
     var status: String?
     var notice: String?
     var isSpeaking = false
-    var playingID: String?
+    var previewingVoice: String?
+    private var previewTask: Task<Void, Never>?
+    private let previewPlayer = PCMPlayer()
 
     init(kernel: Kernel) {
         self.kernel = kernel
+    }
+
+    func preview(_ candidate: String) {
+        if previewingVoice == candidate {
+            previewTask?.cancel()
+            previewPlayer.stop()
+            previewingVoice = nil
+            return
+        }
+        previewTask?.cancel()
+        previewPlayer.stop()
+        guard let modelID = boundModelID else { return }
+        previewingVoice = candidate
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = try await kernel.invoke(
+                    modelID, .speak,
+                    payload: .object([
+                        "text": .string("Hedos speaks with this voice."),
+                        "voice": .string(candidate),
+                    ]))
+                for try await chunk in stream {
+                    if case .audio(let frame) = chunk {
+                        previewPlayer.enqueue(frame)
+                    }
+                }
+            } catch {}
+            if previewingVoice == candidate {
+                previewingVoice = nil
+            }
+        }
     }
 
     func runnableModels(in records: [ModelRecord]) -> [ModelRecord] {
@@ -165,6 +190,35 @@ final class VoiceSurfaceModel {
         }
     }
 
+    func transcribeDropped(_ url: URL, records: [ModelRecord]) {
+        guard let transcriber = DictationController.transcriber(in: records) else {
+            notice = "Transcribing a file needs a ready transcription model."
+            return
+        }
+        guard url.pathExtension.lowercased() == "wav" else {
+            notice = "Only WAV files can be transcribed for now."
+            return
+        }
+        notice = nil
+        status = "Transcribing \(url.lastPathComponent)…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = try await kernel.invoke(
+                    transcriber.id, .transcribe,
+                    payload: .object(["audio": .string(url.path)]))
+                for try await chunk in stream {
+                    if case .text(let delta) = chunk {
+                        draft += delta
+                    }
+                }
+            } catch {
+                notice = error.localizedDescription
+            }
+            status = nil
+        }
+    }
+
     func speak() {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty, !isSpeaking, let modelID = boundModelID else { return }
@@ -172,11 +226,12 @@ final class VoiceSurfaceModel {
         notice = nil
         pendingText = content
         isSpeaking = true
-        stopPlayback()
+        clips.stop()
         speakTask = Task { [weak self] in
             guard let self else { return }
             var pcm = Data()
             var sampleRate = 24000
+            let liveOutput = await kernel.voiceSettings().autoSpeak
             do {
                 var payload: [String: JSONValue] = [
                     "text": .string(content),
@@ -198,7 +253,9 @@ final class VoiceSurfaceModel {
                         status = nil
                         sampleRate = frame.sampleRate
                         pcm.append(frame.data)
-                        player.enqueue(frame)
+                        if liveOutput {
+                            player.enqueue(frame)
+                        }
                     default:
                         break
                     }
@@ -208,6 +265,7 @@ final class VoiceSurfaceModel {
                         modelID: modelID, voice: voice, text: content,
                         sampleRate: sampleRate, pcm: pcm)
                     await load()
+                    Haptics.completion()
                 }
             } catch is CancellationError {
             } catch {
@@ -229,32 +287,15 @@ final class VoiceSurfaceModel {
     }
 
     func togglePlayback(_ artifact: Artifact) {
-        if playingID == artifact.id {
-            stopPlayback()
+        if clips.isActive(artifact.id) {
+            clips.toggle(id: artifact.id)
             return
         }
-        stopPlayback()
         let kernel = kernel
         Task { @MainActor in
-            guard let url = try? await kernel.artifactURL(id: artifact.id),
-                let player = try? AVAudioPlayer(contentsOf: url)
-            else { return }
-            audioPlayer = player
-            playingID = artifact.id
-            playbackDelegate.onFinish = { [weak self] in
-                Task { @MainActor in
-                    self?.playingID = nil
-                }
-            }
-            player.delegate = playbackDelegate
-            player.play()
+            guard let url = try? await kernel.artifactURL(id: artifact.id) else { return }
+            clips.toggle(id: artifact.id, url: url)
         }
-    }
-
-    private func stopPlayback() {
-        audioPlayer?.stop()
-        audioPlayer = nil
-        playingID = nil
     }
 
     func download(_ artifact: Artifact) {
@@ -272,8 +313,8 @@ final class VoiceSurfaceModel {
     }
 
     func delete(_ artifact: Artifact) async {
-        if playingID == artifact.id {
-            stopPlayback()
+        if clips.isActive(artifact.id) {
+            clips.stop()
         }
         try? await kernel.deleteArtifact(id: artifact.id)
         await load()
@@ -302,6 +343,10 @@ struct VoiceSurface: View {
             notice: model.notice,
             onSend: { model.speak() },
             onStop: { model.stop() },
+            slash: SlashSetup(kernel: shell.kernel, capability: .speak),
+            dictation: DictationSetup(
+                kernel: shell.kernel,
+                records: { [weak shell] in shell?.library.records ?? [] }),
             transcript: { transcript },
             aux: {},
             chip: {
@@ -312,6 +357,11 @@ struct VoiceSurface: View {
         .task(id: shell.library.records.count) {
             await model.start(
                 records: shell.library.records, preferring: shell.voiceSelection)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            model.transcribeDropped(url, records: shell.library.records)
+            return true
         }
         .confirmationDialog(
             "Move this recording to the Trash?",
@@ -350,8 +400,14 @@ struct VoiceSurface: View {
                 .frame(maxWidth: conversationWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
-            .onChange(of: model.utterances.count) {
+            .onChange(of: model.utterances.count) { old, new in
                 proxy.scrollTo("voice-tail", anchor: .bottom)
+                if old == 0 && new > 0 {
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(120))
+                        proxy.scrollTo("voice-tail", anchor: .bottom)
+                    }
+                }
             }
             .onChange(of: model.pendingText) {
                 if model.pendingText != nil {
@@ -366,7 +422,7 @@ struct VoiceSurface: View {
             PromptBubble(text: VoiceSurfaceModel.text(of: artifact))
             VoiceBubble(
                 artifact: artifact,
-                isPlaying: model.playingID == artifact.id
+                clips: model.clips
             ) {
                 model.togglePlayback(artifact)
             }
@@ -398,14 +454,13 @@ struct VoiceSurface: View {
     }
 
     private var emptyTranscript: some View {
-        Text(
-            boundRecord.map {
-                "Give \($0.displayName) something to say — every take lands here, playable and downloadable."
-            } ?? "When a voice model lands on your shelf, it speaks from here."
-        )
-        .font(Design.caption)
-        .foregroundStyle(Design.inkFaint)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        TranscriptEmptyState(
+            eyebrow: "Voice · Local",
+            headline: boundRecord != nil ? "Give it a line." : "No voice model yet.",
+            caption: boundRecord.map {
+                "Every take from \($0.displayName) lands here, playable and downloadable. Preview voices from the chip below, or drop a WAV to transcribe it."
+            }
+                ?? "When a voice model lands on your shelf, it speaks from here.")
     }
 
     private var placeholder: String {
@@ -445,7 +500,12 @@ struct VoiceSurface: View {
     private var voiceChip: some View {
         InkMenu(title: model.voice, accessibilityName: "Voice") {
             ForEach(model.voices, id: \.self) { candidate in
-                InkMenuRow(title: candidate, selected: candidate == model.voice) {
+                InkMenuRow(
+                    title: candidate,
+                    selected: candidate == model.voice,
+                    previewing: model.previewingVoice == candidate,
+                    onPreview: { model.preview(candidate) }
+                ) {
                     model.voice = candidate
                 }
             }
