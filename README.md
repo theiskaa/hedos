@@ -11,3 +11,5 @@ Hedos is in early development, pre-v0.1 — there is nothing to install yet.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+We need to save history of voices in the chat like images get saved

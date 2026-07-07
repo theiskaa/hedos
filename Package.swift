@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "hedos",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS("26.0")],
     dependencies: [
         .package(url: "https://github.com/mattt/llama.swift", .upToNextMajor(from: "2.0.0"))
     ],
