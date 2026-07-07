@@ -242,3 +242,66 @@ private func wavData(
         _ = try TranscriptionAudio.fromWAVData(Data("not a wave".utf8))
     }
 }
+
+@Test func sidecarBackendStreamsTextThroughTheFakeSidecar() async throws {
+    let script = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sidecar/FakeSidecar.py")
+    let workdir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: workdir) }
+
+    let supervisor = SidecarSupervisor()
+    let backend = SidecarWhisperBackend(supervisor: supervisor) { path in
+        SidecarSpec(
+            runtimeID: "fake-whisper-\(path.hashValue)",
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", script.path, "normal"],
+            workingDirectory: workdir,
+            readyTimeout: .seconds(15))
+    }
+
+    try await backend.load(path: "/tmp/ggml-tiny.bin")
+    var collected = ""
+    for try await delta in backend.transcribe(samples: [Float](repeating: 0.25, count: 320)) {
+        collected += delta
+    }
+    #expect(collected == "heard 320 samples and understood")
+
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: workdir.path)
+        .filter { $0.hasSuffix(".f32") }
+    #expect(leftovers.isEmpty)
+
+    await backend.unload()
+    #expect(await supervisor.isRunning("fake-whisper-\("/tmp/ggml-tiny.bin".hashValue)") == false)
+}
+
+@Test func ggmlBinIdentifiesDiscoversAndBidsAsWhisper() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let bin = dir.appendingPathComponent("ggml-tiny.bin")
+    var payload = Data("lmgg".utf8)
+    payload.append(Data(repeating: 0x01, count: 128))
+    try payload.write(to: bin)
+    let decoy = dir.appendingPathComponent("weights.bin")
+    try Data(repeating: 0x02, count: 128).write(to: decoy)
+
+    var record = Fixtures.gguf(path: bin.path)
+    record.source = ModelSource(kind: .file, path: bin.path)
+    record.primaryWeightPath = bin.path
+    let identified = Identification.identify(record)
+    #expect(identified.format == .ggmlBin)
+    #expect(identified.modality == .audio)
+    #expect(identified.capabilities == [.transcribe])
+
+    let scanner = LooseFileScanner(directories: [dir])
+    let result = await scanner.scan()
+    #expect(result.discovered.map(\.name) == ["ggml-tiny"])
+    #expect(result.discovered.first?.capabilitiesHint == [.transcribe])
+
+    let adapter = WhisperCppAdapter(
+        governor: MemoryGovernor(
+            totalMemoryMB: 65536, heavyThresholdMB: 1024, defaultWarmWindow: .seconds(300)))
+    let bid = adapter.bid(record, identified)
+    #expect(bid?.tier == .managed)
+}

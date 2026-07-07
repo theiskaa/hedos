@@ -25,7 +25,7 @@ public struct MissingWhisperBackend: WhisperBackend {
 }
 
 public actor WhisperEngine {
-    public static let shared = WhisperEngine(backend: MissingWhisperBackend())
+    public static let shared = WhisperEngine(backend: SidecarWhisperBackend())
 
     public static let expectedSampleRate = 16000
 

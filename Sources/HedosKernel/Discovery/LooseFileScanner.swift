@@ -53,6 +53,19 @@ public struct LooseFileScanner: StoreScanner {
                         executionHint: hint.execution,
                         footprintBytes: Int64(values?.fileSize ?? 0),
                         primaryWeightPath: entry.path))
+            } else if entry.pathExtension.lowercased() == "bin",
+                Identification.hasGGMLMagic(at: entry)
+            {
+                let hint = ModalityHints.whisperBin
+                result.discovered.append(
+                    DiscoveredModel(
+                        name: entry.deletingPathExtension().lastPathComponent,
+                        source: ModelSource(kind: .file, path: entry.path),
+                        modalityHint: hint.modality,
+                        capabilitiesHint: hint.capabilities,
+                        executionHint: hint.execution,
+                        footprintBytes: Int64(values?.fileSize ?? 0),
+                        primaryWeightPath: entry.path))
             }
         }
     }

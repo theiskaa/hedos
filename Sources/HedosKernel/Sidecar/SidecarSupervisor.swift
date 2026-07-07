@@ -286,6 +286,8 @@ public actor SidecarSupervisor {
                 switch value.objectValue?["event"]?.stringValue {
                 case "begin":
                     continuation.yield(.status("generating"))
+                case "text":
+                    continuation.yield(.text(value.objectValue?["text"]?.stringValue ?? ""))
                 case "done":
                     let seconds = value.objectValue?["seconds"]?.doubleValue
                     continuation.yield(

@@ -16,10 +16,10 @@ public struct WhisperCppAdapter: RuntimeAdapter {
     }
 
     public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
-        guard identified.format == .gguf, identified.capabilities.contains(.transcribe) else {
-            return nil
-        }
-        return RuntimeBid(tier: .native, preference: 10)
+        guard identified.format == .gguf || identified.format == .ggmlBin,
+            identified.capabilities.contains(.transcribe)
+        else { return nil }
+        return RuntimeBid(tier: .managed, preference: 10)
     }
 
     public func invoke(

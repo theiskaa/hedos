@@ -103,7 +103,7 @@ private func record(at url: URL, name: String) -> ModelRecord {
     #expect(identified.capabilities == [.chat, .complete])
 }
 
-@Test func engineResolvesWhisperGGUFToWhisperCppNative() async throws {
+@Test func engineResolvesWhisperGGUFToWhisperCppManaged() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let url = try writeGGUF(architecture: "whisper", at: dir, name: "whisper-base.gguf")
@@ -117,7 +117,7 @@ private func record(at url: URL, name: String) -> ModelRecord {
 
     let resolved = try #require(try await registry.get(id: whisper.id))
     #expect(resolved.runtime.id == "whisper-cpp")
-    #expect(resolved.runtime.tier == .native)
+    #expect(resolved.runtime.tier == .managed)
     #expect(resolved.runtime.resolved == .auto)
     #expect(resolved.state == .ready)
     #expect(resolved.modality == .audio)
@@ -136,7 +136,7 @@ private func record(at url: URL, name: String) -> ModelRecord {
         format: .safetensors, modality: .audio, capabilities: [.transcribe], execution: .stream)
     let record = Fixtures.gguf()
 
-    #expect(whisperAdapter.bid(record, transcribeGGUF)?.tier == .native)
+    #expect(whisperAdapter.bid(record, transcribeGGUF)?.tier == .managed)
     #expect(whisperAdapter.bid(record, chatGGUF) == nil)
     #expect(whisperAdapter.bid(record, transcribeSafetensors) == nil)
     #expect(llamaAdapter.bid(record, transcribeGGUF) == nil)

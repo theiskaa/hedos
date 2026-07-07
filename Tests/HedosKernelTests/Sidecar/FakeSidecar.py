@@ -67,6 +67,16 @@ while True:
         for i in range(3):
             send(2, bytes([i]) * 640)
         send_json({"event": "done", "seconds": 0.12})
+    if op == "transcribe":
+        pcm_path = request.get("pcm", "")
+        count = 0
+        if os.path.isfile(pcm_path):
+            count = os.path.getsize(pcm_path) // 4
+            os.remove(pcm_path)
+        send_json({"event": "begin"})
+        send_json({"event": "text", "text": f"heard {count} samples"})
+        send_json({"event": "text", "text": " and understood"})
+        send_json({"event": "done", "seconds": count / 16000.0})
     if op == "image":
         if request.get("prompt") == "fail":
             send_json({"event": "error", "message": "the pipeline exploded"})

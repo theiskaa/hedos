@@ -2,6 +2,7 @@ import Foundation
 
 public enum ModelFormat: String, Sendable, Hashable {
     case gguf
+    case ggmlBin
     case safetensors
     case mlxSafetensors
     case diffusers
@@ -42,6 +43,14 @@ public enum Identification {
 
         let base = URL(fileURLWithPath: (record.source.path as NSString).expandingTildeInPath)
         let container = containerURL(for: base, record: record)
+
+        if base.pathExtension.lowercased() == "bin" && hasGGMLMagic(at: base) {
+            return IdentifiedModel(
+                format: .ggmlBin,
+                modality: .audio,
+                capabilities: [.transcribe],
+                execution: .stream)
+        }
 
         if base.pathExtension.lowercased() == "gguf" || hasGGUFMagic(at: base) {
             if let architecture = ggufGeneralArchitecture(at: base),
@@ -135,6 +144,14 @@ public enum Identification {
         else { return false }
         try? handle.close()
         return magic == Data("GGUF".utf8)
+    }
+
+    static func hasGGMLMagic(at url: URL) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: url.path),
+            let magic = try? handle.read(upToCount: 4)
+        else { return false }
+        try? handle.close()
+        return magic == Data("lmgg".utf8)
     }
 
     static let ggufArchitectureProfiles: [String: GGUFArchitectureProfile] = [

@@ -41,4 +41,8 @@ enum ModalityHints {
     static var gguf: Hint {
         Hint(modality: .text, capabilities: [.chat, .complete], execution: .stream)
     }
+
+    static var whisperBin: Hint {
+        Hint(modality: .audio, capabilities: [.transcribe], execution: .stream)
+    }
 }
