@@ -41,7 +41,7 @@ struct OpenAIChatHandler: GatewayHandling {
                     first = false
                 case .done(let stats):
                     finalStats = stats
-                case .audio, .status:
+                case .audio, .status, .vector:
                     break
                 }
             }
@@ -61,7 +61,7 @@ struct OpenAIChatHandler: GatewayHandling {
                     content += text
                 case .done(let stats):
                     finalStats = stats
-                case .thinking, .audio, .status:
+                case .thinking, .audio, .status, .vector:
                     break
                 }
             }

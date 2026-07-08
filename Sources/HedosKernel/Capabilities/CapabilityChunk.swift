@@ -4,6 +4,7 @@ public enum CapabilityChunk: Sendable, Hashable {
     case text(String)
     case thinking(String)
     case audio(AudioFrame)
+    case vector([Double])
     case status(String)
     case done(GenerationStats?)
 }

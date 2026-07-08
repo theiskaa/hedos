@@ -28,6 +28,7 @@ struct FakeGatewayPort: GatewayPort {
     var records: [ModelRecord] = []
     var chatScript: [CapabilityChunk] = []
     var speakScript: [CapabilityChunk] = []
+    var embedScript: [CapabilityChunk] = []
     var voicesList: [String] = []
     var jobResult: [String] = []
     var jobFailure: String?
@@ -35,6 +36,7 @@ struct FakeGatewayPort: GatewayPort {
     var admission: GatewayAdmissionState = .ready
     var pipelinesList: [Pipeline] = []
     var pipelineEventScript: [PipelineEvent] = []
+    var pipelineHangs = false
     var recorder = InvokeRecorder()
 
     func shelf() async throws -> [ModelRecord] { records }
@@ -43,10 +45,28 @@ struct FakeGatewayPort: GatewayPort {
         _ modelID: String, _ capability: Capability, payload: JSONValue
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         recorder.record(modelID, capability, payload)
-        let script = capability == .speak ? speakScript : chatScript
+        if let record = records.first(where: { $0.id == modelID }),
+            !record.capabilities.contains(capability)
+        {
+            return AsyncThrowingStream { continuation in
+                continuation.finish(
+                    throwing: KernelError.capabilityUnsupported(
+                        model: modelID, capability: capability))
+            }
+        }
+        let script: [CapabilityChunk]
+        switch capability {
+        case .speak: script = speakScript
+        case .embed: script = embedScript
+        default: script = chatScript
+        }
         guard !script.isEmpty else {
             return AsyncThrowingStream { continuation in
-                continuation.finish(throwing: KernelError.modelNotFound(modelID))
+                let error: Error =
+                    capability == .embed
+                    ? KernelError.capabilityUnsupported(model: modelID, capability: capability)
+                    : KernelError.modelNotFound(modelID)
+                continuation.finish(throwing: error)
             }
         }
         return AsyncThrowingStream { continuation in
@@ -106,9 +126,18 @@ struct FakeGatewayPort: GatewayPort {
         -> AsyncStream<PipelineEvent>
     {
         let script = pipelineEventScript
+        guard pipelineHangs else {
+            return AsyncStream { continuation in
+                for event in script { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
         return AsyncStream { continuation in
-            for event in script { continuation.yield(event) }
-            continuation.finish()
+            let task = Task {
+                try? await Task.sleep(for: .seconds(3600))
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 }

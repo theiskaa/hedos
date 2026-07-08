@@ -146,3 +146,60 @@ private func imageModel() -> ModelRecord {
     #expect(object["data"] == nil)
     await stack.stop()
 }
+
+@Test func embeddingsReturnANumericVectorWhenServed() async throws {
+    var embedder = Fixtures.gguf(path: "/tmp/hedos-fixtures/embedder.gguf")
+    embedder.name = "embedder"
+    embedder.capabilities = [.embed]
+    embedder.state = .ready
+    let port = FakeGatewayPort(
+        records: [embedder],
+        embedScript: [
+            .vector([0.1, 0.2, 0.3]),
+            .done(GenerationStats(promptTokens: 4)),
+        ])
+    let stack = try await GatewayHarness.stack(
+        port: port, routes: GatewayRouter.standardRoutes())
+    let body = GatewayHarness.json(["model": "embedder", "input": "vectorize me"])
+    let (data, response) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/embeddings"), token: stack.token, body: body))
+    #expect((response as! HTTPURLResponse).statusCode == 200)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    #expect(object["model"] as? String == "embedder")
+    let entries = object["data"] as! [[String: Any]]
+    #expect(entries.count == 1)
+    #expect(entries[0]["index"] as? Int == 0)
+    let vector = entries[0]["embedding"] as! [Double]
+    #expect(vector == [0.1, 0.2, 0.3])
+    let usage = object["usage"] as? [String: Any]
+    #expect(usage?["prompt_tokens"] as? Int == 4)
+
+    if case .object(let payload) = port.recorder.last!.payload {
+        #expect(payload["input"] == .string("vectorize me"))
+    } else {
+        Issue.record("embed payload should be an object")
+    }
+    await stack.stop()
+}
+
+@Test func embeddingsRefuseNonEmbedModelHonestly() async throws {
+    let chatOnly = Fixtures.gguf(path: "/tmp/hedos-fixtures/chat-only.gguf")
+    var chatModel = chatOnly
+    chatModel.name = "chat-only"
+    chatModel.capabilities = [.chat]
+    chatModel.state = .ready
+    let stack = try await GatewayHarness.stack(
+        port: FakeGatewayPort(records: [chatModel]),
+        routes: GatewayRouter.standardRoutes())
+    let body = GatewayHarness.json(["model": "chat-only", "input": "vectorize me"])
+    let (data, response) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/embeddings"), token: stack.token, body: body))
+    #expect((response as! HTTPURLResponse).statusCode == 501)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let error = object["error"] as? [String: Any]
+    #expect(error?["code"] as? String == "capability_unsupported")
+    #expect(object["data"] == nil)
+    await stack.stop()
+}

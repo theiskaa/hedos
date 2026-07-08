@@ -18,7 +18,9 @@ public struct OllamaAdapter: RuntimeAdapter {
     }
 
     public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
-        guard capability == .chat || capability == .complete else { return false }
+        guard capability == .chat || capability == .complete || capability == .embed else {
+            return false
+        }
         if let runtimeID = record.runtime.id { return runtimeID == id }
         return record.source.kind == .ollama
     }
@@ -84,6 +86,14 @@ public struct OllamaAdapter: RuntimeAdapter {
     public func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        capability == .embed
+            ? invokeEmbed(record, payload: payload)
+            : invokeChat(record, payload: payload)
+    }
+
+    private func invokeChat(
+        _ record: ModelRecord, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -103,6 +113,52 @@ public struct OllamaAdapter: RuntimeAdapter {
                         continuation.yield(chunk)
                         if case .done = chunk { break }
                     }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch let error as URLError
+                    where error.code == .cannotConnectToHost || error.code == .cannotFindHost
+                    || error.code == .networkConnectionLost
+                {
+                    continuation.finish(
+                        throwing: KernelError.runtimeUnavailable(
+                            hint: "Ollama isn't running. Start it with `ollama serve`."))
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func invokeEmbed(
+        _ record: ModelRecord, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var request = URLRequest(url: baseURL.appendingPathComponent("api/embed"))
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = try Self.embedRequestBody(
+                        model: record.name, payload: payload)
+
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    if (response as? HTTPURLResponse)?.statusCode != 200 {
+                        throw KernelError.runtimeFailed(
+                            Self.embedErrorMessage(
+                                data, statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1)
+                        )
+                    }
+                    let parsed = try Self.parseEmbedResponse(data)
+                    for vector in parsed.vectors {
+                        if Task.isCancelled {
+                            continuation.finish(throwing: CancellationError())
+                            return
+                        }
+                        continuation.yield(.vector(vector))
+                    }
+                    continuation.yield(.done(parsed.promptTokens.map { GenerationStats(promptTokens: $0) }))
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
@@ -148,5 +204,49 @@ public struct OllamaAdapter: RuntimeAdapter {
             body["think"] = thinking
         }
         return try JSONEncoder().encode(JSONValue.object(body))
+    }
+
+    static func embedRequestBody(model: String, payload: JSONValue) throws -> Data {
+        guard case .object(let object) = payload, let input = object["input"], input != .null
+        else {
+            throw KernelError.runtimeFailed("embed payload must carry an input")
+        }
+        let body: [String: JSONValue] = ["model": .string(model), "input": input]
+        return try JSONEncoder().encode(JSONValue.object(body))
+    }
+
+    static func parseEmbedResponse(_ data: Data) throws -> (
+        vectors: [[Double]], promptTokens: Int?
+    ) {
+        struct ErrorPayload: Decodable {
+            let error: String
+        }
+        if let errorPayload = try? JSONDecoder().decode(ErrorPayload.self, from: data) {
+            throw KernelError.runtimeFailed("ollama: \(errorPayload.error)")
+        }
+        struct Payload: Decodable {
+            let embeddings: [[Double]]
+            let promptEvalCount: Int?
+            enum CodingKeys: String, CodingKey {
+                case embeddings
+                case promptEvalCount = "prompt_eval_count"
+            }
+        }
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: data),
+            !payload.embeddings.isEmpty
+        else {
+            throw KernelError.runtimeFailed("ollama embed response was not understood")
+        }
+        return (payload.embeddings, payload.promptEvalCount)
+    }
+
+    static func embedErrorMessage(_ data: Data, statusCode: Int) -> String {
+        struct ErrorPayload: Decodable {
+            let error: String
+        }
+        if let errorPayload = try? JSONDecoder().decode(ErrorPayload.self, from: data) {
+            return "ollama: \(errorPayload.error)"
+        }
+        return "ollama embed returned HTTP \(statusCode)"
     }
 }
