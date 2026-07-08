@@ -163,14 +163,15 @@ final class ImagesViewModel {
 
     func loadThumbnail(_ artifact: Artifact) async {
         guard thumbnails[artifact.id] == nil else { return }
-        if let data = try? await kernel.artifactPreview(id: artifact.id),
-            let image = NSImage(data: data)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        if let url = try? await kernel.artifactURL(id: artifact.id),
+            let image = Self.downsampled(url, maxPixel: Design.Bubble.imageMax * scale)
         {
             thumbnails[artifact.id] = image
             return
         }
-        guard let url = try? await kernel.artifactURL(id: artifact.id),
-            let image = Self.downsampled(url, maxPixel: 480)
+        guard let data = try? await kernel.artifactPreview(id: artifact.id),
+            let image = NSImage(data: data)
         else { return }
         thumbnails[artifact.id] = image
     }
@@ -303,7 +304,7 @@ final class ImagesViewModel {
         }
     }
 
-    private static func downsampled(_ url: URL, maxPixel: CGFloat) -> NSImage? {
+    static func downsampled(_ url: URL, maxPixel: CGFloat) -> NSImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
             return nil

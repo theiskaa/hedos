@@ -347,10 +347,14 @@ struct ArtifactExchangeView: View {
         .task(id: reference) {
             artifact = try? await kernel.artifact(id: reference)
             if artifact?.capability == .image, image == nil {
-                if let data = try? await kernel.artifactPreview(id: reference) {
+                let scale = NSScreen.main?.backingScaleFactor ?? 2
+                if let url = try? await kernel.artifactURL(id: reference),
+                    let sharp = ImagesViewModel.downsampled(
+                        url, maxPixel: Design.Bubble.imageMax * scale)
+                {
+                    image = sharp
+                } else if let data = try? await kernel.artifactPreview(id: reference) {
                     image = NSImage(data: data)
-                } else if let url = try? await kernel.artifactURL(id: reference) {
-                    image = NSImage(contentsOf: url)
                 }
             }
         }
