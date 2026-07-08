@@ -168,6 +168,13 @@ public actor MemoryGovernor {
         await residency.suspendAll()
     }
 
+    public func wouldWait(admitting modelID: String, footprintMB: Int?) async -> Bool {
+        guard isHeavy(footprintMB) else { return false }
+        guard let conflict = evictionConflict(admitting: modelID, footprintMB: footprintMB)
+        else { return false }
+        return await leases.count(conflict.modelID) > 0
+    }
+
     private func isHeavy(_ footprintMB: Int?) -> Bool {
         (footprintMB ?? heavyThresholdMB) >= heavyThresholdMB
     }

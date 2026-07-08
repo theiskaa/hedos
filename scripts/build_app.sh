@@ -63,12 +63,24 @@ PLIST
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
     | awk -F'"' '/Developer ID Application/ {print $2; exit}' || true)
 
+ENTITLEMENTS="$(mktemp -t hedos-entitlements).plist"
+cat > "$ENTITLEMENTS" <<'ENT'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.virtualization</key>
+    <true/>
+</dict>
+</plist>
+ENT
+
 sign_bundle() {
     for framework in "$APP"/Contents/Frameworks/*.framework; do
         [ -e "$framework" ] || continue
         codesign --force "$@" "$framework"
     done
-    codesign --force "$@" "$APP"
+    codesign --force "$@" --entitlements "$ENTITLEMENTS" "$APP"
 }
 
 if [ -n "$IDENTITY" ]; then
@@ -78,6 +90,7 @@ else
     sign_bundle --sign -
     echo "signed: ad-hoc"
 fi
+rm -f "$ENTITLEMENTS"
 
 codesign --verify --deep --strict "$APP"
 echo "built: $APP"

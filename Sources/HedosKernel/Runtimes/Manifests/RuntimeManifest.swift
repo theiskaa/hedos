@@ -48,6 +48,42 @@ public struct ManifestPermissions: Sendable, Hashable {
     public var paths: [String]
 }
 
+public struct ManifestVM: Sendable, Hashable {
+    public var image: String
+    public var setup: [String]
+}
+
+public struct RuntimeProvenance: Codable, Sendable, Hashable {
+    public var origin: String
+    public var installedAt: Date
+
+    public static let communityOrigin = "community"
+
+    public init(origin: String, installedAt: Date = Date()) {
+        self.origin = origin
+        self.installedAt = installedAt
+    }
+
+    public var isCommunity: Bool { origin == Self.communityOrigin }
+
+    public static let fileName = ".provenance.json"
+
+    public static func read(in directory: URL) -> RuntimeProvenance? {
+        let url = directory.appendingPathComponent(fileName)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(RuntimeProvenance.self, from: data)
+    }
+
+    public func write(in directory: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(self).write(
+            to: directory.appendingPathComponent(Self.fileName), options: .atomic)
+    }
+}
+
 public struct RuntimeManifest: Sendable, Hashable {
     public var id: String
     public var modalities: [Modality]
@@ -59,7 +95,9 @@ public struct RuntimeManifest: Sendable, Hashable {
     public var serve: ManifestServe?
     public var invoke: ManifestInvoke?
     public var permissions: ManifestPermissions
+    public var vm: ManifestVM?
     public var directory: URL?
+    public var provenance: RuntimeProvenance?
 
     public static func load(table: TOMLTable, directory: URL?) throws -> RuntimeManifest {
         guard let id = table["id"]?.stringValue, !id.isEmpty else {
@@ -146,6 +184,33 @@ public struct RuntimeManifest: Sendable, Hashable {
             network: permissionsTable["network"]?.boolValue ?? false,
             paths: permissionsTable["paths"]?.stringArray ?? ["{model}", "{workdir}"])
 
+        var vm: ManifestVM?
+        if let vmTable = table["vm"]?.tableValue {
+            guard let image = vmTable["image"]?.stringValue, !image.isEmpty else {
+                throw ManifestValidationError(
+                    message: "manifest \(id) declares [vm] without an image")
+            }
+            guard image.contains("@sha256:") else {
+                throw ManifestValidationError(
+                    message:
+                        "manifest \(id) [vm] image must be digest-pinned (…@sha256:…) — tags can move"
+                )
+            }
+            if serve != nil {
+                throw ManifestValidationError(
+                    message: "manifest \(id) [vm] runtimes support [invoke] only")
+            }
+            if env != nil {
+                throw ManifestValidationError(
+                    message:
+                        "manifest \(id) declares both [vm] and [env] — the image and its setup are the environment"
+                )
+            }
+            vm = ManifestVM(
+                image: image,
+                setup: vmTable["setup"]?.stringArray ?? [])
+        }
+
         return RuntimeManifest(
             id: id,
             modalities: modalities,
@@ -157,6 +222,7 @@ public struct RuntimeManifest: Sendable, Hashable {
             serve: serve,
             invoke: invoke,
             permissions: permissions,
+            vm: vm,
             directory: directory)
     }
 }

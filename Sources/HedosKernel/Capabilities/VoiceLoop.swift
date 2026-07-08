@@ -189,6 +189,62 @@ public struct VoiceLoopBackends: Sendable {
     }
 }
 
+struct VoiceLoopBackendAdapter: PipelineBackend {
+    let backends: VoiceLoopBackends
+
+    func invoke(_ modelID: String, _ capability: Capability, payload: JSONValue) async throws
+        -> AsyncThrowingStream<CapabilityChunk, Error>
+    {
+        switch capability {
+        case .transcribe:
+            guard case .object(let object) = payload,
+                case .string(let base64)? = object["pcm"],
+                let data = Data(base64Encoded: base64)
+            else { return VoiceLoopBackendAdapter.empty() }
+            let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            return try await backends.transcribe(samples)
+        case .speak:
+            guard case .object(let object) = payload,
+                case .string(let text)? = object["text"]
+            else { return VoiceLoopBackendAdapter.empty() }
+            return try await backends.speak(text)
+        default:
+            return try await backends.chat(VoiceLoopBackendAdapter.userText(payload))
+        }
+    }
+
+    func submit(_ modelID: String, _ capability: Capability, payload: JSONValue) async throws
+        -> String
+    {
+        throw KernelError.runtimeFailed("voice loop stages do not run jobs")
+    }
+
+    func jobEvents(id: String) async -> AsyncStream<JobEvent> {
+        AsyncStream { $0.finish() }
+    }
+
+    func cancel(jobID: String) async {}
+
+    func artifactData(id: String) async throws -> Data? { nil }
+
+    static func userText(_ payload: JSONValue) -> String {
+        guard case .object(let object) = payload,
+            case .array(let messages)? = object["messages"]
+        else { return "" }
+        for entry in messages.reversed() {
+            guard case .object(let fields) = entry,
+                case .string(let content)? = fields["content"]
+            else { continue }
+            return content
+        }
+        return ""
+    }
+
+    static func empty() -> AsyncThrowingStream<CapabilityChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+
 public actor VoiceLoop {
     public enum Event: Sendable {
         case listening
@@ -251,65 +307,50 @@ public actor VoiceLoop {
         }
     }
 
+    private func stages() -> [PipelineStageRunner] {
+        let backend = VoiceLoopBackendAdapter(backends: backends)
+        return [
+            PipelineRunnerFactory.transcribe(
+                index: 0, modelID: "voice-transcribe", params: [:], sampleRate: 16000,
+                backend: backend),
+            PipelineRunnerFactory.textToText(
+                index: 1, modelID: "voice-chat", capability: .chat, params: [:],
+                backend: backend),
+            PipelineRunnerFactory.speak(
+                index: 2, modelID: "voice-speak", params: [:], voice: nil, backend: backend),
+        ]
+    }
+
     private func runTurn(_ samples: [Float]) async {
         defer { turnTask = nil }
-        do {
-            continuation?.yield(.status("transcribing"))
-            var heard = ""
-            for try await chunk in try await backends.transcribe(samples) {
-                if case .text(let delta) = chunk {
-                    heard += delta
+        continuation?.yield(.status("transcribing"))
+        var reportedTurn = false
+        for await event in PipelineExecutor(stages: stages()).run(input: .audio(samples)) {
+            if Task.isCancelled { return }
+            switch event {
+            case .transcript(_, let text):
+                let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if question.isEmpty {
+                    continuation?.yield(.listening)
+                    return
                 }
-            }
-            let question = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !question.isEmpty else {
+                reportedTurn = true
+                continuation?.yield(.userTurn(question))
+            case .delta(_, let delta):
+                continuation?.yield(.assistantDelta(delta))
+            case .audio(let frame):
+                continuation?.yield(.speech(frame))
+            case .completed:
+                if reportedTurn {
+                    continuation?.yield(.turnCompleted)
+                }
                 continuation?.yield(.listening)
-                return
+            case .failed(let message):
+                continuation?.yield(.failed(message))
+                continuation?.yield(.listening)
+            case .stageStarted, .status, .artifact:
+                break
             }
-            try Task.checkCancellation()
-            continuation?.yield(.userTurn(question))
-
-            let (sentences, sentenceFeed) = AsyncStream.makeStream(of: String.self)
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask { [backends, continuation] in
-                    var chunker = SentenceChunker()
-                    do {
-                        for try await chunk in try await backends.chat(question) {
-                            if case .text(let delta) = chunk {
-                                continuation?.yield(.assistantDelta(delta))
-                                for sentence in chunker.consume(delta) {
-                                    sentenceFeed.yield(sentence)
-                                }
-                            }
-                        }
-                        if let rest = chunker.flush() {
-                            sentenceFeed.yield(rest)
-                        }
-                        sentenceFeed.finish()
-                    } catch {
-                        sentenceFeed.finish()
-                        throw error
-                    }
-                }
-                group.addTask { [backends, continuation] in
-                    for await sentence in sentences {
-                        try Task.checkCancellation()
-                        for try await chunk in try await backends.speak(sentence) {
-                            if case .audio(let frame) = chunk {
-                                continuation?.yield(.speech(frame))
-                            }
-                        }
-                    }
-                }
-                try await group.waitForAll()
-            }
-            try Task.checkCancellation()
-            continuation?.yield(.turnCompleted)
-            continuation?.yield(.listening)
-        } catch is CancellationError {
-        } catch {
-            continuation?.yield(.failed(error.localizedDescription))
-            continuation?.yield(.listening)
         }
     }
 }

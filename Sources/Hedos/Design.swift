@@ -71,6 +71,7 @@ enum Design {
         static let prose: CGFloat = 520
         static let transcriptProse: CGFloat = 620
         static let emptyCaption: CGFloat = 380
+        static let pipelineList: CGFloat = 300
     }
 
     enum Popover {
@@ -293,6 +294,7 @@ enum Design {
         case .chat: "message"
         case .images: "photo.stack"
         case .voice: "speaker.wave.2"
+        case .pipelines: "point.3.connected.trianglepath.dotted"
         case .library: "square.stack.3d.up"
         case .settings: "gearshape"
         }
@@ -304,6 +306,7 @@ enum Design {
         case .chat: "Chat"
         case .images: "Images"
         case .voice: "Voice"
+        case .pipelines: "Pipelines"
         case .library: "Models"
         case .settings: "Settings"
         }

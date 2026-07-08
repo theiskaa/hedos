@@ -62,6 +62,7 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
             await QuickAskController.shared.shell?.kernel.stopWatching()
+            await QuickAskController.shared.shell?.kernel.stopGateway()
             await SettingsModel.active?.flush()
             await MemoryGovernor.shared.suspendForQuit()
             await SidecarSupervisor.shared.terminateAll()

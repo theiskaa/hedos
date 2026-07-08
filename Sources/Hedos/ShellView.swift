@@ -15,6 +15,7 @@ final class ShellModel {
     var imagesSelection: String?
     var pendingImageReveal: String?
     var voiceSelection: String?
+    var pipelineSelection: String?
     var librarySelection: String?
     var sessions: [ChatSession] = []
     var sidebarCollapsed = false
@@ -53,6 +54,7 @@ final class ShellModel {
             chatSelection = restored.chatSessionID
             imagesSelection = restored.imagesSelection
             voiceSelection = restored.voiceModelID
+            pipelineSelection = restored.pipelineSelection
             librarySelection = restored.libraryModelID
             sidebarCollapsed = restored.sidebarCollapsed
         }
@@ -64,6 +66,7 @@ final class ShellModel {
         }
         await refreshSessions()
         watchResidency()
+        Task { await kernel.startGatewayIfEnabled() }
         await library.rescan()
         await kernel.startWatching()
         library.startLiveUpdates()
@@ -259,6 +262,7 @@ final class ShellModel {
             chatSessionID: chatSelection,
             imagesSelection: imagesSelection,
             voiceModelID: voiceSelection,
+            pipelineSelection: pipelineSelection,
             libraryModelID: librarySelection,
             sidebarCollapsed: sidebarCollapsed)
         let kernel = kernel
@@ -335,6 +339,9 @@ struct ShellView: View {
         case .voice:
             VoicePane(shell: shell)
                 .transition(.opacity)
+        case .pipelines:
+            PipelinesPane(shell: shell)
+                .transition(.opacity)
         case .library:
             ModelsPane(shell: shell)
                 .transition(.opacity)
@@ -395,7 +402,7 @@ struct HedosSidebar: View {
                 if surfacesMatch {
                     groupTitle("Surfaces")
                 }
-                ForEach([AppMode.chat, .images, .voice], id: \.self) { mode in
+                ForEach([AppMode.chat, .images, .voice, .pipelines], id: \.self) { mode in
                     if rowMatches(Design.modeTitle(mode)) {
                         modeRow(mode, collapsedRow: false)
                     }
@@ -423,6 +430,7 @@ struct HedosSidebar: View {
                 modeRow(.chat, collapsedRow: true)
                 modeRow(.images, collapsedRow: true)
                 modeRow(.voice, collapsedRow: true)
+                modeRow(.pipelines, collapsedRow: true)
                 Rectangle()
                     .fill(Design.line)
                     .frame(width: 28, height: Design.hairlineWidth)
@@ -460,7 +468,7 @@ struct HedosSidebar: View {
     }
 
     private var surfacesMatch: Bool {
-        [AppMode.chat, .images, .voice].contains {
+        [AppMode.chat, .images, .voice, .pipelines].contains {
             rowMatches(Design.modeTitle($0))
         }
     }

@@ -4,18 +4,20 @@ import Testing
 @testable import HedosKernel
 
 @Test func modeOrderMatchesCommandShortcuts() {
-    #expect(AppMode.allCases == [.home, .chat, .images, .voice, .library, .settings])
+    #expect(
+        AppMode.allCases == [.home, .chat, .images, .voice, .pipelines, .library, .settings])
     #expect(AppMode.home.ordinal == 0)
     #expect(AppMode.chat.ordinal == 1)
     #expect(AppMode.images.ordinal == 2)
     #expect(AppMode.voice.ordinal == 3)
-    #expect(AppMode.library.ordinal == 4)
-    #expect(AppMode.settings.ordinal == 5)
+    #expect(AppMode.pipelines.ordinal == 4)
+    #expect(AppMode.library.ordinal == 5)
+    #expect(AppMode.settings.ordinal == 6)
     for mode in AppMode.allCases {
         #expect(AppMode.at(ordinal: mode.ordinal) == mode)
     }
     #expect(AppMode.at(ordinal: 0) == .home)
-    #expect(AppMode.at(ordinal: 6) == nil)
+    #expect(AppMode.at(ordinal: 7) == nil)
     #expect(AppMode(rawValue: "home") == .home)
 }
 

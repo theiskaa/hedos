@@ -92,6 +92,26 @@ enum ManifestSupport {
         return ""
     }
 
+    static func substitutedForVM(command: String, payload: JSONValue) throws -> [String] {
+        let prompt = promptText(from: payload)
+        var tokens: [String] = []
+        for token in command.split(separator: " ").map(String.init) {
+            var expanded = token
+            expanded = expanded.replacingOccurrences(of: "{model}", with: VMGuestPath.model)
+            expanded = expanded.replacingOccurrences(of: "{prompt}", with: prompt)
+            expanded = expanded.replacingOccurrences(of: "{workdir}", with: VMGuestPath.workdir)
+            expanded = expanded.replacingOccurrences(of: "{outputs}", with: VMGuestPath.outputs)
+            expanded = expanded.replacingOccurrences(
+                of: "{resources}", with: VMGuestPath.resources)
+            expanded = expanded.replacingOccurrences(of: "{python}", with: "python3")
+            tokens.append(expanded)
+        }
+        guard !tokens.isEmpty else {
+            throw KernelError.runtimeFailed("the manifest command is empty")
+        }
+        return tokens
+    }
+
     static func substituted(
         command: String, record: ModelRecord, payload: JSONValue,
         workdir: URL, outputs: URL, envDir: URL?

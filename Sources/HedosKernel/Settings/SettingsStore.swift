@@ -45,6 +45,7 @@ public actor SettingsStore {
     public func voice() -> VoiceSettings { load(VoiceSettings.self) }
     public func appearance() -> AppearanceSettings { load(AppearanceSettings.self) }
     public func advanced() -> AdvancedSettings { load(AdvancedSettings.self) }
+    public func gateway() -> GatewaySettings { load(GatewaySettings.self) }
 
     public func shellState() -> ShellState {
         load(ShellSettings.self).shell

@@ -42,11 +42,27 @@ public enum TOMLLite {
         var root: TOMLTable = [:]
         var currentTable: String?
 
-        for (index, rawLine) in text.components(separatedBy: "\n").enumerated() {
+        let rawLines = text.components(separatedBy: "\n")
+        var index = 0
+        while index < rawLines.count {
             let lineNumber = index + 1
-            let stripped = try stripComment(rawLine, line: lineNumber)
+            var stripped = try stripComment(rawLines[index], line: lineNumber)
                 .trimmingCharacters(in: .whitespaces)
+            index += 1
             if stripped.isEmpty { continue }
+
+            if bracketBalance(stripped) > 0 {
+                var balance = bracketBalance(stripped)
+                while balance > 0, index < rawLines.count {
+                    let continuation = try stripComment(rawLines[index], line: index + 1)
+                        .trimmingCharacters(in: .whitespaces)
+                    index += 1
+                    if !continuation.isEmpty {
+                        stripped += " " + continuation
+                        balance += bracketBalance(continuation)
+                    }
+                }
+            }
 
             if stripped.hasPrefix("[") {
                 guard stripped.hasSuffix("]"), stripped.count > 2 else {
@@ -89,6 +105,30 @@ public enum TOMLLite {
             }
         }
         return root
+    }
+
+    private static func bracketBalance(_ text: String) -> Int {
+        var balance = 0
+        var inString = false
+        var escaped = false
+        for character in text {
+            if escaped {
+                escaped = false
+                continue
+            }
+            if inString && character == "\\" {
+                escaped = true
+                continue
+            }
+            if character == "\"" {
+                inString.toggle()
+                continue
+            }
+            if inString { continue }
+            if character == "[" { balance += 1 }
+            if character == "]" { balance -= 1 }
+        }
+        return balance
     }
 
     private static func stripComment(_ line: String, line lineNumber: Int) throws -> String {

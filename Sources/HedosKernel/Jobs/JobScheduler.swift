@@ -49,6 +49,10 @@ public actor JobScheduler {
             .sorted { ($0.submittedAt, $0.id) < ($1.submittedAt, $1.id) }
     }
 
+    public func queueDepth() -> Int {
+        queue.count + (executing == nil ? 0 : 1)
+    }
+
     public func events(id: String) -> AsyncStream<JobEvent> {
         AsyncStream { continuation in
             guard let job = jobs[id] else {

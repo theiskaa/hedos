@@ -24,6 +24,84 @@ public enum SpeechAudio {
         return wav
     }
 
+    public static func float32PCM(fromWAV wav: Data) -> (pcm: Data, sampleRate: Int)? {
+        guard wav.count > 44,
+            wav.prefix(4).elementsEqual("RIFF".utf8),
+            wav.subdata(in: 8..<12).elementsEqual("WAVE".utf8)
+        else { return nil }
+        var offset = 12
+        var format: UInt16 = 0
+        var channels: UInt16 = 1
+        var sampleRate: UInt32 = 0
+        var bitsPerSample: UInt16 = 0
+        var samplesData: Data?
+        while offset + 8 <= wav.count {
+            let chunkID = wav.subdata(in: offset..<(offset + 4))
+            let chunkSize = Int(readUInt32(wav, at: offset + 4))
+            let body = offset + 8
+            guard body + chunkSize <= wav.count else { break }
+            if chunkID.elementsEqual("fmt ".utf8), chunkSize >= 16 {
+                format = readUInt16(wav, at: body)
+                channels = readUInt16(wav, at: body + 2)
+                sampleRate = readUInt32(wav, at: body + 4)
+                bitsPerSample = readUInt16(wav, at: body + 14)
+            } else if chunkID.elementsEqual("data".utf8) {
+                samplesData = wav.subdata(in: body..<(body + chunkSize))
+            }
+            offset = body + chunkSize + (chunkSize % 2)
+        }
+        guard let samplesData, sampleRate > 0, channels >= 1 else { return nil }
+        let channelCount = Int(channels)
+        var floats: [Float] = []
+        switch (format, bitsPerSample) {
+        case (1, 16):
+            let sampleCount = samplesData.count / 2
+            floats.reserveCapacity(sampleCount / channelCount)
+            samplesData.withUnsafeBytes { raw in
+                let int16Buffer = raw.bindMemory(to: Int16.self)
+                var index = 0
+                while index < int16Buffer.count {
+                    var sum: Float = 0
+                    for channel in 0..<channelCount where index + channel < int16Buffer.count {
+                        sum += Float(Int16(littleEndian: int16Buffer[index + channel])) / 32768
+                    }
+                    floats.append(sum / Float(channelCount))
+                    index += channelCount
+                }
+            }
+        case (3, 32):
+            let sampleCount = samplesData.count / 4
+            floats.reserveCapacity(sampleCount / channelCount)
+            samplesData.withUnsafeBytes { raw in
+                let floatBuffer = raw.bindMemory(to: Float.self)
+                var index = 0
+                while index < floatBuffer.count {
+                    var sum: Float = 0
+                    for channel in 0..<channelCount where index + channel < floatBuffer.count {
+                        sum += floatBuffer[index + channel]
+                    }
+                    floats.append(sum / Float(channelCount))
+                    index += channelCount
+                }
+            }
+        default:
+            return nil
+        }
+        return (floats.withUnsafeBytes { Data($0) }, Int(sampleRate))
+    }
+
+    private static func readUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[data.startIndex + offset])
+            | (UInt16(data[data.startIndex + offset + 1]) << 8)
+    }
+
+    private static func readUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        UInt32(data[data.startIndex + offset])
+            | (UInt32(data[data.startIndex + offset + 1]) << 8)
+            | (UInt32(data[data.startIndex + offset + 2]) << 16)
+            | (UInt32(data[data.startIndex + offset + 3]) << 24)
+    }
+
     public static func peaks(fromFloat32 pcm: Data, buckets: Int = 28) -> [Double] {
         let samples = floatSamples(fromFloat32: pcm)
         guard !samples.isEmpty, buckets > 0 else {

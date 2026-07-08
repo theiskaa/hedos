@@ -72,3 +72,38 @@ import Testing
     }
     #expect(throws: TOMLParseError.self) { _ = try TOMLLite.parse("open = \"unterminated") }
 }
+
+@Test func multiLineArraysAccumulateAcrossLines() throws {
+    let toml = """
+        setup = [
+            "apt-get update && apt-get install -y espeak-ng",
+            "pip install kokoro==0.9.4 soundfile",
+        ]
+        """
+    let table = try TOMLLite.parse(toml)
+    #expect(
+        table["setup"]?.stringArray == [
+            "apt-get update && apt-get install -y espeak-ng",
+            "pip install kokoro==0.9.4 soundfile",
+        ])
+}
+
+@Test func multiLineArrayInsideTableSection() throws {
+    let toml = """
+        id = "x"
+
+        [vm]
+        image = "img@sha256:deadbeef"
+        setup = [
+            "one",
+            "two",
+        ]
+        """
+    let table = try TOMLLite.parse(toml)
+    guard case .table(let vm)? = table["vm"] else {
+        Issue.record("vm table missing")
+        return
+    }
+    #expect(vm["setup"]?.stringArray == ["one", "two"])
+    #expect(vm["image"]?.stringValue == "img@sha256:deadbeef")
+}

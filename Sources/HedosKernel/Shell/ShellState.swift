@@ -5,6 +5,7 @@ public enum AppMode: String, Codable, CaseIterable, Sendable {
     case chat
     case images
     case voice
+    case pipelines
     case library
     case settings
 
@@ -14,8 +15,9 @@ public enum AppMode: String, Codable, CaseIterable, Sendable {
         case .chat: 1
         case .images: 2
         case .voice: 3
-        case .library: 4
-        case .settings: 5
+        case .pipelines: 4
+        case .library: 5
+        case .settings: 6
         }
     }
 
@@ -72,6 +74,7 @@ public struct ShellState: Codable, Sendable, Equatable {
     public var chatSessionID: String?
     public var imagesSelection: String?
     public var voiceModelID: String?
+    public var pipelineSelection: String?
     public var libraryModelID: String?
     public var sidebarCollapsed: Bool
 
@@ -80,6 +83,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         chatSessionID: String? = nil,
         imagesSelection: String? = nil,
         voiceModelID: String? = nil,
+        pipelineSelection: String? = nil,
         libraryModelID: String? = nil,
         sidebarCollapsed: Bool = false
     ) {
@@ -87,6 +91,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         self.chatSessionID = chatSessionID
         self.imagesSelection = imagesSelection
         self.voiceModelID = voiceModelID
+        self.pipelineSelection = pipelineSelection
         self.libraryModelID = libraryModelID
         self.sidebarCollapsed = sidebarCollapsed
     }
@@ -98,6 +103,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         chatSessionID = try container.decodeIfPresent(String.self, forKey: .chatSessionID)
         imagesSelection = try container.decodeIfPresent(String.self, forKey: .imagesSelection)
         voiceModelID = try container.decodeIfPresent(String.self, forKey: .voiceModelID)
+        pipelineSelection = try container.decodeIfPresent(String.self, forKey: .pipelineSelection)
         libraryModelID = try container.decodeIfPresent(String.self, forKey: .libraryModelID)
         sidebarCollapsed =
             (try container.decodeIfPresent(Bool.self, forKey: .sidebarCollapsed)) ?? false
@@ -108,6 +114,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         case .chat: chatSessionID
         case .images: imagesSelection
         case .voice: voiceModelID
+        case .pipelines: pipelineSelection
         case .library: libraryModelID
         case .home, .settings: nil
         }
@@ -118,6 +125,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         case .chat: chatSessionID = id
         case .images: imagesSelection = id
         case .voice: voiceModelID = id
+        case .pipelines: pipelineSelection = id
         case .library: libraryModelID = id
         case .home, .settings: break
         }

@@ -52,6 +52,12 @@ enum SettingsIndex {
             id: "models.servers", section: "Models", title: "Servers",
             keywords: ["endpoint", "openai", "api", "server", "remote", "url", "key"]),
         .init(
+            id: "models.runtimes", section: "Models", title: "Installed runtimes",
+            keywords: [
+                "runtime", "manifest", "community", "install", "vm", "container", "sandbox",
+                "contained",
+            ]),
+        .init(
             id: "chat.prompt", section: "Chat", title: "Default system prompt",
             keywords: ["system", "prompt", "instructions"]),
         .init(
@@ -91,6 +97,18 @@ enum SettingsIndex {
             id: "prompts.library", section: "Prompts", title: "Prompt library",
             keywords: ["prompt", "slash", "template", "snippet", "insert", "placeholder"]),
         .init(
+            id: "gateway.enable", section: "Gateway", title: "Serve models over HTTP",
+            keywords: ["gateway", "server", "http", "api", "serve", "openai", "ollama", "port"]),
+        .init(
+            id: "gateway.port", section: "Gateway", title: "Port",
+            keywords: ["gateway", "port", "http", "address", "localhost"]),
+        .init(
+            id: "gateway.clients", section: "Gateway", title: "Client tokens",
+            keywords: ["token", "client", "key", "scope", "auth", "revoke", "bearer"]),
+        .init(
+            id: "gateway.audit", section: "Gateway", title: "Recent activity",
+            keywords: ["audit", "log", "activity", "requests", "history"]),
+        .init(
             id: "advanced.history", section: "Advanced", title: "Job history length",
             keywords: ["jobs", "history", "limit"]),
         .init(
@@ -129,6 +147,12 @@ final class SettingsModel {
     var voice = VoiceSettings()
     var appearance = AppearanceSettings()
     var advanced = AdvancedSettings()
+    var gateway = GatewaySettings()
+    var gatewayStatus = GatewayStatus(running: false)
+    var gatewayClients: [GatewayClient] = []
+    var gatewayAuditEntries: [GatewayAuditEntry] = []
+    var gatewayNotice: String?
+    var installedRuntimes: [RuntimeManifest] = []
     var prompts: [Prompt] = []
     var voices: [String] = []
     var previewing = false
@@ -148,7 +172,9 @@ final class SettingsModel {
         voice = await kernel.voiceSettings()
         appearance = await kernel.appearanceSettings()
         advanced = await kernel.advancedSettings()
+        gateway = await kernel.gatewaySettings()
         prompts = await kernel.prompts()
+        await refreshGateway()
         loaded = true
         applyTheme()
         applyShellIntegrations()
@@ -244,6 +270,93 @@ final class SettingsModel {
         }
     }
 
+    func refreshGateway() async {
+        gatewayStatus = await kernel.gatewayStatus()
+        gatewayClients = await kernel.gatewayClients()
+        gatewayAuditEntries = await kernel.gatewayAudit(limit: 20).reversed()
+    }
+
+    func setGatewayEnabled(_ enabled: Bool) {
+        gateway.enabled = enabled
+        gatewayNotice = nil
+        let value = gateway
+        let kernel = kernel
+        Task {
+            try? await kernel.updateGatewaySettings(value)
+            if enabled {
+                do {
+                    _ = try await kernel.startGateway()
+                } catch {
+                    self.gatewayNotice =
+                        (error as? GatewayError)?.message ?? error.localizedDescription
+                }
+            } else {
+                await kernel.stopGateway()
+            }
+            await self.refreshGateway()
+        }
+    }
+
+    func applyGatewayPort() {
+        gatewayNotice = nil
+        let value = gateway
+        let kernel = kernel
+        Task {
+            try? await kernel.updateGatewaySettings(value)
+            if await kernel.gatewayStatus().running {
+                await kernel.stopGateway()
+                do {
+                    _ = try await kernel.startGateway()
+                } catch {
+                    self.gatewayNotice =
+                        (error as? GatewayError)?.message ?? error.localizedDescription
+                }
+            }
+            await self.refreshGateway()
+        }
+    }
+
+    func createGatewayClient(
+        name: String, scopes: GatewayScopes
+    ) async -> GatewayClientCreation? {
+        let creation = try? await kernel.createGatewayClient(name: name, scopes: scopes)
+        await refreshGateway()
+        return creation
+    }
+
+    func revokeGatewayClient(id: String) {
+        let kernel = kernel
+        Task {
+            try? await kernel.revokeGatewayClient(id: id)
+            await self.refreshGateway()
+        }
+    }
+
+    var gatewayAuditFileURL: URL {
+        kernel.gatewayAuditURL
+    }
+
+    func refreshInstalledRuntimes() async {
+        installedRuntimes = await kernel.installedRuntimes()
+    }
+
+    func previewRuntimeInstall(from url: URL) async throws -> RuntimeInstallPreview {
+        try await kernel.previewRuntimeInstall(from: url)
+    }
+
+    func installRuntime(from url: URL) async throws {
+        _ = try await kernel.installRuntime(from: url)
+        await refreshInstalledRuntimes()
+    }
+
+    func uninstallRuntime(id: String) {
+        let kernel = kernel
+        Task {
+            try? await kernel.uninstallRuntime(id: id)
+            await self.refreshInstalledRuntimes()
+        }
+    }
+
     func previewVoice(records: [ModelRecord]) {
         guard !previewing,
             let speaker = records.first(where: {
@@ -300,6 +413,7 @@ final class SettingsModel {
         try? await kernel.updateVoiceSettings(voice)
         try? await kernel.updateAppearanceSettings(appearance)
         try? await kernel.updateAdvancedSettings(advanced)
+        try? await kernel.updateGatewaySettings(gateway)
     }
 
     private func persist(_ key: String, _ operation: @escaping (Kernel) async -> Void) {
@@ -313,7 +427,7 @@ final class SettingsModel {
     }
 }
 
-private struct SettingRow<Control: View>: View {
+struct SettingRow<Control: View>: View {
     let id: String
     let label: String
     var caption: String? = nil
@@ -359,6 +473,7 @@ enum SettingsSection: String, CaseIterable {
     case chat
     case voice
     case appearance
+    case gateway
     case advanced
 
     var title: String {
@@ -369,6 +484,7 @@ enum SettingsSection: String, CaseIterable {
         case .chat: "Chat"
         case .voice: "Voice"
         case .appearance: "Appearance"
+        case .gateway: "Gateway"
         case .advanced: "Advanced"
         }
     }
@@ -381,6 +497,7 @@ enum SettingsSection: String, CaseIterable {
         case .chat: "message"
         case .voice: "speaker.wave.2"
         case .appearance: "paintpalette"
+        case .gateway: "network"
         case .advanced: "slider.horizontal.3"
         }
     }
@@ -393,6 +510,7 @@ enum SettingsSection: String, CaseIterable {
         case .chat: "Prompts, sending, and exports."
         case .voice: "Voices, speed, and speaking."
         case .appearance: "Theme and layout. Previews always show both palettes."
+        case .gateway: "Serve your models to local tools, with tokens."
         case .advanced: "History and data locations."
         }
     }
@@ -444,6 +562,24 @@ struct SettingsRoot: View {
         ) {
             AddServerSheet(shell: shell) {
                 showingAddServer = false
+            }
+        }
+        .modalScrim(
+            isPresented: showingAddGatewayClient,
+            onDismiss: { showingAddGatewayClient = false }
+        ) {
+            AddGatewayClientSheet(shell: shell) {
+                showingAddGatewayClient = false
+            }
+        }
+        .modalScrim(
+            isPresented: installCandidate != nil,
+            onDismiss: { installCandidate = nil }
+        ) {
+            if let source = installCandidate {
+                InstallRuntimeSheet(shell: shell, source: source) {
+                    installCandidate = nil
+                }
             }
         }
         .modalScrim(
@@ -501,7 +637,7 @@ struct SettingsRoot: View {
                     expandedGroup("App", [.general, .appearance])
                     expandedGroup("Surfaces", [.chat, .voice])
                     expandedGroup("Library", [.models, .prompts])
-                    expandedGroup("System", [.advanced])
+                    expandedGroup("System", [.gateway, .advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -522,7 +658,7 @@ struct SettingsRoot: View {
                     collapsedGroup([.general, .appearance], first: true)
                     collapsedGroup([.chat, .voice])
                     collapsedGroup([.models, .prompts])
-                    collapsedGroup([.advanced])
+                    collapsedGroup([.gateway, .advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity)
@@ -611,6 +747,8 @@ struct SettingsRoot: View {
     @State private var pendingScroll: String?
     @State private var promptDraft: Prompt?
     @State private var showingAddServer = false
+    @State private var showingAddGatewayClient = false
+    @State private var installCandidate: URL?
     @State private var promptDraftIsNew = false
 
     private var detail: some View {
@@ -643,6 +781,10 @@ struct SettingsRoot: View {
                         case .voice: voiceSection
                         case .appearance: appearanceSection
                         case .prompts: promptsSection
+                        case .gateway:
+                            GatewaySection(
+                                shell: shell, highlighted: highlighted,
+                                onAddClient: { showingAddGatewayClient = true })
                         case .advanced: advancedSection
                         }
                     }
@@ -860,7 +1002,59 @@ struct SettingsRoot: View {
             group("Servers") {
                 serverRows
             }
+            group("Installed runtimes") {
+                runtimeRows
+            }
         }
+    }
+
+    private var runtimeRows: some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            HStack {
+                Spacer()
+                Button("Install a runtime…") {
+                    RuntimePicker.pick { url in
+                        installCandidate = url
+                    }
+                }
+                .buttonStyle(QuietButtonStyle())
+                .accessibilityIdentifier("runtimes-install")
+            }
+            ForEach(shell.settings.installedRuntimes, id: \.id) { manifest in
+                HStack(spacing: Design.Space.s) {
+                    Image(systemName: "shippingbox")
+                        .font(Design.glyphInline)
+                        .foregroundStyle(Design.inkSoft)
+                    Text(manifest.id)
+                        .font(Design.label)
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                    Text("contained")
+                        .font(Design.micro)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
+                    Spacer()
+                    Button {
+                        shell.settings.uninstallRuntime(id: manifest.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(Design.glyphInline)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    .buttonStyle(PressDipStyle())
+                    .accessibilityLabel("Uninstall \(manifest.id)")
+                }
+            }
+            if shell.settings.installedRuntimes.isEmpty {
+                Text("Community runtimes run inside their own Linux machine — never loose on the Mac.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+        }
+        .padding(.vertical, Design.Space.m)
+        .id("models.runtimes")
+        .background(highlightBackground("models.runtimes"))
+        .task { await shell.settings.refreshInstalledRuntimes() }
     }
 
     private var serverRows: some View {

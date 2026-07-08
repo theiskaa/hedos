@@ -40,7 +40,16 @@ public struct UserRuntimeStore: Sendable {
             do {
                 let text = try String(contentsOf: manifestURL, encoding: .utf8)
                 let table = try TOMLLite.parse(text)
-                let manifest = try RuntimeManifest.load(table: table, directory: manifestDirectory)
+                var manifest = try RuntimeManifest.load(table: table, directory: manifestDirectory)
+                if let manifestDirectory {
+                    manifest.provenance = RuntimeProvenance.read(in: manifestDirectory)
+                }
+                if manifest.provenance?.isCommunity == true, manifest.vm == nil {
+                    issues.append(
+                        "\(label): community runtimes run contained — \"\(manifest.id)\" has no [vm] section"
+                    )
+                    continue
+                }
                 if reservedIDs.contains(manifest.id) {
                     issues.append("\(label): id \"\(manifest.id)\" is reserved")
                     continue

@@ -42,11 +42,16 @@ public actor Kernel {
     public let artifactStore: ArtifactStore
     public let chats: ChatStore
     public let promptStore: PromptStore
+    public let pipelineStore: PipelineStore
     private let baseAdapters: [any RuntimeAdapter]
     private var adapters: [any RuntimeAdapter]
     let secrets: any SecretStore
     let habitat: ModelHabitat
     let scheduler: JobScheduler
+    let gatewayClientStore: GatewayClientStore
+    let gatewayAuditLog: GatewayAuditLog
+    var gateway: GatewayServer?
+    let vmHost: any VMHost
     private var shelfWatcher: ShelfWatcher?
     private var watcherTask: Task<Void, Never>?
     private var watcherDebounce: Duration = .seconds(2)
@@ -58,7 +63,8 @@ public actor Kernel {
         adapters: [any RuntimeAdapter]? = nil,
         governor: MemoryGovernor = .shared,
         secrets: any SecretStore = KeychainStore(),
-        habitat: ModelHabitat = ModelHabitat()
+        habitat: ModelHabitat = ModelHabitat(),
+        vmHost: (any VMHost)? = nil
     ) {
         self.habitat = habitat
         self.directory = directory
@@ -72,6 +78,8 @@ public actor Kernel {
         self.chats = ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
         self.promptStore = PromptStore(
             directory: directory.appendingPathComponent("prompts", isDirectory: true))
+        self.pipelineStore = PipelineStore(
+            directory: directory.appendingPathComponent("pipelines", isDirectory: true))
         self.secrets = secrets
         let base = adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets)
         self.baseAdapters = base
@@ -80,6 +88,10 @@ public actor Kernel {
             history: JobHistoryStore(directory: directory),
             admission: GovernorAdmission(governor: governor, registry: registry),
             artifacts: ProvenanceArtifactWriter(store: artifactStore, registry: registry))
+        let gatewayDirectory = directory.appendingPathComponent("gateway", isDirectory: true)
+        self.gatewayClientStore = GatewayClientStore(directory: gatewayDirectory, secrets: secrets)
+        self.gatewayAuditLog = GatewayAuditLog(directory: gatewayDirectory)
+        self.vmHost = vmHost ?? ContainerizationVMHost(directory: directory)
     }
 
     public init() {
@@ -117,7 +129,9 @@ public actor Kernel {
         var manifestAdapters: [any RuntimeAdapter] = []
         for manifest in manifests {
             let approvedNetwork = approved.contains(manifest.id)
-            if manifest.serve != nil {
+            if manifest.vm != nil {
+                manifestAdapters.append(VMCommandAdapter(manifest: manifest, host: vmHost))
+            } else if manifest.serve != nil {
                 manifestAdapters.append(
                     ManifestSidecarAdapter(
                         manifest: manifest, approvedNetwork: approvedNetwork,
@@ -264,6 +278,36 @@ public actor Kernel {
         _ = try await settings.approveNetworkRuntime(id)
         _ = await reloadUserRuntimes()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+    }
+
+    private var manifestInstaller: ManifestInstaller {
+        ManifestInstaller(
+            runtimesDirectory: directory.appendingPathComponent("runtimes.d", isDirectory: true),
+            reservedIDs: Set(baseAdapters.map(\.id)))
+    }
+
+    public func previewRuntimeInstall(from source: URL) async throws -> RuntimeInstallPreview {
+        try manifestInstaller.preview(from: source, vmAssetState: await vmHost.assetState())
+    }
+
+    public func installRuntime(from source: URL) async throws -> String {
+        let id = try manifestInstaller.install(from: source)
+        _ = await reloadUserRuntimes()
+        try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+        return id
+    }
+
+    public func uninstallRuntime(id: String) async throws {
+        try manifestInstaller.uninstall(id: id)
+        _ = await reloadUserRuntimes()
+        try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+    }
+
+    public func installedRuntimes() async -> [RuntimeManifest] {
+        let store = UserRuntimeStore(
+            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
+        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
+        return manifests.filter { $0.provenance?.isCommunity == true }
     }
 
     public func addServer(baseURL: String, apiKey: String?) async throws -> [String] {
