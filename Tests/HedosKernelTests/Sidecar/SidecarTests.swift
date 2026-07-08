@@ -88,6 +88,138 @@ import Testing
     #expect(destination.hasSuffix(try EnvironmentManager.lockHash(lockA)))
 }
 
+@Test func concurrentPreparesCoalesceIntoOneBuild() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lockA = root.appendingPathComponent("a.lock")
+    try Data("packages-a".utf8).write(to: lockA)
+
+    final class Counter: @unchecked Sendable {
+        let lock = NSLock()
+        var value = 0
+        func bump() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+    }
+    let builds = Counter()
+    let manager = EnvironmentManager(root: root) { envDir, _, _, progress in
+        builds.bump()
+        progress("building")
+        try await Task.sleep(for: .milliseconds(200))
+        try FileManager.default.createDirectory(
+            at: envDir.appendingPathComponent("bin"), withIntermediateDirectories: true)
+    }
+
+    async let first = manager.prepare(runtimeID: "python:test", lockfile: lockA) { _ in }
+    async let second = manager.prepare(runtimeID: "python:test", lockfile: lockA) { _ in }
+    let (firstURL, secondURL) = try await (first, second)
+
+    #expect(firstURL == secondURL)
+    #expect(builds.value == 1)
+    #expect(
+        FileManager.default.fileExists(
+            atPath: firstURL.appendingPathComponent(".hedos-env-ok").path))
+}
+
+@Test func preparesForDifferentRuntimesRunIndependently() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lockA = root.appendingPathComponent("a.lock")
+    try Data("packages-a".utf8).write(to: lockA)
+
+    final class Counter: @unchecked Sendable {
+        let lock = NSLock()
+        var value = 0
+        func bump() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+    }
+    let builds = Counter()
+    let manager = EnvironmentManager(root: root) { envDir, _, _, progress in
+        builds.bump()
+        progress("building")
+        try await Task.sleep(for: .milliseconds(200))
+        try FileManager.default.createDirectory(
+            at: envDir.appendingPathComponent("bin"), withIntermediateDirectories: true)
+    }
+
+    async let first = manager.prepare(runtimeID: "python:one", lockfile: lockA) { _ in }
+    async let second = manager.prepare(runtimeID: "python:two", lockfile: lockA) { _ in }
+    _ = try await (first, second)
+
+    #expect(builds.value == 2)
+}
+
+@Test func failedBuildIsRetryable() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lockA = root.appendingPathComponent("a.lock")
+    try Data("packages-a".utf8).write(to: lockA)
+
+    final class Counter: @unchecked Sendable {
+        let lock = NSLock()
+        var value = 0
+        func bump() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+    }
+    let builds = Counter()
+    let manager = EnvironmentManager(root: root) { envDir, _, _, progress in
+        let attempt = builds.bump()
+        progress("building")
+        if attempt == 1 {
+            throw KernelError.runtimeFailed("boom")
+        }
+        try FileManager.default.createDirectory(
+            at: envDir.appendingPathComponent("bin"), withIntermediateDirectories: true)
+    }
+
+    await #expect(throws: KernelError.self) {
+        _ = try await manager.prepare(runtimeID: "python:test", lockfile: lockA) { _ in }
+    }
+    let second = try await manager.prepare(runtimeID: "python:test", lockfile: lockA) { _ in }
+    #expect(
+        FileManager.default.fileExists(
+            atPath: second.appendingPathComponent(".hedos-env-ok").path))
+    #expect(builds.value == 2)
+}
+
+@Test func markerFastPathSkipsBuilder() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let lockA = root.appendingPathComponent("a.lock")
+    try Data("packages-a".utf8).write(to: lockA)
+
+    final class Counter: @unchecked Sendable {
+        let lock = NSLock()
+        var value = 0
+        func bump() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+    }
+    let builds = Counter()
+    let manager = EnvironmentManager(root: root) { envDir, _, _, progress in
+        builds.bump()
+        progress("building")
+        try FileManager.default.createDirectory(
+            at: envDir.appendingPathComponent("bin"), withIntermediateDirectories: true)
+    }
+
+    _ = try await manager.prepare(runtimeID: "python:test", lockfile: lockA) { _ in }
+    #expect(builds.value == 1)
+    _ = try await manager.prepare(runtimeID: "python:test", lockfile: lockA) { _ in }
+    #expect(builds.value == 1)
+}
+
 private func fakeSidecarSpec(
     mode: String = "normal", idle: Duration = .seconds(120),
     cooperativeCancel: Bool = false, grace: Duration = .seconds(10)

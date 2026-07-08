@@ -11,6 +11,7 @@ public actor EnvironmentManager {
 
     private let root: URL
     private let builder: Builder
+    private var inFlight: [String: Task<URL, Error>] = [:]
 
     public init(root: URL, builder: Builder? = nil) {
         self.root = root
@@ -26,6 +27,33 @@ public actor EnvironmentManager {
         runtimeID: String, lockfile: URL, progress: @Sendable (String) -> Void
     ) async throws -> URL {
         let hash = try Self.lockHash(lockfile)
+        let key = "\(runtimeID)#\(hash)"
+
+        if let existing = inFlight[key] {
+            return try await existing.value
+        }
+
+        return try await withoutActuallyEscaping(progress) { escapingProgress in
+            let task = Task {
+                try await self.performPrepare(
+                    runtimeID: runtimeID, hash: hash, lockfile: lockfile,
+                    progress: escapingProgress)
+            }
+            inFlight[key] = task
+            do {
+                let url = try await task.value
+                inFlight[key] = nil
+                return url
+            } catch {
+                inFlight[key] = nil
+                throw error
+            }
+        }
+    }
+
+    private func performPrepare(
+        runtimeID: String, hash: String, lockfile: URL, progress: @Sendable (String) -> Void
+    ) async throws -> URL {
         let safeID = runtimeID.replacingOccurrences(of: ":", with: "-")
         let runtimeDir = root.appendingPathComponent("runtimes/\(safeID)", isDirectory: true)
         let envDir = runtimeDir.appendingPathComponent("envs/\(hash)", isDirectory: true)
