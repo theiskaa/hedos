@@ -3,56 +3,41 @@ import Foundation
 public struct PacedReveal: Sendable {
     public private(set) var target = ""
     public private(set) var revealedCount = 0
-    private var targetCount = 0
-    private var revealedEndIndex: String.Index
     private let baseChars: Int
     private let drainDivisor: Int
 
     public init(baseChars: Int = 12, drainDivisor: Int = 24) {
         self.baseChars = baseChars
         self.drainDivisor = drainDivisor
-        self.revealedEndIndex = target.startIndex
     }
 
     public var backlog: Int {
-        targetCount - revealedCount
+        max(0, target.count - revealedCount)
     }
 
     public var revealed: String {
-        String(target[..<revealedEndIndex])
+        String(target.prefix(revealedCount))
     }
 
     public mutating func append(_ delta: String) {
-        let wasCaughtUp = revealedCount == targetCount
         target += delta
-        targetCount += delta.count
-        if wasCaughtUp {
-            revealedEndIndex = target.index(target.startIndex, offsetBy: revealedCount)
-        }
     }
 
     public mutating func tick() -> Bool {
         let pending = backlog
         guard pending > 0 else { return false }
         let step = max(baseChars, pending / drainDivisor)
-        let newRevealedCount = min(targetCount, revealedCount + step)
-        let advanceBy = newRevealedCount - revealedCount
-        revealedEndIndex = target.index(revealedEndIndex, offsetBy: advanceBy)
-        revealedCount = newRevealedCount
+        revealedCount = min(target.count, revealedCount + step)
         return true
     }
 
     public mutating func finish() {
-        let advanceBy = targetCount - revealedCount
-        revealedEndIndex = target.index(revealedEndIndex, offsetBy: advanceBy)
-        revealedCount = targetCount
+        revealedCount = target.count
     }
 
     public mutating func reset() {
         target = ""
-        targetCount = 0
         revealedCount = 0
-        revealedEndIndex = target.startIndex
     }
 }
 

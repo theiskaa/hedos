@@ -28,6 +28,27 @@ import Testing
     #expect(!advanced)
 }
 
+@Test func pacedRevealSurvivesGraphemeClustersSplitAcrossChunks() {
+    var reveal = PacedReveal(baseChars: 12, drainDivisor: 24)
+    for _ in 0..<40 {
+        reveal.append("\r")
+        reveal.append("\n")
+        _ = reveal.tick()
+    }
+    reveal.append("👩")
+    reveal.append("\u{200D}")
+    reveal.append("💻")
+    _ = reveal.tick()
+    reveal.append("e")
+    reveal.append("\u{301}")
+    _ = reveal.tick()
+
+    #expect(reveal.revealedCount <= reveal.target.count)
+    reveal.finish()
+    #expect(reveal.backlog == 0)
+    #expect(reveal.revealed == reveal.target)
+}
+
 @Test func balancerClosesTrailingMarkersWithoutTouchingCompleteText() {
     #expect(MarkdownBalancer.balanced("plain text") == "plain text")
     #expect(MarkdownBalancer.balanced("a **bold** done") == "a **bold** done")
