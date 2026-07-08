@@ -79,6 +79,7 @@ public actor Kernel {
             OllamaAdapter(),
             MlxAudioAdapter(governor: governor),
             MfluxAdapter(governor: governor),
+            DiffusersAdapter(governor: governor),
         ]
     }
 
