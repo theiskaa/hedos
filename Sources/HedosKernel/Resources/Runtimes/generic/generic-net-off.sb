@@ -1,0 +1,60 @@
+(version 1)
+(deny default)
+(import "system.sb")
+(deny network*)
+
+(allow process-fork)
+(allow process-exec
+    (subpath (param "VENV"))
+    (subpath (param "UVPY"))
+    (subpath (param "RESOURCES"))
+    (subpath "/usr/bin")
+    (subpath "/bin")
+    (subpath "/opt/homebrew")
+    (subpath "/Library")
+    (subpath "/Applications/Xcode.app"))
+(allow signal (target self))
+
+(allow file-read-metadata)
+(allow file-read*
+    (subpath (param "VENV"))
+    (subpath (param "UVPY"))
+    (subpath (param "MODEL"))
+    (subpath (param "WORKDIR"))
+    (subpath (param "RESOURCES"))
+    (subpath "/System")
+    (subpath "/usr")
+    (subpath "/Library")
+    (subpath "/opt/homebrew")
+    (subpath "/Applications/Xcode.app")
+    (subpath "/private/etc")
+    (subpath "/private/var/db")
+    (subpath "/dev"))
+
+(allow file-map-executable
+    (subpath (param "VENV"))
+    (subpath (param "UVPY"))
+    (subpath (param "RESOURCES"))
+    (subpath "/System")
+    (subpath "/usr/lib")
+    (subpath "/Library")
+    (subpath "/opt/homebrew")
+    (subpath "/Applications/Xcode.app"))
+
+(deny file-write*)
+(allow file-write*
+    (subpath (param "WORKDIR"))
+    (subpath (param "TMP"))
+    (subpath (param "CACHE"))
+    (subpath "/dev"))
+
+(allow iokit-open
+    (iokit-user-client-class "AGXDeviceUserClient")
+    (iokit-user-client-class "AGXSharedUserClient")
+    (iokit-user-client-class "IOSurfaceRootUserClient"))
+(allow iokit-get-properties)
+
+(allow mach-lookup (global-name "com.apple.MTLCompilerService"))
+
+(allow sysctl-read)
+(allow ipc-posix-shm)

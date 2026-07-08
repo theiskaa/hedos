@@ -49,6 +49,9 @@ enum SettingsIndex {
             id: "models.hfCache", section: "Models", title: "Hugging Face caches",
             keywords: ["hf", "hugging", "face", "cache", "hub", "home", "huggingface"]),
         .init(
+            id: "models.servers", section: "Models", title: "Servers",
+            keywords: ["endpoint", "openai", "api", "server", "remote", "url", "key"]),
+        .init(
             id: "chat.prompt", section: "Chat", title: "Default system prompt",
             keywords: ["system", "prompt", "instructions"]),
         .init(
@@ -436,6 +439,14 @@ struct SettingsRoot: View {
         .scrollEdgeEffectStyle(.none, for: .top)
         .background(Design.paper.ignoresSafeArea())
         .modalScrim(
+            isPresented: showingAddServer,
+            onDismiss: { showingAddServer = false }
+        ) {
+            AddServerSheet(shell: shell) {
+                showingAddServer = false
+            }
+        }
+        .modalScrim(
             isPresented: promptDraft != nil,
             onDismiss: { promptDraft = nil }
         ) {
@@ -599,6 +610,7 @@ struct SettingsRoot: View {
 
     @State private var pendingScroll: String?
     @State private var promptDraft: Prompt?
+    @State private var showingAddServer = false
     @State private var promptDraftIsNew = false
 
     private var detail: some View {
@@ -845,7 +857,57 @@ struct SettingsRoot: View {
             group("Hugging Face caches") {
                 hfCacheRows
             }
+            group("Servers") {
+                serverRows
+            }
         }
+    }
+
+    private var serverRows: some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            HStack {
+                Spacer()
+                Button("Add a server…") {
+                    showingAddServer = true
+                }
+                .buttonStyle(QuietButtonStyle())
+            }
+            ForEach(shell.library.endpointRecords, id: \.id) { record in
+                HStack(spacing: Design.Space.s) {
+                    SourceMark(kind: .endpoint, size: 14)
+                        .foregroundStyle(Design.inkSoft)
+                    Text(record.displayName)
+                        .font(Design.label)
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                    Text(record.source.path)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button {
+                        let shell = shell
+                        let id = record.id
+                        Task { await shell.library.removeEndpoint(id: id) }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(Design.glyphInline)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    .buttonStyle(PressDipStyle())
+                    .accessibilityLabel("Remove \(record.displayName)")
+                }
+            }
+            if shell.library.endpointRecords.isEmpty {
+                Text("Any OpenAI-compatible local server — llama-server, LM Studio, vLLM.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+        }
+        .padding(.vertical, Design.Space.m)
+        .id("models.servers")
+        .background(highlightBackground("models.servers"))
     }
 
     private var warmRows: some View {

@@ -42,13 +42,16 @@ public actor Kernel {
     public let artifactStore: ArtifactStore
     public let chats: ChatStore
     public let promptStore: PromptStore
-    private let adapters: [any RuntimeAdapter]
+    private let baseAdapters: [any RuntimeAdapter]
+    private var adapters: [any RuntimeAdapter]
+    let secrets: any SecretStore
     let scheduler: JobScheduler
 
     public init(
         directory: URL,
         adapters: [any RuntimeAdapter]? = nil,
-        governor: MemoryGovernor = .shared
+        governor: MemoryGovernor = .shared,
+        secrets: any SecretStore = KeychainStore()
     ) {
         self.directory = directory
         let registry = Registry(directory: directory)
@@ -61,7 +64,10 @@ public actor Kernel {
         self.chats = ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
         self.promptStore = PromptStore(
             directory: directory.appendingPathComponent("prompts", isDirectory: true))
-        self.adapters = adapters ?? Self.defaultAdapters(governor: governor)
+        self.secrets = secrets
+        let base = adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets)
+        self.baseAdapters = base
+        self.adapters = base
         self.scheduler = JobScheduler(
             history: JobHistoryStore(directory: directory),
             admission: GovernorAdmission(governor: governor, registry: registry),
@@ -72,7 +78,9 @@ public actor Kernel {
         self.init(directory: Registry.defaultDirectory())
     }
 
-    private static func defaultAdapters(governor: MemoryGovernor) -> [any RuntimeAdapter] {
+    private static func defaultAdapters(
+        governor: MemoryGovernor, secrets: any SecretStore
+    ) -> [any RuntimeAdapter] {
         [
             LlamaCppAdapter(governor: governor),
             WhisperCppAdapter(governor: governor),
@@ -82,11 +90,43 @@ public actor Kernel {
             DiffusersAdapter(governor: governor),
             MlxLmAdapter(governor: governor),
             AppleFoundationAdapter(),
+            OpenAIEndpointAdapter(secrets: secrets),
         ]
+    }
+
+    public nonisolated func userRuntimesDirectory() -> URL {
+        let dir = directory.appendingPathComponent("runtimes.d", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func reloadUserRuntimes() async -> [String] {
+        let approved = Set(await settings.models().approvedNetworkRuntimes)
+        let reserved = Set(baseAdapters.map(\.id))
+        let store = UserRuntimeStore(
+            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
+        let (manifests, issues) = store.load(reservedIDs: reserved)
+        var manifestAdapters: [any RuntimeAdapter] = []
+        for manifest in manifests {
+            let approvedNetwork = approved.contains(manifest.id)
+            if manifest.serve != nil {
+                manifestAdapters.append(
+                    ManifestSidecarAdapter(
+                        manifest: manifest, approvedNetwork: approvedNetwork,
+                        governor: governor))
+            } else {
+                manifestAdapters.append(
+                    ManifestCommandAdapter(
+                        manifest: manifest, approvedNetwork: approvedNetwork))
+            }
+        }
+        adapters = baseAdapters + manifestAdapters
+        return issues
     }
 
     public func discover() async throws -> DiscoverySummary {
         await applyStoredPolicies()
+        let manifestIssues = await reloadUserRuntimes()
         let home = FileManager.default.homeDirectoryForCurrentUser
         let models = await settings.models()
         let looseDirectories =
@@ -99,8 +139,9 @@ public actor Kernel {
             LooseFileScanner(directories: looseDirectories),
             AppleFoundationScanner(),
         ]
-        let summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
+        var summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+        summary.issues.append(contentsOf: manifestIssues)
         return summary
     }
 
@@ -118,6 +159,76 @@ public actor Kernel {
 
     public func removeWatchedFolder(_ path: String) async throws {
         _ = try await settings.removeWatchedFolder(path)
+    }
+
+    public func manifestTemplate(for modelID: String) async throws -> String {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        return ManifestTemplate.render(record: record, identified: Identification.identify(record))
+    }
+
+    public func pendingNetworkConsent(for modelID: String) async throws -> ManifestConsentInfo? {
+        guard let record = try await registry.get(id: modelID) else { return nil }
+        let approved = Set(await settings.models().approvedNetworkRuntimes)
+        let store = UserRuntimeStore(
+            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
+        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
+        for manifest in manifests
+        where manifest.permissions.network && !approved.contains(manifest.id) {
+            if manifest.detect?.matches(record) == true {
+                return ManifestConsentInfo(id: manifest.id, paths: manifest.permissions.paths)
+            }
+        }
+        return nil
+    }
+
+    public func approveNetworkRuntime(_ id: String) async throws {
+        _ = try await settings.approveNetworkRuntime(id)
+        _ = await reloadUserRuntimes()
+        try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+    }
+
+    public func addServer(baseURL: String, apiKey: String?) async throws -> [String] {
+        let base = OpenAIEndpointAdapter.normalizedBase(baseURL)
+        let account = OpenAIEndpointAdapter.account(for: base)
+        if let apiKey, !apiKey.isEmpty {
+            try secrets.set(apiKey, account: account)
+        }
+        return try await OpenAIEndpointAdapter.listModels(baseURL: base, key: apiKey)
+    }
+
+    public func registerEndpoint(baseURL: String, model: String) async throws -> ModelRecord {
+        let base = OpenAIEndpointAdapter.normalizedBase(baseURL)
+        let record = ModelRecord(
+            name: model,
+            modality: .text,
+            capabilities: [.chat, .complete],
+            source: ModelSource(kind: .endpoint, path: base, repo: model),
+            runtime: RuntimeRef(
+                id: "generic:openai-server", resolved: .user, tier: .native,
+                confirmedAt: Date()),
+            params: Identification.endpointParams,
+            execution: .stream,
+            state: .ready)
+        try await registry.register(record)
+        return record
+    }
+
+    public func removeEndpoint(_ modelID: String) async throws {
+        guard let record = try await registry.get(id: modelID),
+            record.source.kind == .endpoint
+        else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        _ = try await registry.unregister(id: modelID)
+        let siblings = try await registry.list().filter {
+            $0.source.kind == .endpoint && $0.source.path == record.source.path
+        }
+        if siblings.isEmpty {
+            try? secrets.delete(
+                account: OpenAIEndpointAdapter.account(for: record.source.path))
+        }
     }
 
     public func hfCacheRoots() async throws -> [String] {

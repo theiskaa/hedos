@@ -117,7 +117,9 @@ struct ModelsPane: View {
         var list: [ModelFacet] = [
             .all, .capability(.chat), .capability(.images), .capability(.voice),
         ]
-        let kinds: [SourceKind] = [.ollama, .huggingfaceCache, .lmStudio, .builtin, .file, .folder]
+        let kinds: [SourceKind] = [
+            .ollama, .huggingfaceCache, .lmStudio, .builtin, .endpoint, .file, .folder,
+        ]
         for kind in kinds
         where shell.library.records.contains(where: { $0.source.kind == kind }) {
             if case .store(let existing) = list.last, Self.storeTitle(existing) == Self.storeTitle(kind) {
@@ -226,6 +228,7 @@ struct ModelsPane: View {
         case .huggingfaceCache: "Hugging Face"
         case .lmStudio: "LM Studio"
         case .builtin: "Built in"
+        case .endpoint: "Servers"
         case .file, .folder: "Loose"
         default: "Other"
         }
@@ -324,6 +327,8 @@ struct ModelDetailSheet: View {
     let shell: ShellModel
     let onClose: () -> Void
     @State private var reason: String?
+    @State private var consent: ManifestConsentInfo?
+    @State private var copiedTemplate = false
     @State private var chosenRuntime: String
 
     init(record: ModelRecord, shell: ShellModel, onClose: @escaping () -> Void) {
@@ -382,6 +387,7 @@ struct ModelDetailSheet: View {
                     for: record, format: identified.format,
                     pipelineClass: identified.pipelineClass)
             }.value
+            consent = try? await shell.kernel.pendingNetworkConsent(for: record.id)
         }
     }
 
@@ -513,9 +519,60 @@ struct ModelDetailSheet: View {
     @ViewBuilder
     private var footer: some View {
         if record.runtime.tier == .recipeNeeded {
-            Text("A runtime recipe can make this model runnable later.")
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                if let consent {
+                    VStack(alignment: .leading, spacing: Design.Space.xs) {
+                        Text("A runtime for this model exists but wants permissions:")
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkSoft)
+                        Text("Network access — outbound connections allowed")
+                            .font(Design.label)
+                            .foregroundStyle(Design.ink)
+                        ForEach(consent.paths, id: \.self) { path in
+                            Text("Files — \(path)")
+                                .font(Design.label)
+                                .foregroundStyle(Design.ink)
+                        }
+                        Button("Approve \(consent.id)") {
+                            let shell = shell
+                            let id = consent.id
+                            Task {
+                                try? await shell.kernel.approveNetworkRuntime(id)
+                                await shell.library.refreshShelf()
+                            }
+                        }
+                        .buttonStyle(InkButtonStyle())
+                        .padding(.top, Design.Space.xs)
+                    }
+                } else {
+                    Text("A runtime recipe can make this model runnable later.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                }
+                HStack(spacing: Design.Space.m) {
+                    Button(copiedTemplate ? "Copied" : "Copy manifest template") {
+                        let shell = shell
+                        let id = record.id
+                        Task { @MainActor in
+                            guard
+                                let template = try? await shell.kernel.manifestTemplate(for: id)
+                            else { return }
+                            let pasteboard = NSPasteboard.general
+                            pasteboard.clearContents()
+                            pasteboard.setString(template, forType: .string)
+                            copiedTemplate = true
+                            try? await Task.sleep(for: .seconds(2))
+                            copiedTemplate = false
+                        }
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    Button("Open runtimes.d…") {
+                        NSWorkspace.shared.activateFileViewerSelecting(
+                            [shell.kernel.userRuntimesDirectory()])
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+            }
         } else if let title = openTitle {
             VStack(spacing: Design.Space.m) {
                 Button {

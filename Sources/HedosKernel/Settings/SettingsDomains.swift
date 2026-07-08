@@ -81,6 +81,7 @@ public struct ModelsSettings: SettingsDomain {
 
     public var watchedFolders: [String]
     public var hfCacheRoots: [String]
+    public var approvedNetworkRuntimes: [String]
     public var keepWarm: KeepWarmPolicy
     public var eviction: EvictionPolicy
     public var ramBudgetMB: Int?
@@ -88,6 +89,7 @@ public struct ModelsSettings: SettingsDomain {
     public init() {
         watchedFolders = []
         hfCacheRoots = []
+        approvedNetworkRuntimes = []
         keepWarm = .fiveMinutes
         eviction = .strictSingle
         ramBudgetMB = nil
@@ -96,12 +98,14 @@ public struct ModelsSettings: SettingsDomain {
     public init(
         watchedFolders: [String] = [],
         hfCacheRoots: [String] = [],
+        approvedNetworkRuntimes: [String] = [],
         keepWarm: KeepWarmPolicy = .fiveMinutes,
         eviction: EvictionPolicy = .strictSingle,
         ramBudgetMB: Int? = nil
     ) {
         self.watchedFolders = watchedFolders
         self.hfCacheRoots = hfCacheRoots
+        self.approvedNetworkRuntimes = approvedNetworkRuntimes
         self.keepWarm = keepWarm
         self.eviction = eviction
         self.ramBudgetMB = ramBudgetMB
@@ -112,7 +116,8 @@ public struct ModelsSettings: SettingsDomain {
     }
 
     enum CodingKeys: String, CodingKey {
-        case watchedFolders, hfCacheRoots, keepWarm, eviction, ramBudgetMB
+        case watchedFolders, hfCacheRoots, approvedNetworkRuntimes, keepWarm, eviction
+        case ramBudgetMB
     }
 
     public init(from decoder: any Decoder) throws {
@@ -125,6 +130,9 @@ public struct ModelsSettings: SettingsDomain {
             [String].self, .watchedFolders, fallback: defaults.watchedFolders)
         hfCacheRoots = container.lenient(
             [String].self, .hfCacheRoots, fallback: defaults.hfCacheRoots)
+        approvedNetworkRuntimes = container.lenient(
+            [String].self, .approvedNetworkRuntimes,
+            fallback: defaults.approvedNetworkRuntimes)
         keepWarm = container.lenient(KeepWarmPolicy.self, .keepWarm, fallback: defaults.keepWarm)
         eviction = container.lenient(EvictionPolicy.self, .eviction, fallback: defaults.eviction)
         ramBudgetMB = container.lenient(Int.self, .ramBudgetMB)

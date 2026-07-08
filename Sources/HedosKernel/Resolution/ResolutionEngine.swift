@@ -84,6 +84,17 @@ public actor ResolutionEngine {
         if !identified.capabilities.isEmpty { updated.capabilities = identified.capabilities }
         if !identified.params.isEmpty { updated.params = identified.params }
         updated.execution = identified.execution
+        if let winner = bids.first,
+            let backed = adapters.first(where: { $0.id == winner.id }) as? any ManifestBacked
+        {
+            if identified.modality == nil, let modality = backed.manifest.modalities.first {
+                updated.modality = modality
+            }
+            if identified.capabilities.isEmpty {
+                updated.capabilities = backed.manifest.capabilities
+                updated.execution = backed.manifest.execution
+            }
+        }
         updated = profiles.populated(updated)
 
         if updated != record {

@@ -22,6 +22,6 @@ let package = Package(
         .testTarget(
             name: "HedosKernelTests",
             dependencies: ["HedosKernel"],
-            exclude: ["Sidecar/FakeSidecar.py"]),
+            exclude: ["Sidecar/FakeSidecar.py", "Runtimes/FakeSSEServer.py"]),
     ]
 )

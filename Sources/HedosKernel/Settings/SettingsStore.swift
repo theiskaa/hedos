@@ -91,6 +91,16 @@ public actor SettingsStore {
     }
 
     @discardableResult
+    public func approveNetworkRuntime(_ id: String) throws -> ModelsSettings {
+        var settings = models()
+        if !settings.approvedNetworkRuntimes.contains(id) {
+            settings.approvedNetworkRuntimes.append(id)
+            try save(settings)
+        }
+        return settings
+    }
+
+    @discardableResult
     public func addHFCacheRoot(_ path: String) throws -> ModelsSettings {
         var settings = models()
         let normalized = (path as NSString).expandingTildeInPath

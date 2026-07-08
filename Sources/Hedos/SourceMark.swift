@@ -27,6 +27,7 @@ struct SourceMark: View {
         case .file: "doc"
         case .folder: "folder"
         case .builtin: "apple.logo"
+        case .endpoint: "network"
         default: "shippingbox"
         }
     }

@@ -8,6 +8,7 @@ public enum ModelFormat: String, Sendable, Hashable {
     case diffusers
     case ollamaStore
     case builtin
+    case endpoint
     case unknown
 }
 
@@ -37,6 +38,14 @@ public enum Identification {
                 capabilities: [.chat, .complete],
                 execution: .stream,
                 params: builtinParams)
+        }
+        if record.source.kind == .endpoint {
+            return IdentifiedModel(
+                format: .endpoint,
+                modality: .text,
+                capabilities: [.chat, .complete],
+                execution: .stream,
+                params: endpointParams)
         }
         if record.source.kind == .ollama {
             return IdentifiedModel(
@@ -122,6 +131,12 @@ public enum Identification {
     static let builtinParams: [ParamSpec] = [
         ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
         ParamSpec(key: "max_tokens", type: .int, range: [.int(1), .int(4096)]),
+    ]
+
+    static let endpointParams: [ParamSpec] = [
+        ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
+        ParamSpec(key: "top_p", type: .float, range: [.double(0), .double(1)]),
+        ParamSpec(key: "max_tokens", type: .int, range: [.int(1), .int(32768)]),
     ]
 
     static func diffusersPipelineClass(at url: URL) -> String? {

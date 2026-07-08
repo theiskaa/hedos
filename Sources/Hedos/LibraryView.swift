@@ -67,6 +67,30 @@ final class LibraryViewModel {
         await rescan()
     }
 
+    var endpointRecords: [ModelRecord] {
+        records.filter { $0.source.kind == .endpoint }
+    }
+
+    func connectServer(baseURL: String, apiKey: String?) async -> (
+        models: [String]?, error: String?
+    ) {
+        do {
+            return (try await kernel.addServer(baseURL: baseURL, apiKey: apiKey), nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
+    func addEndpoint(baseURL: String, model: String) async {
+        _ = try? await kernel.registerEndpoint(baseURL: baseURL, model: model)
+        await refreshShelf()
+    }
+
+    func removeEndpoint(id: String) async {
+        try? await kernel.removeEndpoint(id)
+        await refreshShelf()
+    }
+
     func record(id: String?) -> ModelRecord? {
         guard let id else { return nil }
         return records.first { $0.id == id }
@@ -78,6 +102,7 @@ final class LibraryViewModel {
             (.huggingfaceCache, "Hugging Face"),
             (.lmStudio, "LM Studio"),
             (.builtin, "Built in"),
+            (.endpoint, "Servers"),
             (.file, "Loose"),
             (.folder, "Loose"),
         ]
