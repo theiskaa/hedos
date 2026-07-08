@@ -50,3 +50,12 @@ import Testing
     #expect(MarkdownBalancer.balanced("a `*not emphasis*` done") == "a `*not emphasis*` done")
     #expect(MarkdownBalancer.balanced("**bold across\nlines still open") == "**bold across\nlines still open**")
 }
+
+@Test func balancerTreatsTildeFencesLikeBacktickFences() {
+    #expect(
+        MarkdownBalancer.balanced("before\n~~~swift\nlet x = 1")
+            == "before\n~~~swift\nlet x = 1\n```")
+    #expect(
+        MarkdownBalancer.balanced("~~~\ncode\n~~~\nafter **hey")
+            == "~~~\ncode\n~~~\nafter **hey**")
+}

@@ -1,0 +1,135 @@
+import Foundation
+import Testing
+
+@testable import HedosKernel
+
+@Test func tokensRecognizeKeywordsInSwiftAndLeaveRestPlain() {
+    let tokens = CodeHighlighter.tokens("let x = 1", language: "swift")
+    #expect(
+        tokens == [
+            CodeToken(text: "let", kind: .keyword),
+            CodeToken(text: " x = ", kind: .plain),
+            CodeToken(text: "1", kind: .number),
+        ])
+}
+
+@Test func tokensRecognizeKeywordsRegardlessOfDeclaredLanguage() {
+    let swiftTokens = CodeHighlighter.tokens("def", language: "swift")
+    let pythonTokens = CodeHighlighter.tokens("def", language: "python")
+    let unknownTokens = CodeHighlighter.tokens("def", language: "not-a-real-language")
+    #expect(swiftTokens == [CodeToken(text: "def", kind: .keyword)])
+    #expect(pythonTokens == [CodeToken(text: "def", kind: .keyword)])
+    #expect(unknownTokens == [CodeToken(text: "def", kind: .keyword)])
+}
+
+@Test func tokensRecognizeStringLiterals() {
+    let tokens = CodeHighlighter.tokens("\"hello world\"", language: "swift")
+    #expect(tokens == [CodeToken(text: "\"hello world\"", kind: .string)])
+}
+
+@Test func tokensKeepKeywordInsideStringLiteralAsString() {
+    let tokens = CodeHighlighter.tokens("\"return true\"", language: "swift")
+    #expect(tokens == [CodeToken(text: "\"return true\"", kind: .string)])
+}
+
+@Test func tokensHandleUnterminatedStringLiteral() {
+    let tokens = CodeHighlighter.tokens("\"unterminated", language: "swift")
+    #expect(tokens == [CodeToken(text: "\"unterminated", kind: .string)])
+}
+
+@Test func tokensHandleEscapedQuoteInsideStringLiteral() {
+    let tokens = CodeHighlighter.tokens("\"a \\\" b\"", language: "swift")
+    #expect(tokens == [CodeToken(text: "\"a \\\" b\"", kind: .string)])
+}
+
+@Test func tokensRecognizeSingleAndBacktickQuotedLiterals() {
+    let single = CodeHighlighter.tokens("'a'", language: "swift")
+    #expect(single == [CodeToken(text: "'a'", kind: .string)])
+
+    let backtick = CodeHighlighter.tokens("`x`", language: "swift")
+    #expect(backtick == [CodeToken(text: "`x`", kind: .string)])
+}
+
+@Test func tokensRecognizeLineCommentForDefaultLanguage() {
+    let tokens = CodeHighlighter.tokens("// a comment", language: "swift")
+    #expect(tokens == [CodeToken(text: "// a comment", kind: .comment)])
+}
+
+@Test func tokensKeepKeywordInsideCommentAsComment() {
+    let tokens = CodeHighlighter.tokens("// return true", language: "swift")
+    #expect(tokens == [CodeToken(text: "// return true", kind: .comment)])
+}
+
+@Test func tokensRecognizeHashLineCommentForPython() {
+    let tokens = CodeHighlighter.tokens("# a comment", language: "python")
+    #expect(tokens == [CodeToken(text: "# a comment", kind: .comment)])
+}
+
+@Test func tokensRecognizeDoubleDashLineCommentForLua() {
+    let tokens = CodeHighlighter.tokens("-- a comment", language: "lua")
+    #expect(tokens == [CodeToken(text: "-- a comment", kind: .comment)])
+}
+
+@Test func tokensDoNotRecognizeLineCommentsForCSSLikeLanguages() {
+    let tokens = CodeHighlighter.tokens("// not a comment", language: "css")
+    #expect(tokens.contains(where: { $0.kind == .comment }) == false)
+}
+
+@Test func tokensRecognizeNumbers() {
+    let tokens = CodeHighlighter.tokens("42", language: "swift")
+    #expect(tokens == [CodeToken(text: "42", kind: .number)])
+}
+
+@Test func tokensRecognizeFloatingPointAndTruncateHexAtFirstHexLetterDigit() {
+    let tokens = CodeHighlighter.tokens("3.14 0x1F", language: "swift")
+    #expect(
+        tokens == [
+            CodeToken(text: "3.14", kind: .number),
+            CodeToken(text: " ", kind: .plain),
+            CodeToken(text: "0x1", kind: .number),
+            CodeToken(text: "F", kind: .plain),
+        ])
+}
+
+@Test func tokensDoNotTreatDigitsInsideIdentifiersAsNumbers() {
+    let tokens = CodeHighlighter.tokens("var1", language: "swift")
+    #expect(tokens == [CodeToken(text: "var1", kind: .plain)])
+}
+
+@Test func tokensForNilLanguageUseDefaultSlashSlashComment() {
+    let tokens = CodeHighlighter.tokens("// hi", language: nil)
+    #expect(tokens == [CodeToken(text: "// hi", kind: .comment)])
+}
+
+@Test func tokensForUnrecognizedLanguageStringUseDefaultSlashSlashComment() {
+    let tokens = CodeHighlighter.tokens("// hi", language: "not-a-real-language")
+    #expect(tokens == [CodeToken(text: "// hi", kind: .comment)])
+}
+
+@Test func tokensForNilLanguageStillRecognizeSharedKeywords() {
+    let tokens = CodeHighlighter.tokens("if true", language: nil)
+    #expect(tokens.contains(CodeToken(text: "if", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "true", kind: .keyword)))
+}
+
+@Test func tokensRoundTripInvariantHoldsAcrossVariousInputs() {
+    let samples: [(String, String?)] = [
+        ("let x = 1", "swift"),
+        ("def foo():\n    return True", "python"),
+        ("-- comment\nlocal x = 1", "lua"),
+        ("\"string with \\\" escape\" and 3.14 0x1F", "swift"),
+        ("", "swift"),
+        ("plain text with no tokens at all", nil),
+        ("mixed 'quotes' and \"double\" and `backtick`", "javascript"),
+        ("// comment\nvar1 = 42", "javascript"),
+    ]
+    for (code, language) in samples {
+        let tokens = CodeHighlighter.tokens(code, language: language)
+        let reconstructed = tokens.map(\.text).joined()
+        #expect(reconstructed == code)
+    }
+}
+
+@Test func tokensForEmptyStringReturnEmptyArray() {
+    #expect(CodeHighlighter.tokens("", language: "swift") == [])
+}
