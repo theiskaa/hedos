@@ -526,11 +526,19 @@ struct ChatView: View {
             .onScrollGeometryChange(for: ScrollAnchorState.self) { geometry in
                 ScrollAnchorState(
                     container: geometry.containerSize,
+                    contentHeight: geometry.contentSize.height,
+                    offsetY: geometry.contentOffset.y,
                     nearBottom: geometry.contentOffset.y + geometry.containerSize.height
                         >= geometry.contentSize.height - 60)
             } action: { old, new in
-                followsStream = new.nearBottom
-                if old.container != new.container && old.nearBottom {
+                if new.nearBottom {
+                    followsStream = true
+                } else if new.offsetY < old.offsetY - 8 {
+                    followsStream = false
+                }
+                if followsStream
+                    && (new.contentHeight != old.contentHeight || new.container != old.container)
+                {
                     proxy.scrollTo("tail", anchor: .bottom)
                 }
             }
@@ -538,8 +546,11 @@ struct ChatView: View {
                 if new.count > old.count {
                     followsStream = true
                     settleAtTail(proxy)
-                } else if followsStream {
-                    proxy.scrollTo("tail", anchor: .bottom)
+                }
+            }
+            .onChange(of: model.isStreaming) { _, streaming in
+                if !streaming && followsStream {
+                    settleAtTail(proxy)
                 }
             }
             .onAppear { settleAtTail(proxy) }
@@ -548,6 +559,8 @@ struct ChatView: View {
 
     private struct ScrollAnchorState: Equatable {
         var container: CGSize = .zero
+        var contentHeight: CGFloat = 0
+        var offsetY: CGFloat = 0
         var nearBottom = false
     }
 
