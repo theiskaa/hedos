@@ -156,8 +156,12 @@ struct AddServerSheet: View {
         let shell = shell
         let url = baseURL
         Task { @MainActor in
-            await shell.library.addEndpoint(baseURL: url, model: model)
-            if !added.contains(model) { added.append(model) }
+            let ok = await shell.library.addEndpoint(baseURL: url, model: model)
+            if ok {
+                if !added.contains(model) { added.append(model) }
+            } else {
+                notice = "Couldn't add \(model)."
+            }
         }
     }
 }

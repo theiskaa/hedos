@@ -16,6 +16,18 @@ public actor LlamaEngine {
     private var generationSlotHeld = false
     private var generationSlotWaiters: [CheckedContinuation<Void, Never>] = []
 
+    public struct GenerationParams: Sendable {
+        public var temperature: Float
+        public var topP: Float?
+        public var maxTokens: Int
+
+        public init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
+            self.temperature = temperature
+            self.topP = topP
+            self.maxTokens = maxTokens
+        }
+    }
+
     public func run(
         path: String,
         modelID: String,
@@ -23,6 +35,7 @@ public actor LlamaEngine {
         footprintMB: Int?,
         governor: MemoryGovernor,
         messages: [ChatMessage],
+        params: GenerationParams = GenerationParams(),
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async {
         await governor.beginGeneration(modelID)
@@ -33,7 +46,8 @@ public actor LlamaEngine {
                 producer: producer, path: path, modelID: modelID, modelName: modelName,
                 footprintMB: footprintMB, governor: governor, continuation: continuation)
             do {
-                try await generate(messages: messages, continuation: continuation)
+                try await generate(
+                    messages: messages, params: params, continuation: continuation)
                 await governor.gate.release(producer)
             } catch {
                 await governor.gate.release(producer)
@@ -84,6 +98,7 @@ public actor LlamaEngine {
 
     private func generate(
         messages: [ChatMessage],
+        params: GenerationParams,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
         guard let model, let context else {
@@ -110,12 +125,20 @@ public actor LlamaEngine {
 
         let samplerParams = llama_sampler_chain_default_params()
         let sampler = llama_sampler_chain_init(samplerParams)
-        llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7))
-        llama_sampler_chain_add(sampler, llama_sampler_init_dist(UInt32.random(in: 0..<UInt32.max)))
+        if params.temperature <= 0 {
+            llama_sampler_chain_add(sampler, llama_sampler_init_greedy())
+        } else {
+            if let topP = params.topP, topP < 1 {
+                llama_sampler_chain_add(sampler, llama_sampler_init_top_p(topP, 1))
+            }
+            llama_sampler_chain_add(sampler, llama_sampler_init_temp(params.temperature))
+            llama_sampler_chain_add(
+                sampler, llama_sampler_init_dist(UInt32.random(in: 0..<UInt32.max)))
+        }
         defer { llama_sampler_free(sampler) }
 
         var generated = 0
-        let maxTokens = 2048
+        let maxTokens = params.maxTokens
         var pieceBuffer = [CChar](repeating: 0, count: 512)
 
         while generated < maxTokens {

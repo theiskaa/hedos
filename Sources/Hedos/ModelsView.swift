@@ -29,7 +29,7 @@ enum ModelFacet: Hashable {
         case .capability(let mode):
             Launcher.models(in: [record], for: mode).isEmpty == false
         case .store(let kind):
-            record.source.kind == kind
+            ModelsPane.storeTitle(record.source.kind) == ModelsPane.storeTitle(kind)
         case .recipeNeeded:
             record.runtime.tier == .recipeNeeded
         }

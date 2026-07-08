@@ -15,6 +15,14 @@ public struct ManifestConsentInfo: Sendable, Hashable {
 }
 
 enum ManifestSupport {
+    static func errorSummary(_ raw: String) -> String {
+        let lines = raw.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let last = lines.last else { return "the runtime stopped without output" }
+        return String(last.suffix(300))
+    }
+
     static func slug(_ id: String) -> String {
         id.map { $0.isLetter || $0.isNumber ? $0 : "-" }.reduce(into: "") { $0.append($1) }
     }

@@ -115,6 +115,50 @@ private let validInvokeManifest = """
     #expect(throws: ManifestValidationError.self) {
         _ = try RuntimeManifest.load(table: try TOMLLite.parse(both), directory: nil)
     }
+
+    let chatAsJob = """
+        id = "a"
+        capabilities = ["chat"]
+        execution = "job"
+        [invoke]
+        command = "x"
+        """
+    #expect(throws: ManifestValidationError.self) {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(chatAsJob), directory: nil)
+    }
+
+    let imageAsStream = """
+        id = "a"
+        capabilities = ["image"]
+        execution = "stream"
+        [invoke]
+        command = "x"
+        """
+    #expect(throws: ManifestValidationError.self) {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(imageAsStream), directory: nil)
+    }
+
+    let imageJob = """
+        id = "a"
+        capabilities = ["image"]
+        execution = "job"
+        [invoke]
+        command = "x"
+        """
+    #expect(throws: Never.self) {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(imageJob), directory: nil)
+    }
+}
+
+@Test func errorSummaryTakesLastMeaningfulLine() {
+    let traceback = """
+        Traceback (most recent call last):
+          File "main.py", line 12, in <module>
+            raise ValueError("bad size")
+        ValueError: bad size
+        """
+    #expect(ManifestSupport.errorSummary(traceback) == "ValueError: bad size")
+    #expect(ManifestSupport.errorSummary("   ") == "the runtime stopped without output")
 }
 
 @Test func detectPredicateMatrix() throws {

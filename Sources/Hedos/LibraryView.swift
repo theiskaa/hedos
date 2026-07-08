@@ -95,9 +95,15 @@ final class LibraryViewModel {
         }
     }
 
-    func addEndpoint(baseURL: String, model: String) async {
-        _ = try? await kernel.registerEndpoint(baseURL: baseURL, model: model)
-        await refreshShelf()
+    @discardableResult
+    func addEndpoint(baseURL: String, model: String) async -> Bool {
+        do {
+            _ = try await kernel.registerEndpoint(baseURL: baseURL, model: model)
+            await refreshShelf()
+            return true
+        } catch {
+            return false
+        }
     }
 
     func removeEndpoint(id: String) async {

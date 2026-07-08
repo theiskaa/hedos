@@ -130,7 +130,8 @@ public actor SidecarSupervisor {
         else {
             let tail = stderrTail(id)
             kill(id)
-            throw KernelError.runtimeFailed("sidecar \(id) failed to start: \(tail)")
+            throw KernelError.runtimeFailed(
+                "The runtime failed to start: \(ManifestSupport.errorSummary(tail))")
         }
         if let rate = ready.controlField("sample_rate")?.intValue {
             sidecar.sampleRate = rate
@@ -198,10 +199,13 @@ public actor SidecarSupervisor {
     }
 
     private func expireCancelWatchdog(_ id: String, session: UUID) {
-        cancelWatchdogs[id] = nil
-        guard !Task.isCancelled, let sidecar = sidecars[id], sidecar.busy,
-            sidecar.jobSession == session
+        guard !Task.isCancelled,
+            let watchdog = cancelWatchdogs[id], watchdog.session == session
         else { return }
+        cancelWatchdogs[id] = nil
+        guard let sidecar = sidecars[id], sidecar.busy, sidecar.jobSession == session else {
+            return
+        }
         kill(id)
     }
 
@@ -325,7 +329,7 @@ public actor SidecarSupervisor {
             }
         }
         throw KernelError.runtimeFailed(
-            "sidecar \(id) exited mid-job: \(stderrTail(id))")
+            "The runtime stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
     }
 
     private func nextBinaryFrame(_ id: String) async -> Data? {
@@ -373,7 +377,7 @@ public actor SidecarSupervisor {
             }
         }
         throw KernelError.runtimeFailed(
-            "sidecar \(id) exited mid-request: \(stderrTail(id))")
+            "The runtime stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
     }
 
     private func ingest(_ data: Data, for id: String) {

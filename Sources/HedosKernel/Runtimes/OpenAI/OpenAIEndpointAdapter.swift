@@ -70,8 +70,10 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
                         )
                     }
                     guard http.statusCode == 200 else {
-                        throw KernelError.runtimeFailed(
-                            "\(base) returned HTTP \(http.statusCode)")
+                        throw KernelError.runtimeUnavailable(
+                            hint:
+                                "The server answered with HTTP \(http.statusCode). Check that it's serving the OpenAI API and the model is available."
+                        )
                     }
                     var parser = OpenAIStreamParser()
                     for try await line in bytes.lines {

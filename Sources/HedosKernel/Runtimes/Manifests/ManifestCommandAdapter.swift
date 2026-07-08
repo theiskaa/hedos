@@ -152,17 +152,15 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
         let drain = PipeDrain(stdout: stdout, stderr: stderr)
         try process.run()
         return try await withTaskCancellationHandler {
-            let (outputData, errorData) = await drain.collect()
-            process.waitUntilExit()
+            let (outputData, errorData) = await drain.collect(process: process)
             guard process.terminationStatus == 0 else {
-                let tail = String(decoding: errorData, as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .suffix(400)
+                let tail = ManifestSupport.errorSummary(String(decoding: errorData, as: UTF8.self))
                 throw KernelError.runtimeFailed(
-                    "\(id) exited with status \(process.terminationStatus): \(String(tail))")
+                    "\(id) stopped with status \(process.terminationStatus): \(tail)")
             }
             return (String(decoding: outputData, as: UTF8.self), outputs)
         } onCancel: {
+            drain.cancel()
             if process.isRunning { process.terminate() }
         }
     }
@@ -171,24 +169,59 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
 private final class PipeDrain: @unchecked Sendable {
     private let stdout: Pipe
     private let stderr: Pipe
+    private let lock = NSLock()
+    private var out = Data()
+    private var err = Data()
 
     init(stdout: Pipe, stderr: Pipe) {
         self.stdout = stdout
         self.stderr = stderr
     }
 
-    func collect() async -> (stdout: Data, stderr: Data) {
-        async let out = read(stdout)
-        async let err = read(stderr)
-        return (await out, await err)
+    func collect(process: Process) async -> (stdout: Data, stderr: Data) {
+        stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            self?.append(handle.availableData, isStdout: true)
+        }
+        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            self?.append(handle.availableData, isStdout: false)
+        }
+        await withCheckedContinuation { continuation in
+            let resumed = ResumeOnce(continuation)
+            process.terminationHandler = { _ in resumed.fire() }
+            if !process.isRunning { resumed.fire() }
+        }
+        cancel()
+        return lock.withLock { (out, err) }
     }
 
-    private func read(_ pipe: Pipe) async -> Data {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-                continuation.resume(returning: data)
-            }
+    func cancel() {
+        stdout.fileHandleForReading.readabilityHandler = nil
+        stderr.fileHandleForReading.readabilityHandler = nil
+        append((try? stdout.fileHandleForReading.read(upToCount: 1 << 20)) ?? Data(), isStdout: true)
+        append((try? stderr.fileHandleForReading.read(upToCount: 1 << 20)) ?? Data(), isStdout: false)
+    }
+
+    private func append(_ data: Data, isStdout: Bool) {
+        guard !data.isEmpty else { return }
+        lock.withLock {
+            if isStdout { out.append(data) } else { err.append(data) }
         }
+    }
+}
+
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func fire() {
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume()
     }
 }

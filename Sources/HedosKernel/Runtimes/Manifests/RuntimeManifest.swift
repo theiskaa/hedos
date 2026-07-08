@@ -132,6 +132,15 @@ public struct RuntimeManifest: Sendable, Hashable {
                 message: "manifest \(id) declares neither [serve] nor [invoke]")
         }
 
+        let jobCapabilities: Set<Capability> = [.image]
+        let declaresJob = execution == .job
+        let servesJob = !Set(capabilities).isDisjoint(with: jobCapabilities)
+        if declaresJob != servesJob {
+            throw ManifestValidationError(
+                message:
+                    "manifest \(id) execution \"\(executionRaw)\" does not match its capabilities")
+        }
+
         let permissionsTable = table["permissions"]?.tableValue ?? [:]
         let permissions = ManifestPermissions(
             network: permissionsTable["network"]?.boolValue ?? false,
