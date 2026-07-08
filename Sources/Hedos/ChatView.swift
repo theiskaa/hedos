@@ -521,29 +521,41 @@ struct ChatView: View {
                 .padding(.horizontal, Design.Space.xxl)
                 .padding(.vertical, Design.Space.xxl)
                 .frame(maxWidth: conversationWidth, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height
-                    >= geometry.contentSize.height - 60
-            } action: { _, nearBottom in
-                followsStream = nearBottom
-            }
-            .onChange(of: model.transcript) { old, new in
-                guard followsStream else { return }
-                proxy.scrollTo("tail", anchor: .bottom)
-                if old.isEmpty && !new.isEmpty {
-                    settleAtTail(proxy)
+            .onScrollGeometryChange(for: ScrollAnchorState.self) { geometry in
+                ScrollAnchorState(
+                    container: geometry.containerSize,
+                    nearBottom: geometry.contentOffset.y + geometry.containerSize.height
+                        >= geometry.contentSize.height - 60)
+            } action: { old, new in
+                followsStream = new.nearBottom
+                if old.container != new.container && old.nearBottom {
+                    proxy.scrollTo("tail", anchor: .bottom)
                 }
             }
+            .onChange(of: model.transcript) { old, new in
+                if new.count > old.count {
+                    followsStream = true
+                    settleAtTail(proxy)
+                } else if followsStream {
+                    proxy.scrollTo("tail", anchor: .bottom)
+                }
+            }
+            .onAppear { settleAtTail(proxy) }
         }
     }
 
+    private struct ScrollAnchorState: Equatable {
+        var container: CGSize = .zero
+        var nearBottom = false
+    }
+
     private func settleAtTail(_ proxy: ScrollViewProxy) {
+        proxy.scrollTo("tail", anchor: .bottom)
         Task {
-            for delay in [120, 400] {
+            for delay in [80, 350] {
                 try? await Task.sleep(for: .milliseconds(delay))
-                guard followsStream else { return }
                 proxy.scrollTo("tail", anchor: .bottom)
             }
         }
