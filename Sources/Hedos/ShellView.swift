@@ -9,6 +9,7 @@ final class ShellModel {
     let images: ImagesViewModel
     let voice: VoiceSurfaceModel
     let settings: SettingsModel
+    let system = SystemMonitor()
 
     var mode: AppMode = .library
     var chatSelection: String?
@@ -21,6 +22,7 @@ final class ShellModel {
     var sidebarCollapsed = false
     var isFullscreen = false
     var settingsTarget: SettingsDestination?
+    var showingGatewayLog = false
     var chatQuery = ""
     var chatSearchFocusTick = 0
     var resident: [Kernel.ResidentEntry] = []
@@ -48,6 +50,7 @@ final class ShellModel {
     func start() async {
         guard !started else { return }
         started = true
+        system.start()
         await settings.load()
         if let restored = try? await kernel.shellState() {
             mode = restored.mode
@@ -119,10 +122,7 @@ final class ShellModel {
 
     func setSidebarCollapsed(_ collapsed: Bool) {
         guard sidebarCollapsed != collapsed else { return }
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        withAnimation(Design.motion(reduceMotion: reduceMotion)) {
-            sidebarCollapsed = collapsed
-        }
+        sidebarCollapsed = collapsed
         persist()
     }
 
@@ -345,6 +345,9 @@ struct ShellView: View {
         case .library:
             ModelsPane(shell: shell)
                 .transition(.opacity)
+        case .gateway:
+            GatewayPane(shell: shell)
+                .transition(.opacity)
         case .settings:
             ModelsPane(shell: shell)
                 .transition(.opacity)
@@ -407,9 +410,16 @@ struct HedosSidebar: View {
                         modeRow(mode, collapsedRow: false)
                     }
                 }
-                if rowMatches(Design.modeTitle(.library)) {
+                if rowMatches(Design.modeTitle(.library))
+                    || rowMatches(Design.modeTitle(.gateway))
+                {
                     groupTitle("Library")
-                    modeRow(.library, collapsedRow: false)
+                    if rowMatches(Design.modeTitle(.library)) {
+                        modeRow(.library, collapsedRow: false)
+                    }
+                    if rowMatches(Design.modeTitle(.gateway)) {
+                        modeRow(.gateway, collapsedRow: false)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -437,6 +447,7 @@ struct HedosSidebar: View {
                     .padding(.vertical, Design.Space.s)
                     .accessibilityHidden(true)
                 modeRow(.library, collapsedRow: true)
+                modeRow(.gateway, collapsedRow: true)
             }
             Spacer(minLength: 0)
             settingsRow(collapsedRow: true)
@@ -474,7 +485,11 @@ struct HedosSidebar: View {
     }
 
     private func settingsRow(collapsedRow: Bool) -> some View {
-        BrandRow(
+        InkSidebarRow(
+            id: AppMode.settings,
+            glyph: Design.modeGlyph(.settings),
+            title: Design.modeTitle(.settings),
+            selected: false,
             collapsed: collapsedRow,
             hovered: $hovered
         ) {
@@ -482,89 +497,6 @@ struct HedosSidebar: View {
         }
         .help("Settings — ⌘,")
         .accessibilityIdentifier("rail-settings")
-    }
-}
-
-private struct BrandRow: View {
-    var collapsed: Bool = false
-    @Binding var hovered: AppMode?
-    let action: () -> Void
-
-    @State private var hoverPoint: CGPoint?
-
-    var body: some View {
-        Button(action: action) {
-            if collapsed {
-                LogoMark(size: 30)
-                    .frame(width: 44, height: 44)
-                    .modifier(InkGlow(point: hoverPoint))
-                    .modifier(GlowTracking(point: $hoverPoint, hovered: $hovered))
-                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
-            } else {
-                HStack(spacing: Design.Space.chipX) {
-                    LogoMark(size: 28)
-                        .frame(width: 30, alignment: .leading)
-                    Text("Hedos")
-                        .font(Design.paneTitle)
-                        .tracking(Design.tightTracking)
-                        .foregroundStyle(Design.ink)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, Design.Space.l)
-                .padding(.vertical, Design.Space.s + 1)
-                .modifier(InkGlow(point: hoverPoint))
-                .modifier(GlowTracking(point: $hoverPoint, hovered: $hovered))
-                .contentShape(Capsule())
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Settings")
-    }
-}
-
-private struct GlowTracking: ViewModifier {
-    @Binding var point: CGPoint?
-    @Binding var hovered: AppMode?
-
-    func body(content: Content) -> some View {
-        content.onContinuousHover(coordinateSpace: .local) { phase in
-            switch phase {
-            case .active(let location):
-                point = location
-                hovered = .settings
-            case .ended:
-                point = nil
-                if hovered == .settings {
-                    hovered = nil
-                }
-            }
-        }
-    }
-}
-
-private struct InkGlow: ViewModifier {
-    let point: CGPoint?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        content.overlay {
-            if let point {
-                GeometryReader { geometry in
-                    RadialGradient(
-                        colors: [Design.paper.opacity(0.9), .clear],
-                        center: UnitPoint(
-                            x: point.x / max(geometry.size.width, 1),
-                            y: point.y / max(geometry.size.height, 1)),
-                        startRadius: 0,
-                        endRadius: 52)
-                }
-                .animation(
-                    reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.65),
-                    value: point)
-                .mask(content)
-                .allowsHitTesting(false)
-            }
-        }
     }
 }
 
@@ -852,8 +784,16 @@ struct ChatSessionsColumn: View {
                 }
                 deleting = nil
             }
+            .keyboardShortcut(.defaultAction)
         } message: {
             Text("The conversation leaves your history.")
+        }
+        .onDeleteCommand {
+            if let id = shell.chatSelection,
+                let session = shell.sessions.first(where: { $0.id == id })
+            {
+                deleting = session
+            }
         }
     }
 

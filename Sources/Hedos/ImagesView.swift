@@ -469,33 +469,15 @@ struct ImagesSurface: View {
                 caption: Provenance.line(for: artifact, schema: schema(for: artifact)),
                 isLoading: model.thumbnail(artifact) == nil
             )
-            .overlay(alignment: .topTrailing) {
-                if hoveredRow == artifact.id {
-                    HStack(spacing: Design.Space.xs) {
-                        if canRun(artifact) && !model.isBusy {
-                            CircleControl(glyph: "arrow.clockwise", label: "Re-run") {
-                                model.rerun(artifact)
-                            }
-                            CircleControl(glyph: "wand.and.sparkles", label: "Vary") {
-                                model.vary(artifact)
-                            }
-                        }
-                        CircleControl(glyph: "arrow.down", label: "Download") {
-                            model.download(artifact)
-                        }
-                    }
-                    .padding(Design.Space.m + Design.Space.xs)
-                    .transition(.opacity)
-                }
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                    .strokeBorder(
+                        shell.imagesSelection == artifact.id
+                            ? AnyShapeStyle(Design.accent.opacity(0.6)) : AnyShapeStyle(.clear),
+                        lineWidth: 1.5))
+            .onTapGesture {
+                shell.selectImages(artifact.id)
             }
-            .onHover { inside in
-                if inside {
-                    hoveredRow = artifact.id
-                } else if hoveredRow == artifact.id {
-                    hoveredRow = nil
-                }
-            }
-            .animation(Design.wash, value: hoveredRow)
             .task(id: artifact.id) {
                 await model.loadThumbnail(artifact)
             }
@@ -504,20 +486,10 @@ struct ImagesSurface: View {
                     model.rerun(artifact)
                 }
                 .disabled(model.isBusy || !canRun(artifact))
-                .help(
-                    model.isBusy
-                        ? "Wait for the current generation to finish."
-                        : canRun(artifact)
-                            ? "" : "The model that made this image is not ready.")
                 Button("Vary") {
                     model.vary(artifact)
                 }
                 .disabled(model.isBusy || !canRun(artifact))
-                .help(
-                    model.isBusy
-                        ? "Wait for the current generation to finish."
-                        : canRun(artifact)
-                            ? "" : "The model that made this image is not ready.")
                 Divider()
                 Button("Download…") {
                     model.download(artifact)
@@ -527,14 +499,20 @@ struct ImagesSurface: View {
                     confirmingDelete = artifact
                 }
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.bubble)
-                    .strokeBorder(
-                        shell.imagesSelection == artifact.id
-                            ? AnyShapeStyle(Design.accent.opacity(0.6)) : AnyShapeStyle(.clear),
-                        lineWidth: 1.5))
-            .onTapGesture {
-                shell.selectImages(artifact.id)
+            if model.thumbnail(artifact) != nil {
+                ArtifactTray {
+                    if canRun(artifact) && !model.isBusy {
+                        TrayButton(label: "Re-run", glyph: "arrow.clockwise") {
+                            model.rerun(artifact)
+                        }
+                        TrayButton(label: "Vary", glyph: "wand.and.sparkles") {
+                            model.vary(artifact)
+                        }
+                    }
+                    TrayButton(label: "Save .png", glyph: "arrow.down.to.line") {
+                        model.download(artifact)
+                    }
+                }
             }
         }
     }
@@ -637,7 +615,11 @@ struct ImagesSurface: View {
             CircleControl(glyph: "slider.horizontal.3", label: "Generation parameters") {
                 showParams.toggle()
             }
-            .popover(isPresented: $showParams, arrowEdge: .top) {
+            .inkPopover(
+                isPresented: $showParams,
+                width: Design.Popover.form.width,
+                maxHeight: Design.Popover.form.height
+            ) {
                 ImageParamsForm(model: model)
             }
         }

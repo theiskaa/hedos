@@ -582,6 +582,7 @@ struct ChatView: View {
                 previousVersionsAffordance(entry)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.bottom, Design.Space.m)
         } else {
             VStack(alignment: .leading, spacing: 8) {
                 if !entry.thinking.isEmpty {
@@ -612,11 +613,38 @@ struct ChatView: View {
                     artifactCard(reference)
                 }
                 if !entry.text.isEmpty && !(model.isStreaming && !entry.persisted) {
-                    HStack(spacing: Design.Space.l) {
-                        copyControl(entry)
-                        if canReadAloud(entry) {
-                            readAloudControl(entry)
+                    HStack(spacing: Design.Space.m) {
+                        ArtifactTray {
+                            TrayButton(
+                                label: copiedEntryID == entry.id ? "Copied" : "Copy",
+                                glyph: copiedEntryID == entry.id ? "checkmark" : "doc.on.doc"
+                            ) {
+                                copy(entry.text)
+                                copiedEntryID = entry.id
+                                Task {
+                                    try? await Task.sleep(for: .seconds(1.5))
+                                    if copiedEntryID == entry.id { copiedEntryID = nil }
+                                }
+                            }
+                            if entry.persisted && !model.isStreaming {
+                                TrayButton(label: "Regenerate", glyph: "arrow.clockwise") {
+                                    model.regenerate(entry)
+                                }
+                            }
+                            if canReadAloud(entry) {
+                                TrayButton(
+                                    label: model.speakingEntryID == entry.id ? "Stop" : "Speak",
+                                    glyph: model.speakingEntryID == entry.id
+                                        ? "stop.fill" : "speaker.wave.2"
+                                ) {
+                                    narrate(entry)
+                                }
+                            }
                         }
+                        if model.speakingEntryID == entry.id {
+                            SpeakingIndicator()
+                        }
+                        Spacer(minLength: 0)
                         if showsStats, let stats = entry.stats {
                             statsLine(stats)
                         }
@@ -625,6 +653,7 @@ struct ChatView: View {
                 previousVersionsAffordance(entry)
             }
             .frame(maxWidth: Design.Column.transcriptProse, alignment: .leading)
+            .padding(.bottom, Design.Space.xl)
         }
     }
 
@@ -680,7 +709,7 @@ struct ChatView: View {
                                 .foregroundStyle(Design.inkFaint)
                                 .textSelection(.enabled)
                         }
-                        .leftRule()
+                        .padding(.leading, Design.Space.l)
                     }
                 }
                 .padding(.top, Design.Space.xs)
@@ -733,7 +762,7 @@ struct ChatView: View {
                 .lineSpacing(Design.bodyLineSpacing)
                 .foregroundStyle(Design.inkSoft)
                 .textSelection(.enabled)
-                .leftRule()
+                .padding(.leading, Design.Space.l)
                 .padding(.top, Design.Space.xs)
         } label: {
             if streaming {

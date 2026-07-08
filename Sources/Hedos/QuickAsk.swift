@@ -135,14 +135,14 @@ struct HotkeyRecorder: View {
                             ? Design.inkSoft : hotkey == nil ? Design.inkFaint : Design.ink)
                     .padding(.horizontal, Design.Space.chipX)
                     .padding(.vertical, Design.Space.xs + 1)
-                    .background(Design.surface, in: Capsule())
+                    .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
                     .overlay(
-                        Capsule().strokeBorder(
+                        RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
                             recording
                                 ? AnyShapeStyle(Design.ink.opacity(0.35))
                                 : AnyShapeStyle(Design.line),
                             lineWidth: Design.hairlineWidth))
-                    .contentShape(Capsule())
+                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(

@@ -21,10 +21,10 @@ struct InkSlider: View {
             let width = proxy.size.width
             let thumbX = fraction * (width - 14)
             ZStack(alignment: .leading) {
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(Design.line)
                     .frame(height: 4)
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(isSet ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.inkFaint))
                     .frame(width: max(7, thumbX + 7), height: 4)
                 Circle()
@@ -59,7 +59,7 @@ struct InkSlider: View {
         .focusEffectDisabled()
         .overlay {
             if focused {
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .inset(by: -3)
                     .stroke(Design.ink.opacity(0.35), lineWidth: Design.hairlineWidth)
             }
@@ -103,11 +103,11 @@ struct InkToggle: View {
             onToggle(!isOn)
         } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(
                         isOn && isSet
                             ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface))
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth)
                 Circle()
                     .fill(
@@ -120,12 +120,12 @@ struct InkToggle: View {
                     .padding(3)
             }
             .frame(width: 34, height: 20)
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             .animation(
                 reduceMotion ? nil : .easeOut(duration: 0.15), value: isOn)
         }
         .buttonStyle(TogglePressStyle(reduceMotion: reduceMotion))
-        .inkFocusRing(Capsule())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .accessibilityLabel(label)
         .accessibilityValue(isSet ? (isOn ? "on" : "off") : "auto")
         .accessibilityAddTraits(.isToggle)
@@ -171,12 +171,12 @@ struct InkSegmented: View {
                                 : hoveredValue == candidate
                                     ? AnyShapeStyle(Design.inkWash)
                                     : AnyShapeStyle(Design.surface),
-                            in: Capsule())
+                            in: RoundedRectangle(cornerRadius: Design.Radius.control))
                         .overlay(
-                            Capsule().strokeBorder(
+                            RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
                                 selection == candidate ? .clear : Design.line,
                                 lineWidth: Design.hairlineWidth))
-                        .contentShape(Capsule())
+                        .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                 }
                 .buttonStyle(PressDipStyle())
                 .onHover { inside in
@@ -186,7 +186,7 @@ struct InkSegmented: View {
                         hoveredValue = nil
                     }
                 }
-                .inkFocusRing(Capsule())
+                .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
                 .animation(Design.wash, value: hoveredValue)
                 .accessibilityLabel(candidate)
                 .accessibilityAddTraits(selection == candidate ? .isSelected : [])
@@ -231,7 +231,7 @@ struct InkField: View {
     private var fieldShape: AnyInsettableShape {
         switch shape {
         case .rounded: AnyInsettableShape(RoundedRectangle(cornerRadius: Design.Radius.control))
-        case .capsule: AnyInsettableShape(Capsule())
+        case .capsule: AnyInsettableShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         }
     }
 }
@@ -333,6 +333,7 @@ struct InkMenu<Content: View>: View {
     var externalOpen: Binding<Bool>? = nil
     @ViewBuilder let content: () -> Content
     @State private var localOpen = false
+    @State private var anchor: NSView?
 
     private var open: Binding<Bool> {
         externalOpen ?? $localOpen
@@ -340,43 +341,53 @@ struct InkMenu<Content: View>: View {
 
     var body: some View {
         Button {
-            open.wrappedValue.toggle()
+            open.wrappedValue = true
         } label: {
             HStack(spacing: Design.Space.xs) {
                 Text(title)
                     .font(Design.label)
                     .lineLimit(1)
                     .foregroundStyle(Design.inkSoft)
-                Image(systemName: "chevron.up.chevron.down")
+                Text(verbatim: "▾")
                     .font(Design.glyphSmall)
                     .foregroundStyle(Design.inkFaint)
             }
             .padding(.horizontal, Design.Space.chipX)
             .padding(.vertical, Design.Space.xs)
-            .background(Design.surface, in: Capsule())
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
-                Capsule().strokeBorder(
+                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
                     open.wrappedValue
                         ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         }
         .buttonStyle(.plain)
-        .inkFocusRing(Capsule())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .fixedSize()
-        .popover(isPresented: open, arrowEdge: .top) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                    content()
-                }
-                .padding(Design.Space.s)
-            }
-            .frame(width: Design.Popover.menuWidth)
-            .frame(maxHeight: Design.Popover.menuMaxHeight)
-            .presentationBackground(Design.paper)
-            .environment(\.inkMenuDismiss) { open.wrappedValue = false }
+        .background(AnchorReader { anchor = $0 })
+        .onChange(of: open.wrappedValue) { _, isOpen in
+            if isOpen { present() }
         }
         .accessibilityLabel(accessibilityName)
+    }
+
+    private func present() {
+        guard let anchor else { return }
+        InkPopup.shared.present(
+            anchor: anchor,
+            width: Design.Popover.menuWidth,
+            maxHeight: Design.Popover.menuMaxHeight,
+            content: menu,
+            onDismiss: { open.wrappedValue = false })
+    }
+
+    private var menu: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            content()
+        }
+        .padding(Design.Space.s)
+        .environment(\.inkMenuDismiss) { InkPopup.shared.dismiss() }
     }
 }
 
@@ -473,54 +484,67 @@ struct InkDropdown: View {
     var placeholder: String = "auto"
     var allowsAuto = true
     var accessibilityName: String = "option"
+    var width: CGFloat? = nil
     let onSelect: (String?) -> Void
     @State private var open = false
+    @State private var anchor: NSView?
 
     var body: some View {
         Button {
-            open.toggle()
+            present()
         } label: {
-            HStack(spacing: Design.Space.xs) {
+            HStack(spacing: Design.Space.s) {
                 Text(selection ?? placeholder)
-                    .font(Design.label)
+                    .font(Design.caption)
                     .lineLimit(1)
                     .foregroundStyle(selection == nil ? Design.inkFaint : Design.ink)
-                Image(systemName: "chevron.down")
-                    .font(Design.glyphSmall)
+                Spacer(minLength: Design.Space.m)
+                Text(verbatim: "▾")
+                    .font(Design.caption)
                     .foregroundStyle(Design.inkFaint)
             }
             .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.xs + 1)
-            .background(Design.surface, in: Capsule())
+            .padding(.vertical, Design.Space.s)
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
-                Capsule().strokeBorder(
+                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
                     open ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
-            .contentShape(Capsule())
+            .frame(width: width)
+            .fixedSize(horizontal: width == nil, vertical: true)
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         }
         .buttonStyle(.plain)
-        .inkFocusRing(Capsule())
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                    if allowsAuto {
-                        dropdownRow(title: placeholder, value: nil, faint: true)
-                        Rectangle()
-                            .fill(Design.line)
-                            .frame(height: Design.hairlineWidth)
-                            .padding(.vertical, Design.Space.xxs)
-                    }
-                    ForEach(options, id: \.self) { candidate in
-                        dropdownRow(title: candidate, value: candidate, faint: false)
-                    }
-                }
-                .padding(Design.Space.s)
-            }
-            .frame(width: Design.Popover.dropdownWidth)
-            .frame(maxHeight: Design.Popover.dropdownMaxHeight)
-            .presentationBackground(Design.paper)
-        }
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .background(AnchorReader { anchor = $0 })
         .accessibilityLabel("Choose \(accessibilityName)")
+    }
+
+    private func present() {
+        guard let anchor else { return }
+        open = true
+        InkPopup.shared.present(
+            anchor: anchor,
+            width: Design.Popover.dropdownWidth,
+            maxHeight: Design.Popover.dropdownMaxHeight,
+            content: rows,
+            onDismiss: { open = false })
+    }
+
+    private var rows: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            if allowsAuto {
+                dropdownRow(title: placeholder, value: nil, faint: true)
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(height: Design.hairlineWidth)
+                    .padding(.vertical, Design.Space.xxs)
+            }
+            ForEach(options, id: \.self) { candidate in
+                dropdownRow(title: candidate, value: candidate, faint: false)
+            }
+        }
+        .padding(Design.Space.s)
     }
 
     private func dropdownRow(title: String, value: String?, faint: Bool) -> some View {
@@ -530,7 +554,7 @@ struct InkDropdown: View {
             faint: faint
         ) {
             onSelect(value)
-            open = false
+            InkPopup.shared.dismiss()
         }
     }
 }
@@ -585,13 +609,13 @@ struct QuietButtonStyle: ButtonStyle {
             .padding(.vertical, Design.Space.xs + 1)
             .background(
                 hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.surface),
-                in: Capsule())
+                in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
-                Capsule().strokeBorder(
+                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
                     hovering ? AnyShapeStyle(Design.inkFaint) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.15), value: hovering)
     }
@@ -729,7 +753,7 @@ struct ThemePreview: View {
                     RoundedRectangle(cornerRadius: 2).fill(surface))
                 .padding(.vertical, 4)
                 VStack(alignment: .leading, spacing: 4) {
-                    Capsule()
+                    RoundedRectangle(cornerRadius: Design.Radius.control)
                         .fill(ink.opacity(0.85))
                         .frame(width: 26, height: 6)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -742,9 +766,9 @@ struct ThemePreview: View {
                             .frame(width: 28, height: 3)
                     }
                     Spacer()
-                    Capsule()
+                    RoundedRectangle(cornerRadius: Design.Radius.control)
                         .fill(surface)
-                        .overlay(Capsule().strokeBorder(soft.opacity(0.3), lineWidth: 0.5))
+                        .overlay(RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(soft.opacity(0.3), lineWidth: 0.5))
                         .frame(height: 8)
                         .overlay(alignment: .trailing) {
                             Circle()

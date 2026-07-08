@@ -47,8 +47,8 @@ struct MarkdownBlockView: View {
         switch block {
         case .paragraph(let text):
             Text("\(inline(text))\(cursorText)")
-                .font(Design.body)
-                .lineSpacing(Design.bodyLineSpacing)
+                .font(Design.readingBody)
+                .lineSpacing(Design.readingLineSpacing)
                 .textSelection(.enabled)
         case .heading(let level, let text):
             Text("\(inline(text))\(cursorText)")
@@ -65,19 +65,19 @@ struct MarkdownBlockView: View {
                             .font(Design.body)
                             .foregroundStyle(Design.inkFaint)
                         inline(item)
-                            .font(Design.body)
-                            .lineSpacing(Design.bodyLineSpacing)
+                            .font(Design.readingBody)
+                            .lineSpacing(Design.readingLineSpacing)
                             .textSelection(.enabled)
                     }
                 }
             }
         case .quote(let text):
             inline(text)
-                .font(Design.body)
-                .lineSpacing(Design.bodyLineSpacing)
+                .font(Design.readingBody)
+                .lineSpacing(Design.readingLineSpacing)
                 .foregroundStyle(Design.inkSoft)
                 .textSelection(.enabled)
-                .leftRule()
+                .padding(.leading, Design.Space.l)
         case .table(let header, let rows):
             ScrollView(.horizontal) {
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 6) {

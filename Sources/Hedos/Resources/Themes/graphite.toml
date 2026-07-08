@@ -1,0 +1,34 @@
+# Graphite — the shipped dark base theme.
+
+[meta]
+name = "Graphite"
+appearance = "dark"
+
+[surface]
+ground = "#141210"
+panel = "#1A1815"
+card = "#211E1E"
+card2 = "#26221F"
+line = "#322E2A"
+line_bright = "#4A443E"
+
+[ink]
+text = "#F1ECEC"
+muted = "#A39C94"
+faint = "#6E655D"
+
+[accent]
+value = "#EDE8E3"
+dim = "#CFCECD"
+on = "#17140F"
+
+[heat]
+warm = "#C99A4E"
+error = "#C06A4E"
+
+[shape]
+radius_control = 2
+radius_card = 3
+radius_artifact = 10
+unit = 16
+hairline = 1

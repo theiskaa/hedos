@@ -7,6 +7,7 @@ public enum AppMode: String, Codable, CaseIterable, Sendable {
     case voice
     case pipelines
     case library
+    case gateway
     case settings
 
     public var ordinal: Int {
@@ -17,7 +18,8 @@ public enum AppMode: String, Codable, CaseIterable, Sendable {
         case .voice: 3
         case .pipelines: 4
         case .library: 5
-        case .settings: 6
+        case .gateway: 6
+        case .settings: 7
         }
     }
 
@@ -116,7 +118,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         case .voice: voiceModelID
         case .pipelines: pipelineSelection
         case .library: libraryModelID
-        case .home, .settings: nil
+        case .home, .gateway, .settings: nil
         }
     }
 
@@ -127,7 +129,7 @@ public struct ShellState: Codable, Sendable, Equatable {
         case .voice: voiceModelID = id
         case .pipelines: pipelineSelection = id
         case .library: libraryModelID = id
-        case .home, .settings: break
+        case .home, .gateway, .settings: break
         }
     }
 }

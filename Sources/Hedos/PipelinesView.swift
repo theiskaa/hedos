@@ -214,7 +214,7 @@ private struct PortChip: View {
             .padding(.horizontal, Design.Space.xs)
             .padding(.vertical, 1)
             .background(
-                Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
     }
 
     private var label: String {
@@ -759,8 +759,8 @@ private struct PipelineRunContent: View {
                     .font(Design.glyphNav)
                     .foregroundStyle(model.listening ? Design.accent : Design.inkSoft)
                     .frame(width: 52, height: 52)
-                    .background(Circle().fill(Design.surface))
-                    .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                    .background(RoundedRectangle(cornerRadius: Design.Radius.control).fill(Design.surface))
+                    .overlay(RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
             }
             .buttonStyle(PressDipStyle())
             .accessibilityIdentifier("pipeline-mic")

@@ -55,7 +55,11 @@ struct ModelsPane: View {
                 }
                 .help("Watched folders")
                 .accessibilityLabel("Watched folders")
-                .popover(isPresented: $showFolders, arrowEdge: .bottom) {
+                .inkPopover(
+                    isPresented: $showFolders,
+                    width: Design.Popover.menuWidth,
+                    maxHeight: Design.Popover.menuMaxHeight
+                ) {
                     FoldersPopover(model: shell.library) {
                         showFolders = false
                         shell.settingsTarget = SettingsDestination(
@@ -90,13 +94,8 @@ struct ModelsPane: View {
     private var filterRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Design.Space.m) {
-                HStack(spacing: Design.Space.s) {
-                    Image(systemName: "magnifyingglass")
-                        .font(Design.glyphInline)
-                        .foregroundStyle(Design.inkFaint)
-                    InkField(placeholder: "Filter by name", text: $query, shape: .capsule)
-                        .frame(width: 180)
-                }
+                InkSearchField(placeholder: "Filter by name", query: $query, fill: Design.surface)
+                    .frame(width: 200)
                 ForEach(facets, id: \.self) { candidate in
                     FilterChip(
                         label: candidate.label,
@@ -244,30 +243,30 @@ struct ModelCard: View {
     var body: some View {
         Button(action: onOpen) {
             VStack(alignment: .leading, spacing: Design.Space.l) {
-                HStack(alignment: .top, spacing: Design.Space.l) {
-                    IconPlaque(size: 44) {
-                        SourceMark(kind: record.source.kind, size: 24)
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    HStack(alignment: .center, spacing: Design.Space.l) {
+                        SourceMark(kind: record.source.kind, size: 20)
                             .foregroundStyle(Design.inkSoft)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if warm {
-                            AccentDot()
-                                .offset(x: 2, y: -2)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                            .frame(width: 24, height: 24)
+                            .overlay(alignment: .topTrailing) {
+                                if warm {
+                                    AccentDot()
+                                        .offset(x: 3, y: -3)
+                                }
+                            }
                         Text(record.name)
                             .font(Design.title)
                             .tracking(Design.tightTracking)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                        Text(
-                            "\(ModelsPane.storeTitle(record.source.kind)) · \(record.modality.rawValue)"
-                        )
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkFaint)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+                    Text(
+                        "\(ModelsPane.storeTitle(record.source.kind)) · \(record.modality.rawValue)"
+                    )
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+                    .padding(.leading, 24 + Design.Space.l)
                 }
                 HStack(spacing: Design.Space.s) {
                     ForEach(capabilities, id: \.self) { mode in
@@ -302,7 +301,9 @@ struct ModelCard: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Design.Radius.tile)
                     .strokeBorder(
-                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        hovering
+                            ? AnyShapeStyle(Design.accentEdge)
+                            : warm ? AnyShapeStyle(Design.lineBright) : AnyShapeStyle(Design.line),
                         lineWidth: Design.hairlineWidth))
             .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
             .lifts(hovering: hovering)
@@ -357,7 +358,7 @@ struct ModelDetailSheet: View {
                     specs
                     if needsConfirmation {
                         VStack(alignment: .leading, spacing: Design.Space.m) {
-                            MicroHeader(title: "Runtime")
+                            MicroHeader(title: "[ Runtime ]")
                             InkRadioGroup(
                                 options: runtimeOptions, selection: $chosenRuntime)
                             Text("Nothing runs until you open it.")
@@ -425,56 +426,49 @@ struct ModelDetailSheet: View {
 
     private var specs: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: "Details")
+            MicroHeader(title: "[ Specification ]")
             specRows
                 .padding(.horizontal, Design.Space.tile)
-                .padding(.vertical, Design.Space.xs)
-                .surfaceCard(radius: Design.Radius.tile)
+                .padding(.vertical, Design.Space.s)
+                .surfaceCard(radius: Design.Radius.card)
         }
     }
 
     private var specRows: some View {
         VStack(alignment: .leading, spacing: 0) {
             if record.displayName != record.name {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
                     Text("Source")
-                        .font(Design.label)
+                        .font(Design.caption)
                         .foregroundStyle(Design.inkFaint)
-                        .frame(width: 72, alignment: .leading)
+                    Spacer(minLength: Design.Space.m)
                     SourceMark(kind: record.source.kind, size: 12)
                         .foregroundStyle(Design.inkFaint)
                     Text(record.name)
-                        .font(Design.caption)
+                        .font(Design.data(12))
                         .foregroundStyle(Design.ink)
                         .textSelection(.enabled)
-                        .lineLimit(2)
+                        .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer(minLength: 0)
                 }
                 .padding(.vertical, Design.Space.m)
-                Divider()
+                .overlay(alignment: .bottom) { DottedRule() }
             }
             specRow("Modality", record.modality.rawValue)
-            Divider()
             specRow("Kind", record.source.kind.rawValue)
             if let repo = record.source.repo {
-                Divider()
                 specRow("Repo", repo)
             }
             if let mb = record.footprintMB, mb > 0 {
-                Divider()
-                specRow("Size", DiscoverySummary.formatBytes(Int64(mb) << 20), mono: true)
+                specRow("On disk", DiscoverySummary.formatBytes(Int64(mb) << 20), mono: true)
             }
             if let fit = Fit.label(record) {
-                Divider()
                 specRow("Fit", fit)
             }
             if let path = record.primaryWeightPath ?? record.source.path as String? {
-                Divider()
                 specRow("Path", (path as NSString).abbreviatingWithTildeInPath)
             }
             if let group = Fit.duplicateInsight(record, in: shell.library.summary) {
-                Divider()
                 duplicateCard(group)
             }
         }
@@ -499,21 +493,23 @@ struct ModelDetailSheet: View {
     }
 
     private func specRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
             Text(label)
-                .font(Design.label)
+                .font(Design.caption)
                 .foregroundStyle(Design.inkFaint)
-                .frame(width: 72, alignment: .leading)
+                .fixedSize()
+                .layoutPriority(1)
             Text(value)
-                .font(mono ? Design.data(12) : Design.caption)
+                .font(Design.data(12))
                 .monospacedDigit()
                 .foregroundStyle(Design.ink)
                 .textSelection(.enabled)
-                .lineLimit(2)
+                .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 0)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, Design.Space.m)
+        .overlay(alignment: .bottom) { DottedRule() }
     }
 
     @ViewBuilder

@@ -234,9 +234,9 @@ struct AddGatewayClientSheet: View {
                 .padding(.horizontal, Design.Space.m)
                 .padding(.vertical, Design.Space.xs)
                 .background(
-                    Capsule().fill(selected ? Design.ink : Design.paper))
+                    RoundedRectangle(cornerRadius: Design.Radius.control).fill(selected ? Design.ink : Design.paper))
                 .overlay(
-                    Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                    RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])

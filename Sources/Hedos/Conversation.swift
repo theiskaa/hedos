@@ -2,6 +2,7 @@ import AVFoundation
 import AppKit
 import HedosKernel
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     let placeholder: String
@@ -22,6 +23,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.sendWithEnter) private var sendWithEnter
     @State private var composerHeight: CGFloat = 22
+    @State private var composerFocusToken = 0
     @State private var slashPrompts: [Prompt] = []
     @State private var slashHighlight = 0
     @State private var slashSuppressed = false
@@ -36,6 +38,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             }
             composer
         }
+        .onAppear { composerFocusToken += 1 }
     }
 
     private func noticeBar(_ text: String) -> some View {
@@ -71,7 +74,8 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                     text: $draft,
                     sendWithEnter: sendWithEnter,
                     measuredHeight: $composerHeight,
-                    onCommand: interceptCommand
+                    onCommand: interceptCommand,
+                    focusToken: composerFocusToken
                 ) {
                     if canSend && !isWorking {
                         onSend()
@@ -125,8 +129,8 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                     }
                 }
         }
-        .frame(maxWidth: conversationWidth)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: conversationWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, Design.Space.xxl)
         .padding(.bottom, Design.Space.xxl)
         .padding(.top, Design.Space.m)
@@ -263,10 +267,10 @@ struct CircleControl: View {
                     live
                         ? AnyShapeStyle(Design.accent)
                         : prominent ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface),
-                    in: Circle())
+                    in: RoundedRectangle(cornerRadius: Design.Radius.control))
                 .overlay {
                     if prominent || live {
-                        Circle()
+                        RoundedRectangle(cornerRadius: Design.Radius.control)
                             .strokeBorder(
                                 LinearGradient(
                                     colors: [
@@ -276,16 +280,16 @@ struct CircleControl: View {
                                     startPoint: .top, endPoint: .center),
                                 lineWidth: Design.hairlineWidth)
                     } else {
-                        Circle()
+                        RoundedRectangle(cornerRadius: Design.Radius.control)
                             .strokeBorder(Design.line, lineWidth: Design.hairlineWidth)
                     }
                 }
-                .contentShape(Circle())
+                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                 .opacity(isEnabled ? 1 : 0.4)
         }
         .buttonStyle(CirclePressStyle(prominent: prominent, hovering: hovering))
         .onHover { hovering = $0 }
-        .inkFocusRing(Circle())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .help(label)
         .accessibilityLabel(label)
     }
@@ -331,14 +335,40 @@ struct ArtifactExchangeView: View {
             if let artifact {
                 switch artifact.capability {
                 case .speak:
-                    VoiceBubble(artifact: artifact, clips: clips) {
-                        togglePlayback(artifact)
+                    VStack(alignment: .leading, spacing: Design.Space.s) {
+                        artifactLabel(
+                            kind: "voice", name: VoiceSurfaceModel.voiceName(of: artifact))
+                        VoiceBubble(artifact: artifact, clips: clips) {
+                            togglePlayback(artifact)
+                        }
+                        ArtifactTray {
+                            TrayButton(label: "Save audio", glyph: "arrow.down.to.line") {
+                                exportArtifact(artifact, suggested: "narration.wav")
+                            }
+                            TrayButton(label: "Transcript", glyph: "doc.on.doc") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(
+                                    VoiceSurfaceModel.text(of: artifact), forType: .string)
+                            }
+                        }
                     }
                 case .image:
-                    ImageBubble(
-                        image: image,
-                        caption: Provenance.line(for: artifact),
-                        isLoading: image == nil)
+                    VStack(alignment: .leading, spacing: Design.Space.s) {
+                        ImageBubble(
+                            image: image,
+                            caption: Provenance.line(for: artifact),
+                            isLoading: image == nil)
+                        if image != nil {
+                            ArtifactTray {
+                                TrayButton(label: "Save .png", glyph: "arrow.down.to.line") {
+                                    saveImage()
+                                }
+                                TrayButton(label: "Copy", glyph: "doc.on.doc") {
+                                    copyImage()
+                                }
+                            }
+                        }
+                    }
                 default:
                     EmptyView()
                 }
@@ -363,6 +393,18 @@ struct ArtifactExchangeView: View {
         }
     }
 
+    private func artifactLabel(kind: String, name: String?) -> some View {
+        HStack(spacing: Design.Space.xs) {
+            Text(verbatim: "▸")
+                .font(Design.micro)
+                .foregroundStyle(Design.accent)
+            Text((name.map { "\(kind) · \($0)" } ?? kind).uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+        }
+    }
+
     private func togglePlayback(_ artifact: Artifact) {
         if clips.isActive(artifact.id) {
             clips.toggle(id: artifact.id)
@@ -374,6 +416,85 @@ struct ArtifactExchangeView: View {
             clips.toggle(id: artifact.id, url: url)
         }
     }
+
+    private func exportArtifact(_ artifact: Artifact, suggested: String) {
+        let kernel = kernel
+        Task { @MainActor in
+            guard let source = try? await kernel.artifactURL(id: artifact.id),
+                let data = try? Data(contentsOf: source)
+            else { return }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = source.lastPathComponent.isEmpty
+                ? suggested : source.lastPathComponent
+            guard panel.runModal() == .OK, let destination = panel.url else { return }
+            try? data.write(to: destination)
+        }
+    }
+
+    private func saveImage() {
+        guard let image, let data = ArtifactExchangeView.pngData(image) else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = "image.png"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        try? data.write(to: destination)
+    }
+
+    private func copyImage() {
+        guard let image else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+    }
+
+    private static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+            let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+}
+
+struct ArtifactTray<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack(spacing: Design.Space.s) {
+            content()
+        }
+    }
+}
+
+struct TrayButton: View {
+    let label: String
+    let glyph: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Design.Space.xs) {
+                Image(systemName: glyph)
+                    .font(Design.glyphSmall)
+                Text(label)
+                    .font(Design.micro)
+                    .tracking(0.4)
+            }
+            .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.xs + 1)
+            .background(Design.panel, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.control)
+                    .strokeBorder(
+                        hovering ? Design.lineBright : Design.line,
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+        }
+        .buttonStyle(PressDipStyle())
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .accessibilityLabel(label)
+    }
 }
 
 private struct ComposerTextView: NSViewRepresentable {
@@ -381,10 +502,12 @@ private struct ComposerTextView: NSViewRepresentable {
     let sendWithEnter: Bool
     @Binding var measuredHeight: CGFloat
     var onCommand: ((Selector) -> Bool)? = nil
+    var focusToken: Int = 0
     let onSend: () -> Void
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ComposerTextView
+        var lastFocusToken = -1
 
         init(parent: ComposerTextView) {
             self.parent = parent
@@ -440,6 +563,12 @@ private struct ComposerTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async {
+                scroll.window?.makeFirstResponder(view)
+            }
+        }
         if view.string != text {
             view.string = text
             view.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))

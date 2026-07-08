@@ -34,9 +34,9 @@ struct InkSearchField: View {
         }
         .padding(.horizontal, Design.Space.chipX)
         .padding(.vertical, Design.Space.s)
-        .background(fill, in: Capsule())
+        .background(fill, in: RoundedRectangle(cornerRadius: Design.Radius.control))
         .overlay(
-            Capsule()
+            RoundedRectangle(cornerRadius: Design.Radius.control)
                 .strokeBorder(
                     focused
                         ? AnyShapeStyle(Design.accent.opacity(0.55))
@@ -66,7 +66,7 @@ struct InkSidebarRow<ID: Hashable>: View {
             if collapsed {
                 button.inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
             } else {
-                button.inkFocusRing(Capsule())
+                button.inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
             }
         }
         .accessibilityLabel(title)
@@ -137,8 +137,8 @@ struct InkSidebarRow<ID: Hashable>: View {
         }
         .padding(.horizontal, Design.Space.l)
         .padding(.vertical, Design.Space.s + 1)
-        .background(Capsule().fill(washColor))
-        .contentShape(Capsule())
+        .background(RoundedRectangle(cornerRadius: Design.Radius.control).fill(washColor))
+        .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         .animation(Design.wash, value: selected)
         .animation(Design.wash, value: hovered == id)
     }
@@ -155,13 +155,13 @@ struct SidebarCollapseToggle: View {
                 .font(Design.glyphPrimary)
                 .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
                 .frame(width: 28, height: 28)
-                .background(Circle().fill(Design.ink.opacity(hovering ? 0.06 : 0.04)))
-                .contentShape(Circle())
+                .background(RoundedRectangle(cornerRadius: Design.Radius.control).fill(Design.ink.opacity(hovering ? 0.06 : 0.04)))
+                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                 .animation(Design.wash, value: hovering)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .inkFocusRing(Circle())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .help(collapsed ? "Expand the sidebar" : "Collapse the sidebar")
         .accessibilityLabel(collapsed ? "Expand the sidebar" : "Collapse the sidebar")
     }
@@ -182,14 +182,14 @@ struct QuietIconButton: View {
                 .foregroundStyle(hovering && enabled ? Design.ink : Design.inkSoft)
                 .frame(width: 28, height: 28)
                 .background(
-                    Circle().fill(Design.ink.opacity(hovering && enabled ? 0.06 : 0.04)))
-                .contentShape(Circle())
+                    RoundedRectangle(cornerRadius: Design.Radius.control).fill(Design.ink.opacity(hovering && enabled ? 0.06 : 0.04)))
+                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                 .opacity(enabled ? 1 : 0.4)
                 .animation(Design.wash, value: hovering)
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(Circle())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
     }
 }
 

@@ -7,6 +7,7 @@ struct GatewaySection: View {
     let highlighted: String?
     let onAddClient: () -> Void
     let onConnect: () -> Void
+    var onShowAllRequests: (() -> Void)? = nil
     @State private var portText = ""
     @State private var copiedAddress = false
 
@@ -14,6 +15,7 @@ struct GatewaySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.xxl) {
+            controlHeader
             group("Serve") {
                 SettingRow(
                     id: "gateway.enable", label: "Serve models over HTTP",
@@ -26,9 +28,6 @@ struct GatewaySection: View {
                         onToggle: { model.setGatewayEnabled($0) })
                 }
                 .accessibilityIdentifier("gateway-enable")
-                if model.gatewayStatus.running, let port = model.gatewayStatus.port {
-                    addressRow(port: port)
-                }
                 if let notice = model.gatewayNotice {
                     HStack(spacing: Design.Space.s) {
                         Image(systemName: "exclamationmark.triangle")
@@ -55,10 +54,10 @@ struct GatewaySection: View {
             group("Endpoints") {
                 endpointRows
             }
-            group("Client tokens") {
+            group("Clients") {
                 clientRows
             }
-            group("Recent activity") {
+            group("Recent requests") {
                 auditRows
             }
         }
@@ -70,14 +69,6 @@ struct GatewaySection: View {
 
     private var endpointRows: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            HStack {
-                Spacer()
-                Button("Connect a tool…") {
-                    onConnect()
-                }
-                .buttonStyle(QuietButtonStyle())
-                .accessibilityIdentifier("gateway-connect")
-            }
             ForEach(Array(GatewayEndpoints.grouped.enumerated()), id: \.offset) { _, section in
                 Text(section.group.uppercased())
                     .font(Design.micro)
@@ -110,133 +101,232 @@ struct GatewaySection: View {
                     .foregroundStyle(Design.inkFaint)
                     .padding(.top, Design.Space.xs)
             }
+            Button("Connect a tool…") {
+                onConnect()
+            }
+            .buttonStyle(QuietButtonStyle())
+            .accessibilityIdentifier("gateway-connect")
+            .padding(.top, Design.Space.xs)
         }
         .padding(.vertical, Design.Space.m)
         .id("gateway.endpoints")
         .background(highlightBackground("gateway.endpoints"))
     }
 
-    private func addressRow(port: Int) -> some View {
-        HStack(spacing: Design.Space.s) {
-            AccentDot()
-            Text("http://127.0.0.1:\(String(port))/v1")
-                .font(Design.data(12))
-                .foregroundStyle(Design.ink)
-                .textSelection(.enabled)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(
-                    "http://127.0.0.1:\(String(port))/v1", forType: .string)
-                copiedAddress = true
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    copiedAddress = false
+    private var controlHeader: some View {
+        let running = model.gatewayStatus.running
+        let port = model.gatewayStatus.port ?? model.gateway.port
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Design.Space.chipX) {
+                if running {
+                    AccentDot(size: 9)
+                } else {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Design.inkFaint)
+                        .frame(width: 9, height: 9)
                 }
-            } label: {
-                Image(systemName: copiedAddress ? "checkmark" : "doc.on.doc")
-                    .font(Design.glyphInline)
-                    .foregroundStyle(Design.inkSoft)
+                Text("Gateway")
+                    .font(Design.title)
+                    .foregroundStyle(Design.ink)
+                Spacer(minLength: Design.Space.m)
+                Text(running ? "LIVE · :\(String(port))" : "OFFLINE")
+                    .font(Design.micro)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(running ? Design.heatText : Design.inkFaint)
             }
-            .buttonStyle(PressDipStyle())
-            .accessibilityLabel("Copy gateway address")
-            Spacer()
+            .padding(.horizontal, Design.Space.tile)
+            .padding(.vertical, Design.Space.l)
+            if running {
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(height: Design.hairlineWidth)
+                HStack(spacing: Design.Space.s) {
+                    Text(verbatim: "$")
+                        .font(Design.data(12))
+                        .foregroundStyle(Design.inkFaint)
+                    Text("http://127.0.0.1:\(String(port))/v1")
+                        .font(Design.data(12))
+                        .foregroundStyle(Design.ink)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: Design.Space.m)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(
+                            "http://127.0.0.1:\(String(port))/v1", forType: .string)
+                        copiedAddress = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            copiedAddress = false
+                        }
+                    } label: {
+                        Text(copiedAddress ? "COPIED" : "COPY")
+                            .font(Design.micro)
+                            .tracking(Design.microTracking)
+                            .foregroundStyle(copiedAddress ? Design.heatText : Design.inkSoft)
+                    }
+                    .buttonStyle(PressDipStyle())
+                    .accessibilityLabel("Copy gateway address")
+                }
+                .padding(.horizontal, Design.Space.tile)
+                .padding(.vertical, Design.Space.l)
+            }
         }
-        .padding(.vertical, Design.Space.s)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.tile)
         .accessibilityIdentifier("gateway-address")
     }
 
+    private func lastUsedShort(_ client: GatewayClient) -> String {
+        guard let used = client.lastUsedAt else { return "never" }
+        return Self.relative.localizedString(for: used, relativeTo: Date())
+    }
+
     private var clientRows: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack {
-                Spacer()
-                Button("Add a client…") {
-                    onAddClient()
+        VStack(alignment: .leading, spacing: 0) {
+            if !model.gatewayClients.isEmpty {
+                HStack(spacing: Design.Space.m) {
+                    Text("CLIENT")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("RECENT")
+                        .frame(width: 60, alignment: .trailing)
+                    Text("LAST USED")
+                        .frame(width: 116, alignment: .trailing)
+                    Color.clear.frame(width: 18, height: 1)
                 }
-                .buttonStyle(QuietButtonStyle())
-                .accessibilityIdentifier("gateway-add-client")
+                .font(Design.label)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+                .padding(.vertical, Design.Space.s)
             }
             ForEach(model.gatewayClients) { client in
-                HStack(spacing: Design.Space.s) {
-                    Image(systemName: "key")
-                        .font(Design.glyphInline)
-                        .foregroundStyle(Design.inkSoft)
-                    Text(client.name)
-                        .font(Design.label)
-                        .foregroundStyle(Design.ink)
-                        .lineLimit(1)
-                    Text(scopeSummary(client.scopes))
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkFaint)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                    Text(usedLabel(client))
-                        .font(Design.micro)
-                        .tracking(Design.microTracking)
-                        .foregroundStyle(Design.inkFaint)
-                    Button {
-                        model.revokeGatewayClient(id: client.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(Design.glyphInline)
-                            .foregroundStyle(Design.inkFaint)
-                    }
-                    .buttonStyle(PressDipStyle())
-                    .accessibilityLabel("Revoke \(client.name)")
-                }
+                clientLedgerRow(client)
             }
             if model.gatewayClients.isEmpty {
                 Text("Every request needs a token, loopback included. Create one per tool.")
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
+                    .padding(.vertical, Design.Space.s)
             }
+            Button("Add a client…") {
+                onAddClient()
+            }
+            .buttonStyle(QuietButtonStyle())
+            .accessibilityIdentifier("gateway-add-client")
+            .padding(.top, Design.Space.m)
         }
         .padding(.vertical, Design.Space.m)
         .id("gateway.clients")
         .background(highlightBackground("gateway.clients"))
     }
 
-    private var auditRows: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack {
-                Spacer()
-                Button("Show in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting(
-                        [model.gatewayAuditFileURL])
+    private func clientLedgerRow(_ client: GatewayClient) -> some View {
+        let recent = model.gatewayAuditEntries.filter { $0.client == client.id }.count
+        return HStack(spacing: Design.Space.m) {
+            HStack(spacing: Design.Space.s) {
+                if client.lastUsedAt != nil {
+                    AccentDot(size: 7)
+                } else {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Design.inkFaint)
+                        .frame(width: 7, height: 7)
                 }
-                .buttonStyle(QuietButtonStyle())
+                Text(client.name)
+                    .font(Design.body.weight(.medium))
+                    .foregroundStyle(Design.ink)
+                    .lineLimit(1)
             }
-            ForEach(Array(model.gatewayAuditEntries.enumerated()), id: \.offset) { _, entry in
-                HStack(spacing: Design.Space.s) {
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Text("\(recent)")
+                .font(Design.data(12))
+                .monospacedDigit()
+                .foregroundStyle(recent > 0 ? Design.ink : Design.inkFaint)
+                .frame(width: 60, alignment: .trailing)
+            Text(lastUsedShort(client))
+                .font(Design.data(11))
+                .foregroundStyle(Design.inkFaint)
+                .lineLimit(1)
+                .frame(width: 116, alignment: .trailing)
+            Button {
+                model.revokeGatewayClient(id: client.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(Design.glyphInline)
+                    .foregroundStyle(Design.inkFaint)
+            }
+            .buttonStyle(PressDipStyle())
+            .frame(width: 18)
+            .accessibilityLabel("Revoke \(client.name)")
+        }
+        .padding(.vertical, Design.Space.s)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Design.line)
+                .frame(height: Design.hairlineWidth)
+        }
+    }
+
+    private var auditRows: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(model.gatewayAuditEntries.prefix(12).enumerated()), id: \.offset) {
+                _, entry in
+                HStack(spacing: Design.Space.m) {
                     Text(Self.time.string(from: entry.ts))
                         .font(Design.data(11))
+                        .monospacedDigit()
                         .foregroundStyle(Design.inkFaint)
-                    Text(entry.outcome)
+                    Text(entry.method)
                         .font(Design.micro)
                         .tracking(Design.microTracking)
-                        .foregroundStyle(entry.outcome == "ok" ? Design.inkSoft : Design.ink)
-                    Text("\(entry.method) \(entry.route)")
-                        .font(Design.data(11))
                         .foregroundStyle(Design.inkSoft)
+                        .frame(width: 46, alignment: .leading)
+                    Text(entry.route)
+                        .font(Design.data(11))
+                        .foregroundStyle(Design.ink)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Spacer()
-                    if let name = entry.clientName {
-                        Text(name)
-                            .font(Design.label)
-                            .foregroundStyle(Design.inkFaint)
-                            .lineLimit(1)
-                    }
-                    Text(String(entry.status))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(verbatim: "→")
                         .font(Design.data(11))
                         .foregroundStyle(Design.inkFaint)
+                    Text(String(entry.status))
+                        .font(Design.data(11))
+                        .monospacedDigit()
+                        .foregroundStyle(entry.outcome == "ok" ? Design.inkSoft : Design.danger)
+                    Text("\(entry.durationMs)ms")
+                        .font(Design.data(10))
+                        .monospacedDigit()
+                        .foregroundStyle(Design.inkFaint)
+                        .frame(width: 58, alignment: .trailing)
+                }
+                .padding(.vertical, Design.Space.s)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Design.line)
+                        .frame(height: Design.hairlineWidth)
                 }
             }
             if model.gatewayAuditEntries.isEmpty {
                 Text("Requests land here — successes and refusals both.")
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
+                    .padding(.vertical, Design.Space.s)
             }
+            HStack(spacing: Design.Space.m) {
+                if model.gatewayAuditEntries.count > 12, let onShowAllRequests {
+                    Button("Show all \(model.gatewayAuditEntries.count)") {
+                        onShowAllRequests()
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+                Button("Show in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [model.gatewayAuditFileURL])
+                }
+                .buttonStyle(QuietButtonStyle())
+            }
+            .padding(.top, Design.Space.m)
         }
         .padding(.vertical, Design.Space.m)
         .id("gateway.audit")
@@ -301,7 +391,9 @@ struct GatewaySection: View {
 struct GatewayCodeBlock: View {
     let title: String
     let code: String
+    var language: String? = nil
     @State private var copied = false
+    @State private var tokens: [CodeToken] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.xs) {
@@ -327,9 +419,9 @@ struct GatewayCodeBlock: View {
                 .buttonStyle(PressDipStyle())
                 .accessibilityLabel("Copy \(title)")
             }
-            Text(code)
+            highlighted
                 .font(Design.data(11))
-                .foregroundStyle(Design.ink)
+                .lineSpacing(2.5)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -340,6 +432,39 @@ struct GatewayCodeBlock: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: Design.Radius.tile)
                         .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        }
+        .onAppear { tokens = CodeHighlighter.tokens(code, language: resolvedLanguage) }
+        .onChange(of: code) { _, newCode in
+            tokens = CodeHighlighter.tokens(newCode, language: resolvedLanguage)
+        }
+    }
+
+    private var resolvedLanguage: String? {
+        if let language { return language }
+        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return "json" }
+        if trimmed.contains("curl") || trimmed.hasPrefix("$") { return "bash" }
+        return nil
+    }
+
+    private var highlighted: Text {
+        tokens.reduce(Text(verbatim: "")) { result, token in
+            result + styled(token)
+        }
+    }
+
+    private func styled(_ token: CodeToken) -> Text {
+        switch token.kind {
+        case .plain:
+            Text(verbatim: token.text).foregroundStyle(Design.ink)
+        case .keyword:
+            Text(verbatim: token.text).foregroundStyle(Design.ink).fontWeight(.semibold)
+        case .string:
+            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
+        case .comment:
+            Text(verbatim: token.text).foregroundStyle(Design.inkFaint)
+        case .number:
+            Text(verbatim: token.text).foregroundStyle(Design.accentText)
         }
     }
 }

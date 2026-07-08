@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import HedosKernel
 import SwiftUI
 
@@ -470,11 +471,24 @@ struct VoiceSurface: View {
     private func utteranceRow(_ artifact: Artifact) -> some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
             PromptBubble(text: VoiceSurfaceModel.text(of: artifact))
-            VoiceBubble(
-                artifact: artifact,
-                clips: model.clips
-            ) {
-                model.togglePlayback(artifact)
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                voiceLabel(artifact)
+                VoiceBubble(
+                    artifact: artifact,
+                    clips: model.clips
+                ) {
+                    model.togglePlayback(artifact)
+                }
+                ArtifactTray {
+                    TrayButton(label: "Download .wav", glyph: "arrow.down.to.line") {
+                        model.download(artifact)
+                    }
+                    TrayButton(label: "Transcript", glyph: "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(
+                            VoiceSurfaceModel.text(of: artifact), forType: .string)
+                    }
+                }
             }
             .contextMenu {
                 Button("Download…") {
@@ -485,6 +499,21 @@ struct VoiceSurface: View {
                     deleting = artifact
                 }
             }
+        }
+    }
+
+    private func voiceLabel(_ artifact: Artifact) -> some View {
+        HStack(spacing: Design.Space.xs) {
+            Text(verbatim: "▸")
+                .font(Design.micro)
+                .foregroundStyle(Design.accent)
+            Text(
+                ("voice" + (VoiceSurfaceModel.voiceName(of: artifact).map { " · \($0)" } ?? ""))
+                    .uppercased()
+            )
+            .font(Design.micro)
+            .tracking(Design.microTracking)
+            .foregroundStyle(Design.inkFaint)
         }
     }
 

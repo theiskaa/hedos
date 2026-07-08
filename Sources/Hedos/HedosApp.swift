@@ -173,11 +173,11 @@ struct HedosApp: App {
 struct AboutView: View {
     var body: some View {
         VStack(spacing: 14) {
-            HeptagonMark(size: 64, color: Design.ink)
-            Text("Hedos")
-                .font(Design.plaque(26, weight: .semibold))
+            PixelKoala(size: 64, color: Design.ink)
+            HedosWordmark(unit: 6, color: Design.ink)
+                .padding(.top, Design.Space.xxs)
             Text("A home for every local model.")
-                .font(.callout)
+                .font(Design.caption)
                 .foregroundStyle(Design.inkSoft)
             Text("kernel \(Kernel.version)")
                 .font(Design.data(11))

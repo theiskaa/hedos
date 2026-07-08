@@ -71,15 +71,20 @@ struct VoiceBubble: View {
                 .foregroundStyle(Design.inkSoft)
                 .lineLimit(1)
                 .fixedSize()
-            rateChip
         }
-        .padding(.vertical, Design.Space.s)
-        .padding(.leading, Design.Space.s)
-        .padding(.trailing, Design.Space.l)
-        .background(Design.surface, in: Capsule())
-        .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .frame(maxWidth: Design.Bubble.promptMax)
+        .padding(.vertical, Design.Space.m)
+        .padding(.horizontal, Design.Space.l)
+        .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.artifact))
+        .overlay(RoundedRectangle(cornerRadius: Design.Radius.artifact).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .frame(maxWidth: 340)
         .help(VoiceSurfaceModel.voiceName(of: artifact).map { "Voice: \($0)" } ?? "Narration")
+        .contextMenu {
+            ForEach(AudioClipController.rates, id: \.self) { candidate in
+                Button(String(format: "%g× speed", candidate)) {
+                    clips.setRate(candidate)
+                }
+            }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Narration, \(durationText)")
     }
@@ -90,42 +95,13 @@ struct VoiceBubble: View {
                 .font(Design.caption.weight(.semibold))
                 .foregroundStyle(Design.paper)
                 .frame(width: 34, height: 34)
-                .background(Design.ink, in: Circle())
-                .contentShape(Circle())
+                .background(Design.ink, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         }
         .buttonStyle(PressDipStyle())
-        .inkFocusRing(Circle())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .help(isSounding ? "Pause" : isActive ? "Resume" : "Play")
         .accessibilityLabel(isSounding ? "Pause" : "Play")
-    }
-
-    private var rateChip: some View {
-        Button {
-            clips.cycleRate()
-        } label: {
-            Text(clips.rateLabel)
-                .font(Design.data(10).weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(clips.rate == 1.0 ? Design.inkSoft : Design.accentText)
-                .padding(.horizontal, Design.Space.m)
-                .padding(.vertical, Design.Space.xs)
-                .background(
-                    clips.rate == 1.0
-                        ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.accentWash),
-                    in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(PressDipStyle())
-        .fixedSize()
-        .help("Playback speed · click to cycle")
-        .contextMenu {
-            ForEach(AudioClipController.rates, id: \.self) { candidate in
-                Button(String(format: "%g×", candidate)) {
-                    clips.setRate(candidate)
-                }
-            }
-        }
-        .accessibilityLabel("Playback speed \(clips.rateLabel)")
     }
 
     private var timeText: String {
@@ -176,7 +152,7 @@ struct WavePlayerBars: View {
         let normalized = displayPeaks
         return HStack(alignment: .center, spacing: 1.5) {
             ForEach(Array(normalized.enumerated()), id: \.offset) { _, level in
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(style)
                     .frame(maxWidth: .infinity)
                     .frame(height: (0.14 + 0.86 * level) * 26)

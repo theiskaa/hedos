@@ -18,11 +18,12 @@ enum Design {
     }
 
     enum Radius {
-        static let card: CGFloat = 8
-        static let control: CGFloat = 10
-        static let bubble: CGFloat = 14
-        static let tile: CGFloat = 14
-        static let surface: CGFloat = 20
+        static var control: CGFloat { ThemeStore.shared.shape.control }
+        static var card: CGFloat { ThemeStore.shared.shape.card }
+        static var tile: CGFloat { ThemeStore.shared.shape.tile }
+        static var surface: CGFloat { ThemeStore.shared.shape.surface }
+        static var bubble: CGFloat { ThemeStore.shared.shape.bubble }
+        static var artifact: CGFloat { ThemeStore.shared.shape.artifact }
     }
 
     struct Shade {
@@ -55,9 +56,9 @@ enum Design {
 
     enum Sheet {
         static let gallery = CGSize(width: 640, height: 520)
-        static let modelDetailWidth: CGFloat = 440
-        static let modelDetailHeight: CGFloat = 560
-        static let modelRecipeHeight: CGFloat = 420
+        static let modelDetailWidth: CGFloat = 600
+        static let modelDetailHeight: CGFloat = 680
+        static let modelRecipeHeight: CGFloat = 560
         static let promptWidth: CGFloat = 500
         static let promptHeight: CGFloat = 560
         static let serverWidth: CGFloat = 480
@@ -108,7 +109,8 @@ enum Design {
         _ size: CGFloat, _ weight: Font.Weight = .regular, relativeTo style: Font.TextStyle
     ) -> Font {
         guard let family = fontBook.uiFamily else {
-            return .system(size: scaledSize(size, relativeTo: style), weight: weight)
+            return .system(
+                size: scaledSize(size, relativeTo: style), weight: weight, design: .monospaced)
         }
         return .custom(family, size: size, relativeTo: style).weight(weight)
     }
@@ -117,10 +119,20 @@ enum Design {
         _ style: Font.TextStyle, size: CGFloat, weight: Font.Weight = .regular
     ) -> Font {
         guard let family = fontBook.uiFamily else {
-            return Font.system(style).weight(weight)
+            return .system(
+                size: scaledSize(size, relativeTo: style), weight: weight, design: .monospaced)
         }
         return .custom(family, size: size, relativeTo: style).weight(weight)
     }
+
+    private static func reading(
+        _ size: CGFloat, _ weight: Font.Weight = .regular, relativeTo style: Font.TextStyle
+    ) -> Font {
+        .system(size: scaledSize(size, relativeTo: style), weight: weight)
+    }
+
+    static var readingBody: Font { reading(14, relativeTo: .body) }
+    static let readingLineSpacing: CGFloat = 4
 
     private static func mono(
         _ size: CGFloat, _ weight: Font.Weight = .regular, relativeTo style: Font.TextStyle
@@ -200,41 +212,38 @@ enum Design {
         reduceMotion ? nil : spring
     }
 
-    private enum Hex {
-        static let paper = (light: 0xF6F7F8, dark: 0x121417)
-        static let surface = (light: 0xFFFFFF, dark: 0x1A1D21)
-        static let line = (light: 0xE3E6EA, dark: 0x2A2E34)
-        static let ink = (light: 0x16191D, dark: 0xE9EDF2)
-        static let inkSoft = (light: 0x4A5158, dark: 0xA7ADB5)
-        static let inkFaint = (light: 0x6A727C, dark: 0x808893)
-        static let accent = (light: 0x2563EB, dark: 0x60A5FA)
-        static let accentText = (light: 0x1D4ED8, dark: 0x93C5FD)
-        static let shadow = 0x0B0D10
-    }
-
-    static let paper = adaptive(light: Hex.paper.light, dark: Hex.paper.dark)
-    static let surface = adaptive(light: Hex.surface.light, dark: Hex.surface.dark)
-    static let line = adaptive(light: Hex.line.light, dark: Hex.line.dark)
-    static let ink = adaptive(light: Hex.ink.light, dark: Hex.ink.dark)
-    static let inkSoft = adaptive(light: Hex.inkSoft.light, dark: Hex.inkSoft.dark)
-    static let inkFaint = adaptive(light: Hex.inkFaint.light, dark: Hex.inkFaint.dark)
+    static let paper = adaptive { $0.ground }
+    static let panel = adaptive { $0.panel }
+    static let surface = adaptive { $0.card }
+    static let surface2 = adaptive { $0.card2 }
+    static let line = adaptive { $0.line }
+    static let lineBright = adaptive { $0.lineBright }
+    static let ink = adaptive { $0.text }
+    static let inkSoft = adaptive { $0.muted }
+    static let inkFaint = adaptive { $0.faint }
     static let inkWash = ink.opacity(0.06)
-    static let accent = adaptive(light: Hex.accent.light, dark: Hex.accent.dark)
-    static let accentText = adaptive(light: Hex.accentText.light, dark: Hex.accentText.dark)
+    static let accent = adaptive { $0.accent }
+    static let accentText = adaptive { $0.accentDim }
     static let accentWash = accent.opacity(0.11)
     static let accentEdge = accent.opacity(0.25)
+    static let onAccent = adaptive { $0.onAccent }
+    static let heat = adaptive { $0.heat }
+    static let heatText = adaptive { $0.heat }
+    static let heatWash = heat.opacity(0.16)
+    static let heatEdge = heat.opacity(0.32)
+    static let danger = adaptive { $0.error }
 
     enum PreviewPalette {
-        static let lightPaper = fixed(Hex.paper.light)
-        static let lightSurface = fixed(Hex.surface.light)
-        static let lightInk = fixed(Hex.ink.light)
-        static let lightSoft = fixed(Hex.inkSoft.light)
-        static let lightAccent = fixed(Hex.accent.light)
-        static let darkPaper = fixed(Hex.paper.dark)
-        static let darkSurface = fixed(Hex.surface.dark)
-        static let darkInk = fixed(Hex.ink.dark)
-        static let darkSoft = fixed(Hex.inkSoft.dark)
-        static let darkAccent = fixed(Hex.accent.dark)
+        static let lightPaper = fixed(Theme.paper.palette.ground)
+        static let lightSurface = fixed(Theme.paper.palette.card)
+        static let lightInk = fixed(Theme.paper.palette.text)
+        static let lightSoft = fixed(Theme.paper.palette.muted)
+        static let lightAccent = fixed(Theme.paper.palette.accentDim)
+        static let darkPaper = fixed(Theme.graphite.palette.ground)
+        static let darkSurface = fixed(Theme.graphite.palette.card)
+        static let darkInk = fixed(Theme.graphite.palette.text)
+        static let darkSoft = fixed(Theme.graphite.palette.muted)
+        static let darkAccent = fixed(Theme.graphite.palette.accentDim)
     }
 
     private static func fixed(_ hex: Int) -> Color {
@@ -244,14 +253,15 @@ enum Design {
             blue: Double(hex & 0xFF) / 255)
     }
 
-    private static func adaptive(light: Int, dark: Int) -> Color {
+    private static func adaptive(_ pick: @escaping @Sendable (ThemePalette) -> Int) -> Color {
         Color(
             nsColor: NSColor(
                 name: nil,
                 dynamicProvider: { appearance in
-                    let hex =
+                    let palette =
                         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                        ? dark : light
+                        ? ThemeStore.shared.dark : ThemeStore.shared.light
+                    let hex = pick(palette)
                     return NSColor(
                         srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
                         green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -276,7 +286,7 @@ enum Design {
     static let hairlineWidth: CGFloat = 1
     static let ruleWidth: CGFloat = 2
 
-    static let shadowColor = fixed(Hex.shadow)
+    static let shadowColor = fixed(0x0B0D10)
 
     static func modalityGlyph(_ modality: Modality) -> String {
         switch modality {
@@ -296,6 +306,7 @@ enum Design {
         case .voice: "speaker.wave.2"
         case .pipelines: "point.3.connected.trianglepath.dotted"
         case .library: "square.stack.3d.up"
+        case .gateway: "network"
         case .settings: "gearshape"
         }
     }
@@ -308,6 +319,7 @@ enum Design {
         case .voice: "Voice"
         case .pipelines: "Pipelines"
         case .library: "Models"
+        case .gateway: "Gateway"
         case .settings: "Settings"
         }
     }
@@ -446,9 +458,9 @@ struct InkButtonStyle: ButtonStyle {
             .padding(.horizontal, circle ? 0 : Design.Space.xl)
             .padding(.vertical, circle ? 0 : Design.Space.s + 1)
             .frame(width: circle ? 28 : nil, height: circle ? 28 : nil)
-            .background(Design.ink, in: Capsule())
+            .background(Design.ink, in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .strokeBorder(
                         LinearGradient(
                             colors: [
@@ -472,9 +484,9 @@ struct InkButtonStyle: ButtonStyle {
                     : hovering ? Design.Elevation.buttonHover.y : Design.Elevation.button.y)
             .offset(y: configuration.isPressed ? 0 : hovering ? -1 : 0)
             .opacity(isEnabled ? 1 : 0.4)
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
             .onHover { hovering = $0 }
-            .inkFocusRing(Capsule())
+            .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
             .animation(.easeOut(duration: 0.2), value: hovering)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -518,17 +530,17 @@ struct FilterChip: View {
                 isOn
                     ? AnyShapeStyle(Design.ink)
                     : hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.surface),
-                in: Capsule())
+                in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .strokeBorder(
                         isOn ? AnyShapeStyle(.clear) : Design.hairline,
                         lineWidth: Design.hairlineWidth))
-            .contentShape(Capsule())
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(Capsule())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .animation(Design.wash, value: hovering)
         .accessibilityLabel(label)
         .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -578,9 +590,9 @@ struct TintChip: View {
         .padding(.vertical, Design.Space.xxs + 1.5)
         .background(
             live ? AnyShapeStyle(Design.accentWash) : AnyShapeStyle(Design.inkWash),
-            in: Capsule())
+            in: RoundedRectangle(cornerRadius: Design.Radius.control))
         .overlay(
-            Capsule().strokeBorder(
+            RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
                 live ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
                 lineWidth: Design.hairlineWidth))
         .accessibilityLabel(text)
@@ -713,13 +725,13 @@ struct AccentDot: View {
     var body: some View {
         ZStack {
             if !reduceMotion {
-                Circle()
-                    .stroke(Design.accent, lineWidth: Design.hairlineWidth)
+                RoundedRectangle(cornerRadius: 1)
+                    .stroke(Design.heat, lineWidth: Design.hairlineWidth)
                     .scaleEffect(pulsing ? 2.4 : 1)
                     .opacity(pulsing ? 0 : 0.8)
             }
-            Circle()
-                .fill(Design.accent)
+            RoundedRectangle(cornerRadius: 1)
+                .fill(Design.heat)
         }
         .frame(width: size, height: size)
         .onAppear {
@@ -785,13 +797,13 @@ struct SheetCloseButton: View {
                 .frame(width: 24, height: 24)
                 .background(
                     hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.cardFill),
-                    in: Circle())
-                .contentShape(Circle())
+                    in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
                 .animation(Design.wash, value: hovering)
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(Circle())
+        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .keyboardShortcut(.cancelAction)
         .accessibilityLabel("Close")
     }
@@ -905,7 +917,7 @@ struct SpeakingIndicator: View {
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<5, id: \.self) { index in
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(Design.accent)
                     .frame(width: 2.5, height: phase ? barHeight(index) : 4)
                     .animation(

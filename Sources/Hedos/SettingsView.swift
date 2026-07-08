@@ -530,7 +530,7 @@ struct SettingsDestination: Equatable {
 extension AppearanceSettings.Theme {
     var nsAppearance: NSAppearance? {
         switch self {
-        case .system: nil
+        case .system: NSAppearance(named: .darkAqua)
         case .light: NSAppearance(named: .aqua)
         case .dark: NSAppearance(named: .darkAqua)
         }
@@ -651,7 +651,7 @@ struct SettingsRoot: View {
                     expandedGroup("App", [.general, .appearance])
                     expandedGroup("Surfaces", [.chat, .voice])
                     expandedGroup("Library", [.models, .prompts])
-                    expandedGroup("System", [.gateway, .advanced])
+                    expandedGroup("System", [.advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -672,7 +672,7 @@ struct SettingsRoot: View {
                     collapsedGroup([.general, .appearance], first: true)
                     collapsedGroup([.chat, .voice])
                     collapsedGroup([.models, .prompts])
-                    collapsedGroup([.gateway, .advanced])
+                    collapsedGroup([.advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity)
@@ -1026,16 +1026,6 @@ struct SettingsRoot: View {
 
     private var runtimeRows: some View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack {
-                Spacer()
-                Button("Install a runtime…") {
-                    RuntimePicker.pick { url in
-                        installCandidate = url
-                    }
-                }
-                .buttonStyle(QuietButtonStyle())
-                .accessibilityIdentifier("runtimes-install")
-            }
             ForEach(shell.settings.installedRuntimes, id: \.id) { manifest in
                 HStack(spacing: Design.Space.s) {
                     Image(systemName: "shippingbox")
@@ -1066,6 +1056,14 @@ struct SettingsRoot: View {
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
             }
+            Button("Install a runtime…") {
+                RuntimePicker.pick { url in
+                    installCandidate = url
+                }
+            }
+            .buttonStyle(QuietButtonStyle())
+            .accessibilityIdentifier("runtimes-install")
+            .padding(.top, Design.Space.xs)
         }
         .padding(.vertical, Design.Space.m)
         .id("models.runtimes")
@@ -1075,13 +1073,6 @@ struct SettingsRoot: View {
 
     private var serverRows: some View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack {
-                Spacer()
-                Button("Add a server…") {
-                    showingAddServer = true
-                }
-                .buttonStyle(QuietButtonStyle())
-            }
             ForEach(shell.library.endpointRecords, id: \.id) { record in
                 HStack(spacing: Design.Space.s) {
                     SourceMark(kind: .endpoint, size: 14)
@@ -1114,6 +1105,11 @@ struct SettingsRoot: View {
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
             }
+            Button("Add a server…") {
+                showingAddServer = true
+            }
+            .buttonStyle(QuietButtonStyle())
+            .padding(.top, Design.Space.xs)
         }
         .padding(.vertical, Design.Space.m)
         .id("models.servers")
@@ -1130,18 +1126,6 @@ struct SettingsRoot: View {
 
     private var hfCacheRows: some View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack {
-                Spacer()
-                Button("Add…") {
-                    let shell = shell
-                    FolderRow.pickFolder { url in
-                        Task {
-                            await shell.library.addHFRoot(url)
-                        }
-                    }
-                }
-                .buttonStyle(QuietButtonStyle())
-            }
             ForEach(shell.library.hfCacheRoots, id: \.self) { path in
                 FolderRow(path: path) {
                     let shell = shell
@@ -1155,6 +1139,16 @@ struct SettingsRoot: View {
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
             }
+            Button("Add…") {
+                let shell = shell
+                FolderRow.pickFolder { url in
+                    Task {
+                        await shell.library.addHFRoot(url)
+                    }
+                }
+            }
+            .buttonStyle(QuietButtonStyle())
+            .padding(.top, Design.Space.xs)
         }
         .padding(.vertical, Design.Space.m)
         .id("models.hfCache")
@@ -1163,18 +1157,6 @@ struct SettingsRoot: View {
 
     private var foldersRows: some View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack {
-                Spacer()
-                Button("Add…") {
-                    let shell = shell
-                    FolderRow.pickFolder { url in
-                        Task {
-                            await shell.library.addFolder(url)
-                        }
-                    }
-                }
-                .buttonStyle(QuietButtonStyle())
-            }
             ForEach(shell.library.watchedFolders, id: \.self) { path in
                 FolderRow(path: path) {
                     let shell = shell
@@ -1188,6 +1170,16 @@ struct SettingsRoot: View {
                     .font(Design.label)
                     .foregroundStyle(Design.inkFaint)
             }
+            Button("Add…") {
+                let shell = shell
+                FolderRow.pickFolder { url in
+                    Task {
+                        await shell.library.addFolder(url)
+                    }
+                }
+            }
+            .buttonStyle(QuietButtonStyle())
+            .padding(.top, Design.Space.xs)
         }
         .padding(.vertical, Design.Space.m)
         .id("models.folders")
@@ -1332,19 +1324,20 @@ struct SettingsRoot: View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
             group("Theme") {
-                cardChoiceRow("appearance.theme", "Palette") {
+                cardChoiceRow("appearance.theme", "Theme") {
                     InkChoiceCard(
-                        label: "System",
-                        selected: model.appearance.theme == .system,
+                        label: "Graphite",
+                        selected: model.appearance.theme == .system
+                            || model.appearance.theme == .dark,
                         action: {
-                            model.appearance.theme = .system
+                            model.appearance.theme = .dark
                             model.saveAppearance()
                         }
                     ) {
-                        ThemePreview(variant: .system)
+                        ThemePreview(variant: .dark)
                     }
                     InkChoiceCard(
-                        label: "Light",
+                        label: "Paper",
                         selected: model.appearance.theme == .light,
                         action: {
                             model.appearance.theme = .light
@@ -1352,16 +1345,6 @@ struct SettingsRoot: View {
                         }
                     ) {
                         ThemePreview(variant: .light)
-                    }
-                    InkChoiceCard(
-                        label: "Dark",
-                        selected: model.appearance.theme == .dark,
-                        action: {
-                            model.appearance.theme = .dark
-                            model.saveAppearance()
-                        }
-                    ) {
-                        ThemePreview(variant: .dark)
                     }
                 }
             }
@@ -1372,6 +1355,7 @@ struct SettingsRoot: View {
                         selection: model.appearance.uiFont,
                         placeholder: "San Francisco",
                         accessibilityName: "app font",
+                        width: 220,
                         onSelect: { family in
                             model.appearance.uiFont = family
                             model.saveAppearance()
@@ -1383,22 +1367,12 @@ struct SettingsRoot: View {
                         selection: model.appearance.monoFont,
                         placeholder: "SF Mono",
                         accessibilityName: "mono font",
+                        width: 220,
                         onSelect: { family in
                             model.appearance.monoFont = family
                             model.saveAppearance()
                         })
                 }
-                VStack(alignment: .leading, spacing: Design.Space.xs) {
-                    Text("Sphinx of black quartz, judge my vow.")
-                        .font(Design.body)
-                        .foregroundStyle(Design.ink)
-                    Text("SAMPLE 0123456789".uppercased())
-                        .font(Design.micro)
-                        .tracking(Design.microTracking)
-                        .foregroundStyle(Design.inkFaint)
-                }
-                .padding(.vertical, Design.Space.chipX)
-                .padding(.horizontal, Design.Space.s)
             }
             group("Layout") {
                 HStack(alignment: .top, spacing: Design.Space.gutter) {
@@ -1712,10 +1686,10 @@ private struct BudgetBar: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             ZStack(alignment: .leading) {
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(Design.line)
                     .frame(height: 8)
-                Capsule()
+                RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(Design.accent)
                     .frame(
                         width: min(max(0, width * CGFloat(usedMB) / CGFloat(totalMB)), width),
@@ -1760,46 +1734,56 @@ private struct PromptCard: View {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: Design.Space.l) {
-                HStack(alignment: .center, spacing: Design.Space.l) {
-                    IconPlaque(size: 44) {
-                        Image(systemName: promptGlyph(prompt))
-                            .font(Design.glyphNav)
-                            .foregroundStyle(Design.inkSoft)
-                    }
-                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                        Text(prompt.title.isEmpty ? "Untitled" : prompt.title)
-                            .font(Design.title)
-                            .tracking(Design.tightTracking)
-                            .lineLimit(1)
-                            .foregroundStyle(Design.ink)
-                        Text(scopeLine)
-                            .font(Design.label)
-                            .foregroundStyle(Design.inkFaint)
-                    }
-                    Spacer(minLength: 0)
-                }
+            VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: Design.Space.s) {
-                    TintChip(text: promptCapabilityLabel(prompt.capability) ?? "Any surface")
-                    ForEach(prompt.placeholderNames, id: \.self) { name in
-                        TintChip(text: "{\(name)}")
-                    }
+                    Text(verbatim: "▸")
+                        .font(Design.body.weight(.semibold))
+                        .foregroundStyle(Design.accent)
+                    Text(prompt.title.isEmpty ? "Untitled" : prompt.title)
+                        .font(Design.title)
+                        .lineLimit(1)
+                        .foregroundStyle(Design.ink)
+                    Spacer(minLength: Design.Space.m)
+                    Text((promptCapabilityLabel(prompt.capability) ?? "any").uppercased())
+                        .font(Design.label)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
                 }
+                .padding(.horizontal, Design.Space.tile)
+                .padding(.vertical, Design.Space.l)
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(height: Design.hairlineWidth)
                 Text(prompt.body.isEmpty ? "No message yet." : prompt.body)
-                    .font(Design.caption)
+                    .font(Design.readingBody)
+                    .lineSpacing(2)
                     .foregroundStyle(prompt.body.isEmpty ? Design.inkFaint : Design.inkSoft)
-                    .lineLimit(2, reservesSpace: true)
+                    .lineLimit(3, reservesSpace: true)
                     .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Design.Space.tile)
+                    .background(Design.panel)
+                if !tags.isEmpty {
+                    HStack(spacing: Design.Space.l) {
+                        ForEach(tags, id: \.self) { tag in
+                            Text("#\(tag)")
+                                .font(Design.micro)
+                                .foregroundStyle(Design.inkFaint)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, Design.Space.tile)
+                    .padding(.vertical, Design.Space.m)
+                }
             }
-            .padding(Design.Space.tile)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.card))
+            .clipShape(RoundedRectangle(cornerRadius: Design.Radius.card))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                RoundedRectangle(cornerRadius: Design.Radius.card)
                     .strokeBorder(
                         hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
                         lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
             .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
@@ -1812,8 +1796,13 @@ private struct PromptCard: View {
         .accessibilityIdentifier("prompt-card-\(prompt.id)")
     }
 
-    private var scopeLine: String {
-        promptCapabilityLabel(prompt.capability).map { "\($0) only" } ?? "Any surface"
+    private var tags: [String] {
+        var result: [String] = []
+        if let capability = promptCapabilityLabel(prompt.capability) {
+            result.append(capability.lowercased())
+        }
+        result.append(contentsOf: prompt.placeholderNames)
+        return result
     }
 }
 

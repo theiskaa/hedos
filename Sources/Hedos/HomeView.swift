@@ -6,47 +6,37 @@ struct HomePane: View {
     @State private var artifacts: [Artifact] = []
 
     var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(title: "Home") {
-                if shell.library.isScanning {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                QuietIconButton(glyph: "arrow.clockwise") {
-                    Task { await shell.library.rescan() }
-                }
-                .disabled(shell.library.isScanning)
-                .help("Scan the machine again")
-                .accessibilityLabel("Rescan")
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: Design.Space.pane) {
-                    statusBlock
-                    if let failure = shell.library.errorMessage {
-                        scanFailure(failure)
-                    } else if let summary, summary.totalCount == 0 {
-                        coldStartCard
-                    } else {
-                        startCard
-                        if !shell.resident.isEmpty {
-                            warmNow
-                        }
-                        if !riverItems.isEmpty {
-                            continueRiver
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: Design.Space.pane) {
+                hero
+                if let failure = shell.library.errorMessage {
+                    scanFailure(failure)
+                } else if let summary, summary.totalCount == 0 {
+                    FirstRunDiscovery(shell: shell)
+                } else if summary == nil {
+                    lookingLine
+                } else {
+                    board
+                    if !riverItems.isEmpty {
+                        continueRiver
                     }
-                    Text("Chat ⌘1 · Images ⌘2 · Voice ⌘3 · Models ⌘4".uppercased())
-                        .font(Design.micro)
-                        .tracking(Design.microTracking)
-                        .foregroundStyle(Design.inkFaint)
                 }
-                .padding(.horizontal, Design.Space.gutter + Design.Space.m)
-                .padding(.top, Design.Space.pane)
-                .padding(.bottom, Design.Space.pane)
-                .frame(maxWidth: Design.Column.hero, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                hints
             }
+            .padding(.horizontal, Design.Space.gutter + Design.Space.m)
+            .padding(.top, Design.Space.pane + Design.Space.l)
+            .padding(.bottom, Design.Space.pane)
+            .frame(maxWidth: Design.Column.hero, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(alignment: .topTrailing) {
+            HedosLogo(size: 360, color: Design.ink)
+                .opacity(0.05)
+                .padding(.trailing, -60)
+                .padding(.top, Design.Space.gutter)
+                .allowsHitTesting(false)
+        }
+        .background(PixelGrid())
         .task {
             if shell.library.summary == nil {
                 await shell.library.rescan()
@@ -60,6 +50,201 @@ struct HomePane: View {
 
     private var summary: DiscoverySummary? {
         shell.library.summary
+    }
+
+    private var hero: some View {
+        HStack(alignment: .top, spacing: Design.Space.l) {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                HedosWordmark(unit: 9, color: Design.ink)
+                Text("A home for every local model on your machine.")
+                    .font(Design.readingBody)
+                    .foregroundStyle(Design.inkSoft)
+            }
+            Spacer(minLength: 0)
+            if shell.library.isScanning {
+                ProgressView()
+                    .controlSize(.small)
+            }
+            QuietIconButton(glyph: "arrow.clockwise") {
+                Task { await shell.library.rescan() }
+            }
+            .disabled(shell.library.isScanning)
+            .help("Scan the machine again")
+            .accessibilityLabel("Rescan")
+        }
+    }
+
+    private var hints: some View {
+        Text("Chat ⌘1 · Images ⌘2 · Voice ⌘3 · Models ⌘4".uppercased())
+            .font(Design.micro)
+            .tracking(Design.microTracking)
+            .foregroundStyle(Design.inkFaint)
+    }
+
+    private var lookingLine: some View {
+        Text("Looking around this Mac…")
+            .font(Design.title)
+            .foregroundStyle(Design.inkSoft)
+    }
+
+    private var board: some View {
+        HStack(alignment: .top, spacing: Design.Space.l) {
+            statCard
+            VStack(alignment: .leading, spacing: Design.Space.l) {
+                temperatureCard
+                warmNowCard
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statCard: some View {
+        if let summary {
+            VStack(alignment: .leading, spacing: Design.Space.xl) {
+                HStack {
+                    MicroHeader(title: "On this machine")
+                    Spacer(minLength: 0)
+                    if shell.library.isScanning {
+                        ShimmerText(text: "Scanning…".uppercased())
+                    }
+                }
+                HStack(alignment: .bottom, spacing: Design.Space.l) {
+                    PixelNumber(text: "\(summary.totalCount)", unit: 6, color: Design.ink)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("models found".uppercased())
+                            .font(Design.micro)
+                            .tracking(Design.microTracking)
+                            .foregroundStyle(Design.inkFaint)
+                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                            .font(Design.data(12))
+                            .foregroundStyle(Design.inkSoft)
+                    }
+                    Spacer(minLength: 0)
+                }
+                if shell.residencyBudgetMB > 0 {
+                    VStack(alignment: .leading, spacing: Design.Space.s) {
+                        HStack {
+                            Text("memory budget".uppercased())
+                                .font(Design.label)
+                                .tracking(Design.microTracking)
+                                .foregroundStyle(Design.inkFaint)
+                            Spacer(minLength: 0)
+                            Text(
+                                "\(DiscoverySummary.formatBytes(Int64(shell.residentUsedMB) << 20)) / \(DiscoverySummary.formatBytes(Int64(shell.residencyBudgetMB) << 20))"
+                            )
+                            .font(Design.data(10))
+                            .monospacedDigit()
+                            .foregroundStyle(Design.inkFaint)
+                        }
+                        SegmentedBar(used: residentFraction, warm: residentFraction, segments: 24)
+                            .animation(Design.spring, value: shell.residentUsedMB)
+                    }
+                }
+                systemStats
+                if let pick = Fit.recommendation(in: shell.library.records),
+                    pick.fit?.verdict != .tooLarge
+                {
+                    Button("Start chat") {
+                        shell.startChat(bound: pick)
+                    }
+                    .buttonStyle(InkButtonStyle())
+                    .accessibilityIdentifier("home-recommendation")
+                }
+            }
+            .padding(Design.Space.xl)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .surfaceCard(radius: Design.Radius.card)
+        }
+    }
+
+    private var warmNowCard: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "Warm now · \(shell.resident.count)")
+            if shell.resident.isEmpty {
+                Text("Nothing warm. Models sleep until you ask.")
+                    .font(Design.readingBody)
+                    .foregroundStyle(Design.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(shell.resident, id: \.self) { entry in
+                    HStack(spacing: Design.Space.chipX) {
+                        AccentDot()
+                        Text(residentName(entry))
+                            .font(Design.body.weight(.medium))
+                            .foregroundStyle(Design.ink)
+                            .lineLimit(1)
+                        Spacer(minLength: Design.Space.m)
+                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                            .font(Design.data(11))
+                            .monospacedDigit()
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                }
+            }
+        }
+        .padding(Design.Space.xl)
+        .frame(width: 288, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.card)
+    }
+
+    private var temperatureCard: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            HStack {
+                MicroHeader(title: "Temperature")
+                Spacer(minLength: 0)
+                Text(shell.system.thermalLabel.uppercased())
+                    .font(Design.label)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(temperatureColor)
+            }
+            HStack(alignment: .center, spacing: Design.Space.m) {
+                Text(temperatureText)
+                    .font(Design.paneTitle)
+                    .monospacedDigit()
+                    .foregroundStyle(temperatureColor)
+                Spacer(minLength: 0)
+                HStack(spacing: 3) {
+                    ForEach(0..<3, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(temperatureSegment(index))
+                            .frame(width: 10, height: 10)
+                    }
+                }
+            }
+        }
+        .padding(Design.Space.xl)
+        .frame(width: 288, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.card)
+    }
+
+    private var temperatureLevel: Int {
+        if let celsius = shell.system.temperatureC {
+            if celsius >= 80 { return 2 }
+            if celsius >= 65 { return 1 }
+            return 0
+        }
+        switch shell.system.thermal {
+        case .serious, .critical: return 2
+        case .fair: return 1
+        default: return 0
+        }
+    }
+
+    private var temperatureColor: Color {
+        switch temperatureLevel {
+        case 2: Design.danger
+        case 1: Design.heat
+        default: Design.accentText
+        }
+    }
+
+    private func temperatureSegment(_ index: Int) -> Color {
+        guard index <= temperatureLevel else { return Design.line }
+        switch index {
+        case 0: return Design.accentText
+        case 1: return Design.heat
+        default: return Design.danger
+        }
     }
 
     private var statusBlock: some View {
@@ -80,19 +265,28 @@ struct HomePane: View {
     @ViewBuilder
     private var statusLine: some View {
         if let summary, summary.totalCount > 0 {
-            HStack(alignment: .center, spacing: Design.Space.l) {
-                Text("\(counts(summary))\(warmSegment)")
-                    .font(Design.display)
-                    .tracking(Design.tightTracking)
-                    .monospacedDigit()
-                    .foregroundStyle(Design.ink)
-                    .contentTransition(.numericText())
-                    .animation(Design.spring, value: summary.totalCount)
-                    .animation(Design.spring, value: shell.resident.count)
-                if !shell.resident.isEmpty {
-                    AccentDot(size: 9)
+            HStack(alignment: .bottom, spacing: Design.Space.l) {
+                PixelNumber(text: "\(summary.totalCount)", unit: 6, color: Design.ink)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("models on this Mac".uppercased())
+                        .font(Design.micro)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
+                    HStack(spacing: Design.Space.s) {
+                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                            .font(Design.data(12))
+                            .foregroundStyle(Design.inkSoft)
+                        if !shell.resident.isEmpty {
+                            Text("· \(shell.resident.count) warm")
+                                .font(Design.data(12))
+                                .foregroundStyle(Design.heatText)
+                            AccentDot(size: 8)
+                        }
+                    }
                 }
+                Spacer(minLength: 0)
             }
+            .animation(Design.spring, value: summary.totalCount)
         } else if let summary, summary.totalCount == 0 {
             Text("Nothing on this Mac speaks yet.")
                 .font(Design.display)
@@ -115,7 +309,7 @@ struct HomePane: View {
     private var warmSegment: Text {
         guard !shell.resident.isEmpty else { return Text(verbatim: "") }
         return Text(" · \(shell.resident.count) warm")
-            .foregroundStyle(Design.accentText)
+            .foregroundStyle(Design.heatText)
     }
 
     private func scanFailure(_ failure: String) -> some View {
@@ -131,25 +325,6 @@ struct HomePane: View {
                 .frame(maxWidth: Design.Column.prose, alignment: .leading)
             Button("Scan again") {
                 Task { await shell.library.rescan() }
-            }
-            .buttonStyle(InkButtonStyle())
-        }
-        .padding(Design.Space.xxl)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .surfaceCard(radius: Design.Radius.tile)
-    }
-
-    private var coldStartCard: some View {
-        VStack(alignment: .leading, spacing: Design.Space.l) {
-            Text("Models put here by Ollama, LM Studio, or the Hugging Face cache appear on their own. For weights that live anywhere else, point Hedos at the folder.")
-                .font(Design.caption)
-                .foregroundStyle(Design.inkSoft)
-                .lineSpacing(Design.bodyLineSpacing)
-                .frame(maxWidth: Design.Column.prose, alignment: .leading)
-            Button("Watch a folder…") {
-                shell.settingsTarget = SettingsDestination(
-                    section: .models, anchor: "models.folders")
-                SettingsWindowController.shared.show(shell: shell)
             }
             .buttonStyle(InkButtonStyle())
         }
@@ -241,22 +416,14 @@ struct HomePane: View {
         }
     }
 
+    private var residentFraction: Double {
+        min(Double(shell.residentUsedMB) / Double(max(1, shell.residencyBudgetMB)), 1)
+    }
+
     private var heatBar: some View {
         HStack(spacing: Design.Space.chipX) {
-            GeometryReader { geometry in
-                let width = geometry.size.width
-                let fraction = min(
-                    Double(shell.residentUsedMB) / Double(max(1, shell.residencyBudgetMB)), 1)
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Design.line)
-                    Capsule()
-                        .fill(Design.accent)
-                        .frame(width: max(5, width * fraction))
-                }
-            }
-            .frame(height: 5)
-            .animation(Design.spring, value: shell.residentUsedMB)
+            SegmentedBar(used: residentFraction, warm: residentFraction, segments: 20)
+                .animation(Design.spring, value: shell.residentUsedMB)
             Text(
                 "\(DiscoverySummary.formatBytes(Int64(shell.residentUsedMB) << 20)) / \(DiscoverySummary.formatBytes(Int64(shell.residencyBudgetMB) << 20))"
             )
@@ -275,6 +442,48 @@ struct HomePane: View {
             return record.displayName
         }
         return entry.name
+    }
+
+    @ViewBuilder
+    private var systemStats: some View {
+        if let mem = shell.system.memory {
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                HStack(spacing: Design.Space.m) {
+                    Text("system memory".uppercased())
+                        .font(Design.label)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
+                    Spacer(minLength: 0)
+                    Text(
+                        "\(DiscoverySummary.formatBytes(Int64(mem.usedBytes))) / \(DiscoverySummary.formatBytes(Int64(mem.totalBytes)))"
+                    )
+                    .font(Design.data(10))
+                    .monospacedDigit()
+                    .foregroundStyle(Design.inkFaint)
+                }
+                SegmentedBar(used: mem.usedFraction, warm: 0, segments: 24)
+                    .animation(Design.spring, value: mem.usedBytes)
+            }
+        }
+    }
+
+    private var temperatureTag: some View {
+        HStack(spacing: Design.Space.xs) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(shell.system.runningHot ? Design.heat : Design.inkFaint)
+                .frame(width: 7, height: 7)
+            Text(temperatureText)
+                .font(Design.data(10))
+                .monospacedDigit()
+                .foregroundStyle(shell.system.runningHot ? Design.heatText : Design.inkSoft)
+        }
+    }
+
+    private var temperatureText: String {
+        if let celsius = shell.system.temperatureC {
+            return String(format: "%.0f°C", celsius)
+        }
+        return "—"
     }
 
     private enum RiverItem: Identifiable {

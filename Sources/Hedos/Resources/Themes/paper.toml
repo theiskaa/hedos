@@ -1,0 +1,34 @@
+# Paper — the shipped light theme.
+
+[meta]
+name = "Paper"
+appearance = "light"
+
+[surface]
+ground = "#E9E5DE"
+panel = "#F1EDE7"
+card = "#FBF9F5"
+card2 = "#F5F1EB"
+line = "#DBD5CB"
+line_bright = "#C4BDB1"
+
+[ink]
+text = "#211E1E"
+muted = "#6E655D"
+faint = "#9C948A"
+
+[accent]
+value = "#211E1E"
+dim = "#4B4646"
+on = "#F5F1EB"
+
+[heat]
+warm = "#9A6E22"
+error = "#A24A30"
+
+[shape]
+radius_control = 2
+radius_card = 3
+radius_artifact = 10
+unit = 16
+hairline = 1

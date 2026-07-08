@@ -63,8 +63,7 @@ struct GatewayConnectSheet: View {
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.vertical, Design.Space.l)
         }
-        .frame(width: Design.Sheet.serverWidth)
-        .frame(maxHeight: Design.Sheet.serverHeight)
+        .frame(width: 680, height: 640)
         .task {
             pipelineID = await shell.kernel.pipelines().first?.id
         }
