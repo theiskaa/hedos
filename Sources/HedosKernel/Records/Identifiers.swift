@@ -36,6 +36,7 @@ public struct SourceKind: RawRepresentable, Codable, Hashable, Sendable, Express
     public static let ollama = SourceKind(rawValue: "ollama")
     public static let huggingfaceCache = SourceKind(rawValue: "huggingface-cache")
     public static let lmStudio = SourceKind(rawValue: "lm-studio")
+    public static let builtin = SourceKind(rawValue: "builtin")
     public static let file = SourceKind(rawValue: "file")
     public static let folder = SourceKind(rawValue: "folder")
 }

@@ -77,6 +77,7 @@ final class LibraryViewModel {
             (.ollama, "Ollama"),
             (.huggingfaceCache, "Hugging Face"),
             (.lmStudio, "LM Studio"),
+            (.builtin, "Built in"),
             (.file, "Loose"),
             (.folder, "Loose"),
         ]

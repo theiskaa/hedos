@@ -21,6 +21,7 @@ public struct DiscoverySummary: Sendable {
             (.ollama, "in Ollama"),
             (.huggingfaceCache, "in the Hugging Face cache"),
             (.lmStudio, "in LM Studio"),
+            (.builtin, "built in"),
         ]
         for (kind, label) in ordered {
             if let stat = perKind[kind], stat.count > 0 {

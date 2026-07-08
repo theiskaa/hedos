@@ -81,6 +81,7 @@ public actor Kernel {
             MfluxAdapter(governor: governor),
             DiffusersAdapter(governor: governor),
             MlxLmAdapter(governor: governor),
+            AppleFoundationAdapter(),
         ]
     }
 
@@ -96,6 +97,7 @@ public actor Kernel {
             HFCacheScanner(roots: HFCacheScanner.defaultRoots(user: models.hfCacheRoots)),
             LMStudioScanner(roots: LMStudioScanner.defaultRoots()),
             LooseFileScanner(directories: looseDirectories),
+            AppleFoundationScanner(),
         ]
         let summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)

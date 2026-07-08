@@ -117,7 +117,7 @@ struct ModelsPane: View {
         var list: [ModelFacet] = [
             .all, .capability(.chat), .capability(.images), .capability(.voice),
         ]
-        let kinds: [SourceKind] = [.ollama, .huggingfaceCache, .lmStudio, .file, .folder]
+        let kinds: [SourceKind] = [.ollama, .huggingfaceCache, .lmStudio, .builtin, .file, .folder]
         for kind in kinds
         where shell.library.records.contains(where: { $0.source.kind == kind }) {
             if case .store(let existing) = list.last, Self.storeTitle(existing) == Self.storeTitle(kind) {
@@ -225,6 +225,7 @@ struct ModelsPane: View {
         case .ollama: "Ollama"
         case .huggingfaceCache: "Hugging Face"
         case .lmStudio: "LM Studio"
+        case .builtin: "Built in"
         case .file, .folder: "Loose"
         default: "Other"
         }
@@ -279,7 +280,7 @@ struct ModelCard: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(
                         record.footprintMB.map {
-                            DiscoverySummary.formatBytes(Int64($0) << 20)
+                            $0 > 0 ? DiscoverySummary.formatBytes(Int64($0) << 20) : "—"
                         } ?? "size unknown"
                     )
                     .font(Design.data(15))

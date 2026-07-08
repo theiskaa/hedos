@@ -7,6 +7,7 @@ public enum ModelFormat: String, Sendable, Hashable {
     case mlxSafetensors
     case diffusers
     case ollamaStore
+    case builtin
     case unknown
 }
 
@@ -29,6 +30,14 @@ public enum Identification {
     public static func identify(
         _ record: ModelRecord, pipelines: PipelineFamilyRegistry = .builtin
     ) -> IdentifiedModel {
+        if record.source.kind == .builtin {
+            return IdentifiedModel(
+                format: .builtin,
+                modality: .text,
+                capabilities: [.chat, .complete],
+                execution: .stream,
+                params: builtinParams)
+        }
         if record.source.kind == .ollama {
             return IdentifiedModel(
                 format: .ollamaStore,
@@ -109,6 +118,11 @@ public enum Identification {
         return IdentifiedModel(
             format: .unknown, modality: nil, capabilities: [], execution: .sync)
     }
+
+    static let builtinParams: [ParamSpec] = [
+        ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
+        ParamSpec(key: "max_tokens", type: .int, range: [.int(1), .int(4096)]),
+    ]
 
     static func diffusersPipelineClass(at url: URL) -> String? {
         guard let data = try? Data(contentsOf: url),

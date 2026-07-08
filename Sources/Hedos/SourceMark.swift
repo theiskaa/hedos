@@ -26,6 +26,7 @@ struct SourceMark: View {
         switch kind {
         case .file: "doc"
         case .folder: "folder"
+        case .builtin: "apple.logo"
         default: "shippingbox"
         }
     }
