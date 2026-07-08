@@ -59,7 +59,7 @@ public actor SidecarSupervisor {
     }
 
     private var sidecars: [String: Sidecar] = [:]
-    private var cancelWatchdogs: [String: Task<Void, Never>] = [:]
+    private var cancelWatchdogs: [String: (session: UUID, task: Task<Void, Never>)] = [:]
 
     public init() {}
 
@@ -141,22 +141,24 @@ public actor SidecarSupervisor {
         _ spec: SidecarSpec, _ control: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
+            let session = UUID()
             let task = Task {
                 do {
-                    try self.send(spec.runtimeID, control)
-                    try await self.pump(spec, into: continuation)
+                    try await self.runStream(
+                        spec, control, session: session, into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
-                await self.settleStream(spec.runtimeID)
+                await self.settleStream(spec.runtimeID, session: session)
             }
             continuation.onTermination = { termination in
                 if case .cancelled = termination {
                     if spec.cooperativeCancel {
                         Task {
                             await self.cancelStream(
-                                spec.runtimeID, grace: spec.cancelGraceTimeout)
+                                spec.runtimeID, session: session,
+                                grace: spec.cancelGraceTimeout)
                         }
                         return
                     }
@@ -167,23 +169,50 @@ public actor SidecarSupervisor {
         }
     }
 
-    private func cancelStream(_ id: String, grace: Duration) {
-        try? send(id, .object(["op": .string("cancel")]))
-        cancelWatchdogs[id]?.cancel()
-        cancelWatchdogs[id] = Task {
-            try? await Task.sleep(for: grace)
-            await self.expireCancelWatchdog(id)
-        }
+    private func runStream(
+        _ spec: SidecarSpec, _ control: JSONValue, session: UUID,
+        into continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
+    ) async throws {
+        let id = spec.runtimeID
+        await acquireExclusive(id, session: session)
+        defer { releaseExclusive(id, session: session) }
+        try Task.checkCancellation()
+        try send(id, control)
+        markJobOpSent(id, session: session)
+        try await pump(spec, into: continuation)
     }
 
-    private func expireCancelWatchdog(_ id: String) {
-        guard cancelWatchdogs[id] != nil, !Task.isCancelled else { return }
+    private func cancelStream(_ id: String, session: UUID, grace: Duration) {
+        guard let sidecar = sidecars[id], sidecar.busy,
+            sidecar.jobSession == session, sidecar.jobOpSent
+        else { return }
+        try? send(id, .object(["op": .string("cancel")]))
+        cancelWatchdogs[id]?.task.cancel()
+        cancelWatchdogs[id] = (
+            session,
+            Task {
+                try? await Task.sleep(for: grace)
+                await self.expireCancelWatchdog(id, session: session)
+            }
+        )
+    }
+
+    private func expireCancelWatchdog(_ id: String, session: UUID) {
         cancelWatchdogs[id] = nil
+        guard !Task.isCancelled, let sidecar = sidecars[id], sidecar.busy,
+            sidecar.jobSession == session
+        else { return }
         kill(id)
     }
 
-    private func settleStream(_ id: String) {
-        cancelWatchdogs[id]?.cancel()
+    private func settleStream(_ id: String, session: UUID) {
+        guard let watchdog = cancelWatchdogs[id], watchdog.session == session else { return }
+        watchdog.task.cancel()
+        cancelWatchdogs[id] = nil
+    }
+
+    private func clearWatchdog(_ id: String) {
+        cancelWatchdogs[id]?.task.cancel()
         cancelWatchdogs[id] = nil
     }
 
@@ -423,6 +452,7 @@ public actor SidecarSupervisor {
 
     public func shutdown(_ id: String) async {
         guard let sidecar = sidecars[id] else { return }
+        clearWatchdog(id)
         if sidecar.process.isRunning {
             try? send(id, .object(["op": .string("shutdown")]))
             for _ in 0..<30 where sidecar.process.isRunning {
@@ -447,6 +477,7 @@ public actor SidecarSupervisor {
     }
 
     private func kill(_ id: String) {
+        clearWatchdog(id)
         if let sidecar = sidecars[id] {
             if sidecar.process.isRunning { sidecar.process.terminate() }
             if let waiter = sidecar.waiter {

@@ -85,15 +85,14 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
                         manifest: adapter.manifest
                     ) { continuation.yield(.status($0)) }
                     let spec = try adapter.spec(record: record, envDir: envDir)
-                    try await adapter.ensureRunning(record, spec: spec) {
-                        continuation.yield(.status($0))
-                    }
                     var control: [String: JSONValue] = ["op": .string(capability.rawValue)]
                     if case .object(let fields) = payload {
                         for (key, value) in fields { control[key] = value }
                     }
                     let producer = GPUProducer.generation(modelID: record.id)
-                    await governor.gate.acquire(producer)
+                    try await adapter.acquireRunning(record, spec: spec, producer: producer) {
+                        continuation.yield(.status($0))
+                    }
                     do {
                         let stream = await adapter.supervisor.request(spec, .object(control))
                         for try await chunk in stream {
@@ -134,15 +133,14 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
                         manifest: adapter.manifest
                     ) { continuation.yield(.status($0)) }
                     let spec = try adapter.spec(record: record, envDir: envDir)
-                    try await adapter.ensureRunning(record, spec: spec) {
-                        continuation.yield(.status($0))
-                    }
                     var control: [String: JSONValue] = ["op": .string(capability.rawValue)]
                     if case .object(let fields) = payload {
                         for (key, value) in fields { control[key] = value }
                     }
                     let producer = GPUProducer.job(modelID: record.id)
-                    await governor.gate.acquire(producer)
+                    try await adapter.acquireRunning(record, spec: spec, producer: producer) {
+                        continuation.yield(.status($0))
+                    }
                     do {
                         let stream = await adapter.supervisor.jobRequest(spec, .object(control))
                         for try await event in stream {
@@ -163,8 +161,8 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
         }
     }
 
-    private func ensureRunning(
-        _ record: ModelRecord, spec: SidecarSpec,
+    private func acquireRunning(
+        _ record: ModelRecord, spec: SidecarSpec, producer: GPUProducer,
         status: @escaping @Sendable (String) -> Void
     ) async throws {
         let supervisor = supervisor
@@ -195,9 +193,10 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
                 ) {
                     await supervisor.shutdown(spec.runtimeID)
                 }
-                return
             }
-            return
+            await governor.gate.acquire(producer)
+            if await supervisor.isRunning(spec.runtimeID) { return }
+            await governor.gate.release(producer)
         }
     }
 }

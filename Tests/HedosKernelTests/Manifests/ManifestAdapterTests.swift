@@ -202,6 +202,36 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     }
 }
 
+@Test func commandAdapterSurvivesVerboseStderr() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let record = try xyzRecord(in: dir)
+    let script = dir.appendingPathComponent("fake_noisy.py")
+    try Data(
+        """
+        import sys
+        sys.stderr.write("warning line\\n" * 20000)
+        sys.stderr.flush()
+        print("final answer")
+        """.utf8
+    ).write(to: script)
+
+    let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
+    defer {
+        try? FileManager.default.removeItem(at: Registry.defaultDirectory()
+            .appendingPathComponent("workdirs/\(ManifestSupport.slug(manifest.id))"))
+    }
+    let adapter = ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+
+    var text = ""
+    for try await chunk in adapter.invoke(
+        pinned(record, to: manifest.id), .chat, payload: .object([:]))
+    {
+        if case .text(let delta) = chunk { text += delta }
+    }
+    #expect(text.contains("final answer"))
+}
+
 @Test func unapprovedInvokeRefusesWithConsentHint() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

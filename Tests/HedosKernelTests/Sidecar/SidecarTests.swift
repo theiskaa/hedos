@@ -174,6 +174,59 @@ private func fakeSidecarSpec(
     await supervisor.shutdownAll()
 }
 
+@Test func concurrentStreamRequestsSerializeWithoutFrameCorruption() async throws {
+    let spec = fakeSidecarSpec()
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    async let firstFrames: Int = {
+        var count = 0
+        let stream = await supervisor.request(spec, chatControl("alpha"))
+        for try await chunk in stream {
+            if case .text = chunk { count += 1 }
+        }
+        return count
+    }()
+    async let secondFrames: Int = {
+        var count = 0
+        let stream = await supervisor.request(spec, chatControl("bravo"))
+        for try await chunk in stream {
+            if case .text = chunk { count += 1 }
+        }
+        return count
+    }()
+
+    let (first, second) = try await (firstFrames, secondFrames)
+    #expect(first == 3)
+    #expect(second == 3)
+    #expect(await supervisor.isRunning(spec.runtimeID))
+    await supervisor.shutdownAll()
+}
+
+@Test func cooperativeCancelWatchdogDoesNotKillNextRequest() async throws {
+    let spec = fakeSidecarSpec(cooperativeCancel: true, grace: .milliseconds(300))
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let cancelled = Task {
+        let stream = await supervisor.request(spec, chatControl("slow"))
+        for try await chunk in stream {
+            if case .text = chunk { break }
+        }
+    }
+    _ = await cancelled.result
+
+    var deltas: [String] = []
+    let second = await supervisor.request(spec, chatControl("after"))
+    for try await chunk in second {
+        if case .text(let delta) = chunk { deltas.append(delta) }
+    }
+    #expect(deltas.joined() == "after!")
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(await supervisor.isRunning(spec.runtimeID))
+    await supervisor.shutdownAll()
+}
+
 private func chatControl(_ content: String) -> JSONValue {
     .object([
         "op": .string("chat"),

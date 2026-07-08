@@ -148,19 +148,47 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+
+        let drain = PipeDrain(stdout: stdout, stderr: stderr)
         try process.run()
-
-        let outputData = try stdout.fileHandleForReading.readToEnd() ?? Data()
-        let errorData = try stderr.fileHandleForReading.readToEnd() ?? Data()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let tail = String(decoding: errorData, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .suffix(400)
-            throw KernelError.runtimeFailed(
-                "\(id) exited with status \(process.terminationStatus): \(tail)")
+        return try await withTaskCancellationHandler {
+            let (outputData, errorData) = await drain.collect()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                let tail = String(decoding: errorData, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .suffix(400)
+                throw KernelError.runtimeFailed(
+                    "\(id) exited with status \(process.terminationStatus): \(String(tail))")
+            }
+            return (String(decoding: outputData, as: UTF8.self), outputs)
+        } onCancel: {
+            if process.isRunning { process.terminate() }
         }
-        return (String(decoding: outputData, as: UTF8.self), outputs)
+    }
+}
+
+private final class PipeDrain: @unchecked Sendable {
+    private let stdout: Pipe
+    private let stderr: Pipe
+
+    init(stdout: Pipe, stderr: Pipe) {
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+
+    func collect() async -> (stdout: Data, stderr: Data) {
+        async let out = read(stdout)
+        async let err = read(stderr)
+        return (await out, await err)
+    }
+
+    private func read(_ pipe: Pipe) async -> Data {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
+                continuation.resume(returning: data)
+            }
+        }
     }
 }

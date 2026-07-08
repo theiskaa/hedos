@@ -107,6 +107,29 @@ private func endpointRecord(port: Int, model: String = "fake-chat-1") -> ModelRe
     #expect(
         OpenAIEndpointAdapter.normalizedBase("http://x:11434/V1")
             == "http://x:11434")
-    #expect(OpenAIEndpointAdapter.account(for: "http://127.0.0.1:11434") == "127.0.0.1:11434")
-    #expect(OpenAIEndpointAdapter.account(for: "https://server.local") == "server.local")
+    #expect(
+        OpenAIEndpointAdapter.account(for: "http://127.0.0.1:11434")
+            == "http://127.0.0.1:11434")
+    #expect(
+        OpenAIEndpointAdapter.account(for: "http://127.0.0.1:11434/v1/")
+            == "http://127.0.0.1:11434")
+    #expect(
+        OpenAIEndpointAdapter.account(for: "http://host:8080")
+            != OpenAIEndpointAdapter.account(for: "https://host:8080"))
+}
+
+@Test func removingOneSchemeKeepsSiblingSchemeKey() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let secrets = InMemorySecretStore()
+    let kernel = Kernel(directory: dir, secrets: secrets)
+    try secrets.set("plain-key", account: "http://host:8080")
+    try secrets.set("tls-key", account: "https://host:8080")
+
+    let plain = try await kernel.registerEndpoint(baseURL: "http://host:8080", model: "a")
+    _ = try await kernel.registerEndpoint(baseURL: "https://host:8080", model: "b")
+
+    try await kernel.removeEndpoint(plain.id)
+    #expect(try secrets.get(account: "http://host:8080") == nil)
+    #expect(try secrets.get(account: "https://host:8080") == "tls-key")
 }

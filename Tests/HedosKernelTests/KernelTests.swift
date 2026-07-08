@@ -66,7 +66,7 @@ import Testing
     defer { try? FileManager.default.removeItem(at: dir) }
     let secrets = InMemorySecretStore()
     let kernel = Kernel(directory: dir, secrets: secrets)
-    try secrets.set("sk-live", account: "127.0.0.1:9999")
+    try secrets.set("sk-live", account: "http://127.0.0.1:9999")
 
     let first = try await kernel.registerEndpoint(
         baseURL: "http://127.0.0.1:9999", model: "alpha")
@@ -74,10 +74,10 @@ import Testing
         baseURL: "http://127.0.0.1:9999", model: "beta")
 
     try await kernel.removeEndpoint(first.id)
-    #expect(try secrets.get(account: "127.0.0.1:9999") == "sk-live")
+    #expect(try secrets.get(account: "http://127.0.0.1:9999") == "sk-live")
 
     try await kernel.removeEndpoint(second.id)
-    #expect(try secrets.get(account: "127.0.0.1:9999") == nil)
+    #expect(try secrets.get(account: "http://127.0.0.1:9999") == nil)
 }
 
 @Test func endpointRecordsSurviveDiscoverUntouched() async throws {

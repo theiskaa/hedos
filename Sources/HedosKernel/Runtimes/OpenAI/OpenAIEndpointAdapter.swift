@@ -27,11 +27,7 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
     }
 
     public static func account(for base: String) -> String {
-        guard let url = URL(string: normalizedBase(base)), let host = url.host else {
-            return normalizedBase(base)
-        }
-        let port = url.port.map { ":\($0)" } ?? ""
-        return "\(host)\(port)"
+        normalizedBase(base)
     }
 
     public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {

@@ -94,19 +94,18 @@ def main():
         if op not in ("chat", "complete"):
             continue
 
-        if op == "chat":
-            prompt = tokenizer.apply_chat_template(
-                request.get("messages", []), add_generation_prompt=True
-            )
-        else:
-            prompt = request.get("prompt", "")
-        max_tokens = int(request.get("max_tokens", 4096))
-
         started = time.monotonic()
         cancelled = False
         shutdown_requested = False
         last = None
         try:
+            if op == "chat":
+                prompt = tokenizer.apply_chat_template(
+                    request.get("messages", []), add_generation_prompt=True
+                )
+            else:
+                prompt = request.get("prompt", "")
+            max_tokens = int(request.get("max_tokens", 4096))
             send_json({"event": "begin"})
             for response in stream_generate(
                 model, tokenizer, prompt,

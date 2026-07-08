@@ -174,32 +174,27 @@ def main():
         if op != "image":
             continue
 
-        prompt = request.get("prompt", "")
-        steps = max(1, int(request.get("steps", 2)))
-        guidance = float(request.get("guidance", 0.0))
-        size = str(request.get("size", "1024x1024"))
-        seed = request.get("seed")
-        seed = int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little")
-        try:
-            width, height = (int(part) for part in size.split("x"))
-        except ValueError:
-            send_json({"event": "error", "message": f"size {size} is not WIDTHxHEIGHT"})
-            continue
-
         started = time.monotonic()
-        emitter = StepEmitter(steps, torch, Image)
-        options = {
-            "prompt": prompt,
-            "num_inference_steps": steps,
-            "guidance_scale": guidance,
-            "width": width,
-            "height": height,
-            "generator": torch.Generator("mps").manual_seed(seed),
-            "output_type": "pil",
-        }
-        if supports_callback:
-            options["callback_on_step_end"] = emitter
         try:
+            prompt = request.get("prompt", "")
+            steps = max(1, int(request.get("steps", 2)))
+            guidance = float(request.get("guidance", 0.0))
+            size = str(request.get("size", "1024x1024"))
+            seed = request.get("seed")
+            seed = int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little")
+            width, height = (int(part) for part in size.split("x"))
+            emitter = StepEmitter(steps, torch, Image)
+            options = {
+                "prompt": prompt,
+                "num_inference_steps": steps,
+                "guidance_scale": guidance,
+                "width": width,
+                "height": height,
+                "generator": torch.Generator("mps").manual_seed(seed),
+                "output_type": "pil",
+            }
+            if supports_callback:
+                options["callback_on_step_end"] = emitter
             send_json({"event": "begin"})
             result = pipe(**options)
             if emitter.cancelled:
