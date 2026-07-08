@@ -88,8 +88,10 @@ import Testing
     #expect(destination.hasSuffix(try EnvironmentManager.lockHash(lockA)))
 }
 
-private func fakeSidecarSpec(mode: String = "normal", idle: Duration = .seconds(120)) -> SidecarSpec
-{
+private func fakeSidecarSpec(
+    mode: String = "normal", idle: Duration = .seconds(120),
+    cooperativeCancel: Bool = false, grace: Duration = .seconds(10)
+) -> SidecarSpec {
     let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .appendingPathComponent("FakeSidecar.py")
@@ -98,7 +100,9 @@ private func fakeSidecarSpec(mode: String = "normal", idle: Duration = .seconds(
         executable: URL(fileURLWithPath: "/usr/bin/env"),
         arguments: ["python3", script.path, mode],
         readyTimeout: .seconds(15),
-        idleTimeout: idle)
+        idleTimeout: idle,
+        cooperativeCancel: cooperativeCancel,
+        cancelGraceTimeout: grace)
 }
 
 @Test func supervisorStreamsAudioFromFakeSidecar() async throws {
@@ -167,6 +171,130 @@ private func fakeSidecarSpec(mode: String = "normal", idle: Duration = .seconds(
         if case .audio = chunk { frames += 1 }
     }
     #expect(frames == 3)
+    await supervisor.shutdownAll()
+}
+
+private func chatControl(_ content: String) -> JSONValue {
+    .object([
+        "op": .string("chat"),
+        "messages": .array([
+            .object(["role": .string("user"), "content": .string(content)])
+        ]),
+    ])
+}
+
+@Test func pumpParsesTokenCountsFromChatDoneEvent() async throws {
+    let spec = fakeSidecarSpec()
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    var deltas: [String] = []
+    var stats: GenerationStats?
+    let stream = await supervisor.request(spec, chatControl("abcdef"))
+    for try await chunk in stream {
+        switch chunk {
+        case .text(let delta): deltas.append(delta)
+        case .done(let s): stats = s
+        default: break
+        }
+    }
+    #expect(deltas.joined() == "abcdef!")
+    #expect(stats?.promptTokens == 1)
+    #expect(stats?.completionTokens == 3)
+    #expect(stats?.durationMs == 200)
+
+    var speakStats: GenerationStats?
+    let speak = await supervisor.request(spec, .object(["op": .string("speak")]))
+    for try await chunk in speak {
+        if case .done(let s) = chunk { speakStats = s }
+    }
+    #expect(speakStats?.durationMs == 120)
+    #expect(speakStats?.promptTokens == nil)
+    #expect(speakStats?.completionTokens == nil)
+    await supervisor.shutdownAll()
+}
+
+@Test func cooperativeCancelKeepsSidecarWarmAndServesNextRequest() async throws {
+    let spec = fakeSidecarSpec(cooperativeCancel: true)
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let consumer = Task {
+        let stream = await supervisor.request(spec, chatControl("slow"))
+        for try await chunk in stream {
+            if case .text = chunk { break }
+        }
+    }
+    _ = await consumer.result
+
+    var settled = false
+    for _ in 0..<40 {
+        try await Task.sleep(for: .milliseconds(50))
+        if await supervisor.isRunning(spec.runtimeID) {
+            settled = true
+        } else {
+            settled = false
+            break
+        }
+    }
+    #expect(settled)
+
+    var deltas: [String] = []
+    let second = await supervisor.request(spec, chatControl("again"))
+    for try await chunk in second {
+        if case .text(let delta) = chunk { deltas.append(delta) }
+    }
+    #expect(deltas.joined() == "again!")
+    await supervisor.shutdownAll()
+}
+
+@Test func cooperativeCancelWithoutAckKillsAfterGrace() async throws {
+    let spec = fakeSidecarSpec(cooperativeCancel: true, grace: .milliseconds(400))
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let consumer = Task {
+        let stream = await supervisor.request(spec, chatControl("deaf"))
+        for try await chunk in stream {
+            if case .status = chunk { break }
+        }
+    }
+    _ = await consumer.result
+
+    var dead = false
+    for _ in 0..<40 {
+        try await Task.sleep(for: .milliseconds(50))
+        if await !supervisor.isRunning(spec.runtimeID) {
+            dead = true
+            break
+        }
+    }
+    #expect(dead)
+    await supervisor.shutdownAll()
+}
+
+@Test func defaultSpecStillKillsOnCancel() async throws {
+    let spec = fakeSidecarSpec()
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let consumer = Task {
+        let stream = await supervisor.request(spec, chatControl("slow"))
+        for try await chunk in stream {
+            if case .text = chunk { break }
+        }
+    }
+    _ = await consumer.result
+
+    var dead = false
+    for _ in 0..<40 {
+        try await Task.sleep(for: .milliseconds(50))
+        if await !supervisor.isRunning(spec.runtimeID) {
+            dead = true
+            break
+        }
+    }
+    #expect(dead)
     await supervisor.shutdownAll()
 }
 

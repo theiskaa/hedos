@@ -13,7 +13,8 @@ public struct HFCacheScanner: StoreScanner {
     }
 
     public static func defaultRoots(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        user: [String] = []
     ) -> [URL] {
         var candidates: [URL] = []
         if let cache = environment["HF_HUB_CACHE"], !cache.isEmpty {
@@ -27,6 +28,18 @@ public struct HFCacheScanner: StoreScanner {
         candidates.append(
             FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".cache/huggingface/hub"))
+        for path in user {
+            let base = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            let hub = base.appendingPathComponent("hub")
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: hub.path, isDirectory: &isDirectory),
+                isDirectory.boolValue
+            {
+                candidates.append(hub)
+            } else {
+                candidates.append(base)
+            }
+        }
 
         var seen = Set<String>()
         return candidates.filter { seen.insert($0.standardizedFileURL.path).inserted }

@@ -144,3 +144,24 @@ import Testing
     #expect(folder.modalityHint == .text)
     #expect(folder.footprintBytes >= 1024)
 }
+
+@Test func userHFRootsJoinDefaultRootsWithHubDetectionAndDedup() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let withHub = dir.appendingPathComponent("home-style")
+    try FileManager.default.createDirectory(
+        at: withHub.appendingPathComponent("hub"), withIntermediateDirectories: true)
+    let bare = dir.appendingPathComponent("bare-hub")
+    try FileManager.default.createDirectory(at: bare, withIntermediateDirectories: true)
+
+    let roots = HFCacheScanner.defaultRoots(
+        environment: [:], user: [withHub.path, bare.path, withHub.path])
+    let paths = roots.map(\.path)
+    #expect(paths.contains(withHub.appendingPathComponent("hub").path))
+    #expect(paths.contains(bare.path))
+    #expect(paths.filter { $0 == withHub.appendingPathComponent("hub").path }.count == 1)
+
+    let envRoots = HFCacheScanner.defaultRoots(
+        environment: ["HF_HOME": withHub.path], user: [withHub.path])
+    #expect(envRoots.filter { $0.path == withHub.appendingPathComponent("hub").path }.count == 1)
+}

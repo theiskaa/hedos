@@ -77,6 +77,44 @@ while True:
         send_json({"event": "text", "text": f"heard {count} samples"})
         send_json({"event": "text", "text": " and understood"})
         send_json({"event": "done", "seconds": count / 16000.0})
+    if op == "chat":
+        messages = request.get("messages", [])
+        content = messages[-1].get("content", "") if messages else ""
+        if content == "fail":
+            send_json({"event": "error", "message": "the model exploded"})
+            continue
+        send_json({"event": "begin"})
+        if content == "deaf":
+            time.sleep(5)
+            send_json({"event": "done", "seconds": 5.0})
+            continue
+        if content == "slow":
+            cancelled = False
+            for i in range(20):
+                send_json({"event": "text", "text": f"token{i} "})
+                time.sleep(0.05)
+                if select.select([0], [], [], 0)[0]:
+                    inner = read_frame()
+                    if inner is None:
+                        sys.exit(0)
+                    if json.loads(inner[1]).get("op") == "cancel":
+                        cancelled = True
+                        break
+            if cancelled:
+                send_json({"event": "cancelled"})
+                continue
+            send_json({"event": "done", "seconds": 1.0})
+            continue
+        for part in [content[: len(content) // 2], content[len(content) // 2 :], "!"]:
+            send_json({"event": "text", "text": part})
+        send_json(
+            {
+                "event": "done",
+                "seconds": 0.2,
+                "prompt_tokens": len(messages),
+                "completion_tokens": 3,
+            }
+        )
     if op == "image":
         if request.get("prompt") == "fail":
             send_json({"event": "error", "message": "the pipeline exploded"})

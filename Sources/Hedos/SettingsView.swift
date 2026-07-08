@@ -46,6 +46,9 @@ enum SettingsIndex {
             id: "models.folders", section: "Models", title: "Watched folders",
             keywords: ["folder", "scan", "discovery", "watch"]),
         .init(
+            id: "models.hfCache", section: "Models", title: "Hugging Face caches",
+            keywords: ["hf", "hugging", "face", "cache", "hub", "home", "huggingface"]),
+        .init(
             id: "chat.prompt", section: "Chat", title: "Default system prompt",
             keywords: ["system", "prompt", "instructions"]),
         .init(
@@ -839,6 +842,9 @@ struct SettingsRoot: View {
             group("Watched folders") {
                 foldersRows
             }
+            group("Hugging Face caches") {
+                hfCacheRows
+            }
         }
     }
 
@@ -848,6 +854,39 @@ struct SettingsRoot: View {
 
     private var budgetBar: some View {
         BudgetBar(shell: shell)
+    }
+
+    private var hfCacheRows: some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            HStack {
+                Spacer()
+                Button("Add…") {
+                    let shell = shell
+                    FolderRow.pickFolder { url in
+                        Task {
+                            await shell.library.addHFRoot(url)
+                        }
+                    }
+                }
+                .buttonStyle(QuietButtonStyle())
+            }
+            ForEach(shell.library.hfCacheRoots, id: \.self) { path in
+                FolderRow(path: path) {
+                    let shell = shell
+                    Task {
+                        await shell.library.removeHFRoot(path)
+                    }
+                }
+            }
+            if shell.library.hfCacheRoots.isEmpty {
+                Text("Standard locations and HF_HOME are always scanned.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+        }
+        .padding(.vertical, Design.Space.m)
+        .id("models.hfCache")
+        .background(highlightBackground("models.hfCache"))
     }
 
     private var foldersRows: some View {

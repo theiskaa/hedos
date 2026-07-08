@@ -8,6 +8,8 @@ public struct SidecarSpec: Sendable {
     public var workingDirectory: URL?
     public var readyTimeout: Duration
     public var idleTimeout: Duration
+    public var cooperativeCancel: Bool
+    public var cancelGraceTimeout: Duration
 
     public init(
         runtimeID: String,
@@ -16,7 +18,9 @@ public struct SidecarSpec: Sendable {
         environment: [String: String] = [:],
         workingDirectory: URL? = nil,
         readyTimeout: Duration = .seconds(180),
-        idleTimeout: Duration = .seconds(120)
+        idleTimeout: Duration = .seconds(120),
+        cooperativeCancel: Bool = false,
+        cancelGraceTimeout: Duration = .seconds(10)
     ) {
         self.runtimeID = runtimeID
         self.executable = executable
@@ -25,6 +29,8 @@ public struct SidecarSpec: Sendable {
         self.workingDirectory = workingDirectory
         self.readyTimeout = readyTimeout
         self.idleTimeout = idleTimeout
+        self.cooperativeCancel = cooperativeCancel
+        self.cancelGraceTimeout = cancelGraceTimeout
     }
 }
 
@@ -53,6 +59,7 @@ public actor SidecarSupervisor {
     }
 
     private var sidecars: [String: Sidecar] = [:]
+    private var cancelWatchdogs: [String: Task<Void, Never>] = [:]
 
     public init() {}
 
@@ -142,14 +149,42 @@ public actor SidecarSupervisor {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+                await self.settleStream(spec.runtimeID)
             }
             continuation.onTermination = { termination in
                 if case .cancelled = termination {
+                    if spec.cooperativeCancel {
+                        Task {
+                            await self.cancelStream(
+                                spec.runtimeID, grace: spec.cancelGraceTimeout)
+                        }
+                        return
+                    }
                     Task { await self.kill(spec.runtimeID) }
                 }
                 task.cancel()
             }
         }
+    }
+
+    private func cancelStream(_ id: String, grace: Duration) {
+        try? send(id, .object(["op": .string("cancel")]))
+        cancelWatchdogs[id]?.cancel()
+        cancelWatchdogs[id] = Task {
+            try? await Task.sleep(for: grace)
+            await self.expireCancelWatchdog(id)
+        }
+    }
+
+    private func expireCancelWatchdog(_ id: String) {
+        guard cancelWatchdogs[id] != nil, !Task.isCancelled else { return }
+        cancelWatchdogs[id] = nil
+        kill(id)
+    }
+
+    private func settleStream(_ id: String) {
+        cancelWatchdogs[id]?.cancel()
+        cancelWatchdogs[id] = nil
     }
 
     public func jobRequest(
@@ -291,8 +326,15 @@ public actor SidecarSupervisor {
                 case "done":
                     let seconds = value.objectValue?["seconds"]?.doubleValue
                     continuation.yield(
-                        .done(GenerationStats(durationMs: seconds.map { Int($0 * 1000) })))
+                        .done(
+                            GenerationStats(
+                                promptTokens: value.objectValue?["prompt_tokens"]?.intValue,
+                                completionTokens: value.objectValue?["completion_tokens"]?
+                                    .intValue,
+                                durationMs: seconds.map { Int($0 * 1000) })))
                     return
+                case "cancelled":
+                    throw CancellationError()
                 case "error":
                     throw KernelError.runtimeFailed(
                         value.objectValue?["message"]?.stringValue ?? "sidecar error")

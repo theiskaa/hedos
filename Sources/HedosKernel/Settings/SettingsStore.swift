@@ -89,4 +89,26 @@ public actor SettingsStore {
         }
         return settings
     }
+
+    @discardableResult
+    public func addHFCacheRoot(_ path: String) throws -> ModelsSettings {
+        var settings = models()
+        let normalized = (path as NSString).expandingTildeInPath
+        if !settings.hfCacheRoots.contains(normalized) {
+            settings.hfCacheRoots.append(normalized)
+            try save(settings)
+        }
+        return settings
+    }
+
+    @discardableResult
+    public func removeHFCacheRoot(_ path: String) throws -> ModelsSettings {
+        var settings = models()
+        let normalized = (path as NSString).expandingTildeInPath
+        if settings.hfCacheRoots.contains(normalized) {
+            settings.hfCacheRoots.removeAll { $0 == normalized }
+            try save(settings)
+        }
+        return settings
+    }
 }

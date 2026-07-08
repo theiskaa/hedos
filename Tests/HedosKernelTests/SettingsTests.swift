@@ -339,3 +339,26 @@ private func waitUntil(
         defaultWarmWindow: .seconds(300))
     #expect(await governor.defaultBudgetMB == 26214)
 }
+
+@Test func hfCacheRootsRoundTripAndDecodeLeniently() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SettingsStore(directory: dir)
+
+    _ = try await store.addHFCacheRoot("~/models/huggingface")
+    _ = try await store.addHFCacheRoot("~/models/huggingface")
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    #expect(await store.models().hfCacheRoots == ["\(home)/models/huggingface"])
+
+    let reloaded = SettingsStore(directory: dir)
+    #expect(await reloaded.models().hfCacheRoots == ["\(home)/models/huggingface"])
+
+    _ = try await reloaded.removeHFCacheRoot("~/models/huggingface")
+    #expect(await reloaded.models().hfCacheRoots.isEmpty)
+
+    let legacy = dir.appendingPathComponent("settings/models.json")
+    try Data(#"{"watchedFolders": ["/tmp/x"]}"#.utf8).write(to: legacy)
+    let lenient = SettingsStore(directory: dir)
+    #expect(await lenient.models().hfCacheRoots.isEmpty)
+    #expect(await lenient.models().watchedFolders == ["/tmp/x"])
+}

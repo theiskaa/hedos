@@ -80,19 +80,20 @@ public actor Kernel {
             MlxAudioAdapter(governor: governor),
             MfluxAdapter(governor: governor),
             DiffusersAdapter(governor: governor),
+            MlxLmAdapter(governor: governor),
         ]
     }
 
     public func discover() async throws -> DiscoverySummary {
         await applyStoredPolicies()
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let watched = await settings.models().watchedFolders
+        let models = await settings.models()
         let looseDirectories =
             LooseFileScanner.defaultDirectories()
-            + watched.map { URL(fileURLWithPath: $0, isDirectory: true) }
+            + models.watchedFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
         let scanners: [any StoreScanner] = [
             OllamaStoreScanner(root: home.appendingPathComponent(".ollama/models")),
-            HFCacheScanner(roots: HFCacheScanner.defaultRoots()),
+            HFCacheScanner(roots: HFCacheScanner.defaultRoots(user: models.hfCacheRoots)),
             LMStudioScanner(roots: LMStudioScanner.defaultRoots()),
             LooseFileScanner(directories: looseDirectories),
         ]
@@ -115,6 +116,18 @@ public actor Kernel {
 
     public func removeWatchedFolder(_ path: String) async throws {
         _ = try await settings.removeWatchedFolder(path)
+    }
+
+    public func hfCacheRoots() async throws -> [String] {
+        await settings.models().hfCacheRoots
+    }
+
+    public func addHFCacheRoot(_ path: String) async throws {
+        _ = try await settings.addHFCacheRoot(path)
+    }
+
+    public func removeHFCacheRoot(_ path: String) async throws {
+        _ = try await settings.removeHFCacheRoot(path)
     }
 
     public func shellState() async throws -> ShellState {

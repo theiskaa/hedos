@@ -14,6 +14,7 @@ final class LibraryViewModel {
     var summary: DiscoverySummary?
     var records: [ModelRecord] = []
     var watchedFolders: [String] = []
+    var hfCacheRoots: [String] = []
     var isScanning = false
     var errorMessage: String?
 
@@ -25,6 +26,7 @@ final class LibraryViewModel {
             summary = try await kernel.discover()
             records = try await kernel.shelf()
             watchedFolders = try await kernel.watchedFolders()
+            hfCacheRoots = try await kernel.hfCacheRoots()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -52,6 +54,16 @@ final class LibraryViewModel {
 
     func removeFolder(_ path: String) async {
         try? await kernel.removeWatchedFolder(path)
+        await rescan()
+    }
+
+    func addHFRoot(_ url: URL) async {
+        try? await kernel.addHFCacheRoot(url.path)
+        await rescan()
+    }
+
+    func removeHFRoot(_ path: String) async {
+        try? await kernel.removeHFCacheRoot(path)
         await rescan()
     }
 
