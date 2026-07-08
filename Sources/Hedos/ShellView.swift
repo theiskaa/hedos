@@ -65,6 +65,8 @@ final class ShellModel {
         await refreshSessions()
         watchResidency()
         await library.rescan()
+        await kernel.startWatching()
+        library.startLiveUpdates()
     }
 
     private func watchResidency() {

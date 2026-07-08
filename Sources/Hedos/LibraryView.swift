@@ -71,6 +71,20 @@ final class LibraryViewModel {
         records.filter { $0.source.kind == .endpoint }
     }
 
+    private var liveTask: Task<Void, Never>?
+
+    func startLiveUpdates() {
+        liveTask?.cancel()
+        let kernel = kernel
+        liveTask = Task { [weak self] in
+            for await summary in await kernel.shelfUpdates() {
+                guard let self else { break }
+                self.summary = summary
+                self.records = (try? await kernel.shelf()) ?? self.records
+            }
+        }
+    }
+
     func connectServer(baseURL: String, apiKey: String?) async -> (
         models: [String]?, error: String?
     ) {

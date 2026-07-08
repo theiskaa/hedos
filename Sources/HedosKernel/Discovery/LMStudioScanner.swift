@@ -8,8 +8,9 @@ public struct LMStudioScanner: StoreScanner {
         self.roots = roots
     }
 
-    public static func defaultRoots() -> [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+    public static func defaultRoots(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
         return [
             home.appendingPathComponent(".lmstudio/models"),
             home.appendingPathComponent(".cache/lm-studio/models"),

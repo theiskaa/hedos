@@ -45,14 +45,22 @@ public actor Kernel {
     private let baseAdapters: [any RuntimeAdapter]
     private var adapters: [any RuntimeAdapter]
     let secrets: any SecretStore
+    let habitat: ModelHabitat
     let scheduler: JobScheduler
+    private var shelfWatcher: ShelfWatcher?
+    private var watcherTask: Task<Void, Never>?
+    private var watcherDebounce: Duration = .seconds(2)
+    private var lastSummary: DiscoverySummary?
+    private var shelfSubscribers: [UUID: AsyncStream<DiscoverySummary>.Continuation] = [:]
 
     public init(
         directory: URL,
         adapters: [any RuntimeAdapter]? = nil,
         governor: MemoryGovernor = .shared,
-        secrets: any SecretStore = KeychainStore()
+        secrets: any SecretStore = KeychainStore(),
+        habitat: ModelHabitat = ModelHabitat()
     ) {
+        self.habitat = habitat
         self.directory = directory
         let registry = Registry(directory: directory)
         let artifactStore = ArtifactStore(
@@ -127,22 +135,89 @@ public actor Kernel {
     public func discover() async throws -> DiscoverySummary {
         await applyStoredPolicies()
         let manifestIssues = await reloadUserRuntimes()
-        let home = FileManager.default.homeDirectoryForCurrentUser
         let models = await settings.models()
-        let looseDirectories =
-            LooseFileScanner.defaultDirectories()
-            + models.watchedFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
-        let scanners: [any StoreScanner] = [
-            OllamaStoreScanner(root: home.appendingPathComponent(".ollama/models")),
-            HFCacheScanner(roots: HFCacheScanner.defaultRoots(user: models.hfCacheRoots)),
-            LMStudioScanner(roots: LMStudioScanner.defaultRoots()),
-            LooseFileScanner(directories: looseDirectories),
-            AppleFoundationScanner(),
-        ]
+        let scanners = habitat.scanners(kinds: nil, models: models)
         var summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
         summary.issues.append(contentsOf: manifestIssues)
+        lastSummary = summary
+        await rearmWatcherIfActive()
         return summary
+    }
+
+    public func shelfUpdates() -> AsyncStream<DiscoverySummary> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            shelfSubscribers[id] = continuation
+            continuation.onTermination = { _ in
+                Task { await self.removeShelfSubscriber(id) }
+            }
+        }
+    }
+
+    private func removeShelfSubscriber(_ id: UUID) {
+        shelfSubscribers[id] = nil
+    }
+
+    public func startWatching(debounce: Duration = .seconds(2)) async {
+        await stopWatchingInternal()
+        watcherDebounce = debounce
+        let models = await settings.models()
+        let watcher = ShelfWatcher(roots: habitat.roots(models: models), debounce: debounce)
+        watcher.start()
+        shelfWatcher = watcher
+        watcherTask = Task { [weak self] in
+            for await kinds in watcher.events {
+                await self?.scopedRescan(kinds)
+            }
+        }
+    }
+
+    public func stopWatching() async {
+        await stopWatchingInternal()
+    }
+
+    private func stopWatchingInternal() async {
+        watcherTask?.cancel()
+        watcherTask = nil
+        shelfWatcher?.stop()
+        shelfWatcher = nil
+    }
+
+    private func rearmWatcherIfActive() async {
+        guard shelfWatcher != nil else { return }
+        await startWatching(debounce: watcherDebounce)
+    }
+
+    private func scopedRescan(_ kinds: Set<SourceKind>) async {
+        guard var summary = lastSummary else {
+            if let full = try? await discover() {
+                emitShelfUpdate(full)
+            }
+            return
+        }
+        let models = await settings.models()
+        let scanners = habitat.scanners(kinds: kinds, models: models)
+        guard !scanners.isEmpty else { return }
+        guard
+            let partial = try? await DiscoveryService(scanners: scanners).discover(into: registry)
+        else { return }
+        try? await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+
+        let affected = Set(scanners.flatMap(\.kinds))
+        for kind in affected {
+            summary.perKind[kind] = partial.perKind[kind]
+        }
+        summary.totalCount = summary.perKind.values.reduce(0) { $0 + $1.count }
+        summary.totalBytes = summary.perKind.values.reduce(0) { $0 + $1.bytes }
+        lastSummary = summary
+        emitShelfUpdate(summary)
+    }
+
+    private func emitShelfUpdate(_ summary: DiscoverySummary) {
+        for continuation in shelfSubscribers.values {
+            continuation.yield(summary)
+        }
     }
 
     public func explainShelf() async throws -> [ResolutionExplanation] {
@@ -155,10 +230,12 @@ public actor Kernel {
 
     public func addWatchedFolder(_ path: String) async throws {
         _ = try await settings.addWatchedFolder(path)
+        await rearmWatcherIfActive()
     }
 
     public func removeWatchedFolder(_ path: String) async throws {
         _ = try await settings.removeWatchedFolder(path)
+        await rearmWatcherIfActive()
     }
 
     public func manifestTemplate(for modelID: String) async throws -> String {
@@ -237,10 +314,12 @@ public actor Kernel {
 
     public func addHFCacheRoot(_ path: String) async throws {
         _ = try await settings.addHFCacheRoot(path)
+        await rearmWatcherIfActive()
     }
 
     public func removeHFCacheRoot(_ path: String) async throws {
         _ = try await settings.removeHFCacheRoot(path)
+        await rearmWatcherIfActive()
     }
 
     public func shellState() async throws -> ShellState {

@@ -9,8 +9,9 @@ public struct LooseFileScanner: StoreScanner {
         self.directories = directories
     }
 
-    public static func defaultDirectories() -> [URL] {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+    public static func defaultDirectories(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [URL] {
         return [
             home.appendingPathComponent("Downloads"),
             home.appendingPathComponent("Models"),
