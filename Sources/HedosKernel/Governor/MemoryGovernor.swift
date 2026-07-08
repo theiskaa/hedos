@@ -19,6 +19,32 @@ public struct ResidentModel: Hashable, Sendable {
     }
 }
 
+private actor AdmissionBarrier {
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if opened { return }
+        await withCheckedContinuation { continuation in
+            if opened {
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func open() {
+        guard !opened else { return }
+        opened = true
+        let pending = waiters
+        waiters.removeAll()
+        for continuation in pending {
+            continuation.resume()
+        }
+    }
+}
+
 public actor MemoryGovernor {
     public static let shared = MemoryGovernor()
 
@@ -32,6 +58,7 @@ public actor MemoryGovernor {
     private var residents: [String: ResidentModel] = [:]
     private var evictionPolicy: EvictionPolicy = .strictSingle
     private var ramBudgetMB: Int?
+    private var admissionTail: Task<Void, Never>?
 
     public init(
         totalMemoryMB: Int = Int(ProcessInfo.processInfo.physicalMemory / (1 << 20)),
@@ -56,15 +83,31 @@ public actor MemoryGovernor {
         footprintMB: Int?,
         onWait: (@Sendable (String) async -> Void)? = nil
     ) async throws -> RAMVerdict {
-        if isHeavy(footprintMB) {
-            while let conflict = evictionConflict(admitting: modelID, footprintMB: footprintMB) {
-                if await leases.count(conflict.modelID) > 0 {
-                    await onWait?("Waiting for \(conflict.name) to finish")
-                    try await leases.drain(conflict.modelID)
-                }
-                try Task.checkCancellation()
-                await residency.unloadNow(conflict.modelID)
+        guard isHeavy(footprintMB) else {
+            let verdict = verdict(admitting: footprintMB, for: modelID)
+            await reserve(modelID: modelID, name: name, footprintMB: footprintMB)
+            return verdict
+        }
+
+        let previous = admissionTail
+        let barrier = AdmissionBarrier()
+        admissionTail = Task {
+            await previous?.value
+            await barrier.wait()
+        }
+        defer {
+            Task { await barrier.open() }
+        }
+
+        await previous?.value
+
+        while let conflict = evictionConflict(admitting: modelID, footprintMB: footprintMB) {
+            if await leases.count(conflict.modelID) > 0 {
+                await onWait?("Waiting for \(conflict.name) to finish")
+                try await leases.drain(conflict.modelID)
             }
+            try Task.checkCancellation()
+            await residency.unloadNow(conflict.modelID)
         }
         let verdict = verdict(admitting: footprintMB, for: modelID)
         await reserve(modelID: modelID, name: name, footprintMB: footprintMB)

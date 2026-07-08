@@ -21,6 +21,14 @@ private actor ReasonLog {
     }
 }
 
+private actor UnloadCounter {
+    private(set) var count = 0
+
+    func increment() {
+        count += 1
+    }
+}
+
 private struct GatedFakeRuntime: Sendable {
     let gate: GPUGate
     let probe: ConcurrencyProbe
@@ -343,6 +351,48 @@ private func waitUntil(
     try await drainTask.value
     #expect(drained.wasInvoked)
     #expect(await lease.count("m") == 0)
+}
+
+@Test func concurrentHeavyAdmitsSerializeUnderStrictSingle() async throws {
+    let governor = testGovernor()
+    let oldUnloaded = CleanupFlag()
+    let unloadCounter = UnloadCounter()
+    await governor.markLoaded(modelID: "old", name: "old-heavy", footprintMB: 6000) {
+        oldUnloaded.mark()
+        await unloadCounter.increment()
+    }
+
+    async let a: RAMVerdict = governor.admit(modelID: "a", name: "heavy-a", footprintMB: 30000)
+    async let b: RAMVerdict = governor.admit(modelID: "b", name: "heavy-b", footprintMB: 30000)
+    _ = try await (a, b)
+
+    let heavyResidents = await governor.resident().filter { $0.footprintMB >= 1024 }
+    #expect(heavyResidents.count == 1)
+    #expect(oldUnloaded.wasInvoked)
+    #expect(await unloadCounter.count == 1)
+}
+
+@Test func admissionChainSurvivesCancellation() async throws {
+    let governor = testGovernor()
+    let oldUnloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "old", name: "old-heavy", footprintMB: 6000) {
+        oldUnloaded.mark()
+    }
+    await governor.beginGeneration("old")
+
+    let aTask = Task {
+        try await governor.admit(modelID: "a", name: "heavy-a", footprintMB: 30000)
+    }
+    try await waitUntil { await governor.leases.count("old") > 0 }
+    aTask.cancel()
+    let aResult = await aTask.result
+    #expect(throws: (any Error).self) { try aResult.get() }
+
+    await governor.endGeneration("old")
+
+    let bResult = try await governor.admit(modelID: "b", name: "heavy-b", footprintMB: 30000)
+    #expect(bResult == .ok)
+    #expect(await governor.isResident("b"))
 }
 
 @Test func quitTeardownSkipsUnloadsEntirely() async throws {
