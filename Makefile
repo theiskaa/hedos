@@ -1,4 +1,4 @@
-.PHONY: build test app run clean
+.PHONY: build test app run clean probe
 
 build:
 	swift build
@@ -11,6 +11,9 @@ app:
 
 run: app
 	open dist/Hedos.app
+
+probe:
+	swift run hedos-probe
 
 clean:
 	rm -rf .build dist

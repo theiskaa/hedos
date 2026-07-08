@@ -7,8 +7,48 @@ enum ModalityHints {
         var execution: ExecutionMode
     }
 
-    static func fromModelIndex(at url: URL) -> Hint {
-        Hint(modality: .image, capabilities: [.image], execution: .job)
+    struct ArchitectureRule {
+        var contains: [String]
+        var suffixes: [String]
+        var hint: Hint
+
+        func matches(_ architecture: String) -> Bool {
+            contains.contains(where: architecture.contains)
+                || suffixes.contains(where: architecture.hasSuffix)
+        }
+    }
+
+    struct ConfigKeyRule {
+        var requiredKeys: Set<String>
+        var hint: Hint
+    }
+
+    static let speechHint = Hint(modality: .speech, capabilities: [.speak], execution: .stream)
+    static let audioHint = Hint(modality: .audio, capabilities: [.transcribe], execution: .stream)
+    static let textHint = Hint(modality: .text, capabilities: [.chat, .complete], execution: .stream)
+
+    static let architectureRules: [ArchitectureRule] = [
+        ArchitectureRule(contains: ["Kokoro", "StyleTTS"], suffixes: [], hint: speechHint),
+        ArchitectureRule(contains: ["Whisper"], suffixes: [], hint: audioHint),
+        ArchitectureRule(contains: ["LMHead"], suffixes: ["ForCausalLM"], hint: textHint),
+    ]
+
+    static let configKeyRules: [ConfigKeyRule] = [
+        ConfigKeyRule(requiredKeys: ["istftnet"], hint: speechHint),
+        ConfigKeyRule(requiredKeys: ["plbert"], hint: speechHint),
+        ConfigKeyRule(requiredKeys: ["style_dim", "n_mels"], hint: speechHint),
+    ]
+
+    static func fromModelIndex(
+        at url: URL, pipelines: PipelineFamilyRegistry = .builtin
+    ) -> Hint {
+        if let className = Identification.diffusersPipelineClass(at: url),
+            let family = pipelines.family(for: className)
+        {
+            return Hint(
+                modality: family.modality, capabilities: family.capabilities, execution: .job)
+        }
+        return Hint(modality: nil, capabilities: [], execution: .job)
     }
 
     static func fromConfigJSON(at url: URL) -> Hint? {
@@ -18,22 +58,14 @@ enum ModalityHints {
         let architectures = (json["architectures"] as? [String]) ?? []
 
         for arch in architectures {
-            if arch.contains("Kokoro") || arch.contains("StyleTTS") {
-                return Hint(modality: .speech, capabilities: [.speak], execution: .stream)
-            }
-            if arch.contains("Whisper") {
-                return Hint(modality: .audio, capabilities: [.transcribe], execution: .stream)
-            }
-            if arch.hasSuffix("ForCausalLM") || arch.contains("LMHead") {
-                return Hint(modality: .text, capabilities: [.chat, .complete], execution: .stream)
+            if let rule = architectureRules.first(where: { $0.matches(arch) }) {
+                return rule.hint
             }
         }
 
         let keys = Set(json.keys)
-        if keys.contains("istftnet") || keys.contains("plbert")
-            || (keys.contains("style_dim") && keys.contains("n_mels"))
-        {
-            return Hint(modality: .speech, capabilities: [.speak], execution: .stream)
+        if let rule = configKeyRules.first(where: { $0.requiredKeys.isSubset(of: keys) }) {
+            return rule.hint
         }
         return nil
     }

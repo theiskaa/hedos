@@ -16,6 +16,9 @@ let package = Package(
             name: "Hedos",
             dependencies: ["HedosKernel"],
             resources: [.copy("Resources")]),
+        .executableTarget(
+            name: "hedos-probe",
+            dependencies: ["HedosKernel"]),
         .testTarget(
             name: "HedosKernelTests",
             dependencies: ["HedosKernel"],

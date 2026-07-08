@@ -96,16 +96,16 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     let adapter = MfluxAdapter()
     let fluxImage = IdentifiedModel(
         format: .diffusers, modality: .image, capabilities: [.image], execution: .job,
-        params: Identification.imagePipelineParams, pipelineClass: "FluxPipeline")
+        params: PipelineFamilyRegistry.fluxParams, pipelineClass: "FluxPipeline")
     let diffusersWithoutCapability = IdentifiedModel(
         format: .diffusers, modality: .image, capabilities: [], execution: .job,
         pipelineClass: "FluxPipeline")
     let nonFluxImage = IdentifiedModel(
         format: .diffusers, modality: .image, capabilities: [.image], execution: .job,
-        params: Identification.imagePipelineParams, pipelineClass: "StableDiffusionPipeline")
+        params: PipelineFamilyRegistry.fluxParams, pipelineClass: "StableDiffusionPipeline")
     let classlessDiffusers = IdentifiedModel(
         format: .diffusers, modality: .image, capabilities: [.image], execution: .job,
-        params: Identification.imagePipelineParams)
+        params: PipelineFamilyRegistry.fluxParams)
     let speechMlx = IdentifiedModel(
         format: .safetensors, modality: .speech, capabilities: [.speak], execution: .stream)
     let textGguf = IdentifiedModel(
@@ -285,27 +285,30 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     #expect(resolved.runtime.id == nil)
 }
 
-@Test func nonFluxDiffusersPipelinesStayRecipeNeededWithoutImageMislabel() async throws {
+@Test func nonFluxDiffusersPipelinesIdentifyHonestlyButStayRecipeNeeded() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let adapter = MfluxAdapter()
-    for pipelineClass in [
-        "StableDiffusionPipeline", "AudioLDM2Pipeline", "KandinskyV22Pipeline",
-        "TextToVideoSDPipeline",
-    ] {
-        let bundle = dir.appendingPathComponent(pipelineClass)
+    let expectations: [(pipelineClass: String, modality: Modality, capabilities: [Capability], params: [ParamSpec])] = [
+        ("StableDiffusionPipeline", .image, [.image], PipelineFamilyRegistry.sd1Params),
+        ("AudioLDM2Pipeline", .audio, [], []),
+        ("KandinskyV22Pipeline", .image, [.image], PipelineFamilyRegistry.kandinskyParams),
+        ("TextToVideoSDPipeline", .video, [], []),
+    ]
+    for expected in expectations {
+        let bundle = dir.appendingPathComponent(expected.pipelineClass)
         try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
-        try Data("{\"_class_name\": \"\(pipelineClass)\"}".utf8)
+        try Data("{\"_class_name\": \"\(expected.pipelineClass)\"}".utf8)
             .write(to: bundle.appendingPathComponent("model_index.json"))
         let record = ModelRecord(
-            name: pipelineClass, modality: .unknown, capabilities: [],
+            name: expected.pipelineClass, modality: .unknown, capabilities: [],
             source: ModelSource(kind: .folder, path: bundle.path))
         let identified = Identification.identify(record)
         #expect(identified.format == .diffusers)
-        #expect(identified.modality == nil)
-        #expect(identified.capabilities.isEmpty)
-        #expect(identified.params.isEmpty)
-        #expect(identified.pipelineClass == pipelineClass)
+        #expect(identified.modality == expected.modality)
+        #expect(identified.capabilities == expected.capabilities)
+        #expect(identified.params == expected.params)
+        #expect(identified.pipelineClass == expected.pipelineClass)
         #expect(adapter.bid(record, identified) == nil)
     }
 
@@ -319,8 +322,9 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     let resolved = try #require(try await registry.get(id: record.id))
     #expect(resolved.runtime.tier == .recipeNeeded)
     #expect(resolved.runtime.id == nil)
-    #expect(resolved.modality == .unknown)
-    #expect(resolved.capabilities.isEmpty)
+    #expect(resolved.modality == .image)
+    #expect(resolved.capabilities == [.image])
+    #expect(!resolved.params.isEmpty)
 }
 
 @Test func supervisorStreamsImageJobFromFakeSidecar() async throws {

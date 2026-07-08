@@ -9,6 +9,7 @@ public struct Modality: RawRepresentable, Codable, Hashable, Sendable, Expressib
     public static let image = Modality(rawValue: "image")
     public static let speech = Modality(rawValue: "speech")
     public static let audio = Modality(rawValue: "audio")
+    public static let video = Modality(rawValue: "video")
     public static let vision = Modality(rawValue: "vision")
     public static let embedding = Modality(rawValue: "embedding")
 }

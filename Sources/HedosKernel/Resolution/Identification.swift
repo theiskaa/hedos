@@ -19,12 +19,6 @@ public struct IdentifiedModel: Sendable, Hashable {
     public var pipelineClass: String? = nil
 }
 
-public struct DiffusersPipelineProfile: Sendable, Hashable {
-    public var modality: Modality
-    public var capabilities: [Capability]
-    public var params: [ParamSpec]
-}
-
 public struct GGUFArchitectureProfile: Sendable, Hashable {
     public var modality: Modality
     public var capabilities: [Capability]
@@ -32,7 +26,9 @@ public struct GGUFArchitectureProfile: Sendable, Hashable {
 }
 
 public enum Identification {
-    public static func identify(_ record: ModelRecord) -> IdentifiedModel {
+    public static func identify(
+        _ record: ModelRecord, pipelines: PipelineFamilyRegistry = .builtin
+    ) -> IdentifiedModel {
         if record.source.kind == .ollama {
             return IdentifiedModel(
                 format: .ollamaStore,
@@ -72,8 +68,9 @@ public enum Identification {
         let modelIndexURL = container.appendingPathComponent("model_index.json")
         if FileManager.default.fileExists(atPath: modelIndexURL.path) {
             let pipelineClass = diffusersPipelineClass(at: modelIndexURL)
+            let scheduler = schedulerFacts(in: container)
             guard let pipelineClass,
-                let profile = diffusersPipelineProfiles[pipelineClass]
+                let profile = pipelines.profile(for: pipelineClass, scheduler: scheduler)
             else {
                 return IdentifiedModel(
                     format: .diffusers,
@@ -113,29 +110,21 @@ public enum Identification {
             format: .unknown, modality: nil, capabilities: [], execution: .sync)
     }
 
-    static let imagePipelineParams: [ParamSpec] = [
-        ParamSpec(key: "steps", type: .int, defaultValue: .int(4), range: [.int(1), .int(50)]),
-        ParamSpec(
-            key: "guidance", type: .float, defaultValue: .double(4.0),
-            range: [.double(0), .double(10)]),
-        ParamSpec(
-            key: "size", type: .enumeration, defaultValue: .string("1024x1024"),
-            values: ["512x512", "768x768", "1024x1024"]),
-        ParamSpec(key: "seed", type: .int),
-    ]
-
-    static let diffusersPipelineProfiles: [String: DiffusersPipelineProfile] = [
-        "FluxPipeline": DiffusersPipelineProfile(
-            modality: .image,
-            capabilities: [.image],
-            params: imagePipelineParams)
-    ]
-
     static func diffusersPipelineClass(at url: URL) -> String? {
         guard let data = try? Data(contentsOf: url),
             let index = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return index["_class_name"] as? String
+    }
+
+    static func schedulerFacts(in container: URL) -> SchedulerFacts? {
+        let url = container.appendingPathComponent("scheduler/scheduler_config.json")
+        guard let data = try? Data(contentsOf: url),
+            let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return SchedulerFacts(
+            className: config["_class_name"] as? String,
+            timestepSpacing: config["timestep_spacing"] as? String)
     }
 
     static func hasGGUFMagic(at url: URL) -> Bool {

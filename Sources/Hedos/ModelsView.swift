@@ -358,7 +358,10 @@ struct ModelDetailSheet: View {
             guard record.runtime.tier == .recipeNeeded else { return }
             let record = record
             reason = await Task.detached {
-                RecipeReason.text(for: record, format: Identification.identify(record).format)
+                let identified = Identification.identify(record)
+                return RecipeReason.text(
+                    for: record, format: identified.format,
+                    pipelineClass: identified.pipelineClass)
             }.value
         }
     }
@@ -555,13 +558,18 @@ struct ModelDetailSheet: View {
 }
 
 enum RecipeReason {
-    nonisolated static func text(for record: ModelRecord, format: ModelFormat) -> String {
+    nonisolated static func text(
+        for record: ModelRecord, format: ModelFormat, pipelineClass: String?
+    ) -> String {
         switch format {
         case .unknown:
             return record.primaryWeightPath == nil
                 ? "This model's weights are in a format none of the built-in runtimes can execute — no safetensors or GGUF detected, likely PyTorch or another framework's format."
                 : "Hedos found this model but could not identify what kind it is."
         case .diffusers:
+            if let pipelineClass {
+                return "This is a diffusers \(pipelineClass) bundle — no built-in runtime serves it yet."
+            }
             return "This is an image-generation pipeline the built-in image runtime cannot serve yet."
         case .safetensors, .mlxSafetensors:
             return "The format is recognized, but no built-in runtime serves \(record.modality.rawValue) models yet."

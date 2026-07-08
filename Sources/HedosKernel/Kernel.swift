@@ -100,6 +100,10 @@ public actor Kernel {
         return summary
     }
 
+    public func explainShelf() async throws -> [ResolutionExplanation] {
+        try await ResolutionEngine(adapters: adapters).explainAll(in: registry)
+    }
+
     public func watchedFolders() async throws -> [String] {
         await settings.models().watchedFolders
     }

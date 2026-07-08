@@ -68,6 +68,7 @@ enum DiscoveryFixtures {
         var files: [(name: String, bytes: Int)]
         var configJSON: String?
         var modelIndexJSON: String?
+        var schedulerConfigJSON: String?
         var writeRefsMain = true
         var revision = "abc123def456"
     }
@@ -105,6 +106,15 @@ enum DiscoveryFixtures {
             try fm.createSymbolicLink(
                 at: snapshot.appendingPathComponent("model_index.json"), withDestinationURL: blob)
         }
+        if let scheduler = spec.schedulerConfigJSON {
+            let blob = blobs.appendingPathComponent("blob-scheduler")
+            try Data(scheduler.utf8).write(to: blob)
+            let schedulerDir = snapshot.appendingPathComponent("scheduler")
+            try fm.createDirectory(at: schedulerDir, withIntermediateDirectories: true)
+            try fm.createSymbolicLink(
+                at: schedulerDir.appendingPathComponent("scheduler_config.json"),
+                withDestinationURL: blob)
+        }
     }
 
     static let kokoroConfig =
@@ -112,6 +122,12 @@ enum DiscoveryFixtures {
     static let causalLMConfig =
         #"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}"#
     static let fluxModelIndex = #"{"_class_name": "FluxPipeline"}"#
+    static let sdxlModelIndex = #"{"_class_name": "StableDiffusionXLPipeline"}"#
+    static let cogVideoModelIndex = #"{"_class_name": "CogVideoXPipeline"}"#
+    static let turboSchedulerConfig =
+        #"{"_class_name": "EulerAncestralDiscreteScheduler", "timestep_spacing": "trailing"}"#
+    static let sdxlBaseSchedulerConfig =
+        #"{"_class_name": "EulerDiscreteScheduler", "timestep_spacing": "leading"}"#
 
 
     static func makeGGUF(at url: URL, bytes: Int, fill: UInt8 = 0x77) throws {
