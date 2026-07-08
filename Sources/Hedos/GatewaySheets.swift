@@ -162,7 +162,21 @@ struct AddGatewayClientSheet: View {
             Text("Hedos keeps only a hash. Losing this token means minting a new client.")
                 .font(Design.label)
                 .foregroundStyle(Design.inkFaint)
+            GatewayCodeBlock(
+                title: "try it",
+                code: GatewayExamples.chatCurl(
+                    port: gatewayPort, model: tryModel, token: creation.token))
         }
+    }
+
+    private var gatewayPort: Int {
+        shell.settings.gatewayStatus.port ?? shell.settings.gateway.port
+    }
+
+    private var tryModel: String {
+        let ready = shell.library.records.filter { $0.state == .ready }
+        return ready.first { $0.capabilities.contains(.chat) }?.displayName
+            ?? ready.first?.displayName ?? "your-model"
     }
 
     private var footer: some View {

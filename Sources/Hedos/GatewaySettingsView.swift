@@ -6,6 +6,7 @@ struct GatewaySection: View {
     @Bindable var shell: ShellModel
     let highlighted: String?
     let onAddClient: () -> Void
+    let onConnect: () -> Void
     @State private var portText = ""
     @State private var copiedAddress = false
 
@@ -51,6 +52,9 @@ struct GatewaySection: View {
                         .accessibilityIdentifier("gateway-port")
                 }
             }
+            group("Endpoints") {
+                endpointRows
+            }
             group("Client tokens") {
                 clientRows
             }
@@ -62,6 +66,54 @@ struct GatewaySection: View {
             await model.refreshGateway()
             portText = String(model.gateway.port)
         }
+    }
+
+    private var endpointRows: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            HStack {
+                Spacer()
+                Button("Connect a tool…") {
+                    onConnect()
+                }
+                .buttonStyle(QuietButtonStyle())
+                .accessibilityIdentifier("gateway-connect")
+            }
+            ForEach(Array(GatewayEndpoints.grouped.enumerated()), id: \.offset) { _, section in
+                Text(section.group.uppercased())
+                    .font(Design.micro)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(Design.inkFaint)
+                    .padding(.top, Design.Space.xs)
+                ForEach(section.endpoints) { endpoint in
+                    HStack(spacing: Design.Space.s) {
+                        Text(endpoint.method)
+                            .font(Design.micro)
+                            .tracking(Design.microTracking)
+                            .foregroundStyle(Design.inkSoft)
+                            .frame(width: 40, alignment: .leading)
+                        Text(endpoint.path)
+                            .font(Design.data(12))
+                            .foregroundStyle(Design.ink)
+                            .textSelection(.enabled)
+                        Spacer(minLength: Design.Space.m)
+                        Text(endpoint.summary)
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+            }
+            if !model.gatewayStatus.running {
+                Text("Turn serving on above to reach these.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+                    .padding(.top, Design.Space.xs)
+            }
+        }
+        .padding(.vertical, Design.Space.m)
+        .id("gateway.endpoints")
+        .background(highlightBackground("gateway.endpoints"))
     }
 
     private func addressRow(port: Int) -> some View {
@@ -243,5 +295,51 @@ struct GatewaySection: View {
         RoundedRectangle(cornerRadius: Design.Radius.card)
             .fill(highlighted == id ? Design.ink.opacity(0.08) : .clear)
             .padding(.horizontal, -Design.Space.s)
+    }
+}
+
+struct GatewayCodeBlock: View {
+    let title: String
+    let code: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xs) {
+            HStack(spacing: Design.Space.s) {
+                Text(title.uppercased())
+                    .font(Design.micro)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(Design.inkFaint)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    copied = true
+                    Task {
+                        try? await Task.sleep(for: .seconds(2))
+                        copied = false
+                    }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(Design.glyphInline)
+                        .foregroundStyle(Design.inkSoft)
+                }
+                .buttonStyle(PressDipStyle())
+                .accessibilityLabel("Copy \(title)")
+            }
+            Text(code)
+                .font(Design.data(11))
+                .foregroundStyle(Design.ink)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(Design.Space.tile)
+                .background(
+                    RoundedRectangle(cornerRadius: Design.Radius.tile)
+                        .fill(Design.surface))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Design.Radius.tile)
+                        .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        }
     }
 }

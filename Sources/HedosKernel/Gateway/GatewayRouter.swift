@@ -5,15 +5,19 @@ public struct GatewayRoute: Sendable {
     public var path: String
     public var handler: any GatewayHandling
     public var inference: Bool
+    public var group: String
+    public var summary: String
 
     public init(
         _ method: String, _ path: String, _ handler: any GatewayHandling,
-        inference: Bool = false
+        inference: Bool = false, group: String = "", summary: String = ""
     ) {
         self.method = method.uppercased()
         self.path = path
         self.handler = handler
         self.inference = inference
+        self.group = group
+        self.summary = summary
     }
 }
 
@@ -42,17 +46,39 @@ public struct GatewayRouter: Sendable {
 
     public static func standardRoutes() -> [GatewayRoute] {
         [
-            GatewayRoute("POST", "/v1/chat/completions", OpenAIChatHandler(), inference: true),
-            GatewayRoute("GET", "/v1/models", OpenAIModelsHandler()),
-            GatewayRoute("POST", "/v1/embeddings", OpenAIEmbeddingsHandler()),
-            GatewayRoute("POST", "/v1/audio/speech", OpenAISpeechHandler(), inference: true),
-            GatewayRoute("POST", "/v1/images/generations", OpenAIImagesHandler(), inference: true),
-            GatewayRoute("POST", "/api/chat", OllamaChatHandler(), inference: true),
-            GatewayRoute("GET", "/api/tags", OllamaTagsHandler()),
-            GatewayRoute("GET", "/api/version", OllamaVersionHandler()),
-            GatewayRoute("POST", "/api/show", OllamaShowHandler()),
-            GatewayRoute("GET", "/v1/pipelines", PipelineListHandler()),
-            GatewayRoute("POST", "/v1/pipelines/run", PipelineRunHandler(), inference: true),
+            GatewayRoute(
+                "POST", "/v1/chat/completions", OpenAIChatHandler(), inference: true,
+                group: "OpenAI", summary: "Stream or complete a chat"),
+            GatewayRoute(
+                "GET", "/v1/models", OpenAIModelsHandler(),
+                group: "OpenAI", summary: "List the models this token can reach"),
+            GatewayRoute(
+                "POST", "/v1/embeddings", OpenAIEmbeddingsHandler(),
+                group: "OpenAI", summary: "Embed text (when a model serves it)"),
+            GatewayRoute(
+                "POST", "/v1/audio/speech", OpenAISpeechHandler(), inference: true,
+                group: "OpenAI", summary: "Speak text to WAV audio"),
+            GatewayRoute(
+                "POST", "/v1/images/generations", OpenAIImagesHandler(), inference: true,
+                group: "OpenAI", summary: "Generate an image (base64 PNG)"),
+            GatewayRoute(
+                "POST", "/api/chat", OllamaChatHandler(), inference: true,
+                group: "Ollama", summary: "Chat over the Ollama NDJSON protocol"),
+            GatewayRoute(
+                "GET", "/api/tags", OllamaTagsHandler(),
+                group: "Ollama", summary: "List models, Ollama-style"),
+            GatewayRoute(
+                "GET", "/api/version", OllamaVersionHandler(),
+                group: "Ollama", summary: "Version handshake for stock clients"),
+            GatewayRoute(
+                "POST", "/api/show", OllamaShowHandler(),
+                group: "Ollama", summary: "Model details handshake"),
+            GatewayRoute(
+                "GET", "/v1/pipelines", PipelineListHandler(),
+                group: "Pipelines", summary: "List your saved pipelines"),
+            GatewayRoute(
+                "POST", "/v1/pipelines/run", PipelineRunHandler(), inference: true,
+                group: "Pipelines", summary: "Run a saved pipeline by id"),
         ]
     }
 

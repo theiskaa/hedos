@@ -103,6 +103,12 @@ enum SettingsIndex {
             id: "gateway.port", section: "Gateway", title: "Port",
             keywords: ["gateway", "port", "http", "address", "localhost"]),
         .init(
+            id: "gateway.endpoints", section: "Gateway", title: "Endpoints",
+            keywords: [
+                "endpoints", "api", "curl", "connect", "examples", "sdk", "openai", "ollama",
+                "routes",
+            ]),
+        .init(
             id: "gateway.clients", section: "Gateway", title: "Client tokens",
             keywords: ["token", "client", "key", "scope", "auth", "revoke", "bearer"]),
         .init(
@@ -573,6 +579,14 @@ struct SettingsRoot: View {
             }
         }
         .modalScrim(
+            isPresented: showingGatewayConnect,
+            onDismiss: { showingGatewayConnect = false }
+        ) {
+            GatewayConnectSheet(shell: shell) {
+                showingGatewayConnect = false
+            }
+        }
+        .modalScrim(
             isPresented: installCandidate != nil,
             onDismiss: { installCandidate = nil }
         ) {
@@ -748,6 +762,7 @@ struct SettingsRoot: View {
     @State private var promptDraft: Prompt?
     @State private var showingAddServer = false
     @State private var showingAddGatewayClient = false
+    @State private var showingGatewayConnect = false
     @State private var installCandidate: URL?
     @State private var promptDraftIsNew = false
 
@@ -784,7 +799,8 @@ struct SettingsRoot: View {
                         case .gateway:
                             GatewaySection(
                                 shell: shell, highlighted: highlighted,
-                                onAddClient: { showingAddGatewayClient = true })
+                                onAddClient: { showingAddGatewayClient = true },
+                                onConnect: { showingGatewayConnect = true })
                         case .advanced: advancedSection
                         }
                     }
