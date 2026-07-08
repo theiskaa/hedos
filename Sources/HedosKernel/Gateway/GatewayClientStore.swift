@@ -116,14 +116,24 @@ public actor GatewayClientStore {
 
     private func loadIfNeeded() {
         guard !loaded else { return }
-        loaded = true
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            loaded = true
+            return
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        clients = (try? decoder.decode([GatewayClient].self, from: data)) ?? []
+        guard let decoded = try? decoder.decode([GatewayClient].self, from: data) else {
+            let quarantineURL = fileURL.deletingLastPathComponent()
+                .appendingPathComponent("clients.json.corrupt-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: fileURL, to: quarantineURL)
+            loaded = true
+            return
+        }
+        clients = decoded
         for client in clients {
             if let used = client.lastUsedAt { persistedUse[client.id] = used }
         }
+        loaded = true
     }
 
     private func persist() throws {

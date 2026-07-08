@@ -80,6 +80,34 @@ import Testing
     #expect(identity != nil)
 }
 
+@Test func corruptClientsFileIsQuarantinedNotClobbered() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let garbage = Data("not json".utf8)
+    try garbage.write(to: dir.appendingPathComponent("clients.json"))
+
+    let store = GatewayClientStore(directory: dir, secrets: InMemorySecretStore())
+    let listed = await store.list()
+    #expect(listed.isEmpty)
+
+    let contentsAfterList = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    let quarantined = contentsAfterList.filter { $0.hasPrefix("clients.json.corrupt-") }
+    #expect(quarantined.count == 1)
+    #expect(!contentsAfterList.contains("clients.json"))
+    let quarantinedData = try Data(
+        contentsOf: dir.appendingPathComponent(quarantined[0]))
+    #expect(quarantinedData == garbage)
+
+    let creation = try await store.create(name: "recovered", scopes: .all)
+    let relisted = await store.list()
+    #expect(relisted.count == 1)
+    #expect(relisted[0].id == creation.client.id)
+
+    let contentsAfterCreate = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    #expect(contentsAfterCreate.contains { $0.hasPrefix("clients.json.corrupt-") })
+    #expect(contentsAfterCreate.contains("clients.json"))
+}
+
 @Test func verifyUpdatesLastUsedAt() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

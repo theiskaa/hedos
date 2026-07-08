@@ -59,8 +59,10 @@ public actor Registry {
 
     private func loadIfNeeded() throws {
         guard !loaded else { return }
-        loaded = true
-        guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            loaded = true
+            return
+        }
         let data = try Data(contentsOf: storeURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -69,7 +71,11 @@ public actor Registry {
             models = Dictionary(
                 envelope.models.map { ($0.id, $0.droppingVanishedParamValues()) },
                 uniquingKeysWith: { _, newer in newer })
+            loaded = true
         } catch {
+            let quarantineURL = directory.appendingPathComponent(
+                "models.json.corrupt-\(Int(Date().timeIntervalSince1970))")
+            try? FileManager.default.moveItem(at: storeURL, to: quarantineURL)
             throw RegistryError.corruptStore(description: String(describing: error))
         }
     }

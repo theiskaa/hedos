@@ -67,6 +67,45 @@ import Testing
     }
 }
 
+@Test func corruptStoreThrowsAndQuarantines() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let garbage = Data("not json".utf8)
+    try garbage.write(to: dir.appendingPathComponent("models.json"))
+
+    let registry = Registry(directory: dir)
+    await #expect(throws: RegistryError.self) {
+        try await registry.list()
+    }
+
+    let contents = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    let quarantined = contents.filter { $0.hasPrefix("models.json.corrupt-") }
+    #expect(quarantined.count == 1)
+    #expect(!contents.contains("models.json"))
+    let quarantinedData = try Data(
+        contentsOf: dir.appendingPathComponent(quarantined[0]))
+    #expect(quarantinedData == garbage)
+}
+
+@Test func registryRecoversAfterQuarantine() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try Data("not json".utf8).write(to: dir.appendingPathComponent("models.json"))
+
+    let registry = Registry(directory: dir)
+    await #expect(throws: RegistryError.self) {
+        try await registry.list()
+    }
+
+    let record = Fixtures.flux()
+    try await registry.register(record)
+    let listed = try await registry.list()
+    #expect(listed == [record])
+
+    let contents = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    #expect(contents.contains { $0.hasPrefix("models.json.corrupt-") })
+}
+
 @Test func storeCarriesSchemaVersion() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
