@@ -1,0 +1,18 @@
+id           = "python:diffusers"
+modalities   = ["image"]
+capabilities = ["image"]
+execution    = "job"
+alternatives = []
+
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]
