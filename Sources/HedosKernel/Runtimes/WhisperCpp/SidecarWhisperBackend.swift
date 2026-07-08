@@ -84,31 +84,17 @@ public actor SidecarWhisperBackend: WhisperBackend {
         let workdir = Registry.defaultDirectory()
             .appendingPathComponent("workdirs/python-whisper-cpp", isDirectory: true)
         try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
-
-        let python = envDir.appendingPathComponent("bin/python")
-        let realPython = python.resolvingSymlinksInPath()
-        let uvPythonRoot = realPython.deletingLastPathComponent().deletingLastPathComponent()
-        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath()
-        let darwinCache = tmp.deletingLastPathComponent().appendingPathComponent("C")
         let modelRoot = URL(fileURLWithPath: path).deletingLastPathComponent()
 
         return SidecarSpec(
             runtimeID: "\(runtimeID)#\(path)",
             executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: [
-                "-f", bundle.appendingPathComponent("sandbox.sb").path,
-                "-D", "VENV=\(envDir.resolvingSymlinksInPath().path)",
-                "-D", "UVPY=\(uvPythonRoot.path)",
-                "-D", "MODEL=\(modelRoot.path)",
-                "-D", "WORKDIR=\(workdir.resolvingSymlinksInPath().path)",
-                "-D", "RESOURCES=\(bundle.path)",
-                "-D", "TMP=\(tmp.path)",
-                "-D", "CACHE=\(darwinCache.path)",
-                python.path,
-                bundle.appendingPathComponent("main.py").path,
-                "--model", path,
-                "--workdir", workdir.path,
-            ],
+            arguments: SandboxArgv.build(
+                envDir: envDir, bundle: bundle, modelSandboxRoot: modelRoot, workdir: workdir,
+                trailingArguments: [
+                    "--model", path,
+                    "--workdir", workdir.path,
+                ]),
             workingDirectory: workdir,
             readyTimeout: .seconds(600))
     }

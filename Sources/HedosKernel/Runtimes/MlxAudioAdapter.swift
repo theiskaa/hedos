@@ -57,40 +57,11 @@ public struct MlxAudioAdapter: RuntimeAdapter {
                     let spec = try Self.spec(
                         runtimeID: runtimeID, envDir: envDir, bundle: bundle, record: record)
                     let producer = GPUProducer.generation(modelID: record.id)
-                    while true {
-                        if await !SidecarSupervisor.shared.isRunning(spec.runtimeID) {
-                            let verdict = try await governor.admit(
-                                modelID: record.id, name: record.name,
-                                footprintMB: record.footprintMB
-                            ) { reason in
-                                continuation.yield(.status(reason))
-                            }
-                            if verdict == .tight {
-                                continuation.yield(.status("Memory is tight — loading anyway"))
-                            }
-                            continuation.yield(.status("Starting speech runtime…"))
-                            let loadProducer = GPUProducer.load(modelID: record.id)
-                            await governor.gate.acquire(loadProducer)
-                            do {
-                                try await SidecarSupervisor.shared.ensureRunning(spec)
-                                await governor.gate.release(loadProducer)
-                            } catch {
-                                await governor.gate.release(loadProducer)
-                                await governor.markUnloaded(record.id)
-                                throw error
-                            }
-                            await governor.markLoaded(
-                                modelID: record.id, name: record.name,
-                                footprintMB: record.footprintMB,
-                                warmWindow: spec.idleTimeout
-                            ) {
-                                await SidecarSupervisor.shared.shutdown(spec.runtimeID)
-                            }
-                        }
-                        await governor.gate.acquire(producer)
-                        if await SidecarSupervisor.shared.isRunning(spec.runtimeID) { break }
-                        await governor.gate.release(producer)
-                    }
+                    try await SidecarWarmLoad.acquire(
+                        governor: governor, supervisor: SidecarSupervisor.shared, spec: spec,
+                        record: record, producer: producer, warmWindow: spec.idleTimeout,
+                        startingStatus: "Starting speech runtime…"
+                    ) { continuation.yield(.status($0)) }
 
                     var control: [String: JSONValue] = ["op": .string("speak")]
                     if case .object(let fields) = payload {
@@ -126,29 +97,16 @@ public struct MlxAudioAdapter: RuntimeAdapter {
             .appendingPathComponent("workdirs/python-mlx-audio", isDirectory: true)
         try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
 
-        let python = envDir.appendingPathComponent("bin/python")
-        let realPython = python.resolvingSymlinksInPath()
-        let uvPythonRoot = realPython.deletingLastPathComponent().deletingLastPathComponent()
-        let tmp = fm.temporaryDirectory.resolvingSymlinksInPath()
-        let darwinCache = tmp.deletingLastPathComponent().appendingPathComponent("C")
-
         return SidecarSpec(
             runtimeID: "\(runtimeID)#\(record.id)",
             executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: [
-                "-f", bundle.appendingPathComponent("sandbox.sb").path,
-                "-D", "VENV=\(envDir.resolvingSymlinksInPath().path)",
-                "-D", "UVPY=\(uvPythonRoot.path)",
-                "-D", "MODEL=\(paths.sandboxRoot)",
-                "-D", "WORKDIR=\(workdir.resolvingSymlinksInPath().path)",
-                "-D", "RESOURCES=\(bundle.path)",
-                "-D", "TMP=\(tmp.path)",
-                "-D", "CACHE=\(darwinCache.path)",
-                python.path,
-                bundle.appendingPathComponent("main.py").path,
-                "--model", paths.snapshot,
-                "--workdir", workdir.path,
-            ],
+            arguments: SandboxArgv.build(
+                envDir: envDir, bundle: bundle,
+                modelSandboxRoot: URL(fileURLWithPath: paths.sandboxRoot), workdir: workdir,
+                trailingArguments: [
+                    "--model", paths.snapshot,
+                    "--workdir", workdir.path,
+                ]),
             workingDirectory: workdir)
     }
 }

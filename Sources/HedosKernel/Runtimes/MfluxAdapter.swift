@@ -91,41 +91,11 @@ public struct MfluxAdapter: RuntimeAdapter, JobRunning {
         into continuation: AsyncThrowingStream<JobRuntimeEvent, Error>.Continuation
     ) async throws {
         let producer = GPUProducer.job(modelID: record.id)
-        while true {
-            if await !supervisor.isRunning(spec.runtimeID) {
-                let verdict = try await governor.admit(
-                    modelID: record.id, name: record.name,
-                    footprintMB: record.footprintMB
-                ) { reason in
-                    continuation.yield(.status(reason))
-                }
-                if verdict == .tight {
-                    continuation.yield(.status("Memory is tight — loading anyway"))
-                }
-                continuation.yield(.status("Starting image runtime…"))
-                let loadProducer = GPUProducer.load(modelID: record.id)
-                await governor.gate.acquire(loadProducer)
-                do {
-                    try await supervisor.ensureRunning(spec)
-                    await governor.gate.release(loadProducer)
-                } catch {
-                    await governor.gate.release(loadProducer)
-                    await governor.markUnloaded(record.id)
-                    throw error
-                }
-                let supervisor = supervisor
-                await governor.markLoaded(
-                    modelID: record.id, name: record.name,
-                    footprintMB: record.footprintMB,
-                    warmWindow: spec.idleTimeout
-                ) {
-                    await supervisor.shutdown(spec.runtimeID)
-                }
-            }
-            await governor.gate.acquire(producer)
-            if await supervisor.isRunning(spec.runtimeID) { break }
-            await governor.gate.release(producer)
-        }
+        try await SidecarWarmLoad.acquire(
+            governor: governor, supervisor: supervisor, spec: spec, record: record,
+            producer: producer, warmWindow: spec.idleTimeout,
+            startingStatus: "Starting image runtime…"
+        ) { continuation.yield(.status($0)) }
 
         var control: [String: JSONValue] = ["op": .string("image")]
         if case .object(let fields) = payload {
@@ -154,41 +124,20 @@ public struct MfluxAdapter: RuntimeAdapter, JobRunning {
             .appendingPathComponent("workdirs/python-mflux", isDirectory: true)
         try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
 
-        let python = envDir.appendingPathComponent("bin/python")
-        let realPython = URL(fileURLWithPath: canonicalPath(python))
-        let uvPythonRoot = realPython.deletingLastPathComponent().deletingLastPathComponent()
-        let tmp = URL(fileURLWithPath: canonicalPath(fm.temporaryDirectory))
-        let darwinCache = tmp.deletingLastPathComponent().appendingPathComponent("C")
-
         return SidecarSpec(
             runtimeID: "\(runtimeID)#\(record.id)",
             executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: [
-                "-f", bundle.appendingPathComponent("sandbox.sb").path,
-                "-D", "VENV=\(canonicalPath(envDir))",
-                "-D", "UVPY=\(uvPythonRoot.path)",
-                "-D", "MODEL=\(canonicalPath(URL(fileURLWithPath: paths.sandboxRoot)))",
-                "-D", "WORKDIR=\(canonicalPath(workdir))",
-                "-D", "RESOURCES=\(bundle.path)",
-                "-D", "TMP=\(tmp.path)",
-                "-D", "CACHE=\(darwinCache.path)",
-                python.path,
-                bundle.appendingPathComponent("main.py").path,
-                "--model", paths.snapshot,
-                "--name", record.name,
-                "--workdir", workdir.path,
-            ],
+            arguments: SandboxArgv.build(
+                envDir: envDir, bundle: bundle,
+                modelSandboxRoot: URL(fileURLWithPath: paths.sandboxRoot), workdir: workdir,
+                trailingArguments: [
+                    "--model", paths.snapshot,
+                    "--name", record.name,
+                    "--workdir", workdir.path,
+                ]),
             environment: ["PYTHONDONTWRITEBYTECODE": "1"],
             workingDirectory: workdir,
             readyTimeout: .seconds(600),
             idleTimeout: .seconds(60))
-    }
-
-    private static func canonicalPath(_ url: URL) -> String {
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard realpath(url.path, &buffer) != nil else {
-            return url.resolvingSymlinksInPath().path
-        }
-        return String(cString: buffer)
     }
 }

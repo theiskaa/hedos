@@ -8,9 +8,14 @@ public actor ResidencyManager {
     private var unloaders: [String: Unloader] = [:]
     private var idleTasks: [String: Task<Void, Never>] = [:]
     private var inflightUnloads: [String: Task<Bool, Never>] = [:]
+    private let clock: any Clock<Duration>
 
-    public init(defaultWarmWindow: Duration = .seconds(120)) {
+    public init(
+        defaultWarmWindow: Duration = .seconds(120),
+        clock: any Clock<Duration> = ContinuousClock()
+    ) {
         self.defaultWarmWindow = defaultWarmWindow
+        self.clock = clock
     }
 
     public func register(
@@ -39,8 +44,9 @@ public actor ResidencyManager {
         guard unloaders[modelID] != nil else { return }
         idleTasks[modelID]?.cancel()
         let window = warmWindow(for: modelID)
+        let clock = clock
         idleTasks[modelID] = Task {
-            try? await Task.sleep(for: window)
+            try? await clock.sleep(for: window)
             guard !Task.isCancelled else { return }
             await self.unloadNow(modelID)
         }

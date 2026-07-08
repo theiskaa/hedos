@@ -13,13 +13,46 @@ private func fixtureHabitat(home: URL, hub: URL? = nil) -> ModelHabitat {
 
 private func pollUntil(
     attempts: Int = 200, interval: Duration = .milliseconds(50),
+    retryEvery: Int = Int.max, onRetry: (@Sendable () -> Void)? = nil,
     _ condition: () async throws -> Bool
 ) async rethrows -> Bool {
-    for _ in 0..<attempts {
+    for attempt in 0..<attempts {
         if try await condition() { return true }
+        if attempt > 0, attempt % retryEvery == 0 {
+            onRetry?()
+        }
         try? await Task.sleep(for: interval)
     }
     return false
+}
+
+private func repeatingTrigger(
+    every interval: Duration = .milliseconds(250), times: Int = 40,
+    _ action: @escaping @Sendable () -> Void
+) -> Task<Void, Never> {
+    Task {
+        for _ in 0..<times {
+            if Task.isCancelled { return }
+            action()
+            try? await Task.sleep(for: interval)
+        }
+    }
+}
+
+private func awaitFirstEvent<T: Sendable>(
+    ceiling: Duration = .seconds(10),
+    collector: Task<T, Never>,
+    trigger: @escaping @Sendable () -> Void
+) async -> T {
+    let armed = repeatingTrigger(every: .milliseconds(250), times: 40, trigger)
+    let racer = Task {
+        try? await Task.sleep(for: ceiling)
+        collector.cancel()
+    }
+    let outcome = await collector.value
+    racer.cancel()
+    armed.cancel()
+    return outcome
 }
 
 @Test func habitatMapRoutesEventPathsToOwningKinds() {
@@ -76,16 +109,10 @@ private func pollUntil(
         }
         return false
     }
-    try await Task.sleep(for: .milliseconds(300))
-    try DiscoveryFixtures.makeOllamaStore(
-        at: store, tags: [.init(model: "second", tag: "latest", modelBytes: 64)])
-
-    let raced = Task {
-        try? await Task.sleep(for: .seconds(10))
-        collector.cancel()
+    let sawEvent = await awaitFirstEvent(collector: collector) {
+        try? DiscoveryFixtures.makeOllamaStore(
+            at: store, tags: [.init(model: "second", tag: "latest", modelBytes: 64)])
     }
-    let sawEvent = await collector.value
-    raced.cancel()
     #expect(sawEvent)
 }
 
@@ -105,15 +132,14 @@ private func pollUntil(
             await counter.increment()
         }
     }
-    try await Task.sleep(for: .milliseconds(300))
+
     for index in 0..<10 {
         try Data("x".utf8).write(to: root.appendingPathComponent("burst-\(index).bin"))
-        try await Task.sleep(for: .milliseconds(20))
     }
 
     let sawFirst = await pollUntil { await counter.value >= 1 }
     #expect(sawFirst)
-    try await Task.sleep(for: .seconds(2))
+    try await Task.sleep(for: .milliseconds(2400))
     let total = await counter.value
     #expect(total == 1)
     collector.cancel()
@@ -142,16 +168,10 @@ private actor EmissionCounter {
         }
         return false
     }
-    try await Task.sleep(for: .milliseconds(300))
-    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-    try Data("gguf".utf8).write(to: root.appendingPathComponent("late.gguf"))
-
-    let raced = Task {
-        try? await Task.sleep(for: .seconds(10))
-        collector.cancel()
+    let sawEvent = await awaitFirstEvent(collector: collector) {
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try? Data("gguf".utf8).write(to: root.appendingPathComponent("late.gguf"))
     }
-    let sawEvent = await collector.value
-    raced.cancel()
     #expect(sawEvent)
 }
 
@@ -179,20 +199,14 @@ private actor EmissionCounter {
         }
         return nil
     }
-    try await Task.sleep(for: .milliseconds(400))
-    try DiscoveryFixtures.makeOllamaStore(
-        at: store,
-        tags: [
-            .init(model: "seed", tag: "latest", modelBytes: 64),
-            .init(model: "fresh", tag: "latest", modelBytes: 64),
-        ])
-
-    let raced = Task {
-        try? await Task.sleep(for: .seconds(10))
-        collector.cancel()
+    let updated = await awaitFirstEvent(collector: collector) {
+        try? DiscoveryFixtures.makeOllamaStore(
+            at: store,
+            tags: [
+                .init(model: "seed", tag: "latest", modelBytes: 64),
+                .init(model: "fresh", tag: "latest", modelBytes: 64),
+            ])
     }
-    let updated = await collector.value
-    raced.cancel()
     await kernel.stopWatching()
 
     let summary = try #require(updated)
@@ -211,8 +225,11 @@ private actor EmissionCounter {
     defer { try? FileManager.default.removeItem(at: dir) }
     let looseDir = home.appendingPathComponent("Models")
     let gguf = looseDir.appendingPathComponent("here.gguf")
-    var payload = Data("GGUF".utf8)
-    payload.append(DiscoveryFixtures.data(bytes: 64))
+    let payload: Data = {
+        var data = Data("GGUF".utf8)
+        data.append(DiscoveryFixtures.data(bytes: 64))
+        return data
+    }()
     try FileManager.default.createDirectory(at: looseDir, withIntermediateDirectories: true)
     try payload.write(to: gguf)
 
@@ -222,16 +239,17 @@ private actor EmissionCounter {
     let records = try await kernel.shelf()
     let record = try #require(records.first { $0.name == "here" })
     await kernel.startWatching(debounce: .milliseconds(150))
-    try await Task.sleep(for: .milliseconds(400))
 
-    try FileManager.default.removeItem(at: gguf)
-    let missing = await pollUntil {
+    let deleteFile: @Sendable () -> Void = { try? FileManager.default.removeItem(at: gguf) }
+    deleteFile()
+    let missing = await pollUntil(retryEvery: 20, onRetry: deleteFile) {
         (try? await kernel.registry.get(id: record.id))??.state == .missing
     }
     #expect(missing)
 
-    try payload.write(to: gguf)
-    let healed = await pollUntil {
+    let healFile: @Sendable () -> Void = { try? payload.write(to: gguf) }
+    healFile()
+    let healed = await pollUntil(retryEvery: 20, onRetry: healFile) {
         (try? await kernel.registry.get(id: record.id))??.state == .ready
     }
     #expect(healed)
@@ -251,13 +269,18 @@ private actor EmissionCounter {
     _ = try await kernel.discover()
     await kernel.startWatching(debounce: .milliseconds(150))
     try await kernel.addWatchedFolder(extra.path)
-    try await Task.sleep(for: .milliseconds(400))
 
-    var payload = Data("GGUF".utf8)
-    payload.append(DiscoveryFixtures.data(bytes: 64))
-    try payload.write(to: extra.appendingPathComponent("dropped.gguf"))
+    let payload: Data = {
+        var data = Data("GGUF".utf8)
+        data.append(DiscoveryFixtures.data(bytes: 64))
+        return data
+    }()
+    let dropFile: @Sendable () -> Void = {
+        try? payload.write(to: extra.appendingPathComponent("dropped.gguf"))
+    }
+    dropFile()
 
-    let appeared = await pollUntil {
+    let appeared = await pollUntil(retryEvery: 20, onRetry: dropFile) {
         let records = (try? await kernel.shelf()) ?? []
         return records.contains { $0.name == "dropped" && $0.state == .ready }
     }
@@ -288,18 +311,13 @@ private actor EmissionCounter {
         for await _ in second { return true }
         return false
     }
-    try await Task.sleep(for: .milliseconds(400))
-    try DiscoveryFixtures.makeGGUF(at: looseDir.appendingPathComponent("fan.gguf"), bytes: 64)
-
-    let raced = Task {
-        try? await Task.sleep(for: .seconds(10))
-        firstTask.cancel()
-        secondTask.cancel()
+    let writeFan: @Sendable () -> Void = {
+        try? DiscoveryFixtures.makeGGUF(at: looseDir.appendingPathComponent("fan.gguf"), bytes: 64)
     }
-    let firstSaw = await firstTask.value
-    let secondSaw = await secondTask.value
-    raced.cancel()
-    #expect(firstSaw)
-    #expect(secondSaw)
+    async let firstSaw = awaitFirstEvent(collector: firstTask, trigger: writeFan)
+    async let secondSaw = awaitFirstEvent(collector: secondTask, trigger: writeFan)
+    let (gotFirst, gotSecond) = await (firstSaw, secondSaw)
+    #expect(gotFirst)
+    #expect(gotSecond)
     await kernel.stopWatching()
 }

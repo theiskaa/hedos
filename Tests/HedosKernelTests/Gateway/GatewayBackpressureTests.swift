@@ -11,6 +11,18 @@ private func readyChatModel() -> ModelRecord {
     return record
 }
 
+private func waitUntil(
+    ceiling: Duration = .seconds(5), interval: Duration = .milliseconds(20),
+    _ condition: @Sendable () async -> Bool
+) async {
+    var elapsed: Duration = .zero
+    while elapsed < ceiling {
+        if await condition() { return }
+        try? await Task.sleep(for: interval)
+        elapsed += interval
+    }
+}
+
 @Test func saturatedAdmissionAnswers503WithRetryAfterAndAudits() async throws {
     let port = FakeGatewayPort(
         records: [readyChatModel()],
@@ -57,22 +69,45 @@ private func readyChatModel() -> ModelRecord {
     await stack.stop()
 }
 
+private actor Signal {
+    private var fired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func fire() {
+        fired = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
+    }
+
+    func wait() async {
+        if fired { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
 @Test func inflightCapAnswers503WhenExceeded() async throws {
     struct HangingHandler: GatewayHandling {
+        let entered: Signal
+        let release: Signal
         var surface: GatewaySurface { .openAI }
         func handle(
             _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
             responder: GatewayResponder
         ) async throws -> GatewayOutcome {
-            try await Task.sleep(for: .seconds(3))
+            await entered.fire()
+            await release.wait()
             try await responder.respond(status: 200, body: Data("{}".utf8))
             return .ok
         }
     }
+    let entered = Signal()
+    let release = Signal()
     let stack = try await GatewayHarness.stack(
         port: FakeGatewayPort(),
         routes: [
-            GatewayRoute("POST", "/v1/chat/completions", HangingHandler(), inference: true)
+            GatewayRoute(
+                "POST", "/v1/chat/completions", HangingHandler(entered: entered, release: release),
+                inference: true)
         ],
         maxConcurrentInference: 1)
     let body = GatewayHarness.json(["model": "x"])
@@ -82,7 +117,7 @@ private func readyChatModel() -> ModelRecord {
             for: GatewayHarness.request(
                 "POST", stack.url("/v1/chat/completions"), token: stack.token, body: body))
     }
-    try await Task.sleep(for: .milliseconds(300))
+    await entered.wait()
 
     let (_, response) = try await URLSession.shared.data(
         for: GatewayHarness.request(
@@ -93,6 +128,7 @@ private func readyChatModel() -> ModelRecord {
 
     let entries = await stack.audit.tail(limit: 5)
     #expect(entries.last?.outcome == "saturated")
+    await release.fire()
     hanging.cancel()
     await stack.stop()
 }
@@ -132,7 +168,7 @@ private func readyChatModel() -> ModelRecord {
             }
         }
     }
-    try await Task.sleep(for: .milliseconds(200))
+    await waitUntil { await scheduler.queueDepth() == 3 }
     let depth = await scheduler.queueDepth()
     #expect(depth == 3)
 }

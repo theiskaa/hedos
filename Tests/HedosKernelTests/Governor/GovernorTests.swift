@@ -5,12 +5,14 @@ import Testing
 
 private func testGovernor(
     totalMemoryMB: Int = 65536,
-    defaultWarmWindow: Duration = .seconds(300)
+    defaultWarmWindow: Duration = .seconds(300),
+    clock: any Clock<Duration> = ContinuousClock()
 ) -> MemoryGovernor {
     MemoryGovernor(
         totalMemoryMB: totalMemoryMB,
         heavyThresholdMB: 1024,
-        defaultWarmWindow: defaultWarmWindow)
+        defaultWarmWindow: defaultWarmWindow,
+        clock: clock)
 }
 
 private actor ReasonLog {
@@ -59,6 +61,12 @@ private func waitUntil(
         try await Task.sleep(for: .milliseconds(5))
     }
     Issue.record("condition never became true")
+}
+
+private func settleScheduledWork(_ times: Int = 50) async {
+    for _ in 0..<times {
+        await Task.yield()
+    }
 }
 
 @Test func heavyLoadEvictsIdleResidentThenAdmits() async throws {
@@ -296,21 +304,38 @@ private func waitUntil(
 }
 
 @Test func newGenerationCancelsPendingIdleUnload() async throws {
-    let governor = testGovernor(defaultWarmWindow: .milliseconds(120))
+    let clock = TestClock()
+    let governor = testGovernor(defaultWarmWindow: .milliseconds(120), clock: clock)
     let unloaded = CleanupFlag()
     await governor.markLoaded(modelID: "tts", name: "kokoro", footprintMB: 350) {
         unloaded.mark()
     }
     await governor.beginGeneration("tts")
     await governor.endGeneration("tts")
-    try await Task.sleep(for: .milliseconds(40))
+    await settleScheduledWork()
+    clock.advance(by: .milliseconds(40))
     await governor.beginGeneration("tts")
-    try await Task.sleep(for: .milliseconds(250))
+    clock.advance(by: .milliseconds(250))
 
     #expect(unloaded.wasInvoked == false)
     #expect(await governor.isResident("tts"))
 
     await governor.endGeneration("tts")
+    await settleScheduledWork()
+    clock.advance(by: .milliseconds(121))
+    try await waitUntil { await governor.isResident("tts") == false }
+    #expect(unloaded.wasInvoked)
+}
+
+@Test func idleUnloadFiresRealTimeSmoke() async throws {
+    let governor = testGovernor(defaultWarmWindow: .milliseconds(60))
+    let unloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "tts", name: "kokoro", footprintMB: 350) {
+        unloaded.mark()
+    }
+    await governor.beginGeneration("tts")
+    await governor.endGeneration("tts")
+
     try await waitUntil { await governor.isResident("tts") == false }
     #expect(unloaded.wasInvoked)
 }
@@ -396,7 +421,8 @@ private func waitUntil(
 }
 
 @Test func quitTeardownSkipsUnloadsEntirely() async throws {
-    let governor = testGovernor(defaultWarmWindow: .milliseconds(50))
+    let clock = TestClock()
+    let governor = testGovernor(defaultWarmWindow: .milliseconds(50), clock: clock)
     let unloaded = CleanupFlag()
     await governor.markLoaded(modelID: "llm", name: "llm", footprintMB: 6000) {
         unloaded.mark()
@@ -404,8 +430,10 @@ private func waitUntil(
     await governor.beginGeneration("llm")
     await governor.endGeneration("llm")
     await governor.suspendForQuit()
+    await settleScheduledWork()
 
-    try await Task.sleep(for: .milliseconds(200))
+    clock.advance(by: .milliseconds(200))
+    await settleScheduledWork()
     #expect(unloaded.wasInvoked == false)
     #expect(await governor.isResident("llm"))
 }

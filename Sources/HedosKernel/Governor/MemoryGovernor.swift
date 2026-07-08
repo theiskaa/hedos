@@ -64,12 +64,13 @@ public actor MemoryGovernor {
         totalMemoryMB: Int = Int(ProcessInfo.processInfo.physicalMemory / (1 << 20)),
         heavyThresholdMB: Int = 1024,
         tightFraction: Double = 0.8,
-        defaultWarmWindow: Duration = .seconds(120)
+        defaultWarmWindow: Duration = .seconds(120),
+        clock: any Clock<Duration> = ContinuousClock()
     ) {
         self.totalMemoryMB = totalMemoryMB
         self.heavyThresholdMB = heavyThresholdMB
         self.tightFraction = tightFraction
-        self.residency = ResidencyManager(defaultWarmWindow: defaultWarmWindow)
+        self.residency = ResidencyManager(defaultWarmWindow: defaultWarmWindow, clock: clock)
     }
 
     public var defaultBudgetMB: Int {
