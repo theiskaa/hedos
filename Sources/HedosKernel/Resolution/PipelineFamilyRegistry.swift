@@ -25,24 +25,32 @@ public struct SchedulerFacts: Sendable, Hashable {
 public struct PipelineRefinement: Sendable, Hashable {
     public var schedulerClasses: Set<String>
     public var timestepSpacing: String?
+    public var nameSignals: Set<String>
     public var paramOverrides: [ParamSpec]
 
     public init(
         schedulerClasses: Set<String>,
         timestepSpacing: String? = nil,
+        nameSignals: Set<String> = [],
         paramOverrides: [ParamSpec]
     ) {
         self.schedulerClasses = schedulerClasses
         self.timestepSpacing = timestepSpacing
+        self.nameSignals = nameSignals
         self.paramOverrides = paramOverrides
     }
 
-    public func matches(_ facts: SchedulerFacts) -> Bool {
+    public func matches(_ facts: SchedulerFacts, repoHint: String?) -> Bool {
         guard let className = facts.className, schedulerClasses.contains(className) else {
             return false
         }
-        if let timestepSpacing { return facts.timestepSpacing == timestepSpacing }
-        return true
+        if let timestepSpacing, facts.timestepSpacing != timestepSpacing {
+            return false
+        }
+        guard !nameSignals.isEmpty else { return true }
+        guard let repoHint else { return false }
+        let lowered = repoHint.lowercased()
+        return nameSignals.contains { lowered.contains($0) }
     }
 }
 
@@ -82,11 +90,15 @@ public struct PipelineFamilyRegistry: Sendable {
         families.first { $0.classNames.contains(className) }
     }
 
-    public func profile(for className: String, scheduler: SchedulerFacts?) -> DiffusersPipelineProfile? {
+    public func profile(
+        for className: String, scheduler: SchedulerFacts?, repoHint: String? = nil
+    ) -> DiffusersPipelineProfile? {
         guard let family = family(for: className) else { return nil }
         var params = family.params
         if let scheduler,
-            let refinement = family.refinements.first(where: { $0.matches(scheduler) })
+            let refinement = family.refinements.first(where: {
+                $0.matches(scheduler, repoHint: repoHint)
+            })
         {
             for override in refinement.paramOverrides {
                 if let index = params.firstIndex(where: { $0.key == override.key }) {
@@ -189,6 +201,7 @@ public struct PipelineFamilyRegistry: Sendable {
     static let turboRefinement = PipelineRefinement(
         schedulerClasses: ["EulerAncestralDiscreteScheduler"],
         timestepSpacing: "trailing",
+        nameSignals: ["turbo", "lightning", "lcm"],
         paramOverrides: turboOverrides)
 
     public static let builtin = PipelineFamilyRegistry(families: [

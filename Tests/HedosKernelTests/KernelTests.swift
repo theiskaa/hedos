@@ -47,7 +47,7 @@ import Testing
     #expect(record.source.repo == "gemma4:latest")
     #expect(record.runtime.id == "generic:openai-server")
     #expect(record.runtime.resolved == .user)
-    #expect(record.runtime.tier == .native)
+    #expect(record.runtime.tier == .remote)
     #expect(record.state == .ready)
     #expect(record.params.contains { $0.key == "temperature" })
     #expect(!record.params.contains { $0.key == "context_length" })

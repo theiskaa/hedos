@@ -136,8 +136,9 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     #expect(differing.isEmpty)
 
     try DiscoveryFixtures.makeGGUF(at: b, bytes: 4096, fill: 0x01)
-    let identical = DuplicateDetector.detect(in: [model(a), model(b)], threshold: 8192)
-    #expect(identical.isEmpty)
+    let identical = DuplicateDetector.detect(in: [model(a), model(b)], threshold: 1024)
+    #expect(identical.count == 1)
+    #expect(identical.first?.wastedBytes == 4096)
 }
 
 private func makeStripedFile(

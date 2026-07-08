@@ -51,6 +51,7 @@ public enum ExecutionMode: String, Codable, Hashable, Sendable {
 public enum RunTier: String, Codable, Hashable, Sendable {
     case native
     case managed
+    case remote
     case recipeNeeded = "recipe-needed"
 }
 

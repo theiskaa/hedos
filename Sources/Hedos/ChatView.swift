@@ -879,7 +879,7 @@ struct ChatView: View {
 
     private func menuAnnotation(_ record: ModelRecord) -> String? {
         var parts: [String] = []
-        parts.append(record.runtime.tier == .native ? "native" : "managed")
+        parts.append(MetaGrid.tierWord(record.runtime.tier))
         if let fit = Fit.short(record) {
             parts.append(fit)
         }

@@ -4,9 +4,13 @@ public struct AppleFoundationAdapter: RuntimeAdapter {
     public var id: String { "apple-foundation" }
 
     private let backend: any AppleFoundationBackend
+    private let registry: Registry?
 
-    public init(backend: any AppleFoundationBackend = SystemFoundationBackend()) {
+    public init(
+        backend: any AppleFoundationBackend = SystemFoundationBackend(), registry: Registry? = nil
+    ) {
         self.backend = backend
+        self.registry = registry
     }
 
     public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
@@ -51,6 +55,8 @@ public struct AppleFoundationAdapter: RuntimeAdapter {
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
             let backend = backend
+            let registry = registry
+            let recordID = record.id
             let task = Task {
                 do {
                     let messages = try Self.messages(from: payload, capability: capability)
@@ -92,12 +98,36 @@ public struct AppleFoundationAdapter: RuntimeAdapter {
                                 completionTokens: completionTokens,
                                 durationMs: durationMs,
                                 ttftMs: ttftMs)))
+                    await Self.markReachable(recordID, registry: registry)
+                    continuation.finish()
+                } catch where Task.isCancelled {
+                    continuation.finish()
+                } catch is CancellationError {
                     continuation.finish()
                 } catch {
+                    if backend.availability() != .available {
+                        await Self.markUnreachable(recordID, registry: registry)
+                    }
                     continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private static func markUnreachable(_ id: String, registry: Registry?) async {
+        guard let registry else { return }
+        guard let record = try? await registry.get(id: id), record.source.kind == .builtin,
+            record.state != .missing
+        else { return }
+        _ = try? await registry.setStateIfPresent(id: id, to: .missing)
+    }
+
+    private static func markReachable(_ id: String, registry: Registry?) async {
+        guard let registry else { return }
+        guard let record = try? await registry.get(id: id), record.source.kind == .builtin,
+            record.state != .ready
+        else { return }
+        _ = try? await registry.setStateIfPresent(id: id, to: .ready)
     }
 }

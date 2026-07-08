@@ -348,6 +348,119 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(cancelled)
 }
 
+@Test func invokeFailureDemotesBuiltinRecordAndSuccessHeals() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let record = builtinRecord()
+    try await registry.register(record)
+
+    let failingBackend = FakeFoundationBackend(
+        state: .notEnabled,
+        failure: KernelError.runtimeFailed(
+            "Apple's model isn't available right now — check Apple Intelligence in System Settings."
+        ))
+    let failingAdapter = AppleFoundationAdapter(backend: failingBackend, registry: registry)
+    let payload: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])])
+    ])
+
+    var threw = false
+    do {
+        for try await _ in failingAdapter.invoke(record, .chat, payload: payload) {}
+    } catch {
+        threw = true
+    }
+    #expect(threw)
+    let demoted = try #require(try await registry.get(id: record.id))
+    #expect(demoted.state == .missing)
+
+    let healthyBackend = FakeFoundationBackend(events: [
+        .snapshot("Hi"), .done(promptTokens: 1, completionTokens: 1),
+    ])
+    let healthyAdapter = AppleFoundationAdapter(backend: healthyBackend, registry: registry)
+    for try await _ in healthyAdapter.invoke(record, .chat, payload: payload) {}
+
+    let healed = try #require(try await registry.get(id: record.id))
+    #expect(healed.state == .ready)
+}
+
+@Test func cancelledInvokeDoesNotDemoteHealthyBuiltinRecord() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let record = builtinRecord()
+    try await registry.register(record)
+
+    let backend = FakeFoundationBackend(
+        events: (1...200).map { .snapshot(String(repeating: "x", count: $0)) },
+        delayNs: 20_000_000)
+    let adapter = AppleFoundationAdapter(backend: backend, registry: registry)
+    let payload: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("go")])])
+    ])
+
+    let consumer = Task {
+        for try await chunk in adapter.invoke(record, .chat, payload: payload) {
+            if case .text = chunk { break }
+        }
+    }
+    _ = await consumer.result
+
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .ready)
+}
+
+@Test func malformedPayloadDoesNotDemoteHealthyBuiltinRecord() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let record = builtinRecord()
+    try await registry.register(record)
+
+    let backend = FakeFoundationBackend(state: .available)
+    let adapter = AppleFoundationAdapter(backend: backend, registry: registry)
+
+    var threw = false
+    do {
+        for try await _ in adapter.invoke(record, .chat, payload: .object([:])) {}
+    } catch {
+        threw = true
+        #expect(String(describing: error).contains("messages"))
+    }
+    #expect(threw)
+
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .ready)
+}
+
+@Test func contentGuardrailErrorDoesNotDemoteHealthyBuiltinRecord() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let record = builtinRecord()
+    try await registry.register(record)
+
+    let backend = FakeFoundationBackend(
+        state: .available,
+        failure: KernelError.runtimeFailed("Apple's model declined this request."))
+    let adapter = AppleFoundationAdapter(backend: backend, registry: registry)
+    let payload: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])])
+    ])
+
+    var threw = false
+    do {
+        for try await _ in adapter.invoke(record, .chat, payload: payload) {}
+    } catch {
+        threw = true
+    }
+    #expect(threw)
+
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .ready)
+}
+
 @Test func kernelChatsEndToEndThroughAppleFoundation() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

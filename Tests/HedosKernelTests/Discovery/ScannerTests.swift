@@ -93,12 +93,14 @@ import Testing
 }
 
 @Test func hfDefaultRootsNeverLetEnvOverrideHideTheStandardCache() {
-    let roots = HFCacheScanner.defaultRoots(environment: ["HF_HOME": "/tmp/stale-override"])
+    let fakeHome = URL(fileURLWithPath: "/tmp/hedos-fake-home-for-tests")
+    let roots = HFCacheScanner.defaultRoots(
+        environment: ["HF_HOME": "/tmp/stale-override"], home: fakeHome)
     #expect(roots.count == 2)
     #expect(roots[0].path == "/tmp/stale-override/hub")
-    #expect(roots[1].path.hasSuffix(".cache/huggingface/hub"))
+    #expect(roots[1].path == "\(fakeHome.path)/.cache/huggingface/hub")
 
-    let plain = HFCacheScanner.defaultRoots(environment: [:])
+    let plain = HFCacheScanner.defaultRoots(environment: [:], home: fakeHome)
     #expect(plain.count == 1)
 }
 

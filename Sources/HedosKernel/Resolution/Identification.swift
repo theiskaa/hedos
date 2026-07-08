@@ -87,8 +87,10 @@ public enum Identification {
         if FileManager.default.fileExists(atPath: modelIndexURL.path) {
             let pipelineClass = diffusersPipelineClass(at: modelIndexURL)
             let scheduler = schedulerFacts(in: container)
+            let repoHint = record.source.repo ?? record.name
             guard let pipelineClass,
-                let profile = pipelines.profile(for: pipelineClass, scheduler: scheduler)
+                let profile = pipelines.profile(
+                    for: pipelineClass, scheduler: scheduler, repoHint: repoHint)
             else {
                 return IdentifiedModel(
                     format: .diffusers,

@@ -40,6 +40,15 @@ public actor Registry {
         return models[id]
     }
 
+    @discardableResult
+    public func setStateIfPresent(id: String, to state: ModelState) throws -> Bool {
+        try loadIfNeeded()
+        guard models[id] != nil else { return false }
+        models[id]?.state = state
+        try save()
+        return true
+    }
+
     public func list() throws -> [ModelRecord] {
         try loadIfNeeded()
         return models.values.sorted {

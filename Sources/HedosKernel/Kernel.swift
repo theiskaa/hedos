@@ -57,6 +57,7 @@ public actor Kernel {
     private var watcherDebounce: Duration = .seconds(2)
     private var lastSummary: DiscoverySummary?
     private var shelfSubscribers: [UUID: AsyncStream<DiscoverySummary>.Continuation] = [:]
+    private let duplicateThreshold: Int64
 
     public init(
         directory: URL,
@@ -64,10 +65,12 @@ public actor Kernel {
         governor: MemoryGovernor = .shared,
         secrets: any SecretStore = KeychainStore(),
         habitat: ModelHabitat = ModelHabitat(),
-        vmHost: (any VMHost)? = nil
+        vmHost: (any VMHost)? = nil,
+        duplicateThreshold: Int64 = DuplicateDetector.defaultThreshold
     ) {
         self.habitat = habitat
         self.directory = directory
+        self.duplicateThreshold = duplicateThreshold
         let registry = Registry(directory: directory)
         let artifactStore = ArtifactStore(
             root: directory.appendingPathComponent("outputs", isDirectory: true))
@@ -81,7 +84,8 @@ public actor Kernel {
         self.pipelineStore = PipelineStore(
             directory: directory.appendingPathComponent("pipelines", isDirectory: true))
         self.secrets = secrets
-        let base = adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets)
+        let base =
+            adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets, registry: registry)
         self.baseAdapters = base
         self.adapters = base
         self.scheduler = JobScheduler(
@@ -99,7 +103,7 @@ public actor Kernel {
     }
 
     private static func defaultAdapters(
-        governor: MemoryGovernor, secrets: any SecretStore
+        governor: MemoryGovernor, secrets: any SecretStore, registry: Registry
     ) -> [any RuntimeAdapter] {
         [
             LlamaCppAdapter(governor: governor),
@@ -109,8 +113,8 @@ public actor Kernel {
             MfluxAdapter(governor: governor),
             DiffusersAdapter(governor: governor),
             MlxLmAdapter(governor: governor),
-            AppleFoundationAdapter(),
-            OpenAIEndpointAdapter(secrets: secrets),
+            AppleFoundationAdapter(registry: registry),
+            OpenAIEndpointAdapter(secrets: secrets, registry: registry),
         ]
     }
 
@@ -121,14 +125,14 @@ public actor Kernel {
     }
 
     private func reloadUserRuntimes() async -> [String] {
-        let approved = Set(await settings.models().approvedNetworkRuntimes)
+        let models = await settings.models()
         let reserved = Set(baseAdapters.map(\.id))
         let store = UserRuntimeStore(
             directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
         let (manifests, issues) = store.load(reservedIDs: reserved)
         var manifestAdapters: [any RuntimeAdapter] = []
         for manifest in manifests {
-            let approvedNetwork = approved.contains(manifest.id)
+            let approvedNetwork = Self.isNetworkApproved(manifest, in: models)
             if manifest.vm != nil {
                 manifestAdapters.append(VMCommandAdapter(manifest: manifest, host: vmHost))
             } else if manifest.serve != nil {
@@ -151,7 +155,9 @@ public actor Kernel {
         let manifestIssues = await reloadUserRuntimes()
         let models = await settings.models()
         let scanners = habitat.scanners(kinds: nil, models: models)
-        var summary = try await DiscoveryService(scanners: scanners).discover(into: registry)
+        var summary = try await DiscoveryService(
+            scanners: scanners, duplicateThreshold: duplicateThreshold
+        ).discover(into: registry)
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
         summary.issues.append(contentsOf: manifestIssues)
         lastSummary = summary
@@ -204,28 +210,48 @@ public actor Kernel {
     }
 
     private func scopedRescan(_ kinds: Set<SourceKind>) async {
-        guard var summary = lastSummary else {
+        guard lastSummary != nil else {
             if let full = try? await discover() {
                 emitShelfUpdate(full)
             }
             return
         }
+        let manifestIssues = await reloadUserRuntimes()
         let models = await settings.models()
         let scanners = habitat.scanners(kinds: kinds, models: models)
         guard !scanners.isEmpty else { return }
         guard
-            let partial = try? await DiscoveryService(scanners: scanners).discover(into: registry)
+            let partial = try? await DiscoveryService(
+                scanners: scanners, duplicateThreshold: duplicateThreshold
+            ).discover(into: registry)
         else { return }
         try? await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
 
         let affected = Set(scanners.flatMap(\.kinds))
+        let duplicates = await recomputeDuplicates()
+
+        guard var summary = lastSummary else { return }
         for kind in affected {
             summary.perKind[kind] = partial.perKind[kind]
         }
         summary.totalCount = summary.perKind.values.reduce(0) { $0 + $1.count }
         summary.totalBytes = summary.perKind.values.reduce(0) { $0 + $1.bytes }
+        summary.duplicates = duplicates
+        summary.issues.append(contentsOf: manifestIssues)
         lastSummary = summary
         emitShelfUpdate(summary)
+    }
+
+    private func recomputeDuplicates() async -> [DuplicateGroup] {
+        guard let live = try? await registry.list() else { return [] }
+        let models = live.filter { $0.state != .missing }.map { record in
+            DiscoveredModel(
+                name: record.name,
+                source: record.source,
+                footprintBytes: Int64(record.footprintMB ?? 0) * (1 << 20),
+                primaryWeightPath: record.primaryWeightPath)
+        }
+        return DuplicateDetector.detect(in: models, threshold: duplicateThreshold)
     }
 
     private func emitShelfUpdate(_ summary: DiscoverySummary) {
@@ -261,12 +287,12 @@ public actor Kernel {
 
     public func pendingNetworkConsent(for modelID: String) async throws -> ManifestConsentInfo? {
         guard let record = try await registry.get(id: modelID) else { return nil }
-        let approved = Set(await settings.models().approvedNetworkRuntimes)
+        let models = await settings.models()
         let store = UserRuntimeStore(
             directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
         let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
         for manifest in manifests
-        where manifest.permissions.network && !approved.contains(manifest.id) {
+        where manifest.permissions.network && !Self.isNetworkApproved(manifest, in: models) {
             if manifest.detect?.matches(record) == true {
                 return ManifestConsentInfo(id: manifest.id, paths: manifest.permissions.paths)
             }
@@ -274,8 +300,17 @@ public actor Kernel {
         return nil
     }
 
+    static func isNetworkApproved(_ manifest: RuntimeManifest, in models: ModelsSettings) -> Bool {
+        guard models.approvedNetworkRuntimes.contains(manifest.id) else { return false }
+        return models.approvedNetworkRuntimeHashes[manifest.id] == manifest.contentHash
+    }
+
     public func approveNetworkRuntime(_ id: String) async throws {
-        _ = try await settings.approveNetworkRuntime(id)
+        let store = UserRuntimeStore(
+            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
+        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
+        let contentHash = manifests.first(where: { $0.id == id })?.contentHash
+        _ = try await settings.approveNetworkRuntime(id, contentHash: contentHash)
         _ = await reloadUserRuntimes()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
     }
@@ -327,7 +362,7 @@ public actor Kernel {
             capabilities: [.chat, .complete],
             source: ModelSource(kind: .endpoint, path: base, repo: model),
             runtime: RuntimeRef(
-                id: "generic:openai-server", resolved: .user, tier: .native,
+                id: "generic:openai-server", resolved: .user, tier: .remote,
                 confirmedAt: Date()),
             params: Identification.endpointParams,
             execution: .stream,

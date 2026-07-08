@@ -256,6 +256,40 @@ private actor EmissionCounter {
     await kernel.stopWatching()
 }
 
+@Test func scopedRescanDropsStaleDuplicateCardForRemovedModel() async throws {
+    let home = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: home) }
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let looseDir = home.appendingPathComponent("Models")
+    try FileManager.default.createDirectory(at: looseDir, withIntermediateDirectories: true)
+
+    let dupA = looseDir.appendingPathComponent("dup-a.gguf")
+    let dupB = looseDir.appendingPathComponent("dup-b.gguf")
+    try DiscoveryFixtures.makeGGUF(at: dupA, bytes: 4096, fill: 0x5A)
+    try DiscoveryFixtures.makeGGUF(at: dupB, bytes: 4096, fill: 0x5A)
+
+    let kernel = Kernel(
+        directory: dir, secrets: InMemorySecretStore(), habitat: fixtureHabitat(home: home),
+        duplicateThreshold: 1024)
+    let initial = try await kernel.discover()
+    #expect(initial.duplicates.count == 1)
+    #expect(initial.duplicates.first?.paths.count == 2)
+
+    await kernel.startWatching(debounce: .milliseconds(150))
+    let updates = await kernel.shelfUpdates()
+    let collector = Task { () -> Bool in
+        for await summary in updates {
+            if summary.duplicates.isEmpty { return true }
+        }
+        return false
+    }
+    let removeDup: @Sendable () -> Void = { try? FileManager.default.removeItem(at: dupB) }
+    let sawEmptyDuplicates = await awaitFirstEvent(collector: collector, trigger: removeDup)
+    #expect(sawEmptyDuplicates)
+    await kernel.stopWatching()
+}
+
 @Test func rearmOnAddWatchedFolderWatchesNewRoot() async throws {
     let home = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: home) }

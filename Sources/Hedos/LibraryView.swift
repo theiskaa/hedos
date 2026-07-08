@@ -149,6 +149,7 @@ enum MetaGrid {
         switch tier {
         case .native: "native"
         case .managed: "managed"
+        case .remote: "remote"
         case .recipeNeeded: "needs recipe"
         }
     }

@@ -117,6 +117,37 @@ import Testing
     #expect((raw["models"] as? [[String: Any]])?.count == 1)
 }
 
+@Test func setStateIfPresentMutatesOnlyStateAndPreservesTierAndAlternatives() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+
+    var record = Fixtures.gguf()
+    record.state = .ready
+    record.runtime.tier = .native
+    record.runtime.alternatives = ["generic:llama.cpp", "generic:openai-server"]
+    try await registry.register(record)
+
+    let changed = try await registry.setStateIfPresent(id: record.id, to: .missing)
+    #expect(changed)
+
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .missing)
+    #expect(after.runtime.tier == .native)
+    #expect(after.runtime.alternatives == ["generic:llama.cpp", "generic:openai-server"])
+    #expect(after.footprintMB == record.footprintMB)
+    #expect(after.name == record.name)
+}
+
+@Test func setStateIfPresentReturnsFalseWhenRecordMissing() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+
+    let changed = try await registry.setStateIfPresent(id: "nonexistent", to: .ready)
+    #expect(!changed)
+}
+
 @Test func listSortsByNameCaseInsensitively() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

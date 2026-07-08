@@ -3,6 +3,25 @@ import Testing
 
 @testable import HedosKernel
 
+private func manifestFixtureHabitat(home: URL) -> ModelHabitat {
+    ModelHabitat(home: home, environment: ["HF_HOME": "", "HF_HUB_CACHE": ""])
+}
+
+private func pollUntilManifestCondition(
+    attempts: Int = 200, interval: Duration = .milliseconds(50),
+    retryEvery: Int = Int.max, onRetry: (@Sendable () -> Void)? = nil,
+    _ condition: () async throws -> Bool
+) async rethrows -> Bool {
+    for attempt in 0..<attempts {
+        if try await condition() { return true }
+        if attempt > 0, attempt % retryEvery == 0 {
+            onRetry?()
+        }
+        try? await Task.sleep(for: interval)
+    }
+    return false
+}
+
 private func writeUserManifest(_ text: String, kernelDir: URL, name: String) throws {
     let runtimesDir = kernelDir.appendingPathComponent("runtimes.d", isDirectory: true)
     try FileManager.default.createDirectory(at: runtimesDir, withIntermediateDirectories: true)
@@ -137,6 +156,99 @@ private let darkManifest = """
     #expect(resolved.runtime.id == "net-runner")
     #expect(resolved.state == .ready)
     #expect(try await kernel.pendingNetworkConsent(for: record.id) == nil)
+}
+
+@Test func editingManifestAfterApprovalReTriggersNetworkConsent() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let networkManifest = darkManifest
+        .replacingOccurrences(of: "id = \"dark-runner\"", with: "id = \"net-runner\"")
+        .replacingOccurrences(
+            of: "[invoke]", with: "[permissions]\nnetwork = true\n[invoke]")
+    try writeUserManifest(networkManifest, kernelDir: dir, name: "net-runner")
+    let record = try darkRecord(in: dir)
+    try await kernel.registry.register(record)
+
+    _ = try await kernel.discover()
+    try await kernel.approveNetworkRuntime("net-runner")
+    let resolved = try #require(try await kernel.registry.get(id: record.id))
+    #expect(resolved.state == .ready)
+    #expect(try await kernel.pendingNetworkConsent(for: record.id) == nil)
+
+    let editedManifest = networkManifest
+        .replacingOccurrences(
+            of: "command = \"echo {prompt}\"", with: "command = \"echo edited {prompt}\"")
+    try writeUserManifest(editedManifest, kernelDir: dir, name: "net-runner")
+
+    _ = try await kernel.discover()
+    let consentAfterEdit = try await kernel.pendingNetworkConsent(for: record.id)
+    #expect(consentAfterEdit?.id == "net-runner")
+
+    let demoted = try #require(try await kernel.registry.get(id: record.id))
+    #expect(demoted.runtime.tier == .recipeNeeded)
+
+    try await kernel.approveNetworkRuntime("net-runner")
+    #expect(try await kernel.pendingNetworkConsent(for: record.id) == nil)
+    let reResolved = try #require(try await kernel.registry.get(id: record.id))
+    #expect(reResolved.state == .ready)
+}
+
+@Test func manifestDeletionDemotesRecordViaScopedRescanAndReinstallHeals() async throws {
+    let home = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: home) }
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let looseDir = home.appendingPathComponent("Models")
+    try FileManager.default.createDirectory(at: looseDir, withIntermediateDirectories: true)
+
+    let kernel = Kernel(
+        directory: dir, secrets: InMemorySecretStore(),
+        habitat: manifestFixtureHabitat(home: home))
+    try writeUserManifest(darkManifest, kernelDir: dir, name: "dark-runner")
+    let record = try darkRecord(in: dir)
+    try await kernel.registry.register(record)
+
+    _ = try await kernel.discover()
+    let ready = try #require(try await kernel.registry.get(id: record.id))
+    #expect(ready.runtime.id == "dark-runner")
+    #expect(ready.state == .ready)
+
+    await kernel.startWatching(debounce: .milliseconds(150))
+
+    let manifestURL = dir.appendingPathComponent("runtimes.d/dark-runner.toml")
+    let removeManifest: @Sendable () -> Void = {
+        try? FileManager.default.removeItem(at: manifestURL)
+    }
+    let nudgeLoose: @Sendable () -> Void = {
+        try? Data(UUID().uuidString.utf8).write(
+            to: looseDir.appendingPathComponent("\(UUID().uuidString).txt"))
+    }
+    removeManifest()
+    nudgeLoose()
+
+    let demoted = await pollUntilManifestCondition(
+        retryEvery: 20,
+        onRetry: {
+            removeManifest()
+            nudgeLoose()
+        }
+    ) {
+        (try? await kernel.registry.get(id: record.id))??.state != .ready
+    }
+    #expect(demoted)
+    let afterDeletion = try #require(try await kernel.registry.get(id: record.id))
+    #expect(afterDeletion.runtime.tier == .recipeNeeded)
+    #expect(afterDeletion.state == .unresolved)
+
+    try writeUserManifest(darkManifest, kernelDir: dir, name: "dark-runner")
+    let healed = await pollUntilManifestCondition(retryEvery: 20, onRetry: nudgeLoose) {
+        (try? await kernel.registry.get(id: record.id))??.state == .ready
+    }
+    #expect(healed)
+    let afterHeal = try #require(try await kernel.registry.get(id: record.id))
+    #expect(afterHeal.runtime.id == "dark-runner")
+    await kernel.stopWatching()
 }
 
 @Test func manifestTemplateRendersDetectFromRecordFacts() throws {

@@ -56,6 +56,23 @@ private func param(_ params: [ParamSpec], _ key: String) -> ParamSpec? {
     #expect(guidance.range == [.double(0), .double(2)])
 }
 
+@Test func nonTurboSDXLWithTrailingEulerAncestralDoesNotGetTurboClamped() throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    let record = try hfDiffusersRecord(
+        hub: hub, repo: "realistic-vision-xl",
+        modelIndex: DiscoveryFixtures.sdxlModelIndex,
+        scheduler: DiscoveryFixtures.turboSchedulerConfig)
+
+    let identified = Identification.identify(record)
+    #expect(identified.modality == .image)
+    let steps = try #require(param(identified.params, "steps"))
+    #expect(steps.defaultValue == .int(30))
+    #expect(steps.range == [.int(1), .int(75)])
+    let guidance = try #require(param(identified.params, "guidance"))
+    #expect(guidance.defaultValue == .double(7.0))
+}
+
 @Test func baseSDXLLeadingSchedulerKeepsDefaultSchema() throws {
     let hub = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: hub) }
