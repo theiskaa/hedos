@@ -128,15 +128,24 @@ public actor EnvironmentManager {
         }
     }
 
+    static func scrubbedEnvironment(
+        base: [String: String], overrides: [String: String]
+    ) -> [String: String] {
+        var env = base
+        env.removeValue(forKey: "PYTHONPATH")
+        env.removeValue(forKey: "PYTHONHOME")
+        for (key, value) in overrides { env[key] = value }
+        return env
+    }
+
     static func runProcess(
         _ executable: URL, _ arguments: [String], environment extra: [String: String]
     ) async throws {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
-        var env = ProcessInfo.processInfo.environment
-        for (key, value) in extra { env[key] = value }
-        process.environment = env
+        process.environment = scrubbedEnvironment(
+            base: ProcessInfo.processInfo.environment, overrides: extra)
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe

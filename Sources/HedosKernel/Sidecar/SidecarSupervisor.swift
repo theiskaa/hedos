@@ -71,6 +71,16 @@ public actor SidecarSupervisor {
         sidecars[id]?.process.processIdentifier
     }
 
+    static func scrubbedEnvironment(
+        base: [String: String], overrides: [String: String]
+    ) -> [String: String] {
+        var env = base
+        env.removeValue(forKey: "PYTHONPATH")
+        env.removeValue(forKey: "PYTHONHOME")
+        for (key, value) in overrides { env[key] = value }
+        return env
+    }
+
     public func ensureRunning(_ spec: SidecarSpec) async throws {
         if let existing = sidecars[spec.runtimeID], existing.process.isRunning { return }
         sidecars[spec.runtimeID] = nil
@@ -78,9 +88,8 @@ public actor SidecarSupervisor {
         let process = Process()
         process.executableURL = spec.executable
         process.arguments = spec.arguments
-        var env = ProcessInfo.processInfo.environment
-        for (key, value) in spec.environment { env[key] = value }
-        process.environment = env
+        process.environment = Self.scrubbedEnvironment(
+            base: ProcessInfo.processInfo.environment, overrides: spec.environment)
         if let workingDirectory = spec.workingDirectory {
             process.currentDirectoryURL = workingDirectory
         }

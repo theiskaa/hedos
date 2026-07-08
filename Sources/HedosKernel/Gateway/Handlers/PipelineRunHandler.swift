@@ -2,6 +2,7 @@ import Foundation
 
 struct PipelineRunHandler: GatewayHandling {
     var surface: GatewaySurface { .openAI }
+    var runTimeout: Duration = .seconds(300)
 
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
@@ -75,38 +76,67 @@ struct PipelineRunHandler: GatewayHandling {
         }
     }
 
+    private enum TextDrain { case done(failure: String?), timedOut }
+
+    private func timeoutMessage() -> String {
+        "the pipeline run timed out after \(Int(runTimeout.components.seconds))s"
+    }
+
     private func renderText(
         _ stream: AsyncStream<PipelineEvent>, model: String, responder: GatewayResponder
     ) async throws {
         let body = try await responder.beginStream(contentType: "text/event-stream")
         let id = "pipe-\(UUID().uuidString.lowercased())"
         let created = Int(Date().timeIntervalSince1970)
-        var first = true
-        var failure: String?
-        for await event in stream {
-            switch event {
-            case .delta(_, let text):
-                try await body.write(
-                    OpenAIWire.sseFrame(
-                        OpenAIWire.chunkFrame(
-                            id: id, created: created, model: model, content: text, role: first)))
-                first = false
-            case .failed(let message):
-                failure = message
-            default:
-                break
+
+        let drain: TextDrain = try await withThrowingTaskGroup(of: TextDrain.self) { group in
+            group.addTask {
+                var first = true
+                var failure: String?
+                for await event in stream {
+                    switch event {
+                    case .delta(_, let text):
+                        try await body.write(
+                            OpenAIWire.sseFrame(
+                                OpenAIWire.chunkFrame(
+                                    id: id, created: created, model: model, content: text,
+                                    role: first)))
+                        first = false
+                    case .failed(let message):
+                        failure = message
+                    default:
+                        break
+                    }
+                }
+                return .done(failure: failure)
             }
+            group.addTask {
+                try await Task.sleep(for: runTimeout)
+                return .timedOut
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
-        if let failure {
+
+        switch drain {
+        case .done(let failure):
+            if let failure {
+                try await body.write(
+                    OpenAIWire.sseFrame([
+                        "error": ["message": failure, "type": "api_error"]
+                    ]))
+            } else {
+                var finalFrame = OpenAIWire.chunkFrame(
+                    id: id, created: created, model: model, finishReason: "stop")
+                finalFrame["usage"] = OpenAIWire.usage(nil)
+                try await body.write(OpenAIWire.sseFrame(finalFrame))
+            }
+        case .timedOut:
             try await body.write(
                 OpenAIWire.sseFrame([
-                    "error": ["message": failure, "type": "api_error"]
+                    "error": ["message": timeoutMessage(), "type": "timeout_error"]
                 ]))
-        } else {
-            var finalFrame = OpenAIWire.chunkFrame(
-                id: id, created: created, model: model, finishReason: "stop")
-            finalFrame["usage"] = OpenAIWire.usage(nil)
-            try await body.write(OpenAIWire.sseFrame(finalFrame))
         }
         try await body.write(OpenAIWire.sseDone)
         try await body.end()
@@ -115,46 +145,73 @@ struct PipelineRunHandler: GatewayHandling {
     private func renderAudio(
         _ stream: AsyncStream<PipelineEvent>, responder: GatewayResponder
     ) async throws {
-        var pcm = Data()
-        var sampleRate = 24000
-        var failure: String?
-        for await event in stream {
-            switch event {
-            case .audio(let frame):
-                if pcm.isEmpty { sampleRate = frame.sampleRate }
-                pcm.append(frame.data)
-            case .failed(let message):
-                failure = message
-            default:
-                break
+        typealias Collected = (pcm: Data, sampleRate: Int, failure: String?)
+        let collected: Collected = try await withThrowingTaskGroup(of: Collected.self) { group in
+            group.addTask {
+                var pcm = Data()
+                var sampleRate = 24000
+                var failure: String?
+                for await event in stream {
+                    switch event {
+                    case .audio(let frame):
+                        if pcm.isEmpty { sampleRate = frame.sampleRate }
+                        pcm.append(frame.data)
+                    case .failed(let message):
+                        failure = message
+                    default:
+                        break
+                    }
+                }
+                return (pcm, sampleRate, failure)
             }
+            group.addTask {
+                try await Task.sleep(for: runTimeout)
+                throw GatewayError(.timeout, timeoutMessage())
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
-        if let failure { throw GatewayError(.serverError, failure) }
-        guard !pcm.isEmpty else {
+        if let failure = collected.failure { throw GatewayError(.serverError, failure) }
+        guard !collected.pcm.isEmpty else {
             throw GatewayError(.serverError, "the pipeline produced no audio")
         }
         try await responder.respond(
             status: 200, contentType: "audio/wav",
-            body: SpeechAudio.wavData(fromFloat32: pcm, sampleRate: sampleRate))
+            body: SpeechAudio.wavData(fromFloat32: collected.pcm, sampleRate: collected.sampleRate))
     }
 
     private func renderImage(
         _ stream: AsyncStream<PipelineEvent>, port: any GatewayPort, responder: GatewayResponder
     ) async throws {
-        var artifactID: String?
-        var failure: String?
-        for await event in stream {
-            switch event {
-            case .artifact(let id):
-                artifactID = id
-            case .failed(let message):
-                failure = message
-            default:
-                break
+        typealias Collected = (artifactID: String?, failure: String?)
+        let collected: Collected = try await withThrowingTaskGroup(of: Collected.self) { group in
+            group.addTask {
+                var artifactID: String?
+                var failure: String?
+                for await event in stream {
+                    switch event {
+                    case .artifact(let id):
+                        artifactID = id
+                    case .failed(let message):
+                        failure = message
+                    default:
+                        break
+                    }
+                }
+                return (artifactID, failure)
             }
+            group.addTask {
+                try await Task.sleep(for: runTimeout)
+                throw GatewayError(.timeout, timeoutMessage())
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
         }
-        if let failure { throw GatewayError(.serverError, failure) }
-        guard let artifactID, let data = try await port.artifactData(id: artifactID) else {
+        if let failure = collected.failure { throw GatewayError(.serverError, failure) }
+        guard let artifactID = collected.artifactID, let data = try await port.artifactData(id: artifactID)
+        else {
             throw GatewayError(.serverError, "the pipeline produced no image")
         }
         try await responder.respond(

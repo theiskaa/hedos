@@ -9,6 +9,7 @@ public struct GatewayError: Error, Sendable, Hashable {
         case methodNotAllowed = "method_not_allowed"
         case notSupported = "not_supported"
         case overloaded = "overloaded"
+        case timeout = "timeout_error"
         case serverError = "api_error"
     }
 
@@ -35,6 +36,7 @@ public struct GatewayError: Error, Sendable, Hashable {
         case .methodNotAllowed: 405
         case .notSupported: 501
         case .overloaded: 503
+        case .timeout: 504
         case .serverError: 500
         }
     }
@@ -47,6 +49,7 @@ public struct GatewayError: Error, Sendable, Hashable {
         case .notFound: "not_found"
         case .notSupported: "not_supported"
         case .overloaded: "saturated"
+        case .timeout: "timeout"
         case .serverError: "error"
         }
     }

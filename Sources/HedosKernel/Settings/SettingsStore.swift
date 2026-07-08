@@ -73,11 +73,27 @@ public actor SettingsStore {
     public func addWatchedFolder(_ path: String) throws -> ModelsSettings {
         var settings = models()
         let normalized = (path as NSString).expandingTildeInPath
+        try Self.rejectIfTooBroad(normalized)
         if !settings.watchedFolders.contains(normalized) {
             settings.watchedFolders.append(normalized)
             try save(settings)
         }
         return settings
+    }
+
+    static func rejectIfTooBroad(_ path: String) throws {
+        let resolved = ManifestSupport.canonicalPath(URL(fileURLWithPath: path)).lowercased()
+        if resolved == "/" {
+            throw KernelError.runtimeFailed(
+                "watching / would expose the entire filesystem to discovery")
+        }
+        let home = ManifestSupport.canonicalPath(
+            FileManager.default.homeDirectoryForCurrentUser
+        ).lowercased()
+        if resolved == home || home.hasPrefix(resolved + "/") {
+            throw KernelError.runtimeFailed(
+                "watching \(path) would expose your entire home folder to discovery")
+        }
     }
 
     @discardableResult
@@ -92,10 +108,20 @@ public actor SettingsStore {
     }
 
     @discardableResult
-    public func approveNetworkRuntime(_ id: String) throws -> ModelsSettings {
+    public func approveNetworkRuntime(_ id: String, contentHash: String? = nil) throws
+        -> ModelsSettings
+    {
         var settings = models()
+        var changed = false
         if !settings.approvedNetworkRuntimes.contains(id) {
             settings.approvedNetworkRuntimes.append(id)
+            changed = true
+        }
+        if let contentHash, settings.approvedNetworkRuntimeHashes[id] != contentHash {
+            settings.approvedNetworkRuntimeHashes[id] = contentHash
+            changed = true
+        }
+        if changed {
             try save(settings)
         }
         return settings

@@ -98,6 +98,7 @@ public struct RuntimeManifest: Sendable, Hashable {
     public var vm: ManifestVM?
     public var directory: URL?
     public var provenance: RuntimeProvenance?
+    public var contentHash: String?
 
     public static func load(table: TOMLTable, directory: URL?) throws -> RuntimeManifest {
         guard let id = table["id"]?.stringValue, !id.isEmpty else {

@@ -13,13 +13,25 @@ import Testing
         ])
 }
 
-@Test func tokensRecognizeKeywordsRegardlessOfDeclaredLanguage() {
+@Test func tokensRecognizeKeywordsAreLanguageAware() {
     let swiftTokens = CodeHighlighter.tokens("def", language: "swift")
     let pythonTokens = CodeHighlighter.tokens("def", language: "python")
     let unknownTokens = CodeHighlighter.tokens("def", language: "not-a-real-language")
-    #expect(swiftTokens == [CodeToken(text: "def", kind: .keyword)])
+    #expect(swiftTokens == [CodeToken(text: "def", kind: .plain)])
     #expect(pythonTokens == [CodeToken(text: "def", kind: .keyword)])
-    #expect(unknownTokens == [CodeToken(text: "def", kind: .keyword)])
+    #expect(unknownTokens == [CodeToken(text: "def", kind: .plain)])
+}
+
+@Test func tokensRecognizeSwiftSpecificKeywordsNotSharedAcrossLanguages() {
+    let tokens = CodeHighlighter.tokens("func guard", language: "swift")
+    #expect(
+        tokens == [
+            CodeToken(text: "func", kind: .keyword),
+            CodeToken(text: " ", kind: .plain),
+            CodeToken(text: "guard", kind: .keyword),
+        ])
+    let pythonTokens = CodeHighlighter.tokens("func", language: "python")
+    #expect(pythonTokens == [CodeToken(text: "func", kind: .plain)])
 }
 
 @Test func tokensRecognizeStringLiterals() {
@@ -80,15 +92,19 @@ import Testing
     #expect(tokens == [CodeToken(text: "42", kind: .number)])
 }
 
-@Test func tokensRecognizeFloatingPointAndTruncateHexAtFirstHexLetterDigit() {
+@Test func tokensRecognizeFloatingPointAndFullHexLiteral() {
     let tokens = CodeHighlighter.tokens("3.14 0x1F", language: "swift")
     #expect(
         tokens == [
             CodeToken(text: "3.14", kind: .number),
             CodeToken(text: " ", kind: .plain),
-            CodeToken(text: "0x1", kind: .number),
-            CodeToken(text: "F", kind: .plain),
+            CodeToken(text: "0x1F", kind: .number),
         ])
+}
+
+@Test func tokensRecognizeHexLiteralWithMixedCaseDigitsAsOneToken() {
+    let tokens = CodeHighlighter.tokens("0xDEAD_beef", language: "swift")
+    #expect(tokens == [CodeToken(text: "0xDEAD_beef", kind: .number)])
 }
 
 @Test func tokensDoNotTreatDigitsInsideIdentifiersAsNumbers() {

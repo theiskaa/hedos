@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct UserRuntimeStore: Sendable {
@@ -41,6 +42,7 @@ public struct UserRuntimeStore: Sendable {
                 let text = try String(contentsOf: manifestURL, encoding: .utf8)
                 let table = try TOMLLite.parse(text)
                 var manifest = try RuntimeManifest.load(table: table, directory: manifestDirectory)
+                manifest.contentHash = Self.contentHash(for: text)
                 if let manifestDirectory {
                     manifest.provenance = RuntimeProvenance.read(in: manifestDirectory)
                 }
@@ -80,5 +82,9 @@ public struct UserRuntimeStore: Sendable {
             }
         }
         return (manifests, issues)
+    }
+
+    public static func contentHash(for text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }

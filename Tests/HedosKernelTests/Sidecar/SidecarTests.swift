@@ -399,6 +399,38 @@ private func chatControl(_ content: String) -> JSONValue {
     await supervisor.shutdownAll()
 }
 
+@Test func scrubbedEnvironmentDropsLeakedPythonPathAndHomeButKeepsOverridesAndOtherVars() {
+    let base = [
+        "PYTHONPATH": "/Users/someone/leaked-project:/other",
+        "PYTHONHOME": "/Users/someone/leaked-home",
+        "PATH": "/usr/bin:/bin",
+    ]
+    let scrubbed = SidecarSupervisor.scrubbedEnvironment(base: base, overrides: [:])
+    #expect(scrubbed["PYTHONPATH"] == nil)
+    #expect(scrubbed["PYTHONHOME"] == nil)
+    #expect(scrubbed["PATH"] == "/usr/bin:/bin")
+
+    let withOverride = SidecarSupervisor.scrubbedEnvironment(
+        base: base, overrides: ["PYTHONDONTWRITEBYTECODE": "1"])
+    #expect(withOverride["PYTHONPATH"] == nil)
+    #expect(withOverride["PYTHONDONTWRITEBYTECODE"] == "1")
+}
+
+@Test func runProcessScrubbedEnvironmentDropsLeakedPythonPathAndHomeButKeepsOverridesAndOtherVars()
+{
+    let base = [
+        "PYTHONPATH": "/Users/someone/leaked-project:/other",
+        "PYTHONHOME": "/Users/someone/leaked-home",
+        "PATH": "/usr/bin:/bin",
+    ]
+    let scrubbed = EnvironmentManager.scrubbedEnvironment(
+        base: base, overrides: ["UV_CACHE_DIR": "/override/cache"])
+    #expect(scrubbed["PYTHONPATH"] == nil)
+    #expect(scrubbed["PYTHONHOME"] == nil)
+    #expect(scrubbed["PATH"] == "/usr/bin:/bin")
+    #expect(scrubbed["UV_CACHE_DIR"] == "/override/cache")
+}
+
 @Test func cooperativeCancelKeepsSidecarWarmAndServesNextRequest() async throws {
     let spec = fakeSidecarSpec(cooperativeCancel: true)
     let supervisor = SidecarSupervisor()

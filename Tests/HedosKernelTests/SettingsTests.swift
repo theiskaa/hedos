@@ -141,6 +141,49 @@ private func waitUntil(
     #expect(await store.appearance() == AppearanceSettings())
 }
 
+@Test func watchedFolderRejectsHomeAndRootButAllowsSubfolder() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = SettingsStore(directory: dir)
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+
+    await #expect(throws: (any Error).self) {
+        _ = try await store.addWatchedFolder("~")
+    }
+    await #expect(throws: (any Error).self) {
+        _ = try await store.addWatchedFolder(home)
+    }
+    await #expect(throws: (any Error).self) {
+        _ = try await store.addWatchedFolder("/")
+    }
+    await #expect(throws: (any Error).self) {
+        _ = try await store.addWatchedFolder("~/Downloads/../..")
+    }
+
+    let settings = try await store.addWatchedFolder("~/Downloads/models")
+    #expect(settings.watchedFolders.count == 1)
+    #expect(settings.watchedFolders[0].hasSuffix("/Downloads/models"))
+
+    let symlinkDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: symlinkDir) }
+    let symlinkToHome = symlinkDir.appendingPathComponent("home-link")
+    try FileManager.default.createSymbolicLink(
+        at: symlinkToHome, withDestinationURL: FileManager.default.homeDirectoryForCurrentUser)
+    await #expect(throws: (any Error).self) {
+        _ = try await store.addWatchedFolder(symlinkToHome.path)
+    }
+
+    let caseInsensitiveVolume =
+        (try? FileManager.default.homeDirectoryForCurrentUser.resourceValues(
+            forKeys: [.volumeSupportsCaseSensitiveNamesKey]
+        ).volumeSupportsCaseSensitiveNames) == false
+    if caseInsensitiveVolume {
+        await #expect(throws: (any Error).self) {
+            _ = try await store.addWatchedFolder(home.uppercased())
+        }
+    }
+}
+
 @Test func watchedFolderAddRemoveDedupsAndPersists() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

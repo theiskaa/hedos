@@ -27,6 +27,20 @@ public struct KeychainStore: SecretStore {
     }
 
     public func get(account: String) throws -> String? {
+        if let secret = try rawGet(account: account) {
+            return secret
+        }
+        guard let legacyAccount = Self.legacyAccount(for: account),
+            let secret = try rawGet(account: legacyAccount)
+        else {
+            return nil
+        }
+        try? set(secret, account: account)
+        try? delete(account: legacyAccount)
+        return secret
+    }
+
+    private func rawGet(account: String) throws -> String? {
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: Self.service,
@@ -41,6 +55,15 @@ public struct KeychainStore: SecretStore {
             throw KernelError.runtimeFailed("keychain read failed with status \(status)")
         }
         return String(data: data, encoding: .utf8)
+    }
+
+    static func legacyAccount(for account: String) -> String? {
+        guard let url = URL(string: account), url.scheme == "http", let host = url.host else {
+            return nil
+        }
+        let port = url.port.map { ":\($0)" } ?? ""
+        let legacy = "\(host)\(port)"
+        return legacy != account ? legacy : nil
     }
 
     public func delete(account: String) throws {

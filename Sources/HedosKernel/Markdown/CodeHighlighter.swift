@@ -63,9 +63,22 @@ public enum CodeHighlighter {
             }
             if character.isNumber, plainEndsAtBoundary(plain) {
                 flushPlain()
-                let number = rest.prefix { $0.isNumber || $0 == "." || $0 == "_" || $0 == "x" }
-                tokens.append(CodeToken(text: String(number), kind: .number))
-                rest = rest.dropFirst(number.count)
+                let initialScan = rest.prefix {
+                    $0.isNumber || $0 == "." || $0 == "_" || $0 == "x" || $0 == "X"
+                }
+                var numberText = String(initialScan)
+                var consumedCount = initialScan.count
+                if numberText.count >= 2 {
+                    let leadingTwo = numberText.prefix(2)
+                    if leadingTwo == "0x" || leadingTwo == "0X" {
+                        let remainder = rest.dropFirst(consumedCount)
+                        let hexTail = remainder.prefix { $0.isHexDigit || $0 == "_" }
+                        numberText += String(hexTail)
+                        consumedCount += hexTail.count
+                    }
+                }
+                tokens.append(CodeToken(text: numberText, kind: .number))
+                rest = rest.dropFirst(consumedCount)
                 continue
             }
             if character.isLetter || character == "_" {
@@ -115,23 +128,101 @@ public enum CodeHighlighter {
         }
     }
 
+    private static let commonKeywords: Set<String> = [
+        "if", "else", "for", "while", "return", "break", "continue", "switch", "case",
+        "default", "true", "false", "nil", "null", "in", "not", "and", "or", "import",
+        "from", "as", "try", "catch", "except", "finally", "throw", "throws", "new",
+        "delete", "this", "self", "super", "static", "public", "private", "protected",
+        "do", "then", "end", "match", "when", "where",
+    ]
+
     private static func keywords(for language: String?) -> Set<String> {
-        let shared: Set<String> = [
-            "if", "else", "for", "while", "return", "break", "continue", "switch", "case",
-            "default", "true", "false", "nil", "null", "None", "True", "False", "in", "not",
-            "and", "or", "import", "from", "as", "try", "catch", "except", "finally", "throw",
-            "throws", "raise", "new", "delete", "this", "self", "super", "static", "public",
-            "private", "protected", "internal", "final", "abstract", "interface", "protocol",
-            "extension", "typealias", "type", "async", "await", "yield", "defer", "guard",
-            "do", "then", "end", "begin", "match", "when", "where", "select",
-        ]
-        let declarations: Set<String> = [
-            "func", "def", "fn", "function", "var", "let", "const", "val", "class", "struct",
-            "enum", "actor", "trait", "impl", "mut", "pub", "use", "mod", "package", "module",
-            "namespace", "void", "int", "float", "double", "bool", "string", "char", "elif",
-            "lambda", "with", "pass", "global", "nonlocal", "assert", "is", "del", "print",
-        ]
-        _ = language
-        return shared.union(declarations)
+        switch language?.lowercased() {
+        case "swift":
+            return commonKeywords.union([
+                "func", "var", "let", "guard", "defer", "async", "await", "struct", "enum",
+                "class", "extension", "protocol", "typealias", "internal", "final", "actor",
+                "init", "associatedtype", "indirect", "mutating", "inout", "some", "any",
+                "willSet", "didSet", "subscript", "fileprivate", "open", "lazy", "weak",
+                "unowned", "rethrows", "operator", "precedencegroup",
+            ])
+        case "python", "py":
+            return commonKeywords.union([
+                "def", "elif", "lambda", "with", "pass", "global", "nonlocal", "assert",
+                "is", "del", "print", "None", "True", "False", "class", "yield", "raise",
+                "async", "await",
+            ])
+        case "javascript", "js", "typescript", "ts", "jsx", "tsx":
+            return commonKeywords.union([
+                "function", "var", "let", "const", "class", "extends", "implements",
+                "interface", "typeof", "instanceof", "void", "yield", "async", "await",
+                "export", "default", "undefined", "of", "get", "set", "type", "enum",
+                "namespace", "declare", "readonly", "abstract",
+            ])
+        case "java":
+            return commonKeywords.union([
+                "class", "interface", "extends", "implements", "void", "int", "float",
+                "double", "boolean", "char", "long", "short", "byte", "package", "final",
+                "abstract", "synchronized", "volatile", "transient", "native", "instanceof",
+                "enum",
+            ])
+        case "c", "cpp", "c++", "objc", "objective-c":
+            return commonKeywords.union([
+                "int", "float", "double", "char", "void", "struct", "union", "enum",
+                "typedef", "const", "extern", "sizeof", "unsigned", "signed", "long",
+                "short", "class", "namespace", "template", "virtual", "override",
+                "nullptr",
+            ])
+        case "go", "golang":
+            return commonKeywords.union([
+                "func", "var", "const", "type", "struct", "interface", "package", "go",
+                "chan", "select", "defer", "map", "range", "fallthrough",
+            ])
+        case "rust", "rs":
+            return commonKeywords.union([
+                "fn", "let", "mut", "const", "struct", "enum", "trait", "impl", "pub",
+                "use", "mod", "loop", "move", "ref", "unsafe", "async", "await", "dyn",
+                "crate", "extern",
+            ])
+        case "ruby", "rb":
+            return commonKeywords.union([
+                "def", "end", "class", "module", "require", "require_relative",
+                "attr_accessor", "yield", "begin", "rescue", "ensure", "raise", "unless",
+                "until", "elsif", "puts",
+            ])
+        case "kotlin", "kt":
+            return commonKeywords.union([
+                "fun", "val", "var", "class", "object", "interface", "is", "as",
+                "package", "companion", "init", "override", "open", "sealed", "data",
+                "suspend", "inline", "internal",
+            ])
+        case "csharp", "cs", "c#":
+            return commonKeywords.union([
+                "class", "interface", "namespace", "using", "void", "int", "float",
+                "double", "bool", "string", "override", "virtual", "abstract", "var",
+                "readonly", "sealed",
+            ])
+        case "php":
+            return commonKeywords.union([
+                "function", "echo", "class", "namespace", "use", "require",
+                "require_once", "include", "include_once", "array", "foreach",
+                "elseif", "endif", "var",
+            ])
+        case "sh", "bash", "zsh", "shell":
+            return commonKeywords.union([
+                "fi", "done", "function", "echo", "esac", "local", "export",
+            ])
+        case "sql":
+            return commonKeywords.union([
+                "select", "insert", "update", "delete", "join", "on", "group", "order",
+                "by", "having", "table", "create", "drop", "alter", "values", "into",
+            ])
+        case "lua":
+            return commonKeywords.union([
+                "function", "local", "repeat", "until",
+            ])
+        default:
+            return commonKeywords
+        }
     }
 }

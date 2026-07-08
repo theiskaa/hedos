@@ -82,6 +82,7 @@ public struct ModelsSettings: SettingsDomain {
     public var watchedFolders: [String]
     public var hfCacheRoots: [String]
     public var approvedNetworkRuntimes: [String]
+    public var approvedNetworkRuntimeHashes: [String: String]
     public var keepWarm: KeepWarmPolicy
     public var eviction: EvictionPolicy
     public var ramBudgetMB: Int?
@@ -90,6 +91,7 @@ public struct ModelsSettings: SettingsDomain {
         watchedFolders = []
         hfCacheRoots = []
         approvedNetworkRuntimes = []
+        approvedNetworkRuntimeHashes = [:]
         keepWarm = .fiveMinutes
         eviction = .strictSingle
         ramBudgetMB = nil
@@ -99,6 +101,7 @@ public struct ModelsSettings: SettingsDomain {
         watchedFolders: [String] = [],
         hfCacheRoots: [String] = [],
         approvedNetworkRuntimes: [String] = [],
+        approvedNetworkRuntimeHashes: [String: String] = [:],
         keepWarm: KeepWarmPolicy = .fiveMinutes,
         eviction: EvictionPolicy = .strictSingle,
         ramBudgetMB: Int? = nil
@@ -106,6 +109,7 @@ public struct ModelsSettings: SettingsDomain {
         self.watchedFolders = watchedFolders
         self.hfCacheRoots = hfCacheRoots
         self.approvedNetworkRuntimes = approvedNetworkRuntimes
+        self.approvedNetworkRuntimeHashes = approvedNetworkRuntimeHashes
         self.keepWarm = keepWarm
         self.eviction = eviction
         self.ramBudgetMB = ramBudgetMB
@@ -116,7 +120,8 @@ public struct ModelsSettings: SettingsDomain {
     }
 
     enum CodingKeys: String, CodingKey {
-        case watchedFolders, hfCacheRoots, approvedNetworkRuntimes, keepWarm, eviction
+        case watchedFolders, hfCacheRoots, approvedNetworkRuntimes, approvedNetworkRuntimeHashes
+        case keepWarm, eviction
         case ramBudgetMB
     }
 
@@ -133,6 +138,9 @@ public struct ModelsSettings: SettingsDomain {
         approvedNetworkRuntimes = container.lenient(
             [String].self, .approvedNetworkRuntimes,
             fallback: defaults.approvedNetworkRuntimes)
+        approvedNetworkRuntimeHashes = container.lenient(
+            [String: String].self, .approvedNetworkRuntimeHashes,
+            fallback: defaults.approvedNetworkRuntimeHashes)
         keepWarm = container.lenient(KeepWarmPolicy.self, .keepWarm, fallback: defaults.keepWarm)
         eviction = container.lenient(EvictionPolicy.self, .eviction, fallback: defaults.eviction)
         ramBudgetMB = container.lenient(Int.self, .ramBudgetMB)

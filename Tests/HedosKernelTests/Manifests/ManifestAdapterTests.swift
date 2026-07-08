@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 
@@ -245,6 +246,148 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
         Issue.record("expected the consent refusal")
     } catch {
         #expect(String(describing: error).contains("network permission"))
+    }
+}
+
+@Test func descendantPIDsFindsRealParentChildRelationship() async throws {
+    let parent = Process()
+    parent.executableURL = URL(fileURLWithPath: "/bin/sh")
+    parent.arguments = ["-c", "/bin/sleep 5 & wait"]
+    try parent.run()
+    defer {
+        if parent.isRunning { parent.terminate() }
+        parent.waitUntilExit()
+    }
+
+    var descendants: [pid_t] = []
+    for _ in 0..<40 {
+        descendants = ManifestCommandAdapter.descendantPIDs(of: parent.processIdentifier)
+        if !descendants.isEmpty { break }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(!descendants.isEmpty)
+    for pid in descendants {
+        #expect(kill(pid, 0) == 0)
+    }
+}
+
+@Test func terminateProcessTreeKillsSandboxedParentAndGrandchild() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let generic = try #require(RuntimeBundle.directory(named: "generic"))
+    let profile = generic.appendingPathComponent("generic-net-off.sb")
+
+    let grandchildScript = dir.appendingPathComponent("fake_grandchild4.py")
+    try Data(
+        """
+        import os, sys
+        with open(sys.argv[1], "w") as f:
+            f.write(str(os.getpid()))
+            f.flush()
+        os.execvp("/bin/sleep", ["sleep", "30"])
+        """.utf8
+    ).write(to: grandchildScript)
+    let parentScript = dir.appendingPathComponent("fake_parent4.py")
+    try Data(
+        """
+        import os, subprocess, sys
+        subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])
+        os.execvp("/bin/sleep", ["sleep", "30"])
+        """.utf8
+    ).write(to: parentScript)
+    let pidFile = dir.appendingPathComponent("gc.pid")
+
+    let canonicalDir = ManifestSupport.canonicalPath(dir)
+    let canonicalTmp = ManifestSupport.canonicalPath(FileManager.default.temporaryDirectory)
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+    process.arguments = [
+        "-f", profile.path,
+        "-D", "VENV=\(canonicalDir)", "-D", "UVPY=\(canonicalDir)", "-D", "MODEL=\(canonicalDir)",
+        "-D", "WORKDIR=\(canonicalDir)", "-D", "RESOURCES=\(canonicalDir)",
+        "-D", "TMP=\(canonicalTmp)",
+        "-D", "CACHE=\(canonicalTmp)C",
+        try realPythonPath(), parentScript.path, grandchildScript.path, pidFile.path,
+    ]
+    var environment = ProcessInfo.processInfo.environment
+    environment.removeValue(forKey: "PYTHONPATH")
+    environment.removeValue(forKey: "PYTHONHOME")
+    process.environment = environment
+    try process.run()
+    defer {
+        if process.isRunning { process.terminate() }
+    }
+
+    var grandchildPID: Int32?
+    for _ in 0..<100 {
+        if let contents = try? String(contentsOf: pidFile, encoding: .utf8),
+            let pid = Int32(contents.trimmingCharacters(in: .whitespacesAndNewlines))
+        {
+            grandchildPID = pid
+            break
+        }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    let grandchild = try #require(grandchildPID)
+    #expect(kill(grandchild, 0) == 0)
+
+    let parentPID = process.processIdentifier
+    var descendants: [pid_t] = []
+    for _ in 0..<40 {
+        descendants = ManifestCommandAdapter.descendantPIDs(of: parentPID)
+        if descendants.contains(grandchild) { break }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(descendants.contains(grandchild))
+
+    ManifestCommandAdapter.terminateProcessTree(process, grace: .milliseconds(200))
+
+    var parentDead = false
+    var childDead = false
+    for _ in 0..<80 {
+        if kill(parentPID, 0) != 0 { parentDead = true }
+        if kill(grandchild, 0) != 0 { childDead = true }
+        if parentDead && childDead { break }
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    #expect(parentDead)
+    #expect(childDead)
+}
+
+@Test func pipeDrainCapTerminatesRunawayStdoutAndBoundsBufferedOutput() async throws {
+    let cap = 64 * 1024
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/yes")
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    let terminated = CapFlag()
+    let drain = PipeDrain(stdout: stdout, stderr: stderr, maxBytes: cap) {
+        terminated.mark()
+        if process.isRunning { process.terminate() }
+    }
+    try process.run()
+    let (outputData, _) = await drain.collect(process: process)
+
+    #expect(terminated.fired)
+    #expect(outputData.count < cap * 4)
+    #expect(!process.isRunning)
+}
+
+private final class CapFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func mark() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+    var fired: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 

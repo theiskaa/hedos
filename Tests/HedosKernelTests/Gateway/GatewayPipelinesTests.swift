@@ -166,6 +166,73 @@ private func pipeline(
     await stack.stop()
 }
 
+@Test func pipelineRunTimesOutHangingTextStageAndKeepsServerResponsive() async throws {
+    let chat = readyModel("chat", name: "gemma", capabilities: [.chat])
+    let pipe = pipeline("answerer", [(chat, .chat)])
+    var port = FakeGatewayPort(records: [chat])
+    port.pipelinesList = [pipe]
+    port.pipelineHangs = true
+    var routes = GatewayRouter.standardRoutes()
+    let runIndex = try #require(routes.firstIndex { $0.path == "/v1/pipelines/run" })
+    routes[runIndex] = GatewayRoute(
+        "POST", "/v1/pipelines/run", PipelineRunHandler(runTimeout: .milliseconds(200)),
+        inference: true, group: "Pipelines", summary: routes[runIndex].summary)
+    let stack = try await GatewayHarness.stack(port: port, routes: routes)
+
+    let body = GatewayHarness.json(["pipeline": pipe.id, "input": ["text": "hi"]])
+    let (data, response) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/pipelines/run"), token: stack.token, body: body))
+    let http = response as! HTTPURLResponse
+    #expect(http.statusCode == 200)
+    let text = String(data: data, encoding: .utf8)!
+    let events = text.split(separator: "\n").filter { $0.hasPrefix("data: ") }.map {
+        String($0.dropFirst(6))
+    }
+    #expect(events.last == "[DONE]")
+    let errorFrame = try #require(
+        events.dropLast().compactMap {
+            try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+        }.first { $0["error"] != nil })
+    let error = errorFrame["error"] as! [String: Any]
+    #expect(error["type"] as? String == "timeout_error")
+
+    let (_, listResponse) = try await URLSession.shared.data(
+        for: GatewayHarness.request("GET", stack.url("/v1/pipelines"), token: stack.token))
+    #expect((listResponse as! HTTPURLResponse).statusCode == 200)
+    await stack.stop()
+}
+
+@Test func pipelineRunTimesOutHangingAudioStageWith504AndKeepsServerResponsive() async throws {
+    let chat = readyModel("chat", name: "gemma", capabilities: [.chat])
+    let tts = readyModel("tts", name: "kokoro", capabilities: [.speak])
+    let pipe = pipeline("voice", [(chat, .chat), (tts, .speak)])
+    var port = FakeGatewayPort(records: [chat, tts])
+    port.pipelinesList = [pipe]
+    port.pipelineHangs = true
+    var routes = GatewayRouter.standardRoutes()
+    let runIndex = try #require(routes.firstIndex { $0.path == "/v1/pipelines/run" })
+    routes[runIndex] = GatewayRoute(
+        "POST", "/v1/pipelines/run", PipelineRunHandler(runTimeout: .milliseconds(200)),
+        inference: true, group: "Pipelines", summary: routes[runIndex].summary)
+    let stack = try await GatewayHarness.stack(port: port, routes: routes)
+
+    let body = GatewayHarness.json(["pipeline": pipe.id, "input": ["text": "say hi"]])
+    let (data, response) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/pipelines/run"), token: stack.token, body: body))
+    let http = response as! HTTPURLResponse
+    #expect(http.statusCode == 504)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let error = object["error"] as! [String: Any]
+    #expect(error["type"] as? String == "timeout_error")
+
+    let (_, listResponse) = try await URLSession.shared.data(
+        for: GatewayHarness.request("GET", stack.url("/v1/pipelines"), token: stack.token))
+    #expect((listResponse as! HTTPURLResponse).statusCode == 200)
+    await stack.stop()
+}
+
 @Test func pipelineRunAuditsPipelineID() async throws {
     let chat = readyModel("chat", name: "gemma", capabilities: [.chat])
     let pipe = pipeline("answerer", [(chat, .chat)])
