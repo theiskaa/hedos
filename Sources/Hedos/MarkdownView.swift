@@ -5,9 +5,10 @@ import SwiftUI
 struct MarkdownTurnView: View {
     let text: String
     var cursor = false
+    @State private var cache = MemoizedMarkdown()
+    @State private var blocks: [MarkdownBlock] = []
 
     var body: some View {
-        let blocks = MarkdownBlocks.parse(text)
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 MarkdownBlockView(
@@ -19,6 +20,10 @@ struct MarkdownTurnView: View {
                     .font(Design.body)
                     .foregroundStyle(Design.accent)
             }
+        }
+        .onAppear { blocks = cache.blocks(for: text) }
+        .onChange(of: text) { _, newText in
+            blocks = cache.blocks(for: newText)
         }
     }
 }
@@ -120,6 +125,7 @@ struct CodeBlockView: View {
     let code: String
     @State private var hovering = false
     @State private var copied = false
+    @State private var highlightedTokens: [CodeToken] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -161,11 +167,17 @@ struct CodeBlockView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
         .onHover { hovering = $0 }
+        .onAppear { refreshHighlight() }
+        .onChange(of: code) { _, _ in refreshHighlight() }
+        .onChange(of: language) { _, _ in refreshHighlight() }
+    }
+
+    private func refreshHighlight() {
+        highlightedTokens = CodeHighlighter.tokens(code, language: language)
     }
 
     private var highlighted: Text {
-        CodeHighlighter.tokens(code, language: language).reduce(Text(verbatim: "")) {
-            result, token in
+        highlightedTokens.reduce(Text(verbatim: "")) { result, token in
             result + styled(token)
         }
     }

@@ -37,6 +37,9 @@ final class ChatViewModel {
     private var reveal = PacedReveal()
     private var lastDeltaAt = ContinuousClock().now
     private var tickerTask: Task<Void, Never>?
+    private(set) var liveBalancedText = ""
+    private static let liveBalanceThrottleTicks = 7
+    private var liveBalanceThrottle = RefreshThrottle(everyTicks: liveBalanceThrottleTicks)
 
     init(kernel: Kernel, session: ChatSession) {
         self.kernel = kernel
@@ -157,11 +160,19 @@ final class ChatViewModel {
         if reveal.tick(), !transcript.isEmpty {
             transcript[transcript.count - 1].text = reveal.revealed
         }
+        if liveBalanceThrottle.shouldRefresh() {
+            refreshLiveBalance()
+        }
         let quiet = ContinuousClock().now - lastDeltaAt > .milliseconds(150)
         let cursor = isStreaming && quiet && reveal.backlog == 0 && reveal.revealedCount > 0
         if showsStreamCursor != cursor {
             showsStreamCursor = cursor
         }
+    }
+
+    private func refreshLiveBalance() {
+        guard let last = transcript.last else { return }
+        liveBalancedText = MarkdownBalancer.balanced(last.text)
     }
 
     private func startTicker() {
@@ -191,6 +202,8 @@ final class ChatViewModel {
         transcript.append(Entry(role: .assistant, text: ""))
         isStreaming = true
         reveal.reset()
+        liveBalancedText = ""
+        liveBalanceThrottle = RefreshThrottle(everyTicks: Self.liveBalanceThrottleTicks)
         lastDeltaAt = ContinuousClock().now
         startTicker()
 
@@ -211,6 +224,7 @@ final class ChatViewModel {
                 guard !transcript.isEmpty else { return }
                 reveal.finish()
                 transcript[transcript.count - 1].text = reveal.revealed
+                refreshLiveBalance()
             }
 
             do {
@@ -439,6 +453,7 @@ struct ChatView: View {
         )
         .task(id: session.id) { await model.load() }
         .onDisappear {
+            model.stop()
             model.stopReadAloud()
             voiceConversation.stop()
         }
@@ -747,7 +762,7 @@ struct ChatView: View {
         let isLive =
             model.isStreaming && !entry.persisted && entry.id == model.transcript.last?.id
         guard isLive else { return entry.text }
-        return MarkdownBalancer.balanced(entry.text)
+        return model.liveBalancedText
     }
 
     private func showsCursor(_ entry: ChatViewModel.Entry) -> Bool {
