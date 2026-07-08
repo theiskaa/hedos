@@ -43,10 +43,22 @@ public enum DuplicateDetector {
     }
 
     private static func prefixHash(of path: String) -> String? {
-        guard let handle = FileHandle(forReadingAtPath: path),
-            let data = try? handle.read(upToCount: 1 << 20)
-        else { return nil }
-        try? handle.close()
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let sampleSize: UInt64 = 1 << 20
+        guard (try? handle.seek(toOffset: 0)) != nil else { return nil }
+        var data: Data
+        if size <= sampleSize * 2 {
+            guard let whole = try? handle.read(upToCount: Int(size)) else { return nil }
+            data = whole
+        } else {
+            guard let head = try? handle.read(upToCount: Int(sampleSize)) else { return nil }
+            guard (try? handle.seek(toOffset: size - sampleSize)) != nil else { return nil }
+            guard let tail = try? handle.read(upToCount: Int(sampleSize)) else { return nil }
+            data = head
+            data.append(tail)
+        }
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -127,6 +127,7 @@ private func session(
             to: session.id)
     }
 
+    try await store.enableStatementLogging()
     try await store.resetStatementLog()
     let sessions = try await store.sessions()
     #expect(sessions.count == 5)

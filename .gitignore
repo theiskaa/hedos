@@ -1,6 +1,7 @@
 # Private docs & working rules
 internal/
 CLAUDE.md
+.claude/
 
 # macOS
 .DS_Store

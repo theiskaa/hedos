@@ -1,4 +1,4 @@
-.PHONY: build test app run clean probe
+.PHONY: build test app run clean probe icon
 
 build:
 	swift build

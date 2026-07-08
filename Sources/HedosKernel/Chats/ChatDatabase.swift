@@ -47,6 +47,7 @@ final class ChatDatabase {
     private let handle: OpaquePointer
     private let writes: WriteCounter
     private(set) var statementLog: [String] = []
+    var statementLoggingEnabled = false
 
     final class WriteCounter {
         var rowsByTable: [String: Int] = [:]
@@ -162,7 +163,9 @@ final class ChatDatabase {
     }
 
     private func prepare(_ sql: String, _ bindings: [SQLiteValue]) throws -> OpaquePointer {
-        statementLog.append(sql)
+        if statementLoggingEnabled {
+            statementLog.append(sql)
+        }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK, let statement
         else {

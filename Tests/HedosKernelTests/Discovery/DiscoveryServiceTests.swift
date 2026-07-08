@@ -140,6 +140,53 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     #expect(identical.isEmpty)
 }
 
+private func makeStripedFile(
+    at url: URL, totalBytes: Int, headByte: UInt8, middleByte: UInt8, tailByte: UInt8
+) throws {
+    try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let sampleSize = 1 << 20
+    var data = Data(repeating: middleByte, count: totalBytes)
+    data.replaceSubrange(0..<sampleSize, with: Data(repeating: headByte, count: sampleSize))
+    data.replaceSubrange(
+        (totalBytes - sampleSize)..<totalBytes, with: Data(repeating: tailByte, count: sampleSize))
+    try data.write(to: url)
+}
+
+@Test func duplicateDetectorSamplesHeadAndTailNotJustFirstMegabyte() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let totalBytes = 3 << 20
+
+    func model(_ url: URL) -> DiscoveredModel {
+        DiscoveredModel(
+            name: url.lastPathComponent,
+            source: ModelSource(kind: .file, path: url.path),
+            footprintBytes: Int64(totalBytes), primaryWeightPath: url.path)
+    }
+
+    let sameHeadA = dir.appendingPathComponent("same-head-a.gguf")
+    let sameHeadB = dir.appendingPathComponent("same-head-b.gguf")
+    try makeStripedFile(
+        at: sameHeadA, totalBytes: totalBytes, headByte: 0xAA, middleByte: 0xBB, tailByte: 0xCC)
+    try makeStripedFile(
+        at: sameHeadB, totalBytes: totalBytes, headByte: 0xAA, middleByte: 0xBB, tailByte: 0xDD)
+    let notDuplicates = DuplicateDetector.detect(
+        in: [model(sameHeadA), model(sameHeadB)], threshold: 1024)
+    #expect(notDuplicates.isEmpty)
+
+    let identicalA = dir.appendingPathComponent("identical-a.gguf")
+    let identicalB = dir.appendingPathComponent("identical-b.gguf")
+    try makeStripedFile(
+        at: identicalA, totalBytes: totalBytes, headByte: 0xAA, middleByte: 0xBB, tailByte: 0xCC)
+    try makeStripedFile(
+        at: identicalB, totalBytes: totalBytes, headByte: 0xAA, middleByte: 0xBB, tailByte: 0xCC)
+    let duplicates = DuplicateDetector.detect(
+        in: [model(identicalA), model(identicalB)], threshold: 1024)
+    #expect(duplicates.count == 1)
+    #expect(duplicates.first?.wastedBytes == Int64(totalBytes))
+}
+
 @Test func headlineFormatting() {
     let empty = DiscoverySummary(
         perKind: [:], totalCount: 0, totalBytes: 0, duplicates: [], issues: [])

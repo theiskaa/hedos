@@ -289,6 +289,10 @@ public actor ChatStore {
         try open().rowsWritten(to: ["sessions", "turns"])
     }
 
+    public func enableStatementLogging() throws {
+        try open().statementLoggingEnabled = true
+    }
+
     public func resetStatementLog() throws {
         try open().resetStatementLog()
     }

@@ -12,6 +12,7 @@ RELEASE=$(swift build -c release --show-bin-path)
 
 cp "$RELEASE/Hedos" "$APP/Contents/MacOS/Hedos"
 for bundle in "$RELEASE"/*.bundle; do
+    [ -e "$bundle" ] || continue
     cp -R "$bundle" "$APP/Contents/Resources/"
 done
 HAS_FRAMEWORKS=0
@@ -45,11 +46,11 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key>
     <string>Hedos</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.0.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
+    <string>26.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

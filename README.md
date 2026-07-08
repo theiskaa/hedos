@@ -8,8 +8,12 @@ Everything is local-first and private by design: models stay exactly where their
 
 Hedos is in early development, pre-v0.1 — there is nothing to install yet.
 
+## Development
+
+Building Hedos requires the macOS 26 SDK toolchain: `swift build` and `swift test`.
+`swift test` needs `python3` on `PATH` — tests drive stdlib-only fake sidecars, no `uv`, no network.
+`make app` assembles `dist/Hedos.app` for local use.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-We need to save history of voices in the chat like images get saved
