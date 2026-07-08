@@ -91,15 +91,18 @@ public struct GatewayRouter: Sendable {
             let outcome = try await route(
                 request, identity: identity!, surface: surface, responder: responder)
             await audit.append(
-                entry(for: request, identity: identity, outcome: outcome, started: started))
+                entry(
+                    for: request, identity: identity, outcome: outcome, started: started,
+                    detail: nil))
         } catch {
             let gatewayError = GatewayError.wrapping(error)
+            let detail = gatewayError.kind == .serverError ? String(describing: error) : nil
             await audit.append(
                 entry(
                     for: request, identity: identity,
                     outcome: GatewayOutcome(
                         status: gatewayError.status, outcome: gatewayError.auditOutcome),
-                    started: started))
+                    started: started, detail: detail))
             guard !responder.hasStarted else { throw gatewayError }
             try await render(gatewayError, surface: surface, responder: responder)
         }
@@ -132,7 +135,7 @@ public struct GatewayRouter: Sendable {
 
     private func entry(
         for request: GatewayRequest, identity: GatewayIdentity?, outcome: GatewayOutcome,
-        started: Date
+        started: Date, detail: String?
     ) -> GatewayAuditEntry {
         GatewayAuditEntry(
             client: identity?.clientID,
@@ -143,7 +146,8 @@ public struct GatewayRouter: Sendable {
             capability: outcome.capability,
             outcome: outcome.outcome,
             status: outcome.status,
-            durationMs: Int(Date().timeIntervalSince(started) * 1000))
+            durationMs: Int(Date().timeIntervalSince(started) * 1000),
+            detail: detail)
     }
 
     func render(

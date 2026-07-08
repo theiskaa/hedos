@@ -50,6 +50,7 @@ public actor GatewayServer {
     private var group: MultiThreadedEventLoopGroup?
     private var acceptTask: Task<Void, Never>?
     private var port: Int?
+    private var startTask: Task<Int, Error>?
 
     public init(configuration: Configuration, router: GatewayRouter) {
         self.configuration = configuration
@@ -64,6 +65,18 @@ public actor GatewayServer {
 
     @discardableResult
     public func start() async throws -> Int {
+        if let startTask { return try await startTask.value }
+        let task = Task { try await self.performStart() }
+        startTask = task
+        do {
+            return try await task.value
+        } catch {
+            startTask = nil
+            throw error
+        }
+    }
+
+    private func performStart() async throws -> Int {
         if let port, acceptTask != nil { return port }
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         self.group = group
@@ -119,6 +132,7 @@ public actor GatewayServer {
         _ = await acceptTask?.value
         acceptTask = nil
         port = nil
+        startTask = nil
         if let group {
             try? await group.shutdownGracefully()
         }

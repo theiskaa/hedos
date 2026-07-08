@@ -77,10 +77,12 @@ public struct GatewayError: Error, Sendable, Hashable {
                 return GatewayError(
                     .notSupported, kernel.errorDescription ?? "not supported",
                     code: "capability_unsupported")
-            case .runtimeUnavailable, .runtimeFailed:
+            case .runtimeUnavailable:
                 return GatewayError(.serverError, kernel.errorDescription ?? "runtime failed")
+            case .runtimeFailed:
+                return GatewayError(.serverError, "the runtime failed to complete the request")
             }
         }
-        return GatewayError(.serverError, String(describing: error))
+        return GatewayError(.serverError, "internal error")
     }
 }

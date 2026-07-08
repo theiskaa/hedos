@@ -11,11 +11,12 @@ public struct GatewayAuditEntry: Codable, Sendable, Hashable {
     public var outcome: String
     public var status: Int
     public var durationMs: Int
+    public var detail: String?
 
     public init(
         ts: Date = Date(), client: String? = nil, clientName: String? = nil, method: String,
         route: String, model: String? = nil, capability: String? = nil, outcome: String,
-        status: Int, durationMs: Int
+        status: Int, durationMs: Int, detail: String? = nil
     ) {
         self.ts = ts
         self.client = client
@@ -27,6 +28,7 @@ public struct GatewayAuditEntry: Codable, Sendable, Hashable {
         self.outcome = outcome
         self.status = status
         self.durationMs = durationMs
+        self.detail = detail
     }
 }
 
