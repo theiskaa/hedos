@@ -44,28 +44,21 @@ struct PipelinesPane: View {
     @State private var model: PipelinesModel?
     @State private var composing = false
     @State private var editDraft: Pipeline?
+    @State private var query = ""
 
     private var records: [ModelRecord] {
         shell.library.records.filter { $0.state == .ready }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(title: "Pipelines") {
-                Button {
-                    composing = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(Design.glyphInline)
-                        .foregroundStyle(Design.inkSoft)
-                }
-                .buttonStyle(PressDipStyle())
-                .accessibilityIdentifier("pipelines-new")
-                .help("New pipeline")
-            }
-            content
+        HStack(spacing: 0) {
+            pipelinesColumn
+                .frame(width: Design.Rail.columnWidth)
+            ColumnDivider()
+            runPanel
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .task {
             if model == nil { model = PipelinesModel(kernel: shell.kernel) }
             await model?.refresh()
@@ -90,8 +83,66 @@ struct PipelinesPane: View {
         }
     }
 
+    private var pipelinesColumn: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Design.Space.s) {
+                InkSearchField(
+                    placeholder: "Search pipelines", query: $query, fill: Design.surface)
+                QuietIconButton(glyph: "plus") {
+                    composing = true
+                }
+                .accessibilityIdentifier("pipelines-new")
+                .help("New pipeline")
+                .accessibilityLabel("New pipeline")
+            }
+            .padding(.horizontal, Design.Space.m)
+            .padding(.top, Design.Space.xxl)
+            .padding(.bottom, Design.Space.s)
+            pipelineList
+        }
+    }
+
+    private func filtered(_ model: PipelinesModel) -> [Pipeline] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return model.pipelines }
+        return model.pipelines.filter { $0.name.lowercased().contains(needle) }
+    }
+
     @ViewBuilder
-    private var content: some View {
+    private var pipelineList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Design.Space.xxs) {
+                if let model {
+                    let rows = filtered(model)
+                    if rows.isEmpty {
+                        Text(
+                            model.pipelines.isEmpty
+                                ? "No pipelines yet." : "Nothing found."
+                        )
+                        .font(Design.caption)
+                        .foregroundStyle(Design.inkFaint)
+                        .padding(Design.Space.m)
+                    } else {
+                        ForEach(rows) { pipeline in
+                            PipelineRow(
+                                pipeline: pipeline,
+                                signature: model.signatures[pipeline.id],
+                                selected: shell.pipelineSelection == pipeline.id,
+                                onSelect: { shell.pipelineSelection = pipeline.id },
+                                onEdit: { editDraft = pipeline },
+                                onDelete: { model.delete(pipeline) })
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, Design.Space.m)
+            .padding(.top, Design.Space.s)
+            .padding(.bottom, Design.Space.l)
+        }
+    }
+
+    @ViewBuilder
+    private var runPanel: some View {
         if let model, model.pipelines.isEmpty {
             ModeEmptyState(
                 eyebrow: "Pipelines",
@@ -102,37 +153,7 @@ struct PipelinesPane: View {
                 Button("New pipeline") { composing = true }
                     .buttonStyle(InkButtonStyle())
             }
-        } else if let model {
-            HStack(spacing: 0) {
-                pipelineList(model)
-                    .frame(width: Design.Column.pipelineList)
-                Rectangle().fill(Design.line).frame(width: 1)
-                runPanel(model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-
-    private func pipelineList(_ model: PipelinesModel) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Design.Space.s) {
-                ForEach(model.pipelines) { pipeline in
-                    PipelineRow(
-                        pipeline: pipeline,
-                        signature: model.signatures[pipeline.id],
-                        selected: shell.pipelineSelection == pipeline.id,
-                        onSelect: { shell.pipelineSelection = pipeline.id },
-                        onEdit: { editDraft = pipeline },
-                        onDelete: { model.delete(pipeline) })
-                }
-            }
-            .padding(Design.Space.l)
-        }
-    }
-
-    @ViewBuilder
-    private func runPanel(_ model: PipelinesModel) -> some View {
-        if let id = shell.pipelineSelection,
+        } else if let model, let id = shell.pipelineSelection,
             let pipeline = model.pipelines.first(where: { $0.id == id }),
             let signature = model.signatures[id]
         {
