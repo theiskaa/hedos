@@ -75,9 +75,15 @@ struct ChatFlow: Sendable {
             transcript.session.title == ChatSession.defaultTitle
         else { return nil }
         let active = transcript.turns.filter { $0.supersededBy == nil }
-        guard let firstUser = active.first(where: { $0.role == .user }),
-            let reply = active.first(where: { $0.role == .assistant && !$0.content.isEmpty })
-        else { return nil }
+        guard let firstUser = active.first(where: { $0.role == .user }) else { return nil }
+        guard let reply = active.first(where: { $0.role == .assistant && !$0.content.isEmpty })
+        else {
+            guard active.contains(where: { $0.role == .assistant && !$0.artifactRefs.isEmpty })
+            else { return nil }
+            let title = ChatSession.title(from: firstUser.content)
+            try await chats.renameSession(id: sessionID, title: title)
+            return title
+        }
         let title =
             await generatedTitle(
                 user: firstUser.content,

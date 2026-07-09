@@ -458,6 +458,19 @@ public actor Kernel {
         _ = try await chats.updateTurn(updated, mergingCapabilityTags: [SessionTag.spoke])
     }
 
+    public func recordGeneratedTurn(
+        sessionID: String, prompt: String, artifactID: String, tag: String
+    ) async throws {
+        guard try await chats.session(id: sessionID) != nil else {
+            throw ChatStoreError.sessionNotFound(sessionID)
+        }
+        _ = try await chats.appendTurn(TurnDraft(role: .user, content: prompt), to: sessionID)
+        _ = try await chats.appendTurn(
+            TurnDraft(role: .assistant, content: "", artifactRefs: [artifactID]),
+            to: sessionID,
+            mergingCapabilityTags: [tag])
+    }
+
     private func chatFlow() -> ChatFlow {
         ChatFlow(
             chats: chats,
