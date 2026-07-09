@@ -144,8 +144,8 @@ enum FontCatalog {
 final class SettingsModel {
     private let kernel: Kernel
     private var saveTasks: [String: Task<Void, Never>] = [:]
-    private let previewPlayer = PCMPlayer()
     private var previewTask: Task<Void, Never>?
+    var audio: AudioSession?
 
     var general = GeneralSettings()
     var models = ModelsSettings()
@@ -162,6 +162,7 @@ final class SettingsModel {
     var prompts: [Prompt] = []
     var voices: [String] = []
     var previewing = false
+    var previewingVoice: String?
     private(set) var loaded = false
 
     static weak var active: SettingsModel?
@@ -221,11 +222,7 @@ final class SettingsModel {
     }
 
     func loadVoices(from records: [ModelRecord]) async {
-        guard
-            let speaker = records.first(where: {
-                $0.state == .ready && Launcher.destination(for: $0) == .voice
-            })
-        else {
+        guard let speaker = SpeechModels.preferred(in: records) else {
             voices = []
             return
         }
@@ -363,31 +360,54 @@ final class SettingsModel {
         }
     }
 
-    func previewVoice(records: [ModelRecord]) {
-        guard !previewing,
-            let speaker = records.first(where: {
-                $0.state == .ready && Launcher.destination(for: $0) == .voice
-            })
-        else { return }
+    func previewVoice(records: [ModelRecord], named candidate: String? = nil) {
+        let chosen = candidate ?? voice.defaultVoice ?? voices.first ?? ""
+        if previewing {
+            stopVoicePreview()
+            guard previewingVoice != chosen else {
+                previewingVoice = nil
+                return
+            }
+        }
+        guard !chosen.isEmpty, let speaker = SpeechModels.preferred(in: records) else { return }
         previewing = true
+        previewingVoice = chosen
         let kernel = kernel
-        let chosen = voice.defaultVoice ?? voices.first ?? ""
+        let liveID = "preview-\(chosen)"
+        audio?.beginLive(
+            AudioSession.Track(id: liveID, title: SpeechModels.previewLine, subtitle: chosen),
+            audible: true,
+            onStop: { [weak self] in self?.stopVoicePreview() })
         previewTask = Task { [weak self] in
-            defer { self?.previewing = false }
+            defer {
+                self?.previewing = false
+                self?.previewingVoice = nil
+            }
             guard let self else { return }
             do {
                 let stream = try await kernel.invoke(
                     speaker.id, .speak,
                     payload: .object([
-                        "text": .string("Hedos speaks with this voice."),
+                        "text": .string(SpeechModels.previewLine),
                         "voice": .string(chosen),
                     ]))
                 for try await chunk in stream {
                     if case .audio(let frame) = chunk {
-                        self.previewPlayer.enqueue(frame)
+                        self.audio?.enqueue(frame, for: liveID)
                     }
                 }
             } catch {}
+            self.audio?.finishLive(liveID)
+        }
+    }
+
+    func stopVoicePreview() {
+        previewTask?.cancel()
+        let candidate = previewingVoice
+        previewing = false
+        previewingVoice = nil
+        if let candidate, audio?.isActive("preview-\(candidate)") == true {
+            audio?.dismiss()
         }
     }
 
@@ -621,6 +641,8 @@ struct SettingsRoot: View {
             if !shell.settings.loaded {
                 await shell.settings.load()
             }
+        }
+        .task(id: shell.library.shelfSignature) {
             await shell.settings.loadVoices(from: shell.library.records)
         }
         .onChange(of: shell.settingsTarget) { _, target in
@@ -882,8 +904,10 @@ struct SettingsRoot: View {
             Divider()
             settingRow("general.startMode", "Start in") {
                 InkDropdown(
-                    options: AppMode.allCases.filter { $0 != .settings }
-                        .map { Design.modeTitle($0) },
+                    options: AppMode.allCases.filter {
+                        $0 != .settings && ShellModel.surfaced($0) == $0
+                    }
+                    .map { Design.modeTitle($0) },
                     selection: model.general.fixedMode.map { Design.modeTitle($0) },
                     placeholder: "Models",
                     accessibilityName: "start mode",
@@ -1261,18 +1285,30 @@ struct SettingsRoot: View {
                         options: model.voices,
                         selection: model.voice.defaultVoice,
                         accessibilityName: "default voice",
+                        onPreview: { candidate in
+                            model.previewVoice(
+                                records: shell.library.records, named: candidate)
+                        },
                         onSelect: { choice in
                             model.voice.defaultVoice = choice
                             model.saveVoice()
+                            if let choice {
+                                model.previewVoice(
+                                    records: shell.library.records, named: choice)
+                            }
                         })
                     if model.previewing {
                         SpeakingIndicator()
                     }
-                    Button(model.previewing ? "Playing…" : "Preview") {
-                        model.previewVoice(records: shell.library.records)
+                    Button(model.previewing ? "Stop" : "Preview") {
+                        if model.previewing {
+                            model.stopVoicePreview()
+                        } else {
+                            model.previewVoice(records: shell.library.records)
+                        }
                     }
                     .buttonStyle(QuietButtonStyle())
-                    .disabled(model.voices.isEmpty || model.previewing)
+                    .disabled(model.voices.isEmpty)
                     .help(
                         model.voices.isEmpty
                             ? "Voices appear when a speech model is ready." : "")

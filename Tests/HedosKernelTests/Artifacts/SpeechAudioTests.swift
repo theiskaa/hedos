@@ -89,16 +89,21 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     #expect(String(data: header, encoding: .ascii) == "RIFF")
 }
 
-@Test func attachSpokenArtifactAppendsRefAndTagsSessionSpoke() async throws {
-    let dir = try Fixtures.tempDirectory()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, adapters: [])
+private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRecord) {
+    let kernel = Kernel(directory: directory, adapters: [])
     var record = Fixtures.gguf(path: "~/models/reader.gguf")
     record.modality = .speech
     record.capabilities = [.speak]
     record.runtime = RuntimeRef(id: "python:mlx-audio", resolved: .auto, tier: .managed)
     record.state = .ready
     try await kernel.registry.register(record)
+    return (kernel, record)
+}
+
+@Test func replaceSpokenArtifactSwapsRefAndTagsSessionSpoke() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (kernel, record) = try await speakingKernel(in: dir)
 
     let session = try await kernel.chats.createSession(modelID: "chatty")
     _ = try await kernel.chats.appendTurn(
@@ -107,21 +112,65 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
         TurnDraft(role: .assistant, content: "something spoken", modelID: "chatty"),
         to: session.id)
 
-    let artifact = try await kernel.saveSpeech(
+    let first = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "something spoken",
         sampleRate: 24000, pcm: sineWave(samples: 2400))
-    try await kernel.attachSpokenArtifact(
-        sessionID: session.id, turnID: answer.id, artifactID: artifact.id)
-    try await kernel.attachSpokenArtifact(
-        sessionID: session.id, turnID: answer.id, artifactID: artifact.id)
+    try await kernel.replaceSpokenArtifact(
+        sessionID: session.id, turnID: answer.id, artifactID: first.id)
+
+    let once = try #require(try await kernel.chats.session(id: session.id))
+    #expect(once.turns.first { $0.id == answer.id }?.artifactRefs == [first.id])
+    #expect(once.session.capabilityTags.contains(SessionTag.spoke))
+
+    let second = try await kernel.saveSpeech(
+        modelID: record.id, voice: "am_michael", text: "something spoken",
+        sampleRate: 24000, pcm: sineWave(samples: 4800))
+    try await kernel.replaceSpokenArtifact(
+        sessionID: session.id, turnID: answer.id, artifactID: second.id)
 
     let reloaded = try #require(try await kernel.chats.session(id: session.id))
     let turn = try #require(reloaded.turns.first { $0.id == answer.id })
-    #expect(turn.artifactRefs == [artifact.id])
-    #expect(reloaded.session.capabilityTags.contains(SessionTag.spoke))
+    #expect(turn.artifactRefs == [second.id])
+    #expect(try await kernel.artifact(id: first.id) == nil)
+    #expect(try await kernel.artifact(id: second.id) != nil)
+    #expect(try await kernel.artifacts().count == 1)
+}
+
+@Test func replaceSpokenArtifactIsIdempotentAndKeepsOtherArtifacts() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (kernel, record) = try await speakingKernel(in: dir)
+
+    let session = try await kernel.chats.createSession(modelID: "chatty")
+    let answer = try await kernel.chats.appendTurn(
+        TurnDraft(role: .assistant, content: "spoken", artifactRefs: ["image-ref"]),
+        to: session.id)
+
+    let spoken = try await kernel.saveSpeech(
+        modelID: record.id, voice: "af_heart", text: "spoken",
+        sampleRate: 24000, pcm: sineWave(samples: 2400))
+    try await kernel.replaceSpokenArtifact(
+        sessionID: session.id, turnID: answer.id, artifactID: spoken.id)
+    try await kernel.replaceSpokenArtifact(
+        sessionID: session.id, turnID: answer.id, artifactID: spoken.id)
+
+    let reloaded = try #require(try await kernel.chats.session(id: session.id))
+    let turn = try #require(reloaded.turns.first { $0.id == answer.id })
+    #expect(turn.artifactRefs == ["image-ref", spoken.id])
+    #expect(try await kernel.artifact(id: spoken.id) != nil)
+}
+
+@Test func replaceSpokenArtifactRejectsUnknownTurn() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (kernel, record) = try await speakingKernel(in: dir)
+    let session = try await kernel.chats.createSession(modelID: "chatty")
+    let artifact = try await kernel.saveSpeech(
+        modelID: record.id, voice: "af_heart", text: "x",
+        sampleRate: 24000, pcm: sineWave(samples: 2400))
 
     await #expect(throws: (any Error).self) {
-        try await kernel.attachSpokenArtifact(
+        try await kernel.replaceSpokenArtifact(
             sessionID: session.id, turnID: "missing", artifactID: artifact.id)
     }
 }

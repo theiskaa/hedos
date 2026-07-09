@@ -353,7 +353,7 @@ struct InkMenu<Content: View>: View {
                     .foregroundStyle(Design.inkFaint)
             }
             .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.xs)
+            .frame(height: Design.Control.size)
             .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
             .overlay(
                 RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
@@ -485,6 +485,7 @@ struct InkDropdown: View {
     var allowsAuto = true
     var accessibilityName: String = "option"
     var width: CGFloat? = nil
+    var onPreview: ((String) -> Void)? = nil
     let onSelect: (String?) -> Void
     @State private var open = false
     @State private var anchor: NSView?
@@ -551,7 +552,10 @@ struct InkDropdown: View {
         DropdownRow(
             title: title,
             selected: selection == value,
-            faint: faint
+            faint: faint,
+            onPreview: value.flatMap { candidate in
+                onPreview.map { preview in { preview(candidate) } }
+            }
         ) {
             onSelect(value)
             InkPopup.shared.dismiss()
@@ -563,6 +567,7 @@ private struct DropdownRow: View {
     let title: String
     let selected: Bool
     let faint: Bool
+    var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @State private var hovering = false
 
@@ -574,6 +579,17 @@ private struct DropdownRow: View {
                     .lineLimit(1)
                     .foregroundStyle(faint ? Design.inkSoft : Design.ink)
                 Spacer(minLength: Design.Space.s)
+                if let onPreview {
+                    Button(action: onPreview) {
+                        Image(systemName: "play.circle")
+                            .font(Design.glyphInline)
+                            .foregroundStyle(hovering ? Design.inkSoft : Design.inkFaint)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Preview \(title)")
+                    .accessibilityLabel("Preview \(title)")
+                }
                 if selected {
                     Image(systemName: "checkmark")
                         .font(Design.glyphSmall.weight(.bold))

@@ -262,7 +262,7 @@ struct CircleControl: View {
             Image(systemName: glyph)
                 .font(Design.caption.weight(.semibold))
                 .foregroundStyle(prominent ? Design.paper : Design.inkSoft)
-                .frame(width: 28, height: 28)
+                .frame(width: Design.Control.size, height: Design.Control.size)
                 .background(
                     live
                         ? AnyShapeStyle(Design.accent)
@@ -326,29 +326,48 @@ private struct CirclePressStyle: ButtonStyle {
 struct ArtifactExchangeView: View {
     let reference: String
     let kernel: Kernel
+    let session: AudioSession
+    var onRerun: ((Artifact) -> Void)? = nil
+    var onVary: ((Artifact) -> Void)? = nil
     @State private var artifact: Artifact?
     @State private var image: NSImage?
-    @State private var clips = AudioClipController()
+    @State private var resolved = false
 
     var body: some View {
+        content
+            .task(id: reference) {
+                resolved = false
+                artifact = try? await kernel.artifact(id: reference)
+                resolved = true
+                if artifact?.capability == .image, image == nil {
+                    let scale = NSScreen.main?.backingScaleFactor ?? 2
+                    if let url = try? await kernel.artifactURL(id: reference),
+                        let sharp = GalleryModel.downsampled(
+                            url, maxPixel: Design.Bubble.imageMax * scale)
+                    {
+                        image = sharp
+                    } else if let data = try? await kernel.artifactPreview(id: reference) {
+                        image = NSImage(data: data)
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         Group {
             if let artifact {
                 switch artifact.capability {
                 case .speak:
                     VStack(alignment: .leading, spacing: Design.Space.s) {
                         artifactLabel(
-                            kind: "voice", name: VoiceSurfaceModel.voiceName(of: artifact))
-                        VoiceBubble(artifact: artifact, clips: clips) {
-                            togglePlayback(artifact)
+                            kind: "voice", name: SpeechArtifact.voiceName(of: artifact))
+                        VoiceBubble(artifact: artifact, session: session) {
+                            session.toggle(artifact)
                         }
                         ArtifactTray {
                             TrayButton(label: "Save audio", glyph: "arrow.down.to.line") {
                                 exportArtifact(artifact, suggested: "narration.wav")
-                            }
-                            TrayButton(label: "Transcript", glyph: "doc.on.doc") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(
-                                    VoiceSurfaceModel.text(of: artifact), forType: .string)
                             }
                         }
                     }
@@ -360,6 +379,16 @@ struct ArtifactExchangeView: View {
                             isLoading: image == nil)
                         if image != nil {
                             ArtifactTray {
+                                if let onRerun {
+                                    TrayButton(label: "Re-run", glyph: "arrow.clockwise") {
+                                        onRerun(artifact)
+                                    }
+                                }
+                                if let onVary {
+                                    TrayButton(label: "Vary", glyph: "wand.and.sparkles") {
+                                        onVary(artifact)
+                                    }
+                                }
                                 TrayButton(label: "Save .png", glyph: "arrow.down.to.line") {
                                     saveImage()
                                 }
@@ -370,27 +399,32 @@ struct ArtifactExchangeView: View {
                         }
                     }
                 default:
-                    EmptyView()
+                    Color.clear.frame(height: 1)
                 }
+            } else if resolved {
+                missingArtifact
+            } else {
+                SkeletonPulse()
+                    .frame(width: Design.Bubble.artifactPlaceholder.width,
+                        height: Design.Bubble.artifactPlaceholder.height)
+                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.artifact))
             }
         }
-        .task(id: reference) {
-            artifact = try? await kernel.artifact(id: reference)
-            if artifact?.capability == .image, image == nil {
-                let scale = NSScreen.main?.backingScaleFactor ?? 2
-                if let url = try? await kernel.artifactURL(id: reference),
-                    let sharp = ImagesViewModel.downsampled(
-                        url, maxPixel: Design.Bubble.imageMax * scale)
-                {
-                    image = sharp
-                } else if let data = try? await kernel.artifactPreview(id: reference) {
-                    image = NSImage(data: data)
-                }
-            }
+    }
+
+    private var missingArtifact: some View {
+        Label {
+            Text("This attachment was deleted.")
+                .font(Design.caption)
+                .foregroundStyle(Design.inkFaint)
+        } icon: {
+            Image(systemName: "trash.slash")
+                .font(Design.glyphInline)
+                .foregroundStyle(Design.inkFaint)
         }
-        .onDisappear {
-            clips.stop()
-        }
+        .frame(width: Design.Bubble.artifactPlaceholder.width, alignment: .leading)
+        .padding(.vertical, Design.Space.s)
+        .accessibilityLabel("Attachment deleted")
     }
 
     private func artifactLabel(kind: String, name: String?) -> some View {
@@ -402,18 +436,6 @@ struct ArtifactExchangeView: View {
                 .font(Design.micro)
                 .tracking(Design.microTracking)
                 .foregroundStyle(Design.inkFaint)
-        }
-    }
-
-    private func togglePlayback(_ artifact: Artifact) {
-        if clips.isActive(artifact.id) {
-            clips.toggle(id: artifact.id)
-            return
-        }
-        let kernel = kernel
-        Task { @MainActor in
-            guard let url = try? await kernel.artifactURL(id: artifact.id) else { return }
-            clips.toggle(id: artifact.id, url: url)
         }
     }
 
@@ -478,6 +500,8 @@ struct TrayButton: View {
                 Text(label)
                     .font(Design.micro)
                     .tracking(0.4)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
             .padding(.horizontal, Design.Space.chipX)

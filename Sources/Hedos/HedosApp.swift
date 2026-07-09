@@ -143,7 +143,11 @@ struct HedosApp: App {
                 }
             }
             CommandGroup(before: .toolbar) {
-                ForEach(AppMode.allCases.filter { $0 != .settings }, id: \.self) { mode in
+                ForEach(
+                    AppMode.allCases.filter {
+                        $0 != .settings && ShellModel.surfaced($0) == $0
+                    }, id: \.self
+                ) { mode in
                     Button(Design.modeTitle(mode)) {
                         shell.setMode(mode)
                     }

@@ -17,6 +17,10 @@ enum Design {
         static let pane: CGFloat = 28
     }
 
+    enum Control {
+        static let size: CGFloat = 28
+    }
+
     enum Radius {
         static var control: CGFloat { ThemeStore.shared.shape.control }
         static var card: CGFloat { ThemeStore.shared.shape.card }
@@ -73,6 +77,8 @@ enum Design {
         static let transcriptProse: CGFloat = 620
         static let emptyCaption: CGFloat = 380
         static let pipelineList: CGFloat = 300
+        static let nowPlaying: CGFloat = 286
+        static let nowPlayingLabel: CGFloat = 160
     }
 
     enum Popover {
@@ -87,6 +93,7 @@ enum Design {
     enum Bubble {
         static let promptMax: CGFloat = 520
         static let imageMax: CGFloat = 360
+        static let artifactPlaceholder = CGSize(width: 340, height: 56)
     }
 
     static let conversationMaxWidth: CGFloat = 840

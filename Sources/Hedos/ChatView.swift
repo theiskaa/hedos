@@ -5,6 +5,14 @@ import SwiftUI
 @Observable
 @MainActor
 final class ChatViewModel {
+    struct Version: Identifiable, Hashable {
+        var id: String
+        var text: String
+        var thinking: String
+        var stats: GenerationStats?
+        var artifactRefs: [String] = []
+    }
+
     struct Entry: Identifiable, Hashable {
         var id: String = UUID().uuidString
         var role: TurnRole
@@ -13,22 +21,65 @@ final class ChatViewModel {
         var stats: GenerationStats?
         var artifactRefs: [String] = []
         var persisted = false
+        var generatesArtifact = false
+        var versions: [Version] = []
+    }
+
+    enum Intent: Hashable, CaseIterable {
+        case text
+        case image
+        case speak
+
+        var capability: Capability {
+            switch self {
+            case .text: .chat
+            case .image: .image
+            case .speak: .speak
+            }
+        }
+    }
+
+    enum ImagePhase: Equatable {
+        case idle
+        case queued(String?)
+        case preparing
+        case running
+        case failed(String)
     }
 
     private let kernel: Kernel
+    private let audio: AudioSession
     let sessionID: String
     private var streamTask: Task<Void, Never>?
-    private let readAloudPlayer = PCMPlayer()
     private var readAloudTask: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
+    private var speakTask: Task<Void, Never>?
+    private var speakLiveID: String?
+    private var imageTask: Task<Void, Never>?
+    private var cancelRequested = false
+    private var submittedPayload: JSONValue?
+    var previewingVoice: String?
+    var pendingSpeech: String?
+    var isSpeaking = false
+    var imagePhase: ImagePhase = .idle
+    var imageProgress: JobProgress = .none
+    var imagePreview: NSImage?
+    var activeImagePrompt: String?
+    var jobID: String?
 
     var transcript: [Entry] = []
-    var previousVersions: [String: [ChatTurn]] = [:]
     var draft = ""
     var isStreaming = false
     var notice: String?
     var canStartOllama = false
     var boundModelID: String?
     var defaultModelID: String?
+    var intent: Intent = .text
+    var imageModelID: String?
+    var voiceModelID: String?
+    var form = ParamForm(schema: [])
+    var voice = "af_heart"
+    var voices: [String] = []
     var speakingEntryID: String?
     var showsStreamCursor = false
     var streamStatus: String?
@@ -41,8 +92,9 @@ final class ChatViewModel {
     private static let liveBalanceThrottleTicks = 7
     private var liveBalanceThrottle = RefreshThrottle(everyTicks: liveBalanceThrottleTicks)
 
-    init(kernel: Kernel, session: ChatSession) {
+    init(kernel: Kernel, session: ChatSession, audio: AudioSession) {
         self.kernel = kernel
+        self.audio = audio
         self.sessionID = session.id
         self.boundModelID = session.modelID
     }
@@ -56,32 +108,204 @@ final class ChatViewModel {
 
     private func apply(_ stored: ChatTranscript) {
         boundModelID = stored.session.modelID
-        var previous: [String: [ChatTurn]] = [:]
+        var retired: [String: [ChatTurn]] = [:]
         for turn in stored.turns {
             if let supersededBy = turn.supersededBy {
-                previous[supersededBy, default: []].append(turn)
+                retired[supersededBy, default: []].append(turn)
             }
         }
-        previousVersions = previous
-        transcript = stored.turns
-            .filter { $0.supersededBy == nil && $0.role != .system }
-            .map {
-                Entry(
-                    id: $0.id,
-                    role: $0.role,
-                    text: $0.content,
-                    thinking: $0.thinking ?? "",
-                    stats: $0.stats,
-                    artifactRefs: $0.artifactRefs,
-                    persisted: true)
+        func predecessor(of turn: ChatTurn) -> ChatTurn? {
+            guard let candidate = retired[turn.id]?.min(by: { $0.seq < $1.seq }),
+                candidate.role == turn.role
+            else { return nil }
+            return candidate
+        }
+
+        let active = stored.turns.filter { $0.supersededBy == nil && $0.role != .system }
+        let placed = active.enumerated().map { index, turn -> (root: Int, entry: Entry) in
+            var chain: [ChatTurn] = []
+            var cursor = predecessor(of: turn)
+            while let older = cursor, chain.count < 64 {
+                chain.append(older)
+                cursor = predecessor(of: older)
             }
+            let history = chain.reversed() + [turn]
+            let generates =
+                turn.role == .user && index + 1 < active.count
+                && active[index + 1].isGeneratedArtifact
+            let entry = Entry(
+                id: turn.id,
+                role: turn.role,
+                text: turn.content,
+                thinking: turn.thinking ?? "",
+                stats: turn.stats,
+                artifactRefs: turn.artifactRefs,
+                persisted: true,
+                generatesArtifact: generates,
+                versions: history.map {
+                    Version(
+                        id: $0.id, text: $0.content, thinking: $0.thinking ?? "",
+                        stats: $0.stats, artifactRefs: $0.artifactRefs)
+                })
+            return (history.first?.seq ?? turn.seq, entry)
+        }
+        transcript = placed.sorted { $0.root < $1.root }.map(\.entry)
     }
 
     var transcriptCharacterCount: Int {
         transcript.reduce(0) { $0 + $1.text.count }
     }
 
+    var isWorking: Bool {
+        isStreaming || isSpeaking || imageBusy
+    }
+
+    var imageBusy: Bool {
+        switch imagePhase {
+        case .queued, .preparing, .running: true
+        case .idle, .failed: false
+        }
+    }
+
+    var activeModelID: String? {
+        switch intent {
+        case .text: boundModelID
+        case .image: imageModelID
+        case .speak: voiceModelID
+        }
+    }
+
+    func imageModels(in records: [ModelRecord]) -> [ModelRecord] {
+        Launcher.models(in: records, for: .images).filter {
+            Launcher.destination(for: $0) == .images
+        }
+    }
+
+    func waitingImageModels(in records: [ModelRecord]) -> [ModelRecord] {
+        Launcher.models(in: records, for: .images).filter {
+            Launcher.destination(for: $0) != .images
+        }
+    }
+
+    func voiceModels(in records: [ModelRecord]) -> [ModelRecord] {
+        Launcher.models(in: records, for: .voice).filter {
+            Launcher.destination(for: $0) == .voice
+        }
+    }
+
+    func setIntent(_ next: Intent) {
+        guard intent != next, !isWorking else { return }
+        if case .failed = imagePhase {
+            imagePhase = .idle
+        }
+        intent = next
+    }
+
+    func selectVoice(_ candidate: String) {
+        guard voice != candidate else { return }
+        voice = candidate
+        let kernel = kernel
+        Task {
+            var settings = await kernel.voiceSettings()
+            settings.defaultVoice = candidate
+            try? await kernel.updateVoiceSettings(settings)
+        }
+    }
+
+    func previewVoice(_ candidate: String) {
+        if previewingVoice == candidate {
+            stopVoicePreview()
+            return
+        }
+        previewTask?.cancel()
+        guard let voiceModelID else { return }
+        previewingVoice = candidate
+        let liveID = "preview-\(candidate)"
+        audio.beginLive(
+            AudioSession.Track(
+                id: liveID, title: SpeechModels.previewLine, subtitle: candidate),
+            audible: true,
+            onStop: { [weak self] in self?.stopVoicePreview() })
+        previewTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = try await kernel.invoke(
+                    voiceModelID, .speak,
+                    payload: .object([
+                        "text": .string(SpeechModels.previewLine),
+                        "voice": .string(candidate),
+                    ]))
+                for try await chunk in stream {
+                    if case .audio(let frame) = chunk {
+                        audio.enqueue(frame, for: liveID)
+                    }
+                }
+            } catch {}
+            if previewingVoice == candidate {
+                previewingVoice = nil
+            }
+            audio.finishLive(liveID)
+        }
+    }
+
+    func bindImage(to record: ModelRecord) {
+        guard imageModelID != record.id else { return }
+        imageModelID = record.id
+        form = ParamForm(schema: record.params)
+    }
+
+    func bindVoice(to record: ModelRecord) async {
+        guard voiceModelID != record.id || voices.isEmpty else { return }
+        voiceModelID = record.id
+        voices = (try? await kernel.voices(record.id)) ?? []
+        let fallback = await kernel.voiceSettings().defaultVoice
+        if case .string(let configured)? = record.paramValues["voice"],
+            voices.contains(configured)
+        {
+            voice = configured
+        } else if let fallback, voices.contains(fallback) {
+            voice = fallback
+        } else if !voices.contains(voice), let first = voices.first {
+            voice = first
+        }
+    }
+
+    func adoptBindings(in records: [ModelRecord]) async {
+        let images = imageModels(in: records)
+        if imageModelID == nil || !images.contains(where: { $0.id == imageModelID }) {
+            if let record = images.first {
+                bindImage(to: record)
+            } else {
+                imageModelID = nil
+                form = ParamForm(schema: [])
+            }
+        }
+        let speakers = voiceModels(in: records)
+        if voiceModelID == nil || !speakers.contains(where: { $0.id == voiceModelID }) {
+            if let record = SpeechModels.preferred(in: records) {
+                await bindVoice(to: record)
+            } else {
+                voiceModelID = nil
+                voices = []
+            }
+        }
+        if intent == .image && images.isEmpty {
+            intent = .text
+        }
+        if intent == .speak && speakers.isEmpty {
+            intent = .text
+        }
+    }
+
     func send() {
+        switch intent {
+        case .text: sendText()
+        case .image: generateImage()
+        case .speak: speakDraft()
+        }
+    }
+
+    private func sendText() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming, boundModelID != nil else { return }
         draft = ""
@@ -89,6 +313,225 @@ final class ChatViewModel {
         stream { kernel, sessionID in
             try await kernel.sendChat(sessionID: sessionID, text: text)
         }
+    }
+
+    private func generateImage() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !isWorking, let modelID = imageModelID else { return }
+        draft = ""
+        let kernel = kernel
+        let payload = form.payload(prompt: text)
+        startImageJob(prompt: text, payload: payload) {
+            try await kernel.submit(modelID, .image, payload: payload)
+        }
+    }
+
+    func rerunImage(_ artifact: Artifact) {
+        submitDerivedImage(from: artifact) { kernel, artifactID in
+            try await kernel.rerun(artifactID: artifactID)
+        }
+    }
+
+    func varyImage(_ artifact: Artifact) {
+        submitDerivedImage(from: artifact) { kernel, artifactID in
+            try await kernel.vary(artifactID: artifactID)
+        }
+    }
+
+    private func submitDerivedImage(
+        from artifact: Artifact,
+        _ submit: @escaping @Sendable (Kernel, String) async throws -> String
+    ) {
+        guard !isWorking else { return }
+        guard let record = recordsProvider?().first(where: { $0.id == artifact.modelID }),
+            Launcher.destination(for: record) == .images
+        else {
+            notice = "The model that made this image is no longer runnable."
+            return
+        }
+        bindImage(to: record)
+        form.load(artifact.params)
+        let kernel = kernel
+        let artifactID = artifact.id
+        let prompt = Provenance.prompt(of: artifact.params) ?? ""
+        startImageJob(prompt: prompt, payload: artifact.params) {
+            try await submit(kernel, artifactID)
+        }
+    }
+
+    private func startImageJob(
+        prompt: String, payload: JSONValue,
+        _ submit: @escaping @Sendable () async throws -> String
+    ) {
+        notice = nil
+        jobID = nil
+        submittedPayload = payload
+        activeImagePrompt = prompt
+        cancelRequested = false
+        imagePhase = .queued(nil)
+        streamStatus = nil
+        imageProgress = .none
+        imagePreview = nil
+        imageTask?.cancel()
+        imageTask = Task {
+            do {
+                let id = try await submit()
+                self.jobID = id
+                if self.cancelRequested {
+                    await self.kernel.cancel(jobID: id)
+                }
+                await self.watchImage(id, prompt: prompt)
+            } catch {
+                self.imagePhase =
+                    self.cancelRequested ? .idle : .failed(error.localizedDescription)
+                self.activeImagePrompt = nil
+            }
+        }
+    }
+
+    private func watchImage(_ id: String, prompt: String) async {
+        for await event in await kernel.jobEvents(id: id) {
+            switch event {
+            case .queued(let reason):
+                imagePhase = .queued(reason)
+            case .preparing:
+                imagePhase = .preparing
+            case .status(let message):
+                streamStatus = message
+            case .running:
+                imagePhase = .running
+                streamStatus = nil
+            case .progress(let updated):
+                imageProgress = updated
+            case .preview(let frame):
+                imagePreview = NSImage(data: frame)
+            case .done(let result):
+                await landImage(result, prompt: prompt)
+            case .failed(let message):
+                imagePhase = .failed(message)
+            case .cancelled:
+                imagePhase = .idle
+            }
+        }
+        if imageBusy {
+            imagePhase = .idle
+        }
+        streamStatus = nil
+        imagePreview = nil
+        imageProgress = .none
+        activeImagePrompt = nil
+    }
+
+    private func landImage(_ result: [String], prompt: String) async {
+        imagePhase = .idle
+        guard let artifactID = result.first else { return }
+        try? await kernel.recordGeneratedTurn(
+            sessionID: sessionID, prompt: prompt, artifactID: artifactID,
+            tag: SessionTag.generatedImage)
+        await reload()
+        Haptics.completion()
+    }
+
+    func cancelImage() {
+        guard imageBusy else { return }
+        cancelRequested = true
+        guard let jobID else { return }
+        let kernel = kernel
+        Task { await kernel.cancel(jobID: jobID) }
+    }
+
+    func copyImageFailureDetails() {
+        guard case .failed(let message) = imagePhase else { return }
+        let details = Provenance.failureDetails(
+            model: imageModelID ?? "",
+            error: message,
+            jobID: jobID,
+            params: submittedPayload ?? form.payload(prompt: activeImagePrompt ?? ""),
+            schema: form.schema)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(details, forType: .string)
+    }
+
+    private func speakDraft() {
+        let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty, !isWorking, let modelID = voiceModelID else { return }
+        draft = ""
+        notice = nil
+        pendingSpeech = content
+        isSpeaking = true
+        let liveID = "speak-\(UUID().uuidString)"
+        speakLiveID = liveID
+        speakTask = Task { [weak self] in
+            guard let self else { return }
+            var pcm = Data()
+            var sampleRate = 24000
+            let playsLive = await kernel.voiceSettings().autoSpeak
+            audio.beginLive(
+                AudioSession.Track(id: liveID, title: content, subtitle: voice),
+                audible: playsLive,
+                onStop: { [weak self] in self?.stop() })
+            do {
+                var payload: [String: JSONValue] = [
+                    "text": .string(content),
+                    "voice": .string(voice),
+                ]
+                let record = recordsProvider?().first { $0.id == modelID }
+                if record?.paramValues["speed"] == nil {
+                    let speed = await kernel.voiceSettings().speed
+                    if speed != 1.0 {
+                        payload["speed"] = .double(speed)
+                    }
+                }
+                let stream = try await kernel.invoke(modelID, .speak, payload: .object(payload))
+                for try await chunk in stream {
+                    switch chunk {
+                    case .status(let message):
+                        streamStatus = message
+                    case .audio(let frame):
+                        streamStatus = nil
+                        sampleRate = frame.sampleRate
+                        pcm.append(frame.data)
+                        audio.enqueue(frame, for: liveID)
+                    default:
+                        break
+                    }
+                }
+                try Task.checkCancellation()
+                if !pcm.isEmpty {
+                    let artifact = try await kernel.saveSpeech(
+                        modelID: modelID, voice: voice, text: content,
+                        sampleRate: sampleRate, pcm: pcm)
+                    try await kernel.recordGeneratedTurn(
+                        sessionID: sessionID, prompt: content, artifactID: artifact.id,
+                        tag: SessionTag.spoke)
+                    audio.finishLive(liveID)
+                    await reload()
+                    Haptics.completion()
+                } else {
+                    audio.finishLive(liveID)
+                }
+            } catch is CancellationError {
+                audio.dismissIfActive(liveID)
+            } catch {
+                notice = error.localizedDescription
+                draft = content
+                audio.finishLive(liveID)
+            }
+            if speakLiveID == liveID {
+                speakLiveID = nil
+            }
+            streamStatus = nil
+            pendingSpeech = nil
+            isSpeaking = false
+        }
+    }
+
+    private func reload() async {
+        _ = try? await kernel.autoTitleIfNeeded(sessionID: sessionID)
+        if let stored = try? await kernel.chats.session(id: sessionID) {
+            apply(stored)
+        }
+        onSessionsChanged?()
     }
 
     func rebind(to record: ModelRecord) {
@@ -150,9 +593,58 @@ final class ChatViewModel {
     }
 
     func stop() {
+        cancelImage()
+        teardown()
+    }
+
+    func teardown() {
         streamTask?.cancel()
+        speakTask?.cancel()
+        if let speakLiveID {
+            audio.dismissIfActive(speakLiveID)
+        }
+        speakLiveID = nil
         stopTicker()
         isStreaming = false
+        isSpeaking = false
+        pendingSpeech = nil
+    }
+
+    func stopVoicePreview() {
+        previewTask?.cancel()
+        let candidate = previewingVoice
+        previewingVoice = nil
+        if let candidate, audio.isActive("preview-\(candidate)") {
+            audio.dismiss()
+        }
+    }
+
+    func transcribeDropped(_ url: URL, records: [ModelRecord]) {
+        guard let transcriber = DictationController.transcriber(in: records) else {
+            notice = "Transcribing a file needs a ready transcription model."
+            return
+        }
+        guard url.pathExtension.lowercased() == "wav" else {
+            notice = "Only WAV files can be transcribed for now."
+            return
+        }
+        notice = "Transcribing \(url.lastPathComponent)…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let stream = try await kernel.invoke(
+                    transcriber.id, .transcribe,
+                    payload: .object(["audio": .string(url.path)]))
+                for try await chunk in stream {
+                    if case .text(let delta) = chunk {
+                        draft += delta
+                    }
+                }
+                notice = nil
+            } catch {
+                notice = error.localizedDescription
+            }
+        }
     }
 
     private func tickReveal() {
@@ -291,7 +783,15 @@ final class ChatViewModel {
     }
 
     func speaker(in records: [ModelRecord]) -> ModelRecord? {
-        records.first { $0.state == .ready && Launcher.destination(for: $0) == .voice }
+        if let voiceModelID,
+            let bound = records.first(where: {
+                $0.id == voiceModelID && $0.state == .ready
+                    && Launcher.destination(for: $0) == .voice
+            })
+        {
+            return bound
+        }
+        return SpeechModels.preferred(in: records)
     }
 
     func toggleReadAloud(_ entry: Entry) {
@@ -306,6 +806,7 @@ final class ChatViewModel {
         let text = SpeechText.speakable(entry.text)
         guard !text.isEmpty else { return }
         speakingEntryID = entry.id
+        let liveID = "narrate-\(entry.id)"
         readAloudTask = Task { [weak self] in
             guard let self else { return }
             var pcm = Data()
@@ -313,7 +814,9 @@ final class ChatViewModel {
             do {
                 let voices = (try? await kernel.voices(speaker.id)) ?? []
                 var chosen: String?
-                if case .string(let configured)? = speaker.paramValues["voice"],
+                if speaker.id == voiceModelID, voices.contains(voice) {
+                    chosen = voice
+                } else if case .string(let configured)? = speaker.paramValues["voice"],
                     voices.contains(configured)
                 {
                     chosen = configured
@@ -339,13 +842,17 @@ final class ChatViewModel {
                         payload["speed"] = .double(speed)
                     }
                 }
+                audio.beginLive(
+                    AudioSession.Track(id: liveID, title: text, subtitle: voice),
+                    audible: true,
+                    onStop: { [weak self] in self?.stopReadAloud() })
                 let stream = try await kernel.invoke(
                     speaker.id, .speak, payload: .object(payload))
                 for try await chunk in stream {
                     if case .audio(let frame) = chunk {
                         sampleRate = frame.sampleRate
                         pcm.append(frame.data)
-                        readAloudPlayer.enqueue(frame)
+                        audio.enqueue(frame, for: liveID)
                     }
                 }
                 if !pcm.isEmpty, entry.persisted, !Task.isCancelled {
@@ -353,7 +860,7 @@ final class ChatViewModel {
                         modelID: speaker.id, voice: voice, text: text,
                         sampleRate: sampleRate, pcm: pcm)
                     {
-                        try? await kernel.attachSpokenArtifact(
+                        try? await kernel.replaceSpokenArtifact(
                             sessionID: sessionID, turnID: entry.id, artifactID: artifact.id)
                         if let stored = try? await kernel.chats.session(id: sessionID) {
                             apply(stored)
@@ -361,9 +868,12 @@ final class ChatViewModel {
                         onSessionsChanged?()
                     }
                 }
+                audio.finishLive(liveID)
             } catch is CancellationError {
+                audio.dismissIfActive(liveID)
             } catch {
                 notice = error.localizedDescription
+                audio.finishLive(liveID)
             }
             if speakingEntryID == entry.id {
                 speakingEntryID = nil
@@ -373,8 +883,11 @@ final class ChatViewModel {
 
     func stopReadAloud() {
         readAloudTask?.cancel()
-        readAloudPlayer.stop()
+        let entryID = speakingEntryID
         speakingEntryID = nil
+        if let entryID, audio.isActive("narrate-\(entryID)") {
+            audio.dismiss()
+        }
     }
 
     func autoSpeakIfWanted() {
@@ -393,36 +906,44 @@ struct ChatView: View {
     let session: ChatSession
     let library: LibraryViewModel
     let kernel: Kernel
+    let audio: AudioSession
+    let launch: ShellModel.PendingLaunch?
     let onOpenArtifacts: ((String) -> Void)?
     let onNewChat: (() -> Void)?
-    let onNarrate: ((String, String) -> Void)?
+    let onLaunchConsumed: (() -> Void)?
     @Environment(\.chatShowsStats) private var showsStats
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.transcriptSpacing) private var transcriptSpacing
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var model: ChatViewModel
     @State private var followsStream = true
     @State private var expandedThinking: Set<String> = []
-    @State private var expandedVersions: Set<String> = []
+    @State private var versionSelection: [String: Int] = [:]
     @State private var editingEntryID: String?
     @State private var editText = ""
     @State private var modelMenuOpen = false
     @State private var voiceConversation = VoiceConversationController()
     @State private var copiedEntryID: String?
+    @State private var showParams = false
 
     init(
         session: ChatSession, library: LibraryViewModel, kernel: Kernel,
+        audio: AudioSession,
+        launch: ShellModel.PendingLaunch? = nil,
         onSessionsChanged: (() -> Void)? = nil,
         onOpenArtifacts: ((String) -> Void)? = nil,
         onNewChat: (() -> Void)? = nil,
-        onNarrate: ((String, String) -> Void)? = nil
+        onLaunchConsumed: (() -> Void)? = nil
     ) {
         self.session = session
         self.library = library
         self.kernel = kernel
+        self.audio = audio
+        self.launch = launch
         self.onOpenArtifacts = onOpenArtifacts
         self.onNewChat = onNewChat
-        self.onNarrate = onNarrate
-        let viewModel = ChatViewModel(kernel: kernel, session: session)
+        self.onLaunchConsumed = onLaunchConsumed
+        let viewModel = ChatViewModel(kernel: kernel, session: session, audio: audio)
         viewModel.onSessionsChanged = onSessionsChanged
         viewModel.recordsProvider = { [weak library] in library?.records ?? [] }
         _model = State(initialValue: viewModel)
@@ -432,30 +953,100 @@ struct ChatView: View {
         library.record(id: model.boundModelID)
     }
 
+    private var activeRecord: ModelRecord? {
+        library.record(id: model.activeModelID)
+    }
+
     var body: some View {
         ConversationScaffold(
             placeholder: placeholder,
             draft: $model.draft,
-            isWorking: model.isStreaming,
+            isWorking: model.isWorking,
             canSend: sendable,
             notice: contextNotice ?? model.notice,
             noticeActionLabel: model.canStartOllama ? "Start Ollama" : nil,
             noticeAction: model.canStartOllama ? { model.startOllamaAndRetry() } : nil,
             onSend: { model.send() },
             onStop: { model.stop() },
-            slash: SlashSetup(kernel: kernel, capability: .chat, commands: slashCommands),
+            slash: SlashSetup(
+                kernel: kernel, capability: model.intent.capability, commands: slashCommands),
             dictation: DictationSetup(
                 kernel: kernel,
                 records: { [weak library] in library?.records ?? [] }),
             transcript: { transcript },
-            aux: { voiceLoopControl },
+            aux: { composerAux },
             chip: { modelChip }
         )
         .task(id: session.id) { await model.load() }
+        .task(id: library.shelfSignature) { await model.adoptBindings(in: library.records) }
+        .task(id: launch) { await applyLaunch() }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            model.transcribeDropped(url, records: library.records)
+            return true
+        }
         .onDisappear {
-            model.stop()
+            model.teardown()
             model.stopReadAloud()
+            model.stopVoicePreview()
             voiceConversation.stop()
+        }
+    }
+
+    private func applyLaunch() async {
+        guard let launch, let record = library.record(id: launch.modelID) else { return }
+        switch launch.intent {
+        case .text: model.rebind(to: record)
+        case .image: model.bindImage(to: record)
+        case .speak: await model.bindVoice(to: record)
+        }
+        model.setIntent(launch.intent)
+        onLaunchConsumed?()
+    }
+
+    @ViewBuilder
+    private var composerAux: some View {
+        intentControl(
+            .image, glyph: "photo", label: "Generate an image",
+            available: !model.imageModels(in: library.records).isEmpty)
+        intentControl(
+            .speak, glyph: "speaker.wave.2", label: "Speak this text",
+            available: !model.voiceModels(in: library.records).isEmpty)
+        paramsControl
+        voiceLoopControl
+    }
+
+    @ViewBuilder
+    private func intentControl(
+        _ target: ChatViewModel.Intent, glyph: String, label: String, available: Bool
+    ) -> some View {
+        if available || model.intent == target {
+            let active = model.intent == target
+            CircleControl(
+                glyph: glyph,
+                prominent: active,
+                label: active ? "Back to chat" : label
+            ) {
+                model.setIntent(active ? .text : target)
+            }
+            .disabled(model.isWorking)
+            .accessibilityIdentifier("intent-\(target == .image ? "image" : "speak")")
+        }
+    }
+
+    @ViewBuilder
+    private var paramsControl: some View {
+        if model.intent == .image && !model.form.schema.isEmpty {
+            CircleControl(glyph: "slider.horizontal.3", label: "Generation parameters") {
+                showParams.toggle()
+            }
+            .inkPopover(
+                isPresented: $showParams,
+                width: Design.Popover.form.width,
+                maxHeight: Design.Popover.form.height
+            ) {
+                ParamsForm(form: Bindable(model).form, disabled: model.isWorking)
+            }
         }
     }
 
@@ -474,7 +1065,8 @@ struct ChatView: View {
                     ? "End voice conversation" : "Start voice conversation"
             ) {
                 voiceConversation.toggle(
-                    sessionID: session.id, kernel: kernel, records: library.records
+                    sessionID: session.id, kernel: kernel, records: library.records,
+                    audio: audio
                 ) { [weak model] in
                     Task { await model?.load() }
                 }
@@ -510,11 +1102,20 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: transcriptSpacing) {
-                    if model.transcript.isEmpty {
+                    if model.transcript.isEmpty && model.pendingSpeech == nil && !model.imageBusy {
                         emptyTranscript
                     }
                     ForEach(model.transcript) { entry in
                         turn(entry)
+                    }
+                    if let pending = model.pendingSpeech {
+                        pendingSpeechRow(pending)
+                    }
+                    if model.imageBusy {
+                        liveImageRow
+                    }
+                    if case .failed(let message) = model.imagePhase {
+                        failedImageRow(message)
                     }
                     Color.clear.frame(height: 1).id("tail")
                 }
@@ -553,6 +1154,18 @@ struct ChatView: View {
                     settleAtTail(proxy)
                 }
             }
+            .onChange(of: model.pendingSpeech) { _, pending in
+                if pending != nil {
+                    followsStream = true
+                    settleAtTail(proxy)
+                }
+            }
+            .onChange(of: model.imageBusy) { _, busy in
+                if busy {
+                    followsStream = true
+                    settleAtTail(proxy)
+                }
+            }
             .onAppear { settleAtTail(proxy) }
         }
     }
@@ -584,7 +1197,7 @@ struct ChatView: View {
                     PromptBubble(text: entry.text)
                         .contextMenu {
                             Button("Copy") { copy(entry.text) }
-                            if entry.persisted && !model.isStreaming {
+                            if entry.persisted && !model.isStreaming && !entry.generatesArtifact {
                                 Button("Edit…") {
                                     editText = entry.text
                                     editingEntryID = entry.id
@@ -592,19 +1205,19 @@ struct ChatView: View {
                             }
                         }
                 }
-                previousVersionsAffordance(entry)
+                versionSwitcher(entry)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.bottom, Design.Space.m)
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                if !entry.thinking.isEmpty {
+                if !displayThinking(entry).isEmpty {
                     thinkingBlock(entry)
                 }
                 if !entry.text.isEmpty {
                     MarkdownTurnView(text: displayText(entry), cursor: showsCursor(entry))
                         .contextMenu {
-                            Button("Copy") { copy(entry.text) }
+                            Button("Copy") { copy(displayText(entry)) }
                             if canReadAloud(entry) {
                                 Button(
                                     model.speakingEntryID == entry.id
@@ -622,9 +1235,6 @@ struct ChatView: View {
                         text: (model.streamStatus ?? "Streaming…").uppercased(),
                         font: Design.micro)
                 }
-                ForEach(entry.artifactRefs, id: \.self) { reference in
-                    artifactCard(reference)
-                }
                 if !entry.text.isEmpty && !(model.isStreaming && !entry.persisted) {
                     HStack(spacing: Design.Space.m) {
                         ArtifactTray {
@@ -632,7 +1242,7 @@ struct ChatView: View {
                                 label: copiedEntryID == entry.id ? "Copied" : "Copy",
                                 glyph: copiedEntryID == entry.id ? "checkmark" : "doc.on.doc"
                             ) {
-                                copy(entry.text)
+                                copy(displayText(entry))
                                 copiedEntryID = entry.id
                                 Task {
                                     try? await Task.sleep(for: .seconds(1.5))
@@ -654,20 +1264,109 @@ struct ChatView: View {
                                 }
                             }
                         }
+                        versionSwitcher(entry)
                         if model.speakingEntryID == entry.id {
                             SpeakingIndicator()
                         }
                         Spacer(minLength: 0)
-                        if showsStats, let stats = entry.stats {
+                        if showsStats, let stats = displayStats(entry) {
                             statsLine(stats)
                         }
                     }
                 }
-                previousVersionsAffordance(entry)
+                ForEach(displayArtifacts(entry), id: \.self) { reference in
+                    artifactCard(reference)
+                }
             }
             .frame(maxWidth: Design.Column.transcriptProse, alignment: .leading)
             .padding(.bottom, Design.Space.xl)
         }
+    }
+
+    private var liveImageRow: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            if let prompt = model.activeImagePrompt, !prompt.isEmpty {
+                PromptBubble(text: prompt)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                ImageBubble(image: model.imagePreview, caption: nil, isLoading: true)
+                HStack(spacing: Design.Space.l) {
+                    ProgressView(value: model.imageProgress.fraction)
+                        .progressViewStyle(.linear)
+                        .tint(Design.accent)
+                        .controlSize(.small)
+                        .frame(maxWidth: Design.Column.control)
+                    if let step = model.imageProgress.step,
+                        let total = model.imageProgress.totalSteps
+                    {
+                        Text("step \(step) / \(total)")
+                            .font(Design.data(10))
+                            .foregroundStyle(Design.inkSoft)
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                            .animation(Design.motion(reduceMotion: reduceMotion), value: step)
+                    } else if let status = imageStatusLine {
+                        Text(status)
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    Button("Cancel") {
+                        model.cancelImage()
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+            }
+        }
+        .padding(.bottom, Design.Space.xl)
+    }
+
+    private var imageStatusLine: String? {
+        switch model.imagePhase {
+        case .queued(let reason): reason ?? model.streamStatus ?? "Waiting to run"
+        case .preparing: "Preparing image runtime, first use only"
+        default: model.streamStatus
+        }
+    }
+
+    private func failedImageRow(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            Label {
+                Text(message)
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkSoft)
+                    .lineSpacing(Design.bodyLineSpacing)
+                    .frame(maxWidth: Design.Column.prose, alignment: .leading)
+                    .textSelection(.enabled)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(Design.glyphInline.weight(.semibold))
+                    .foregroundStyle(Design.inkSoft)
+            }
+            Button("Copy details") {
+                model.copyImageFailureDetails()
+            }
+            .buttonStyle(QuietButtonStyle())
+        }
+        .responseShell()
+        .padding(.bottom, Design.Space.xl)
+    }
+
+    private func pendingSpeechRow(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            PromptBubble(text: text)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            HStack(spacing: Design.Space.l) {
+                SpeakingIndicator()
+                if let status = model.streamStatus {
+                    Text(status)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                }
+            }
+            .responseShell()
+        }
+        .padding(.bottom, Design.Space.xl)
     }
 
     private func editField(_ entry: ChatViewModel.Entry) -> some View {
@@ -696,59 +1395,73 @@ struct ChatView: View {
         }
     }
 
+    private func versionIndex(_ entry: ChatViewModel.Entry) -> Int {
+        let last = max(entry.versions.count - 1, 0)
+        return min(versionSelection[entry.id] ?? last, last)
+    }
+
+    private func selectedVersion(_ entry: ChatViewModel.Entry) -> ChatViewModel.Version? {
+        guard !entry.versions.isEmpty else { return nil }
+        return entry.versions[versionIndex(entry)]
+    }
+
     @ViewBuilder
-    private func previousVersionsAffordance(_ entry: ChatViewModel.Entry) -> some View {
-        if let versions = model.previousVersions[entry.id], !versions.isEmpty {
-            DisclosureGroup(
-                isExpanded: Binding(
-                    get: { expandedVersions.contains(entry.id) },
-                    set: { expanded in
-                        if expanded {
-                            expandedVersions.insert(entry.id)
-                        } else {
-                            expandedVersions.remove(entry.id)
-                        }
-                    })
-            ) {
-                VStack(alignment: .leading, spacing: Design.Space.s) {
-                    ForEach(versions) { version in
-                        VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                            Text(version.role.rawValue.uppercased())
-                                .font(Design.micro)
-                                .tracking(Design.microTracking)
-                                .foregroundStyle(Design.inkFaint)
-                            Text(version.content)
-                                .font(Design.caption)
-                                .foregroundStyle(Design.inkFaint)
-                                .textSelection(.enabled)
-                        }
-                        .padding(.leading, Design.Space.l)
-                    }
+    private func versionSwitcher(_ entry: ChatViewModel.Entry) -> some View {
+        if entry.versions.count > 1 {
+            let index = versionIndex(entry)
+            HStack(spacing: Design.Space.xs) {
+                versionStep(
+                    glyph: "chevron.left", label: "Previous version",
+                    enabled: index > 0
+                ) {
+                    versionSelection[entry.id] = index - 1
                 }
-                .padding(.top, Design.Space.xs)
-            } label: {
-                HStack(spacing: Design.Space.xs) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(Design.glyphSmall)
-                    Text(
-                        versions.count == 1
-                            ? "Previous version" : "\(versions.count) previous versions")
+                Text("\(index + 1)/\(entry.versions.count)")
+                    .font(Design.micro)
+                    .monospacedDigit()
+                    .foregroundStyle(Design.inkFaint)
+                    .lineLimit(1)
+                    .fixedSize()
+                versionStep(
+                    glyph: "chevron.right", label: "Next version",
+                    enabled: index < entry.versions.count - 1
+                ) {
+                    versionSelection[entry.id] = index + 1
                 }
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
             }
-            .disclosureGroupStyle(QuietDisclosureStyle())
-            .accessibilityLabel("Previous versions")
+            .accessibilityLabel("Version \(index + 1) of \(entry.versions.count)")
         }
     }
 
+    private func versionStep(
+        glyph: String, label: String, enabled: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: glyph)
+                .font(Design.glyphMicro)
+                .foregroundStyle(enabled ? Design.inkSoft : Design.inkFaint.opacity(0.4))
+                .frame(width: 14, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+
     private func artifactCard(_ reference: String) -> some View {
-        ArtifactExchangeView(reference: reference, kernel: kernel)
-            .contextMenu {
-                Button("Show in Images") {
-                    onOpenArtifacts?(reference)
-                }
+        ArtifactExchangeView(
+            reference: reference,
+            kernel: kernel,
+            session: audio,
+            onRerun: model.isWorking ? nil : { model.rerunImage($0) },
+            onVary: model.isWorking ? nil : { model.varyImage($0) }
+        )
+        .contextMenu {
+            Button("Show in gallery") {
+                onOpenArtifacts?(reference)
             }
+        }
     }
 
     private func copy(_ text: String) {
@@ -770,7 +1483,7 @@ struct ChatView: View {
                     }
                 })
         ) {
-            Text(entry.thinking)
+            Text(displayThinking(entry))
                 .font(Design.label)
                 .lineSpacing(Design.bodyLineSpacing)
                 .foregroundStyle(Design.inkSoft)
@@ -805,18 +1518,37 @@ struct ChatView: View {
             }
             parts.append("\(tokens) tok")
         }
-        return HStack(spacing: Design.Space.xs) {
-            ForEach(parts, id: \.self) { part in
-                TintChip(text: part)
-            }
-        }
+        return Text(parts.joined(separator: " · "))
+            .font(Design.micro)
+            .tracking(Design.microTracking)
+            .monospacedDigit()
+            .foregroundStyle(Design.inkFaint)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(-1)
     }
 
     private func displayText(_ entry: ChatViewModel.Entry) -> String {
         let isLive =
             model.isStreaming && !entry.persisted && entry.id == model.transcript.last?.id
-        guard isLive else { return entry.text }
+        guard isLive else { return selectedVersion(entry)?.text ?? entry.text }
         return model.liveBalancedText
+    }
+
+    private func displayThinking(_ entry: ChatViewModel.Entry) -> String {
+        selectedVersion(entry)?.thinking ?? entry.thinking
+    }
+
+    private func displayStats(_ entry: ChatViewModel.Entry) -> GenerationStats? {
+        selectedVersion(entry)?.stats ?? entry.stats
+    }
+
+    private func displayArtifacts(_ entry: ChatViewModel.Entry) -> [String] {
+        selectedVersion(entry)?.artifactRefs ?? entry.artifactRefs
+    }
+
+    private func showsLatestVersion(_ entry: ChatViewModel.Entry) -> Bool {
+        entry.versions.count < 2 || versionIndex(entry) == entry.versions.count - 1
     }
 
     private func showsCursor(_ entry: ChatViewModel.Entry) -> Bool {
@@ -826,74 +1558,60 @@ struct ChatView: View {
 
     private func canReadAloud(_ entry: ChatViewModel.Entry) -> Bool {
         entry.role == .assistant && !entry.text.isEmpty && !model.isStreaming
+            && showsLatestVersion(entry)
+            && displayArtifacts(entry).isEmpty
             && model.speaker(in: library.records) != nil
     }
 
-    private func readAloudControl(_ entry: ChatViewModel.Entry) -> some View {
-        let speaking = model.speakingEntryID == entry.id
-        return HStack(spacing: Design.Space.s) {
-            Button {
-                narrate(entry)
-            } label: {
-                Image(systemName: speaking ? "stop.fill" : "speaker.wave.2")
-                    .font(Design.glyphInline)
-                    .foregroundStyle(speaking ? Design.ink : Design.inkFaint)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(speaking ? "Stop reading" : "Narrate in Voice")
-            .accessibilityLabel(speaking ? "Stop reading" : "Narrate in Voice")
-            if speaking {
-                SpeakingIndicator()
-            }
-        }
-    }
-
-    private func copyControl(_ entry: ChatViewModel.Entry) -> some View {
-        Button {
-            copy(entry.text)
-            copiedEntryID = entry.id
-            Task {
-                try? await Task.sleep(for: .seconds(1.5))
-                if copiedEntryID == entry.id {
-                    copiedEntryID = nil
-                }
-            }
-        } label: {
-            Image(systemName: copiedEntryID == entry.id ? "checkmark" : "doc.on.doc")
-                .font(Design.glyphInline)
-                .foregroundStyle(copiedEntryID == entry.id ? Design.ink : Design.inkFaint)
-                .contentTransition(.symbolEffect(.replace))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressDipStyle())
-        .help("Copy the reply")
-        .accessibilityLabel(copiedEntryID == entry.id ? "Copied" : "Copy the reply")
-    }
 
     private func narrate(_ entry: ChatViewModel.Entry) {
-        if model.speakingEntryID == entry.id {
-            model.toggleReadAloud(entry)
-            return
-        }
-        if let onNarrate {
-            onNarrate(SpeechText.speakable(entry.text), entry.id)
-        } else {
-            model.toggleReadAloud(entry)
-        }
+        model.toggleReadAloud(entry)
     }
 
     private var emptyTranscript: some View {
         TranscriptEmptyState(
             eyebrow: "Chat · Local",
-            headline: boundRecord != nil ? "Say the first thing." : "Pick a model to begin.",
-            caption: boundRecord.map {
-                "\($0.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
-            }
-                ?? "Every ready chat model on this Mac lives in the chip below the composer.")
+            headline: emptyHeadline,
+            caption: emptyCaption)
     }
 
+    private var emptyHeadline: String {
+        switch model.intent {
+        case .text: boundRecord != nil ? "Say the first thing." : "Pick a model to begin."
+        case .image: activeRecord != nil ? "Describe something." : "No image model yet."
+        case .speak: activeRecord != nil ? "Give it a line." : "No voice model yet."
+        }
+    }
+
+    private var emptyCaption: String {
+        switch model.intent {
+        case .text:
+            return boundRecord.map {
+                "\($0.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
+            } ?? "Every ready chat model on this Mac lives in the chip below the composer."
+        case .image:
+            return activeRecord != nil
+                ? "A sentence in, an image out — right here in the conversation. Steps, size, and seed live next to the send button."
+                : "When an image model lands on your shelf, it draws into this conversation."
+        case .speak:
+            return activeRecord.map {
+                "\($0.displayName) speaks your text into this conversation, playable and saveable. Preview voices from the chip below."
+            } ?? "When a voice model lands on your shelf, it speaks from here."
+        }
+    }
+
+    @ViewBuilder
     private var modelChip: some View {
+        switch model.intent {
+        case .text: chatChip
+        case .image: imageChip
+        case .speak:
+            voiceChip
+            voicePickerChip
+        }
+    }
+
+    private var chatChip: some View {
         InkMenu(
             title: boundRecord?.displayName ?? "Choose model",
             accessibilityName: "Chat model",
@@ -921,7 +1639,73 @@ struct ChatView: View {
                 }
             }
         }
-        .disabled(model.isStreaming)
+        .disabled(model.isWorking)
+    }
+
+    private var imageChip: some View {
+        InkMenu(
+            title: activeRecord?.displayName ?? "Choose model",
+            accessibilityName: "Image model"
+        ) {
+            let runnable = model.imageModels(in: library.records)
+            let waiting = model.waitingImageModels(in: library.records)
+            if runnable.isEmpty && waiting.isEmpty {
+                InkMenuRow(title: "No image model is ready.", disabled: true) {}
+            }
+            ForEach(runnable) { record in
+                InkMenuRow(
+                    title: record.displayName,
+                    selected: record.id == model.imageModelID
+                ) {
+                    model.bindImage(to: record)
+                }
+            }
+            if !waiting.isEmpty {
+                InkMenuDivider()
+                ForEach(waiting) { record in
+                    InkMenuRow(title: record.displayName, annotation: "needs recipe", disabled: true)
+                    {}
+                }
+            }
+        }
+        .disabled(model.isWorking)
+    }
+
+    private var voiceChip: some View {
+        InkMenu(
+            title: activeRecord?.displayName ?? "Choose model",
+            accessibilityName: "Voice model"
+        ) {
+            let runnable = model.voiceModels(in: library.records)
+            if runnable.isEmpty {
+                InkMenuRow(title: "No voice model is ready.", disabled: true) {}
+            }
+            ForEach(runnable) { record in
+                InkMenuRow(
+                    title: record.displayName,
+                    selected: record.id == model.voiceModelID
+                ) {
+                    Task { await model.bindVoice(to: record) }
+                }
+            }
+        }
+        .disabled(model.isWorking)
+    }
+
+    private var voicePickerChip: some View {
+        InkMenu(title: model.voice, accessibilityName: "Voice") {
+            ForEach(model.voices, id: \.self) { candidate in
+                InkMenuRow(
+                    title: candidate,
+                    selected: candidate == model.voice,
+                    previewing: model.previewingVoice == candidate,
+                    onPreview: { model.previewVoice(candidate) }
+                ) {
+                    model.selectVoice(candidate)
+                }
+            }
+        }
+        .disabled(model.voices.isEmpty || model.isWorking)
     }
 
     private var chatGroups: [(section: String, records: [ModelRecord])] {
@@ -944,12 +1728,21 @@ struct ChatView: View {
     }
 
     private var placeholder: String {
-        boundRecord.map { "Message \($0.displayName)…" } ?? "Pick a model first…"
+        switch model.intent {
+        case .text:
+            return boundRecord.map { "Message \($0.displayName)…" } ?? "Pick a model first…"
+        case .image:
+            return activeRecord != nil
+                ? "What should this look like?" : "Pick an image model first…"
+        case .speak:
+            return activeRecord.map { "What should \($0.displayName) say?" }
+                ?? "Pick a voice model first…"
+        }
     }
 
     private var sendable: Bool {
         !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && model.boundModelID != nil
+            && model.activeModelID != nil
     }
 }
 

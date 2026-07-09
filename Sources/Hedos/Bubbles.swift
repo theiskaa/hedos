@@ -41,26 +41,26 @@ extension View {
 
 struct VoiceBubble: View {
     let artifact: Artifact
-    let clips: AudioClipController
+    let session: AudioSession
     let onToggle: () -> Void
 
     private var isActive: Bool {
-        clips.isActive(artifact.id)
+        session.isActive(artifact.id)
     }
 
     private var isSounding: Bool {
-        clips.isSounding(artifact.id)
+        session.isSounding(artifact.id)
     }
 
     var body: some View {
         HStack(spacing: Design.Space.chipX) {
             playButton
             WavePlayerBars(
-                peaks: VoiceSurfaceModel.peaks(of: artifact),
-                fraction: isActive ? clips.progress : 0,
+                peaks: SpeechArtifact.peaks(of: artifact),
+                fraction: isActive ? session.progress : 0,
                 onSeek: { fraction in
                     if isActive {
-                        clips.seek(to: fraction)
+                        session.seek(to: fraction)
                     } else {
                         onToggle()
                     }
@@ -77,11 +77,11 @@ struct VoiceBubble: View {
         .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.artifact))
         .overlay(RoundedRectangle(cornerRadius: Design.Radius.artifact).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         .frame(maxWidth: 340)
-        .help(VoiceSurfaceModel.voiceName(of: artifact).map { "Voice: \($0)" } ?? "Narration")
+        .help(SpeechArtifact.voiceName(of: artifact).map { "Voice: \($0)" } ?? "Narration")
         .contextMenu {
-            ForEach(AudioClipController.rates, id: \.self) { candidate in
+            ForEach(AudioSession.rates, id: \.self) { candidate in
                 Button(String(format: "%g× speed", candidate)) {
-                    clips.setRate(candidate)
+                    session.setRate(candidate)
                 }
             }
         }
@@ -105,7 +105,7 @@ struct VoiceBubble: View {
     }
 
     private var timeText: String {
-        "\(Self.clock(isActive ? clips.elapsed : 0)) / \(durationText)"
+        "\(Self.clock(isActive ? session.elapsed : 0)) / \(durationText)"
     }
 
     private var durationText: String {
@@ -121,6 +121,8 @@ struct VoiceBubble: View {
 struct WavePlayerBars: View {
     let peaks: [Double]
     let fraction: Double
+    var height: CGFloat = 26
+    var barCount: Int = 80
     var onSeek: ((Double) -> Void)? = nil
 
     var body: some View {
@@ -144,7 +146,7 @@ struct WavePlayerBars: View {
                             min(max(value.location.x / geometry.size.width, 0), 1))
                     })
         }
-        .frame(height: 26)
+        .frame(height: height)
         .accessibilityHidden(true)
     }
 
@@ -155,14 +157,14 @@ struct WavePlayerBars: View {
                 RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(style)
                     .frame(maxWidth: .infinity)
-                    .frame(height: (0.14 + 0.86 * level) * 26)
+                    .frame(height: (0.14 + 0.86 * level) * height)
             }
         }
     }
 
     private var displayPeaks: [Double] {
-        let source = peaks.isEmpty ? Array(repeating: 0.4, count: 80) : peaks
-        let resampled = Self.resample(source, to: 80)
+        let source = peaks.isEmpty ? Array(repeating: 0.4, count: barCount) : peaks
+        let resampled = Self.resample(source, to: barCount)
         let low = resampled.min() ?? 0
         let range = max((resampled.max() ?? 1) - low, 0.001)
         return resampled.map { ($0 - low) / range }

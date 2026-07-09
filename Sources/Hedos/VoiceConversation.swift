@@ -9,8 +9,10 @@ final class VoiceConversationController {
     private(set) var status: String?
     var notice: String?
 
+    private static let trackID = "voice-conversation"
+
     private let capture = MicCapture()
-    private let player = PCMPlayer()
+    private var audio: AudioSession?
     private var loop: VoiceLoop?
     private var eventTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
@@ -29,11 +31,15 @@ final class VoiceConversationController {
         return (transcriber, speaker)
     }
 
-    func toggle(sessionID: String, kernel: Kernel, records: [ModelRecord], onTurn: @escaping () -> Void) {
+    func toggle(
+        sessionID: String, kernel: Kernel, records: [ModelRecord], audio: AudioSession,
+        onTurn: @escaping () -> Void
+    ) {
         if active {
             stop()
             return
         }
+        self.audio = audio
         start(sessionID: sessionID, kernel: kernel, records: records, onTurn: onTurn)
     }
 
@@ -45,7 +51,9 @@ final class VoiceConversationController {
         feedTask?.cancel()
         feedTask = nil
         capture.stop()
-        player.stop()
+        if audio?.isActive(Self.trackID) == true {
+            audio?.dismiss()
+        }
         let loop = loop
         self.loop = nil
         Task {
@@ -99,6 +107,12 @@ final class VoiceConversationController {
             voice: voice)
         self.loop = loop
 
+        audio?.beginLive(
+            AudioSession.Track(
+                id: Self.trackID, title: "Voice conversation", subtitle: voice),
+            audible: true,
+            onStop: { [weak self] in self?.stop() })
+
         let events = await loop.start()
         let (samples, feed) = AsyncStream.makeStream(of: [Float].self)
         do {
@@ -126,7 +140,7 @@ final class VoiceConversationController {
                 case .listening:
                     status = "Listening…"
                 case .userSpeechBegan:
-                    player.stop()
+                    audio?.flushLive(Self.trackID)
                     status = "Hearing you…"
                 case .userTurn(let text):
                     status = "Heard: \(text)"
@@ -134,7 +148,7 @@ final class VoiceConversationController {
                     break
                 case .speech(let frame):
                     status = "Speaking…"
-                    player.enqueue(frame)
+                    audio?.enqueue(frame, for: Self.trackID)
                 case .status(let message):
                     status = message.capitalized + "…"
                 case .turnCompleted:

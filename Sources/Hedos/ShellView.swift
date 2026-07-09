@@ -5,16 +5,22 @@ import SwiftUI
 @Observable
 @MainActor
 final class ShellModel {
+    struct PendingLaunch: Hashable {
+        var modelID: String
+        var intent: ChatViewModel.Intent
+    }
+
     let library: LibraryViewModel
-    let images: ImagesViewModel
-    let voice: VoiceSurfaceModel
+    let gallery: GalleryModel
     let settings: SettingsModel
+    let audio: AudioSession
     let system = SystemMonitor()
 
     var mode: AppMode = .library
     var chatSelection: String?
     var imagesSelection: String?
-    var pendingImageReveal: String?
+    var showingGallery = false
+    var pendingLaunch: PendingLaunch?
     var voiceSelection: String?
     var pipelineSelection: String?
     var librarySelection: String?
@@ -32,19 +38,30 @@ final class ShellModel {
 
     var kernel: Kernel { library.kernel }
 
+    static let surfaces: [AppMode] = [.chat, .pipelines]
+
+    static func surfaced(_ mode: AppMode) -> AppMode {
+        switch mode {
+        case .images, .voice: .chat
+        default: mode
+        }
+    }
+
     init() {
         let library = LibraryViewModel(kernel: Kernel())
         self.library = library
-        self.images = ImagesViewModel(kernel: library.kernel)
-        self.voice = VoiceSurfaceModel(kernel: library.kernel)
+        self.gallery = GalleryModel(kernel: library.kernel)
         self.settings = SettingsModel(kernel: library.kernel)
+        self.audio = AudioSession(kernel: library.kernel)
+        self.settings.audio = audio
     }
 
     init(library: LibraryViewModel) {
         self.library = library
-        self.images = ImagesViewModel(kernel: library.kernel)
-        self.voice = VoiceSurfaceModel(kernel: library.kernel)
+        self.gallery = GalleryModel(kernel: library.kernel)
         self.settings = SettingsModel(kernel: library.kernel)
+        self.audio = AudioSession(kernel: library.kernel)
+        self.settings.audio = audio
     }
 
     func start() async {
@@ -67,6 +84,7 @@ final class ShellModel {
         if mode == .settings {
             mode = .home
         }
+        mode = Self.surfaced(mode)
         await refreshSessions()
         watchResidency()
         Task { await kernel.startGatewayIfEnabled() }
@@ -127,12 +145,13 @@ final class ShellModel {
     }
 
     func setMode(_ newMode: AppMode) {
-        guard mode != newMode, newMode != .settings else { return }
+        let target = Self.surfaced(newMode)
+        guard mode != target, target != .settings else { return }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         withAnimation(Design.motion(reduceMotion: reduceMotion)) {
-            mode = newMode
+            mode = target
         }
-        if newMode == .chat {
+        if target == .chat {
             Task { await refreshSessions() }
         }
         persist()
@@ -145,11 +164,6 @@ final class ShellModel {
 
     func selectImages(_ id: String?) {
         imagesSelection = id
-        persist()
-    }
-
-    func selectVoice(_ id: String?) {
-        voiceSelection = id
         persist()
     }
 
@@ -169,13 +183,12 @@ final class ShellModel {
     }
 
     func showArtifact(_ id: String?) {
-        if let id, images.artifact(id: id) != nil {
+        if let id, gallery.artifact(id: id) != nil {
             imagesSelection = id
-            pendingImageReveal = id
-        } else if imagesSelection == nil || images.artifact(id: imagesSelection) == nil {
-            imagesSelection = images.arranged.first?.id
+        } else if imagesSelection == nil || gallery.artifact(id: imagesSelection) == nil {
+            imagesSelection = gallery.arranged.first?.id
         }
-        mode = .images
+        showingGallery = true
         persist()
     }
 
@@ -227,20 +240,32 @@ final class ShellModel {
         case .chat:
             startChat(bound: record)
         case .images:
-            images.bind(to: record)
-            imagesSelection = nil
-            librarySelection = nil
-            mode = .images
-            persist()
+            openConversation(with: record, intent: .image)
         case .voice:
-            voiceSelection = record.id
-            librarySelection = nil
-            mode = .voice
-            let voice = voice
-            Task { await voice.bind(to: record) }
-            persist()
+            openConversation(with: record, intent: .speak)
         default:
             break
+        }
+    }
+
+    private func openConversation(with record: ModelRecord, intent: ChatViewModel.Intent) {
+        librarySelection = nil
+        pendingLaunch = PendingLaunch(modelID: record.id, intent: intent)
+        if session(id: chatSelection) != nil {
+            mode = .chat
+            persist()
+            return
+        }
+        let kernel = kernel
+        let records = library.records
+        Task {
+            let preferred = (try? await kernel.defaultChatModelID()) ?? nil
+            let chatModel = Launcher.defaultChatModel(in: records, preferring: preferred)
+            let session = try? await kernel.chats.createSession(modelID: chatModel?.id)
+            await refreshSessions()
+            chatSelection = session?.id
+            mode = .chat
+            persist()
         }
     }
 
@@ -275,6 +300,10 @@ final class ShellModel {
 struct ShellView: View {
     @Bindable var shell: ShellModel
 
+    private var nowPlayingClearance: CGFloat {
+        shell.isFullscreen ? Design.Space.l : Design.Space.pane + Design.Space.l
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             HedosSidebar(shell: shell)
@@ -285,6 +314,16 @@ struct ShellView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background {
                     Design.paper.ignoresSafeArea()
+                }
+                .overlay(alignment: .topTrailing) {
+                    NowPlayingCard(session: shell.audio)
+                        .padding(.top, nowPlayingClearance)
+                        .padding(.trailing, Design.Space.l)
+                        .animation(
+                            Design.motion(
+                                reduceMotion: NSWorkspace.shared
+                                    .accessibilityDisplayShouldReduceMotion),
+                            value: shell.audio.track)
                 }
         }
         .id(Design.fontBook.identity)
@@ -330,14 +369,8 @@ struct ShellView: View {
         case .home:
             HomePane(shell: shell)
                 .transition(.opacity)
-        case .chat:
+        case .chat, .images, .voice:
             ChatPane(shell: shell)
-                .transition(.opacity)
-        case .images:
-            ImagesPane(shell: shell)
-                .transition(.opacity)
-        case .voice:
-            VoicePane(shell: shell)
                 .transition(.opacity)
         case .pipelines:
             PipelinesPane(shell: shell)
@@ -405,7 +438,7 @@ struct HedosSidebar: View {
                 if surfacesMatch {
                     groupTitle("Surfaces")
                 }
-                ForEach([AppMode.chat, .images, .voice, .pipelines], id: \.self) { mode in
+                ForEach(ShellModel.surfaces, id: \.self) { mode in
                     if rowMatches(Design.modeTitle(mode)) {
                         modeRow(mode, collapsedRow: false)
                     }
@@ -437,10 +470,9 @@ struct HedosSidebar: View {
                 .padding(.bottom, Design.Space.l)
             VStack(alignment: .center, spacing: Design.Space.xs) {
                 modeRow(.home, collapsedRow: true)
-                modeRow(.chat, collapsedRow: true)
-                modeRow(.images, collapsedRow: true)
-                modeRow(.voice, collapsedRow: true)
-                modeRow(.pipelines, collapsedRow: true)
+                ForEach(ShellModel.surfaces, id: \.self) { mode in
+                    modeRow(mode, collapsedRow: true)
+                }
                 Rectangle()
                     .fill(Design.line)
                     .frame(width: 28, height: Design.hairlineWidth)
@@ -479,7 +511,7 @@ struct HedosSidebar: View {
     }
 
     private var surfacesMatch: Bool {
-        [AppMode.chat, .images, .voice, .pipelines].contains {
+        ShellModel.surfaces.contains {
             rowMatches(Design.modeTitle($0))
         }
     }
@@ -558,6 +590,14 @@ struct ChatPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task { await shell.gallery.load() }
+        .modalScrim(
+            isPresented: shell.showingGallery, onDismiss: { shell.showingGallery = false }
+        ) {
+            GallerySheet(shell: shell) {
+                shell.showingGallery = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -565,8 +605,13 @@ struct ChatPane: View {
         if let session = shell.session(id: shell.chatSelection) {
             ChatView(
                 session: session, library: shell.library, kernel: shell.kernel,
+                audio: shell.audio,
+                launch: shell.pendingLaunch,
                 onSessionsChanged: { [weak shell] in
-                    Task { await shell?.refreshSessions() }
+                    Task {
+                        await shell?.refreshSessions()
+                        await shell?.gallery.load()
+                    }
                 },
                 onOpenArtifacts: { [weak shell] reference in
                     shell?.showArtifact(reference)
@@ -574,16 +619,8 @@ struct ChatPane: View {
                 onNewChat: { [weak shell] in
                     shell?.newChat()
                 },
-                onNarrate: { [weak shell] text, turnID in
-                    guard let shell else { return }
-                    let sessionID = session.id
-                    shell.setMode(.voice)
-                    Task {
-                        await shell.voice.narrate(
-                            text, records: shell.library.records,
-                            preferring: shell.voiceSelection,
-                            attach: (sessionID: sessionID, turnID: turnID))
-                    }
+                onLaunchConsumed: { [weak shell] in
+                    shell?.pendingLaunch = nil
                 }
             )
             .id(session.id)
@@ -641,6 +678,13 @@ struct ChatSessionsColumn: View {
                 InkSearchField(
                     placeholder: "Search chats", query: $query, fill: Design.surface,
                     focusTick: shell.chatSearchFocusTick)
+                if !shell.gallery.arranged.isEmpty {
+                    QuietIconButton(glyph: "square.grid.2x2") {
+                        shell.showingGallery = true
+                    }
+                    .help("All generated images")
+                    .accessibilityLabel("Gallery")
+                }
                 QuietIconButton(
                     glyph: "archivebox",
                     fill: shell.sessionFilter == .archived
@@ -954,34 +998,6 @@ private struct ChatSessionRow: View {
 
 }
 
-struct ImagesPane: View {
-    @Bindable var shell: ShellModel
-    @State private var showGallery = false
-
-    var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(title: "Images") {
-                if !shell.images.arranged.isEmpty {
-                    QuietIconButton(glyph: "square.grid.2x2") {
-                        showGallery = true
-                    }
-                    .help("All generations")
-                    .accessibilityLabel("Gallery")
-                }
-            }
-            ImagesSurface(shell: shell)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .task { await shell.images.load() }
-        .modalScrim(isPresented: showGallery, onDismiss: { showGallery = false }) {
-            GallerySheet(shell: shell) {
-                showGallery = false
-            }
-        }
-    }
-
-}
-
 struct GallerySheet: View {
     @Bindable var shell: ShellModel
     let onClose: () -> Void
@@ -1019,7 +1035,7 @@ struct GallerySheet: View {
                     ],
                     spacing: Design.Space.l
                 ) {
-                    ForEach(shell.images.arranged) { artifact in
+                    ForEach(shell.gallery.arranged) { artifact in
                         cell(artifact)
                     }
                 }
@@ -1027,6 +1043,7 @@ struct GallerySheet: View {
             }
         }
         .frame(width: Design.Sheet.gallery.width, height: Design.Sheet.gallery.height)
+        .task { await shell.gallery.load() }
         .confirmationDialog(
             "Move this image to the Trash?",
             isPresented: Binding(
@@ -1037,7 +1054,7 @@ struct GallerySheet: View {
                 if let artifact = deleting {
                     let shell = shell
                     Task {
-                        await shell.images.delete(artifact)
+                        await shell.gallery.delete(artifact)
                         if shell.imagesSelection == artifact.id {
                             shell.selectImages(nil)
                         }
@@ -1051,7 +1068,7 @@ struct GallerySheet: View {
     }
 
     private var countLine: String {
-        let count = shell.images.arranged.count
+        let count = shell.gallery.arranged.count
         return count == 1 ? "1 image" : "\(count) images"
     }
 
@@ -1062,7 +1079,7 @@ struct GallerySheet: View {
         } label: {
             VStack(alignment: .leading, spacing: Design.Space.xs) {
                 Group {
-                    if let image = shell.images.thumbnail(artifact) {
+                    if let image = shell.gallery.thumbnail(artifact) {
                         Image(nsImage: image)
                             .resizable()
                             .scaledToFill()
@@ -1090,32 +1107,19 @@ struct GallerySheet: View {
         }
         .animation(Design.wash, value: hoveredCell)
         .task(id: artifact.id) {
-            await shell.images.loadThumbnail(artifact)
+            await shell.gallery.loadThumbnail(artifact)
         }
         .contextMenu {
             Button("Download…") {
-                shell.images.download(artifact)
+                shell.gallery.download(artifact)
             }
             Divider()
             Button("Delete…", role: .destructive) {
                 deleting = artifact
             }
         }
-        .help("Show in the conversation")
+        .help("Save or delete from the context menu")
     }
-}
-
-struct VoicePane: View {
-    @Bindable var shell: ShellModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(title: "Voice")
-            VoiceSurface(shell: shell)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
 }
 
 struct ModeEmptyState<Extra: View>: View {

@@ -446,16 +446,27 @@ public actor Kernel {
         try await chatFlow().regenerate(sessionID: sessionID, turnID: turnID)
     }
 
-    public func attachSpokenArtifact(
+    public func replaceSpokenArtifact(
         sessionID: String, turnID: String, artifactID: String
     ) async throws {
         guard let transcript = try await chats.session(id: sessionID),
             let turn = transcript.turns.first(where: { $0.id == turnID })
         else { throw ChatStoreError.turnNotFound(turnID) }
-        guard !turn.artifactRefs.contains(artifactID) else { return }
+        var kept: [String] = []
+        var retired: [String] = []
+        for reference in turn.artifactRefs where reference != artifactID {
+            if try await artifactStore.get(id: reference)?.capability == .speak {
+                retired.append(reference)
+            } else {
+                kept.append(reference)
+            }
+        }
         var updated = turn
-        updated.artifactRefs.append(artifactID)
+        updated.artifactRefs = kept + [artifactID]
         _ = try await chats.updateTurn(updated, mergingCapabilityTags: [SessionTag.spoke])
+        for reference in retired {
+            try? await artifactStore.delete(id: reference)
+        }
     }
 
     public func recordGeneratedTurn(

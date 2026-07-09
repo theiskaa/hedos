@@ -75,10 +75,16 @@ struct HomePane: View {
     }
 
     private var hints: some View {
-        Text("Chat ⌘1 · Images ⌘2 · Voice ⌘3 · Models ⌘4".uppercased())
+        Text(hintLine.uppercased())
             .font(Design.micro)
             .tracking(Design.microTracking)
             .foregroundStyle(Design.inkFaint)
+    }
+
+    private var hintLine: String {
+        (ShellModel.surfaces + [.library])
+            .map { "\(Design.modeTitle($0)) ⌘\($0.ordinal)" }
+            .joined(separator: " · ")
     }
 
     private var lookingLine: some View {
@@ -579,7 +585,7 @@ struct HomePane: View {
             return session.title.isEmpty ? "Untitled chat" : session.title
         case .artifact(let artifact):
             if artifact.capability == .speak {
-                let text = VoiceSurfaceModel.text(of: artifact)
+                let text = SpeechArtifact.text(of: artifact)
                 return text.isEmpty ? "Narration" : text
             }
             return Provenance.prompt(of: artifact.params) ?? "Untitled image"
@@ -593,7 +599,7 @@ struct HomePane: View {
             shell.setMode(.chat)
         case .artifact(let artifact):
             if artifact.capability == .speak {
-                shell.setMode(.voice)
+                shell.setMode(.chat)
             } else {
                 shell.showArtifact(artifact.id)
             }

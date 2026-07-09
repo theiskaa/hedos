@@ -136,7 +136,9 @@ struct PipelinesPane: View {
             let pipeline = model.pipelines.first(where: { $0.id == id }),
             let signature = model.signatures[id]
         {
-            PipelineRunView(kernel: shell.kernel, pipeline: pipeline, signature: signature)
+            PipelineRunView(
+                kernel: shell.kernel, pipeline: pipeline, signature: signature,
+                audio: shell.audio)
                 .id(pipeline.id)
         } else {
             ModeEmptyState(
@@ -480,16 +482,33 @@ final class PipelineRunModel {
     var notice: String?
     var listening = false
 
-    private let player = PCMPlayer()
+    private let audio: AudioSession
     private let capture = MicCapture()
     private var vad = VADLite()
     private var runTask: Task<Void, Never>?
     private var feedTask: Task<Void, Never>?
 
-    init(kernel: Kernel, pipeline: Pipeline, signature: PipelineSignature) {
+    init(kernel: Kernel, pipeline: Pipeline, signature: PipelineSignature, audio: AudioSession) {
         self.kernel = kernel
         self.pipeline = pipeline
         self.signature = signature
+        self.audio = audio
+    }
+
+    private var trackID: String { "pipeline-\(pipeline.id)" }
+
+    private func beginSpeakingIfNeeded() {
+        guard !audio.isActive(trackID) else { return }
+        audio.beginLive(
+            AudioSession.Track(id: trackID, title: pipeline.name, subtitle: "pipeline"),
+            audible: true,
+            onStop: { [weak self] in self?.stop() })
+    }
+
+    private func endSpeaking() {
+        if audio.isActive(trackID) {
+            audio.finishLive(trackID)
+        }
     }
 
     var isAudioHead: Bool { signature.input == .audio }
@@ -509,6 +528,7 @@ final class PipelineRunModel {
         runTask = Task { [weak self] in
             guard let self else { return }
             await self.consume(input: .text(text))
+            self.endSpeaking()
             self.running = false
             self.status = nil
         }
@@ -527,7 +547,8 @@ final class PipelineRunModel {
                 case .audio(let frame):
                     status = "Speaking…"
                     markSpoke()
-                    player.enqueue(frame)
+                    beginSpeakingIfNeeded()
+                    audio.enqueue(frame, for: trackID)
                 case .artifact(let id):
                     status = nil
                     markImage(id)
@@ -592,7 +613,7 @@ final class PipelineRunModel {
                 for event in self.vad.consume(chunk) {
                     switch event {
                     case .speechStarted:
-                        self.player.stop()
+                        self.audio.flushLive(self.trackID)
                         self.runTask?.cancel()
                         self.status = "Hearing you…"
                     case .turnEnded(let turn):
@@ -614,7 +635,7 @@ final class PipelineRunModel {
         listening = false
         status = nil
         capture.stop()
-        player.stop()
+        endSpeaking()
         runTask?.cancel()
         feedTask?.cancel()
         runTask = nil
@@ -625,10 +646,10 @@ final class PipelineRunModel {
 private struct PipelineRunView: View {
     @State private var model: PipelineRunModel
 
-    init(kernel: Kernel, pipeline: Pipeline, signature: PipelineSignature) {
+    init(kernel: Kernel, pipeline: Pipeline, signature: PipelineSignature, audio: AudioSession) {
         _model = State(
             initialValue: PipelineRunModel(
-                kernel: kernel, pipeline: pipeline, signature: signature))
+                kernel: kernel, pipeline: pipeline, signature: signature, audio: audio))
     }
 
     var body: some View {

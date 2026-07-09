@@ -13,6 +13,12 @@ final class LibraryViewModel {
 
     var summary: DiscoverySummary?
     var records: [ModelRecord] = []
+
+    var shelfSignature: [String] {
+        records.map {
+            "\($0.id)|\($0.state.rawValue)|\(Launcher.destination(for: $0).rawValue)"
+        }
+    }
     var watchedFolders: [String] = []
     var hfCacheRoots: [String] = []
     var isScanning = false
