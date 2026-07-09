@@ -10,7 +10,7 @@ import Testing
     #expect(!Kernel.version.isEmpty)
 }
 
-@Test func discoverScansUserConfiguredHFRootAndResolvesMlxLm() async throws {
+@Test func discoverScansUserConfiguredHFRootAndResolvesMlxSwift() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let customRoot = dir.appendingPathComponent("custom-hf")
@@ -30,8 +30,9 @@ import Testing
     let records = try await kernel.shelf()
     let record = try #require(records.first { $0.name.contains("Tiny-Chat-4bit") })
     #expect(record.source.kind == .huggingfaceCache)
-    #expect(record.runtime.id == "python:mlx-lm")
-    #expect(record.runtime.tier == .managed)
+    #expect(record.runtime.id == "mlx-swift")
+    #expect(record.runtime.tier == .native)
+    #expect(record.runtime.alternatives.contains("python:mlx-lm"))
     #expect(record.state == .ready)
 }
 
