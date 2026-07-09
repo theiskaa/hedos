@@ -33,7 +33,8 @@ public actor ArtifactStore {
             params: draft.params,
             createdAt: createdAt,
             durationMs: draft.durationMs,
-            jobID: draft.jobID)
+            jobID: draft.jobID,
+            sessionID: draft.sessionID)
         try writeSidecar(artifact)
         artifacts[artifact.id] = artifact
         return artifact

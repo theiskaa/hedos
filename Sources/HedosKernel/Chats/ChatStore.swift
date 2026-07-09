@@ -106,6 +106,26 @@ public actor ChatStore {
         }
     }
 
+    public func artifactOwners() throws -> [String: String] {
+        let database = try open()
+        let rows = try database.rows(
+            """
+            SELECT turns.artifact_refs, turns.session_id
+            FROM turns
+            JOIN sessions ON sessions.id = turns.session_id
+            WHERE sessions.deleted_at IS NULL
+              AND turns.artifact_refs <> ''
+              AND turns.superseded_by IS NULL
+            """)
+        var owners: [String: String] = [:]
+        for row in rows {
+            for ref in Self.splitTags(row.text(0)) {
+                owners[ref] = row.text(1)
+            }
+        }
+        return owners
+    }
+
     public func appendTurn(
         _ draft: TurnDraft, to sessionID: String, mergingCapabilityTags: [String] = []
     ) throws -> ChatTurn {

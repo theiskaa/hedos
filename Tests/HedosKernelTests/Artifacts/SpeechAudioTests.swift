@@ -89,6 +89,63 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     #expect(String(data: header, encoding: .ascii) == "RIFF")
 }
 
+@Test func saveSpeechRemembersOwningSessionAndLegacySidecarsStillDecode() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (kernel, record) = try await speakingKernel(in: dir)
+
+    let session = try await kernel.chats.createSession(modelID: record.id)
+    let spoken = try await kernel.saveSpeech(
+        modelID: record.id, voice: "af_heart", text: "narrate this",
+        sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
+    #expect(spoken.sessionID == session.id)
+
+    let orphan = try await kernel.saveSpeech(
+        modelID: record.id, voice: "af_heart", text: "no session",
+        sampleRate: 24000, pcm: sineWave(samples: 2400))
+    #expect(orphan.sessionID == nil)
+
+    let reread = try await kernel.artifacts()
+    #expect(reread.first { $0.id == spoken.id }?.sessionID == session.id)
+
+    let sidecar = dir.appendingPathComponent("outputs")
+    let years = try FileManager.default.contentsOfDirectory(at: sidecar, includingPropertiesForKeys: nil)
+    let legacy = try #require(
+        years.flatMap {
+            (try? FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)) ?? []
+        }.first { $0.pathExtension == "json" })
+    var fields = try #require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: legacy)) as? [String: Any])
+    fields.removeValue(forKey: "sessionID")
+    try JSONSerialization.data(withJSONObject: fields).write(to: legacy)
+
+    let fresh = Kernel(directory: dir, adapters: [])
+    let afterLegacy = try await fresh.artifacts()
+    #expect(afterLegacy.count == 2)
+    #expect(afterLegacy.contains { $0.sessionID == nil })
+}
+
+@Test func artifactOwnersDropsArtifactsWhoseConversationWasDeleted() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let (kernel, record) = try await speakingKernel(in: dir)
+
+    let session = try await kernel.chats.createSession(modelID: record.id)
+    let spoken = try await kernel.saveSpeech(
+        modelID: record.id, voice: "af_heart", text: "narrate this",
+        sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
+    try await kernel.recordGeneratedTurn(
+        sessionID: session.id, prompt: "narrate this", artifactID: spoken.id,
+        tag: SessionTag.spoke)
+
+    #expect(try await kernel.artifactOwners()[spoken.id] == session.id)
+
+    try await kernel.chats.deleteSession(id: session.id)
+
+    #expect(try await kernel.artifactOwners().isEmpty)
+    #expect(try await kernel.artifacts().contains { $0.id == spoken.id })
+}
+
 private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRecord) {
     let kernel = Kernel(directory: directory, adapters: [])
     var record = Fixtures.gguf(path: "~/models/reader.gguf")

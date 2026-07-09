@@ -13,6 +13,7 @@ public struct Artifact: Codable, Hashable, Sendable, Identifiable {
     public var createdAt: Date
     public var durationMs: Int
     public var jobID: String
+    public var sessionID: String?
 
     public init(
         id: String,
@@ -26,7 +27,8 @@ public struct Artifact: Codable, Hashable, Sendable, Identifiable {
         params: JSONValue,
         createdAt: Date,
         durationMs: Int,
-        jobID: String
+        jobID: String,
+        sessionID: String? = nil
     ) {
         self.id = id
         self.path = path
@@ -40,11 +42,12 @@ public struct Artifact: Codable, Hashable, Sendable, Identifiable {
         self.createdAt = createdAt
         self.durationMs = durationMs
         self.jobID = jobID
+        self.sessionID = sessionID
     }
 
     enum CodingKeys: String, CodingKey {
         case id, contentHash, model, modelID, runtime, capability, params
-        case createdAt, durationMs, jobID
+        case createdAt, durationMs, jobID, sessionID
         case path = "artifact"
         case previewPath = "preview"
     }
@@ -61,6 +64,7 @@ public struct ArtifactDraft: Sendable {
     public var params: JSONValue
     public var jobID: String
     public var durationMs: Int
+    public var sessionID: String?
 
     public init(
         data: Data,
@@ -72,7 +76,8 @@ public struct ArtifactDraft: Sendable {
         capability: Capability,
         params: JSONValue,
         jobID: String,
-        durationMs: Int
+        durationMs: Int,
+        sessionID: String? = nil
     ) {
         self.data = data
         self.fileExtension = fileExtension
@@ -84,5 +89,6 @@ public struct ArtifactDraft: Sendable {
         self.params = params
         self.jobID = jobID
         self.durationMs = durationMs
+        self.sessionID = sessionID
     }
 }

@@ -619,7 +619,8 @@ public actor Kernel {
     }
 
     public func saveSpeech(
-        modelID: String, voice: String, text: String, sampleRate: Int, pcm: Data
+        modelID: String, voice: String, text: String, sampleRate: Int, pcm: Data,
+        sessionID: String? = nil
     ) async throws -> Artifact {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
@@ -639,7 +640,8 @@ public actor Kernel {
                 "peaks": .array(peaks.map { .double($0) }),
             ]),
             jobID: "voice-\(UUID().uuidString.lowercased())",
-            durationMs: SpeechAudio.durationMs(fromFloat32: pcm, sampleRate: sampleRate))
+            durationMs: SpeechAudio.durationMs(fromFloat32: pcm, sampleRate: sampleRate),
+            sessionID: sessionID)
         return try await artifactStore.store(draft)
     }
 
@@ -673,6 +675,10 @@ public actor Kernel {
 
     public func artifacts() async throws -> [Artifact] {
         try await artifactStore.list()
+    }
+
+    public func artifactOwners() async throws -> [String: String] {
+        try await chats.artifactOwners()
     }
 
     public func artifact(id: String) async throws -> Artifact? {
