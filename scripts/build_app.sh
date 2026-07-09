@@ -27,14 +27,14 @@ else
     rmdir "$APP/Contents/Frameworks"
 fi
 ICON_PLIST="$(mktemp -t hedos-icon).plist"
-if ! ACTOOL_LOG=$(xcrun actool icon/hedos.icon \
+if ! ACTOOL_LOG=$(xcrun actool scripts/icon/hedos.icon \
     --compile "$APP/Contents/Resources" \
     --platform macosx \
     --minimum-deployment-target 26.0 \
     --app-icon hedos \
     --output-partial-info-plist "$ICON_PLIST" \
     --errors --warnings 2>&1); then
-    echo "error: actool failed to compile icon/hedos.icon" >&2
+    echo "error: actool failed to compile scripts/icon/hedos.icon" >&2
     echo "$ACTOOL_LOG" >&2
     exit 1
 fi
