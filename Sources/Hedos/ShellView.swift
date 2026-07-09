@@ -28,6 +28,7 @@ final class ShellModel {
     var sidebarCollapsed = false
     var isFullscreen = false
     var settingsTarget: SettingsDestination?
+    var modelsFilter: ModelFilter?
     var showingGatewayLog = false
     var chatQuery = ""
     var chatSearchFocusTick = 0

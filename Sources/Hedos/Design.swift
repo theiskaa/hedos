@@ -76,7 +76,6 @@ enum Design {
         static let prose: CGFloat = 520
         static let transcriptProse: CGFloat = 620
         static let emptyCaption: CGFloat = 380
-        static let pipelineList: CGFloat = 300
         static let nowPlaying: CGFloat = 286
         static let nowPlayingLabel: CGFloat = 160
     }
@@ -503,15 +502,19 @@ struct FilterChip: View {
     let label: String
     let isOn: Bool
     var mark: SourceKind? = nil
+    var count: Int? = nil
+    var isDisabled = false
     let action: () -> Void
 
     init(
-        label: String, isOn: Bool, mark: SourceKind? = nil,
-        action: @escaping () -> Void
+        label: String, isOn: Bool, mark: SourceKind? = nil, count: Int? = nil,
+        isDisabled: Bool = false, action: @escaping () -> Void
     ) {
         self.label = label
         self.isOn = isOn
         self.mark = mark
+        self.count = count
+        self.isDisabled = isDisabled
         self.action = action
     }
 
@@ -529,6 +532,12 @@ struct FilterChip: View {
                 }
                 Text(label)
                     .font(Design.caption.weight(isOn ? .semibold : .medium))
+                if let count {
+                    Text("\(count)")
+                        .font(Design.micro)
+                        .monospacedDigit()
+                        .foregroundStyle(isOn ? Design.paper.opacity(0.6) : Design.inkFaint)
+                }
             }
             .foregroundStyle(isOn ? Design.paper : hovering ? Design.ink : Design.inkSoft)
             .padding(.horizontal, Design.Space.chipX)
@@ -544,13 +553,24 @@ struct FilterChip: View {
                         isOn ? AnyShapeStyle(.clear) : Design.hairline,
                         lineWidth: Design.hairlineWidth))
             .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .opacity(isDisabled ? 0.45 : 1)
         }
         .buttonStyle(PressDipStyle())
+        .disabled(isDisabled)
         .onHover { hovering = $0 }
         .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
         .animation(Design.wash, value: hovering)
-        .accessibilityLabel(label)
+        .accessibilityLabel(count.map { "\(label), \($0)" } ?? label)
         .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+struct ChipDivider: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 1)
+            .fill(Design.line)
+            .frame(width: 2, height: 16)
+            .accessibilityHidden(true)
     }
 }
 

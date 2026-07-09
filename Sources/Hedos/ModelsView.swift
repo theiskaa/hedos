@@ -2,43 +2,80 @@ import AppKit
 import HedosKernel
 import SwiftUI
 
-enum ModelFacet: Hashable {
-    case all
-    case capability(AppMode)
-    case store(SourceKind)
-    case recipeNeeded
+enum ModelStatus: String, Hashable, CaseIterable {
+    case ready
+    case fits
+    case warm
+    case needsRecipe
+    case missing
 
     var label: String {
         switch self {
-        case .all: "All"
-        case .capability(let mode): Design.modeTitle(mode)
-        case .store(let kind): ModelsPane.storeTitle(kind)
-        case .recipeNeeded: "Needs recipe"
+        case .ready: "Ready"
+        case .fits: "Fits"
+        case .warm: "Warm"
+        case .needsRecipe: "Needs recipe"
+        case .missing: "Missing"
         }
     }
 
-    var storeKind: SourceKind? {
-        if case .store(let kind) = self { return kind }
-        return nil
-    }
-
-    func matches(_ record: ModelRecord) -> Bool {
+    func matches(_ record: ModelRecord, warm: Bool) -> Bool {
         switch self {
-        case .all:
-            true
-        case .capability(let mode):
-            Launcher.models(in: [record], for: mode).isEmpty == false
-        case .store(let kind):
-            ModelsPane.storeTitle(record.source.kind) == ModelsPane.storeTitle(kind)
-        case .recipeNeeded:
+        case .ready:
+            record.state == .ready && record.runtime.tier != .recipeNeeded
+        case .fits:
+            record.fit?.verdict == .runsWell || record.fit?.verdict == .tightFit
+        case .warm:
+            warm
+        case .needsRecipe:
             record.runtime.tier == .recipeNeeded
+        case .missing:
+            record.state == .missing
         }
     }
 }
 
+struct ModelFilter: Equatable {
+    var capabilities: Set<AppMode> = []
+    var sources: Set<String> = []
+    var statuses: Set<ModelStatus> = []
+
+    var isEmpty: Bool {
+        capabilities.isEmpty && sources.isEmpty && statuses.isEmpty
+    }
+
+    static func hasCapability(_ record: ModelRecord, _ mode: AppMode) -> Bool {
+        !Launcher.models(in: [record], for: mode).isEmpty
+    }
+
+    func matches(_ record: ModelRecord, warm: Bool) -> Bool {
+        if !capabilities.isEmpty,
+            !capabilities.contains(where: { Self.hasCapability(record, $0) })
+        {
+            return false
+        }
+        if !sources.isEmpty, !sources.contains(ModelsPane.storeTitle(record.source.kind)) {
+            return false
+        }
+        if !statuses.isEmpty, !statuses.contains(where: { $0.matches(record, warm: warm) }) {
+            return false
+        }
+        return true
+    }
+}
+
+struct ModelChip<Value: Hashable>: Identifiable {
+    let value: Value
+    let label: String
+    var mark: SourceKind?
+    let count: Int
+
+    var id: Value { value }
+}
+
 struct ModelsPane: View {
     @Bindable var shell: ShellModel
-    @State private var facet: ModelFacet = .all
+    @State private var filter = ModelFilter()
     @State private var query = ""
     @State private var showFolders = false
     @State private var presented: String?
@@ -79,6 +116,8 @@ struct ModelsPane: View {
             grid
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onAppear { adoptRequestedFilter() }
+        .onChange(of: shell.modelsFilter) { adoptRequestedFilter() }
         .modalScrim(
             isPresented: shell.library.record(id: presented) != nil,
             onDismiss: { presented = nil }
@@ -96,13 +135,48 @@ struct ModelsPane: View {
             HStack(spacing: Design.Space.m) {
                 InkSearchField(placeholder: "Filter by name", query: $query, fill: Design.surface)
                     .frame(width: 200)
-                ForEach(facets, id: \.self) { candidate in
-                    FilterChip(
-                        label: candidate.label,
-                        isOn: facet == candidate,
-                        mark: candidate.storeKind
-                    ) {
-                        facet = facet == candidate ? .all : candidate
+                FilterChip(label: "All", isOn: filter.isEmpty) {
+                    filter = ModelFilter()
+                }
+                if !capabilityChips.isEmpty {
+                    ChipDivider()
+                    ForEach(capabilityChips) { chip in
+                        FilterChip(
+                            label: chip.label,
+                            isOn: filter.capabilities.contains(chip.value),
+                            count: chip.count,
+                            isDisabled: chip.count == 0
+                                && !filter.capabilities.contains(chip.value)
+                        ) {
+                            toggle(&filter.capabilities, chip.value)
+                        }
+                    }
+                }
+                if !sourceChips.isEmpty {
+                    ChipDivider()
+                    ForEach(sourceChips) { chip in
+                        FilterChip(
+                            label: chip.label,
+                            isOn: filter.sources.contains(chip.value),
+                            mark: chip.mark,
+                            count: chip.count,
+                            isDisabled: chip.count == 0 && !filter.sources.contains(chip.value)
+                        ) {
+                            toggle(&filter.sources, chip.value)
+                        }
+                    }
+                }
+                if !statusChips.isEmpty {
+                    ChipDivider()
+                    ForEach(statusChips) { chip in
+                        FilterChip(
+                            label: chip.label,
+                            isOn: filter.statuses.contains(chip.value),
+                            count: chip.count,
+                            isDisabled: chip.count == 0 && !filter.statuses.contains(chip.value)
+                        ) {
+                            toggle(&filter.statuses, chip.value)
+                        }
                     }
                 }
                 Spacer(minLength: 0)
@@ -112,24 +186,81 @@ struct ModelsPane: View {
         }
     }
 
-    private var facets: [ModelFacet] {
-        var list: [ModelFacet] = [
-            .all, .capability(.chat), .capability(.images), .capability(.voice),
-        ]
-        let kinds: [SourceKind] = [
+    private func adoptRequestedFilter() {
+        guard let requested = shell.modelsFilter else { return }
+        filter = requested
+        query = ""
+        shell.modelsFilter = nil
+    }
+
+    private func toggle<Value: Hashable>(_ set: inout Set<Value>, _ value: Value) {
+        if set.contains(value) {
+            set.remove(value)
+        } else {
+            set.insert(value)
+        }
+    }
+
+    private var searched: [ModelRecord] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return shell.library.records }
+        return shell.library.records.filter {
+            $0.name.lowercased().contains(needle) || $0.displayName.lowercased().contains(needle)
+        }
+    }
+
+    private func count(_ probe: ModelFilter) -> Int {
+        searched.count { probe.matches($0, warm: isWarm($0)) }
+    }
+
+    private var capabilityChips: [ModelChip<AppMode>] {
+        [AppMode.chat, .images, .voice].compactMap { mode in
+            guard shell.library.records.contains(where: { ModelFilter.hasCapability($0, mode) })
+            else { return nil }
+            var probe = filter
+            probe.capabilities = [mode]
+            return ModelChip(value: mode, label: Design.modeTitle(mode), count: count(probe))
+        }
+    }
+
+    private var sourceChips: [ModelChip<String>] {
+        let order: [SourceKind] = [
             .ollama, .huggingfaceCache, .lmStudio, .builtin, .endpoint, .file, .folder,
         ]
-        for kind in kinds
-        where shell.library.records.contains(where: { $0.source.kind == kind }) {
-            if case .store(let existing) = list.last, Self.storeTitle(existing) == Self.storeTitle(kind) {
-                continue
+        var titles: [String] = []
+        for kind in order {
+            let title = Self.storeTitle(kind)
+            guard !titles.contains(title),
+                shell.library.records.contains(where: {
+                    Self.storeTitle($0.source.kind) == title
+                })
+            else { continue }
+            titles.append(title)
+        }
+        for record in shell.library.records {
+            let title = Self.storeTitle(record.source.kind)
+            if !titles.contains(title) {
+                titles.append(title)
             }
-            list.append(.store(kind))
         }
-        if shell.library.records.contains(where: { $0.runtime.tier == .recipeNeeded }) {
-            list.append(.recipeNeeded)
+        return titles.map { title in
+            var probe = filter
+            probe.sources = [title]
+            let mark = shell.library.records.first {
+                Self.storeTitle($0.source.kind) == title
+            }?.source.kind
+            return ModelChip(value: title, label: title, mark: mark, count: count(probe))
         }
-        return list
+    }
+
+    private var statusChips: [ModelChip<ModelStatus>] {
+        ModelStatus.allCases.compactMap { status in
+            guard shell.library.records.contains(where: { status.matches($0, warm: isWarm($0)) })
+            else { return nil }
+            var probe = filter
+            probe.statuses = [status]
+            return ModelChip(value: status, label: status.label, count: count(probe))
+        }
     }
 
     private func isWarm(_ record: ModelRecord) -> Bool {
@@ -137,12 +268,7 @@ struct ModelsPane: View {
     }
 
     private var filtered: [ModelRecord] {
-        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return shell.library.records.filter { record in
-            facet.matches(record)
-                && (needle.isEmpty || record.name.lowercased().contains(needle)
-                    || record.displayName.lowercased().contains(needle))
-        }
+        searched.filter { filter.matches($0, warm: isWarm($0)) }
     }
 
     @ViewBuilder
@@ -153,7 +279,16 @@ struct ModelsPane: View {
             ModeEmptyState(
                 eyebrow: "Filtered view",
                 headline: "No models match.",
-                caption: "Loosen the filter or search by another name.")
+                caption: "Loosen the filter or search by another name."
+            ) {
+                if !filter.isEmpty || !query.isEmpty {
+                    Button("Clear filters") {
+                        filter = ModelFilter()
+                        query = ""
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                }
+            }
         } else {
             ScrollView {
                 LazyVGrid(
