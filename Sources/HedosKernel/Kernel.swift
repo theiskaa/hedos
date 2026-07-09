@@ -510,7 +510,7 @@ public actor Kernel {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
         }
-        return MlxAudioAdapter.availableVoices(record)
+        return SpeechVoices.available(record)
     }
 
     public func startOllama() async throws {
