@@ -112,6 +112,7 @@ public actor Kernel {
             MlxAudioAdapter(governor: governor),
             MfluxAdapter(governor: governor),
             DiffusersAdapter(governor: governor),
+            MlxSwiftAdapter(governor: governor),
             MlxLmAdapter(governor: governor),
             AppleFoundationAdapter(registry: registry),
             OpenAIEndpointAdapter(secrets: secrets, registry: registry),

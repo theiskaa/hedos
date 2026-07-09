@@ -1,0 +1,76 @@
+import Foundation
+
+public struct MlxSwiftAdapter: RuntimeAdapter {
+    public var id: String { "mlx-swift" }
+
+    private let governor: MemoryGovernor
+
+    public init(governor: MemoryGovernor = .shared) {
+        self.governor = governor
+    }
+
+    static func params(from object: [String: JSONValue]) -> MlxSwiftEngine.GenerationParams {
+        var params = MlxSwiftEngine.GenerationParams()
+        if let temperature = object["temperature"]?.doubleValue {
+            params.temperature = Float(temperature)
+        }
+        if let topP = object["top_p"]?.doubleValue {
+            params.topP = Float(topP)
+        }
+        if let maxTokens = object["max_tokens"]?.intValue, maxTokens > 0 {
+            params.maxTokens = maxTokens
+        }
+        return params
+    }
+
+    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+        guard capability == .chat || capability == .complete else { return false }
+        if let runtimeID = record.runtime.id { return runtimeID == id }
+        return false
+    }
+
+    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        guard identified.format == .mlxSafetensors,
+            identified.modality == .text,
+            identified.capabilities.contains(.chat)
+        else { return nil }
+        return RuntimeBid(tier: .native, preference: 15, alternatives: [])
+    }
+
+    public func invoke(
+        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        AsyncThrowingStream { continuation in
+            guard case .object(let object) = payload,
+                case .array(let rawMessages)? = object["messages"]
+            else {
+                continuation.finish(
+                    throwing: KernelError.runtimeFailed("chat payload must carry messages"))
+                return
+            }
+            let messages = rawMessages.compactMap { value -> ChatMessage? in
+                guard case .object(let fields) = value,
+                    case .string(let role)? = fields["role"],
+                    case .string(let content)? = fields["content"],
+                    let parsedRole = ChatMessage.Role(rawValue: role)
+                else { return nil }
+                return ChatMessage(role: parsedRole, content: content)
+            }
+            let directory = SidecarModelPaths.resolve(record).snapshot
+            let governor = governor
+            let params = Self.params(from: object)
+            let task = Task {
+                await MlxSwiftEngine.shared.run(
+                    path: directory,
+                    modelID: record.id,
+                    modelName: record.name,
+                    footprintMB: record.footprintMB,
+                    governor: governor,
+                    messages: messages,
+                    params: params,
+                    continuation: continuation)
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
