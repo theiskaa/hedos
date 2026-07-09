@@ -242,13 +242,28 @@ struct ChatFlow: Sendable {
         return words.prefix(6).joined(separator: " ")
     }
 
-    private static func messages(from turns: [ChatTurn]) -> [ChatMessage] {
-        turns.compactMap { turn in
-            guard turn.supersededBy == nil,
-                let role = ChatMessage.Role(rawValue: turn.role.rawValue),
-                !turn.content.isEmpty
-            else { return nil }
-            return ChatMessage(role: role, content: turn.content)
+    static func messages(from turns: [ChatTurn]) -> [ChatMessage] {
+        let active = turns.filter { $0.supersededBy == nil }
+        var messages: [ChatMessage] = []
+        var index = 0
+        while index < active.count {
+            let turn = active[index]
+            if turn.role == .user, index + 1 < active.count,
+                active[index + 1].isGeneratedArtifact
+            {
+                index += 2
+                continue
+            }
+            if let role = ChatMessage.Role(rawValue: turn.role.rawValue), !turn.content.isEmpty {
+                if let last = messages.last, last.role == role {
+                    messages[messages.count - 1] = ChatMessage(
+                        role: role, content: last.content + "\n\n" + turn.content)
+                } else {
+                    messages.append(ChatMessage(role: role, content: turn.content))
+                }
+            }
+            index += 1
         }
+        return messages
     }
 }

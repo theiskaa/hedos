@@ -112,4 +112,8 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
     public var stats: GenerationStats? {
         GenerationStats.fromTurnStatsJSON(statsJSON)
     }
+
+    public var isGeneratedArtifact: Bool {
+        role == .assistant && content.isEmpty && !artifactRefs.isEmpty
+    }
 }
