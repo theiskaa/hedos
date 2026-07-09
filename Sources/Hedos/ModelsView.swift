@@ -356,12 +356,14 @@ struct ModelDetailSheet: View {
                             .frame(maxWidth: Design.Column.prose, alignment: .leading)
                     }
                     specs
-                    if needsConfirmation {
+                    if showsRuntimeChoice {
                         VStack(alignment: .leading, spacing: Design.Space.m) {
                             MicroHeader(title: "[ Runtime ]")
                             InkRadioGroup(
                                 options: runtimeOptions, selection: $chosenRuntime)
-                            Text("Nothing runs until you open it.")
+                            Text(needsConfirmation
+                                ? "Nothing runs until you open it."
+                                : "Switching takes effect next time you open it.")
                                 .font(Design.label)
                                 .foregroundStyle(Design.inkFaint)
                         }
@@ -602,6 +604,11 @@ struct ModelDetailSheet: View {
             && record.runtime.tier != .recipeNeeded
     }
 
+    private var showsRuntimeChoice: Bool {
+        guard record.runtime.tier != .recipeNeeded else { return false }
+        return needsConfirmation || !record.runtime.alternatives.isEmpty
+    }
+
     private var openTitle: String? {
         switch Launcher.destination(for: record) {
         case .chat: "Open in Chat"
@@ -628,6 +635,8 @@ struct ModelDetailSheet: View {
                 } else {
                     await shell.library.overrideRuntime(record.id, to: chosen)
                 }
+            } else if chosen != record.runtime.id ?? "" {
+                await shell.library.overrideRuntime(record.id, to: chosen)
             }
             if let fresh = shell.library.record(id: record.id) {
                 shell.launch(fresh)
