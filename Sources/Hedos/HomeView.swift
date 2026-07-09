@@ -17,6 +17,9 @@ struct HomePane: View {
                     lookingLine
                 } else {
                     board
+                    if !readyModels.isEmpty {
+                        readySection
+                    }
                     if !riverItems.isEmpty {
                         continueRiver
                     }
@@ -492,6 +495,55 @@ struct HomePane: View {
         return "—"
     }
 
+    private static let readyGridLimit = 6
+
+    private var readyModels: [ModelRecord] {
+        shell.library.records
+            .filter {
+                $0.state == .ready && $0.runtime.tier != .recipeNeeded
+                    && Launcher.destination(for: $0) != .library
+            }
+            .sorted { first, second in
+                if Fit.rank(first) != Fit.rank(second) {
+                    return Fit.rank(first) < Fit.rank(second)
+                }
+                return (first.footprintMB ?? 0) > (second.footprintMB ?? 0)
+            }
+    }
+
+    private var readySection: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            HStack {
+                MicroHeader(title: "Ready to run · \(readyModels.count)")
+                Spacer(minLength: 0)
+                if readyModels.count > Self.readyGridLimit {
+                    Button("See all") {
+                        shell.modelsFilter = ModelFilter(statuses: [.ready])
+                        shell.setMode(.library)
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    .accessibilityIdentifier("home-see-all-models")
+                }
+            }
+            LazyVGrid(
+                columns: [
+                    GridItem(.adaptive(minimum: 200), spacing: Design.Space.l, alignment: .top)
+                ],
+                spacing: Design.Space.l
+            ) {
+                ForEach(readyModels.prefix(Self.readyGridLimit)) { record in
+                    ReadyModelCard(record: record, warm: isWarm(record)) {
+                        shell.launch(record)
+                    }
+                }
+            }
+        }
+    }
+
+    private func isWarm(_ record: ModelRecord) -> Bool {
+        shell.resident.contains { $0.modelID == record.id || $0.name == record.name }
+    }
+
     private enum RiverItem: Identifiable {
         case chat(ChatSession)
         case artifact(Artifact)
@@ -604,5 +656,75 @@ struct HomePane: View {
                 shell.showArtifact(artifact.id)
             }
         }
+    }
+}
+
+struct ReadyModelCard: View {
+    let record: ModelRecord
+    var warm = false
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                HStack(spacing: Design.Space.s) {
+                    SourceMark(kind: record.source.kind, size: 16)
+                        .foregroundStyle(Design.inkSoft)
+                        .frame(width: 18, height: 18)
+                        .overlay(alignment: .topTrailing) {
+                            if warm {
+                                AccentDot(size: 6)
+                                    .offset(x: 3, y: -3)
+                            }
+                        }
+                    Text(record.displayName)
+                        .font(Design.body.weight(.medium))
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: Design.Space.s) {
+                    TintChip(
+                        text: Design.modeTitle(destination),
+                        glyph: Design.modeGlyph(destination))
+                    FitChip(record: record)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(
+                        record.footprintMB.map {
+                            $0 > 0 ? DiscoverySummary.formatBytes(Int64($0) << 20) : "—"
+                        } ?? "size unknown"
+                    )
+                    .font(Design.data(11))
+                    .monospacedDigit()
+                    .foregroundStyle(Design.inkSoft)
+                    Spacer(minLength: 0)
+                }
+            }
+            .padding(Design.Space.l)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .overlay(
+                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    .strokeBorder(
+                        hovering
+                            ? AnyShapeStyle(Design.accentEdge)
+                            : warm ? AnyShapeStyle(Design.lineBright) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .lifts(hovering: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .help("Open \(record.displayName) in \(Design.modeTitle(destination))")
+        .accessibilityLabel(record.displayName)
+        .accessibilityIdentifier("ready-model-\(record.id)")
+    }
+
+    private var destination: AppMode {
+        Launcher.destination(for: record)
     }
 }

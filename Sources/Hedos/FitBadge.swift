@@ -23,17 +23,18 @@ enum Fit {
         }
     }
 
+    static func rank(_ record: ModelRecord) -> Int {
+        switch record.fit?.verdict {
+        case .runsWell: 0
+        case .tightFit: 1
+        case .tooLarge: 2
+        case nil: 3
+        }
+    }
+
     static func recommendation(in records: [ModelRecord]) -> ModelRecord? {
         let ready = records.filter {
             $0.state == .ready && Launcher.destination(for: $0) == .chat
-        }
-        func rank(_ record: ModelRecord) -> Int {
-            switch record.fit?.verdict {
-            case .runsWell: 0
-            case .tightFit: 1
-            case .tooLarge: 2
-            case nil: 3
-            }
         }
         return ready.min { first, second in
             if rank(first) != rank(second) {
