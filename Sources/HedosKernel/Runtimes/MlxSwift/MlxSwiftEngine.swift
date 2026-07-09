@@ -117,14 +117,20 @@ public actor MlxSwiftEngine {
         var completionTokenCount = 0
 
         let stream = try await container.perform { context -> AsyncStream<Generation> in
-            let chat: [Chat.Message] = messages.map { message in
-                switch message.role {
-                case .system: .system(message.content)
-                case .user: .user(message.content)
-                case .assistant: .assistant(message.content)
+            let input: LMInput
+            if context.tokenizer.hasChatTemplate {
+                let chat: [Chat.Message] = messages.map { message in
+                    switch message.role {
+                    case .system: .system(message.content)
+                    case .user: .user(message.content)
+                    case .assistant: .assistant(message.content)
+                    }
                 }
+                input = try await context.processor.prepare(input: UserInput(chat: chat))
+            } else {
+                let rendered = Self.renderChatML(messages)
+                input = try await context.processor.prepare(input: UserInput(prompt: .text(rendered)))
             }
-            let input = try await context.processor.prepare(input: UserInput(chat: chat))
             return try MLXLMCommon.generate(
                 input: input, parameters: generateParameters, context: context)
         }
@@ -212,7 +218,8 @@ public actor MlxSwiftEngine {
         container = loaded
         loadedPath = path
         loadedModelID = modelID
-        Self.applyCacheLimit()
+        let footprintMB = Self.directoryFootprintMB(path: path)
+        Self.applyCacheLimit(footprintMB: footprintMB)
     }
 
     public func unloadIfLoaded(path: String) {
@@ -224,11 +231,28 @@ public actor MlxSwiftEngine {
         container = nil
         loadedPath = nil
         loadedModelID = nil
-        Self.applyCacheLimit()
+        MLX.GPU.clearCache()
     }
 
-    private static func applyCacheLimit() {
-        MLX.GPU.set(cacheLimit: 32 * 1024 * 1024)
+    static func cacheLimit(footprintMB: Int?) -> Int {
+        let gib = 1024 * 1024 * 1024
+        let footprintBytes = (footprintMB ?? 0) * (1 << 20)
+        let weightsBased = max(footprintBytes / 4, gib)
+        let ramBased = min(Int(ProcessInfo.processInfo.physicalMemory) / 8, 8 * gib)
+        return min(weightsBased, ramBased)
+    }
+
+    private static func applyCacheLimit(footprintMB: Int?) {
+        MLX.GPU.set(cacheLimit: cacheLimit(footprintMB: footprintMB))
+    }
+
+    static func renderChatML(_ messages: [ChatMessage]) -> String {
+        var rendered = ""
+        for message in messages {
+            rendered += "<|im_start|>\(message.role.rawValue)\n\(message.content)<|im_end|>\n"
+        }
+        rendered += "<|im_start|>assistant\n"
+        return rendered
     }
 
     static func directoryFootprintMB(path: String) -> Int? {
