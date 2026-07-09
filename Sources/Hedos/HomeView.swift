@@ -4,6 +4,7 @@ import SwiftUI
 struct HomePane: View {
     @Bindable var shell: ShellModel
     @State private var artifacts: [Artifact] = []
+    @State private var artifactOwners: [String: String] = [:]
 
     var body: some View {
         ScrollView {
@@ -41,13 +42,14 @@ struct HomePane: View {
         }
         .background(PixelGrid())
         .task {
+            await shell.refreshSessions()
             if shell.library.summary == nil {
                 await shell.library.rescan()
             }
-            artifacts = (try? await shell.kernel.artifacts()) ?? []
+            await loadArtifacts()
         }
-        .task(id: shell.sessions.count) {
-            artifacts = (try? await shell.kernel.artifacts()) ?? []
+        .task(id: shell.sessions.map(\.updatedAt)) {
+            await loadArtifacts()
         }
     }
 
@@ -563,12 +565,31 @@ struct HomePane: View {
         }
     }
 
-    private var riverItems: [RiverItem] {
-        let chats = shell.filteredSessions.map(RiverItem.chat)
-        let made = artifacts
-            .filter { $0.capability == .image || $0.capability == .speak }
+    private static let riverPerKind = 4
+    private static let riverLimit = 8
+
+    private func loadArtifacts() async {
+        artifactOwners = (try? await shell.kernel.artifactOwners()) ?? [:]
+        artifacts = (try? await shell.kernel.artifacts()) ?? []
+    }
+
+    private func livingArtifacts(_ capability: Capability) -> [RiverItem] {
+        artifacts
+            .filter { $0.capability == capability && artifactOwners[$0.id] != nil }
             .map(RiverItem.artifact)
-        return (chats + made).sorted { $0.date > $1.date }.prefix(8).map { $0 }
+    }
+
+    private var riverItems: [RiverItem] {
+        func newest(_ items: [RiverItem]) -> [RiverItem] {
+            items.sorted { $0.date > $1.date }.prefix(Self.riverPerKind).map { $0 }
+        }
+        let chats = newest(shell.filteredSessions.map(RiverItem.chat))
+        let images = newest(livingArtifacts(.image))
+        let spoken = newest(livingArtifacts(.speak))
+        return (chats + images + spoken)
+            .sorted { $0.date > $1.date }
+            .prefix(Self.riverLimit)
+            .map { $0 }
     }
 
     private var continueRiver: some View {
@@ -651,6 +672,10 @@ struct HomePane: View {
             shell.setMode(.chat)
         case .artifact(let artifact):
             if artifact.capability == .speak {
+                let owner = artifact.sessionID ?? artifactOwners[artifact.id]
+                if let owner, shell.session(id: owner) != nil {
+                    shell.selectChat(owner)
+                }
                 shell.setMode(.chat)
             } else {
                 shell.showArtifact(artifact.id)

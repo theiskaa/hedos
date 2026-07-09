@@ -500,7 +500,7 @@ final class ChatViewModel {
                 if !pcm.isEmpty {
                     let artifact = try await kernel.saveSpeech(
                         modelID: modelID, voice: voice, text: content,
-                        sampleRate: sampleRate, pcm: pcm)
+                        sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
                     try await kernel.recordGeneratedTurn(
                         sessionID: sessionID, prompt: content, artifactID: artifact.id,
                         tag: SessionTag.spoke)
@@ -858,7 +858,7 @@ final class ChatViewModel {
                 if !pcm.isEmpty, entry.persisted, !Task.isCancelled {
                     if let artifact = try? await kernel.saveSpeech(
                         modelID: speaker.id, voice: voice, text: text,
-                        sampleRate: sampleRate, pcm: pcm)
+                        sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
                     {
                         try? await kernel.replaceSpokenArtifact(
                             sessionID: sessionID, turnID: entry.id, artifactID: artifact.id)
