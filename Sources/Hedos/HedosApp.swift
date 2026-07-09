@@ -51,12 +51,6 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
             guard let self, let window = notification.object as? NSWindow else { return }
             self.proxies.removeValue(forKey: ObjectIdentifier(window))
         }
-        if let iconURL = Bundle.module.url(forResource: "Resources/Hedos", withExtension: "icns")
-            ?? Bundle.module.url(forResource: "Hedos", withExtension: "icns"),
-            let icon = NSImage(contentsOf: iconURL)
-        {
-            NSApplication.shared.applicationIconImage = icon
-        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

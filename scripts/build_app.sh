@@ -26,7 +26,25 @@ if [ "$HAS_FRAMEWORKS" = 1 ]; then
 else
     rmdir "$APP/Contents/Frameworks"
 fi
-cp Sources/Hedos/Resources/Hedos.icns "$APP/Contents/Resources/Hedos.icns"
+ICON_PLIST="$(mktemp -t hedos-icon).plist"
+if ! ACTOOL_LOG=$(xcrun actool icon/hedos.icon \
+    --compile "$APP/Contents/Resources" \
+    --platform macosx \
+    --minimum-deployment-target 26.0 \
+    --app-icon hedos \
+    --output-partial-info-plist "$ICON_PLIST" \
+    --errors --warnings 2>&1); then
+    echo "error: actool failed to compile icon/hedos.icon" >&2
+    echo "$ACTOOL_LOG" >&2
+    exit 1
+fi
+for artifact in Assets.car hedos.icns; do
+    if [ ! -f "$APP/Contents/Resources/$artifact" ]; then
+        echo "error: actool did not produce $artifact" >&2
+        exit 1
+    fi
+done
+rm -f "$ICON_PLIST"
 
 MLX_VERSION=$(jq -r '.pins[] | select(.identity=="mlx-swift") | .state.version' Package.resolved)
 if [ -z "$MLX_VERSION" ] || [ "$MLX_VERSION" = "null" ]; then
@@ -68,7 +86,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
-    <string>Hedos</string>
+    <string>hedos</string>
+    <key>CFBundleIconName</key>
+    <string>hedos</string>
     <key>CFBundleShortVersionString</key>
     <string>0.0.0</string>
     <key>CFBundleVersion</key>
