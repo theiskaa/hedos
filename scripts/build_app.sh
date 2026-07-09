@@ -28,6 +28,30 @@ else
 fi
 cp Sources/Hedos/Resources/Hedos.icns "$APP/Contents/Resources/Hedos.icns"
 
+MLX_VERSION=$(jq -r '.pins[] | select(.identity=="mlx-swift") | .state.version' Package.resolved)
+if [ -z "$MLX_VERSION" ] || [ "$MLX_VERSION" = "null" ]; then
+    echo "error: could not resolve mlx-swift version from Package.resolved" >&2
+    exit 1
+fi
+METALLIB_CACHE="dist/.mlx-metallib-cache/$MLX_VERSION"
+METALLIB="$METALLIB_CACHE/mlx.metallib"
+if [ ! -f "$METALLIB" ]; then
+    echo "fetching mlx==$MLX_VERSION metallib via uv"
+    VENV=$(mktemp -d -t hedos-mlx-metallib)
+    uv venv "$VENV/venv" --python 3.12 >/dev/null
+    uv pip install --python "$VENV/venv/bin/python" "mlx==$MLX_VERSION" >/dev/null
+    FOUND=$(find "$VENV/venv" -path '*/mlx/lib/mlx.metallib' | head -1)
+    if [ -z "$FOUND" ]; then
+        echo "error: mlx==$MLX_VERSION did not provide mlx.metallib" >&2
+        rm -rf "$VENV"
+        exit 1
+    fi
+    mkdir -p "$METALLIB_CACHE"
+    cp "$FOUND" "$METALLIB"
+    rm -rf "$VENV"
+fi
+cp "$METALLIB" "$APP/Contents/MacOS/mlx.metallib"
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,6 +105,7 @@ sign_bundle() {
         [ -e "$framework" ] || continue
         codesign --force "$@" "$framework"
     done
+    codesign --force "$@" "$APP/Contents/MacOS/mlx.metallib"
     codesign --force "$@" --entitlements "$ENTITLEMENTS" "$APP"
 }
 
