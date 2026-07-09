@@ -116,16 +116,16 @@ struct HedosWordmark: View {
                 cursor += unit * 6
             }
         }
-        .frame(width: unit * CGFloat(text.count) * 6, height: unit * 7)
+        .frame(width: unit * CGFloat(text.count) * 6, height: unit * 6)
         .accessibilityLabel("hedos")
     }
 
     static let glyphs: [Character: [[Character]]] = [
-        "h": ["10000", "10000", "10000", "11110", "10010", "10010", "10010"].map(Array.init),
-        "e": ["00000", "00000", "01100", "10010", "11110", "10000", "01110"].map(Array.init),
-        "d": ["00010", "00010", "00010", "01110", "10010", "10010", "01110"].map(Array.init),
-        "o": ["00000", "00000", "01100", "10010", "10010", "10010", "01100"].map(Array.init),
-        "s": ["00000", "00000", "01110", "10000", "01100", "00010", "11100"].map(Array.init),
+        "h": ["10000", "10000", "11110", "10010", "10010", "10010"].map(Array.init),
+        "e": ["00000", "01100", "10010", "11110", "10000", "01110"].map(Array.init),
+        "d": ["00010", "00010", "01110", "10010", "10010", "01110"].map(Array.init),
+        "o": ["00000", "01100", "10010", "10010", "10010", "01100"].map(Array.init),
+        "s": ["00000", "01110", "10000", "01100", "00010", "11100"].map(Array.init),
     ]
 }
 
