@@ -8,6 +8,7 @@ struct GatewaySection: View {
     let onAddClient: () -> Void
     let onConnect: () -> Void
     var onShowAllRequests: (() -> Void)? = nil
+    var showsControlHeader = true
     @State private var portText = ""
     @State private var copiedAddress = false
 
@@ -15,7 +16,11 @@ struct GatewaySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.xxl) {
-            controlHeader
+            if showsControlHeader {
+                controlHeader
+            } else if model.gatewayStatus.running {
+                addressCard
+            }
             group("Serve") {
                 SettingRow(
                     id: "gateway.enable", label: "Serve models over HTTP",
@@ -115,7 +120,6 @@ struct GatewaySection: View {
 
     private var controlHeader: some View {
         let running = model.gatewayStatus.running
-        let port = model.gatewayStatus.port ?? model.gateway.port
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Design.Space.chipX) {
                 if running {
@@ -140,42 +144,60 @@ struct GatewaySection: View {
                 Rectangle()
                     .fill(Design.line)
                     .frame(height: Design.hairlineWidth)
-                HStack(spacing: Design.Space.s) {
-                    Text(verbatim: "$")
-                        .font(Design.data(12))
-                        .foregroundStyle(Design.inkFaint)
-                    Text("http://127.0.0.1:\(String(port))/v1")
-                        .font(Design.data(12))
-                        .foregroundStyle(Design.ink)
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: Design.Space.m)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(
-                            "http://127.0.0.1:\(String(port))/v1", forType: .string)
-                        copiedAddress = true
-                        Task {
-                            try? await Task.sleep(for: .seconds(2))
-                            copiedAddress = false
-                        }
-                    } label: {
-                        Text(copiedAddress ? "COPIED" : "COPY")
-                            .font(Design.micro)
-                            .tracking(Design.microTracking)
-                            .foregroundStyle(copiedAddress ? Design.heatText : Design.inkSoft)
-                    }
-                    .buttonStyle(PressDipStyle())
-                    .accessibilityLabel("Copy gateway address")
-                }
-                .padding(.horizontal, Design.Space.tile)
-                .padding(.vertical, Design.Space.l)
+                addressStrip
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .surfaceCard(radius: Design.Radius.tile)
         .accessibilityIdentifier("gateway-address")
+    }
+
+    private var addressCard: some View {
+        addressStrip
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .surfaceCard(radius: Design.Radius.tile)
+            .accessibilityIdentifier("gateway-address")
+    }
+
+    private var addressStrip: some View {
+        HStack(spacing: Design.Space.s) {
+            Text(verbatim: "$")
+                .font(Design.data(12))
+                .foregroundStyle(Design.inkFaint)
+            Text(address)
+                .font(Design.data(12))
+                .foregroundStyle(Design.ink)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: Design.Space.m)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(address, forType: .string)
+                copiedAddress = true
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    copiedAddress = false
+                }
+            } label: {
+                Text(copiedAddress ? "COPIED" : "COPY")
+                    .font(Design.micro)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(copiedAddress ? Design.heatText : Design.inkSoft)
+            }
+            .buttonStyle(PressDipStyle())
+            .accessibilityLabel("Copy gateway address")
+        }
+        .padding(.horizontal, Design.Space.tile)
+        .padding(.vertical, Design.Space.l)
+    }
+
+    private var port: Int {
+        model.gatewayStatus.port ?? model.gateway.port
+    }
+
+    private var address: String {
+        "http://127.0.0.1:\(String(port))/v1"
     }
 
     private func lastUsedShort(_ client: GatewayClient) -> String {

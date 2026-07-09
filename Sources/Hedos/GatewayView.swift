@@ -7,19 +7,42 @@ struct GatewayPane: View {
     @State private var showingAddClient = false
     @State private var showingConnect = false
 
+    private var status: GatewayStatus { shell.settings.gatewayStatus }
+
+    private var statusText: String {
+        status.running
+            ? "live · :\(String(status.port ?? shell.settings.gateway.port))"
+            : "offline"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            PaneHeader(title: "Gateway")
+            PaneHeader(title: "Gateway") {
+                TintChip(text: statusText, live: status.running, faint: !status.running)
+                    .accessibilityIdentifier("gateway-status")
+                QuietIconButton(glyph: "person.badge.plus") {
+                    showingAddClient = true
+                }
+                .help("Add a client")
+                .accessibilityLabel("Add a client")
+                QuietIconButton(glyph: "list.bullet") {
+                    shell.showingGatewayLog = true
+                }
+                .help("All requests")
+                .accessibilityLabel("All requests")
+            }
+            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             ScrollView {
                 GatewaySection(
                     shell: shell,
                     highlighted: nil,
                     onAddClient: { showingAddClient = true },
                     onConnect: { showingConnect = true },
-                    onShowAllRequests: { shell.showingGatewayLog = true }
+                    onShowAllRequests: { shell.showingGatewayLog = true },
+                    showsControlHeader: false
                 )
                 .padding(.horizontal, Design.Space.gutter + Design.Space.m)
-                .padding(.top, Design.Space.l)
+                .padding(.top, Design.Space.xl)
                 .padding(.bottom, Design.Space.pane)
                 .frame(maxWidth: Design.Column.hero, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
