@@ -76,6 +76,10 @@ public struct GatewayError: Error, Sendable, Hashable {
             case .capabilityUnsupported, .paramUnsupported:
                 return GatewayError(
                     .badRequest, kernel.errorDescription ?? "unsupported request")
+            case .contextExceeded:
+                return GatewayError(
+                    .badRequest, kernel.errorDescription ?? "context window exceeded",
+                    code: "context_length_exceeded")
             case .notImplemented:
                 return GatewayError(
                     .notSupported, kernel.errorDescription ?? "not supported",

@@ -9,6 +9,7 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case paramUnsupported(model: String, key: String)
     case runtimeUnavailable(hint: String)
     case runtimeFailed(String)
+    case contextExceeded(model: String)
 
     public var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
             hint
         case .runtimeFailed(let message):
             message
+        case .contextExceeded(let model):
+            "This conversation no longer fits \(model)'s context window. Start a new chat or switch to a model with a larger window."
         }
     }
 }

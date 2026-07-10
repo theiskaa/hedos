@@ -11,6 +11,7 @@ public actor LlamaEngine {
 
     private var loadedPath: String?
     private var loadedModelID: String?
+    private var loadedContextTokens: Int?
     private var model: OpaquePointer?
     private var context: OpaquePointer?
     private let generationSlot = GenerationSlot()
@@ -32,6 +33,7 @@ public actor LlamaEngine {
         modelID: String,
         modelName: String,
         footprintMB: Int?,
+        contextTokens: Int = 4096,
         governor: MemoryGovernor,
         messages: [ChatMessage],
         params: GenerationParams = GenerationParams(),
@@ -42,10 +44,12 @@ public actor LlamaEngine {
             let producer = GPUProducer.generation(modelID: modelID)
             try await acquireGateWithModelLoaded(
                 producer: producer, path: path, modelID: modelID, modelName: modelName,
-                footprintMB: footprintMB, governor: governor, continuation: continuation)
+                footprintMB: footprintMB, contextTokens: contextTokens, governor: governor,
+                continuation: continuation)
             await generationSlot.acquire()
             do {
                 try await generate(
+                    modelName: modelName, contextTokens: contextTokens,
                     messages: messages, params: params, continuation: continuation)
                 await generationSlot.release()
                 await governor.gate.release(producer)
@@ -67,20 +71,26 @@ public actor LlamaEngine {
         modelID: String,
         modelName: String,
         footprintMB: Int?,
+        contextTokens: Int,
         governor: MemoryGovernor,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
         while true {
             try await ensureLoadedGoverned(
                 path: path, modelID: modelID, modelName: modelName,
-                footprintMB: footprintMB, governor: governor, continuation: continuation)
+                footprintMB: footprintMB, contextTokens: contextTokens, governor: governor,
+                continuation: continuation)
             await governor.gate.acquire(producer)
-            if loadedPath == path, model != nil, context != nil { return }
+            if loadedPath == path, loadedContextTokens == contextTokens,
+                model != nil, context != nil
+            { return }
             await governor.gate.release(producer)
         }
     }
 
     private func generate(
+        modelName: String,
+        contextTokens: Int,
         messages: [ChatMessage],
         params: GenerationParams,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
@@ -93,6 +103,9 @@ public actor LlamaEngine {
         var tokens = tokenize(vocab: vocab, text: prompt)
         guard !tokens.isEmpty else {
             throw KernelError.runtimeFailed("prompt produced no tokens")
+        }
+        guard tokens.count < contextTokens else {
+            throw KernelError.contextExceeded(model: modelName)
         }
 
         let memory = llama_get_memory(context)
@@ -122,7 +135,7 @@ public actor LlamaEngine {
         defer { llama_sampler_free(sampler) }
 
         var generated = 0
-        let maxTokens = params.maxTokens
+        let maxTokens = min(params.maxTokens, contextTokens - promptCount)
         var pieceBuffer = [CChar](repeating: 0, count: 512)
         var assembler = Utf8StreamAssembler()
 
@@ -170,10 +183,13 @@ public actor LlamaEngine {
         modelID: String,
         modelName: String,
         footprintMB: Int?,
+        contextTokens: Int,
         governor: MemoryGovernor,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
-        if loadedPath == path, model != nil, context != nil { return }
+        if loadedPath == path, loadedContextTokens == contextTokens,
+            model != nil, context != nil
+        { return }
         let verdict = try await governor.admit(
             modelID: modelID, name: modelName, footprintMB: footprintMB
         ) { reason in
@@ -189,7 +205,7 @@ public actor LlamaEngine {
                 unload()
                 await governor.markUnloaded(previousModelID)
             }
-            try load(path: path, modelID: modelID)
+            try load(path: path, modelID: modelID, contextTokens: contextTokens)
             await governor.gate.release(producer)
         } catch {
             await governor.gate.release(producer)
@@ -206,7 +222,7 @@ public actor LlamaEngine {
         }
     }
 
-    private func load(path: String, modelID: String) throws {
+    private func load(path: String, modelID: String, contextTokens: Int) throws {
         _ = Self.backendReady
         unload()
 
@@ -215,7 +231,7 @@ public actor LlamaEngine {
             throw KernelError.runtimeFailed("could not load gguf at \(path)")
         }
         var contextParams = llama_context_default_params()
-        contextParams.n_ctx = 4096
+        contextParams.n_ctx = UInt32(contextTokens)
         guard let created = llama_init_from_model(loaded, contextParams) else {
             llama_model_free(loaded)
             throw KernelError.runtimeFailed("could not create llama context")
@@ -224,6 +240,7 @@ public actor LlamaEngine {
         context = created
         loadedPath = path
         loadedModelID = modelID
+        loadedContextTokens = contextTokens
     }
 
     public func unloadIfLoaded(path: String) {
@@ -262,6 +279,7 @@ public actor LlamaEngine {
         model = nil
         loadedPath = nil
         loadedModelID = nil
+        loadedContextTokens = nil
     }
 
     private func renderPrompt(model: OpaquePointer, messages: [ChatMessage]) -> String {

@@ -97,9 +97,75 @@ private func speechRecord() -> ModelRecord {
     #expect(keys.contains("temperature"))
     #expect(keys.contains("top_p"))
     #expect(keys.contains("max_tokens"))
-    #expect(keys.contains("context_length"))
+    #expect(!keys.contains("context_length"))
     #expect(!keys.contains("thinking"))
     #expect(populated.params.allSatisfy { $0.defaultValue == nil })
+}
+
+@Test func contextKnobAbsentForMlxRuntimes() {
+    var record = Fixtures.gguf()
+    record.runtime = RuntimeRef(id: "mlx-swift", resolved: .auto, tier: .native)
+    record.contextLength = 8192
+    let keys = ProfileRegistry.builtin.schema(for: record).map(\.key)
+    #expect(!keys.contains("context_length"))
+    #expect(ProfileRegistry.contextLengthSpec(for: record) == nil)
+}
+
+@Test func contextKnobRangeComesFromRecordWindow() {
+    var record = Fixtures.gguf()
+    record.runtime = RuntimeRef(id: "llama-cpp", resolved: .auto, tier: .native)
+    record.contextLength = 8192
+    let spec = ProfileRegistry.builtin.schema(for: record).first { $0.key == "context_length" }
+    #expect(spec?.defaultValue == .int(8192))
+    #expect(spec?.range == [.int(512), .int(8192)])
+}
+
+@Test func contextKnobDefaultCapsAt32k() {
+    var record = Fixtures.gguf()
+    record.runtime = RuntimeRef(id: "llama-cpp", resolved: .auto, tier: .native)
+    record.contextLength = 131072
+    let spec = ProfileRegistry.contextLengthSpec(for: record)
+    #expect(spec?.defaultValue == .int(32768))
+    #expect(spec?.range == [.int(512), .int(131072)])
+}
+
+@Test func unknownWindowOnHonoringRuntimeKeepsWideRange() {
+    var record = Fixtures.gguf()
+    record.runtime = RuntimeRef(id: "ollama", resolved: .auto, tier: .native)
+    record.contextLength = nil
+    let spec = ProfileRegistry.contextLengthSpec(for: record)
+    #expect(spec?.defaultValue == nil)
+    #expect(spec?.range == [.int(512), .int(131072)])
+}
+
+@Test func staleFabricatedSpecReplacedOnAlreadyPopulatedRecord() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let url = dir.appendingPathComponent("windowed.gguf")
+    var builder = GGUFFixtureBuilder(keyValueCount: 2)
+    builder.addString(key: "general.architecture", value: "llama")
+    builder.addUInt32(key: "llama.context_length", value: 8192)
+    try builder.write(to: url)
+    var record = ModelRecord(
+        name: "windowed", modality: .text, capabilities: [.chat, .complete],
+        source: ModelSource(kind: .file, path: url.path),
+        params: [
+            ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
+            ParamSpec(key: "context_length", type: .int, range: [.int(512), .int(131072)]),
+        ],
+        execution: .stream)
+    record.contextLength = 8192
+    try await registry.register(record)
+
+    try await ResolutionEngine(adapters: [LlamaCppAdapter(), OllamaAdapter()])
+        .resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.get(id: record.id))
+    let spec = resolved.params.first { $0.key == "context_length" }
+    #expect(spec?.range == [.int(512), .int(8192)])
+    #expect(spec?.defaultValue == .int(8192))
+    #expect(resolved.params.filter { $0.key == "context_length" }.count == 1)
 }
 
 @Test func profilesAddThinkingToggleWhereRuntimeSupportsIt() {
@@ -139,7 +205,7 @@ private func speechRecord() -> ModelRecord {
     let resolved = try #require(try await registry.get(id: Fixtures.gguf().id))
     #expect(resolved.runtime.id == "fake:llm")
     #expect(resolved.params.map(\.key).contains("temperature"))
-    #expect(resolved.params.map(\.key).contains("context_length"))
+    #expect(!resolved.params.map(\.key).contains("context_length"))
 }
 
 @Test func overridesAndSystemPromptReachTheChatPayload() async throws {

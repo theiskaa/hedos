@@ -9,6 +9,13 @@ public struct LlamaCppAdapter: RuntimeAdapter {
         self.governor = governor
     }
 
+    static func effectiveContextTokens(record: ModelRecord, requested: Int?) -> Int {
+        let base = record.contextLength ?? 4096
+        let cappedDefault = min(base, 32768)
+        let lower = min(512, base)
+        return min(max(requested ?? cappedDefault, lower), base)
+    }
+
     static func params(from object: [String: JSONValue]) -> LlamaEngine.GenerationParams {
         var params = LlamaEngine.GenerationParams()
         if let temperature = object["temperature"]?.doubleValue {
@@ -59,12 +66,15 @@ public struct LlamaCppAdapter: RuntimeAdapter {
             let expanded = (path as NSString).expandingTildeInPath
             let governor = governor
             let params = Self.params(from: object)
+            let contextTokens = Self.effectiveContextTokens(
+                record: record, requested: object["context_length"]?.intValue)
             let task = Task {
                 await LlamaEngine.shared.run(
                     path: expanded,
                     modelID: record.id,
                     modelName: record.name,
                     footprintMB: record.footprintMB,
+                    contextTokens: contextTokens,
                     governor: governor,
                     messages: messages,
                     params: params,
