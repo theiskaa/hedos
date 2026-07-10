@@ -124,6 +124,7 @@ public actor LlamaEngine {
         var generated = 0
         let maxTokens = params.maxTokens
         var pieceBuffer = [CChar](repeating: 0, count: 512)
+        var assembler = Utf8StreamAssembler()
 
         while generated < maxTokens {
             await Task.yield()
@@ -131,11 +132,12 @@ public actor LlamaEngine {
             var token = llama_sampler_sample(sampler, context, -1)
             if llama_vocab_is_eog(vocab, token) { break }
 
-            let written = llama_token_to_piece(vocab, token, &pieceBuffer, 512, 0, false)
-            if written > 0 {
-                let piece = String(
-                    decoding: pieceBuffer[0..<Int(written)].map { UInt8(bitPattern: $0) },
-                    as: UTF8.self)
+            let written = Self.renderPiece(into: &pieceBuffer) { buffer, capacity in
+                llama_token_to_piece(vocab, token, buffer, capacity, 0, false)
+            }
+            if let written {
+                let piece = assembler.feed(
+                    pieceBuffer[0..<written].map { UInt8(bitPattern: $0) })
                 if !piece.isEmpty {
                     continuation.yield(.text(piece))
                 }
@@ -146,6 +148,11 @@ public actor LlamaEngine {
             guard llama_decode(context, batch) == 0 else {
                 throw KernelError.runtimeFailed("llama decode failed mid-generation")
             }
+        }
+
+        let remainder = assembler.flush()
+        if !remainder.isEmpty {
+            continuation.yield(.text(remainder))
         }
 
         let elapsed = clock.now - started
@@ -222,6 +229,22 @@ public actor LlamaEngine {
     public func unloadIfLoaded(path: String) {
         guard loadedPath == path else { return }
         unload()
+    }
+
+    static func renderPiece(
+        into buffer: inout [CChar],
+        write: (UnsafeMutablePointer<CChar>, Int32) -> Int32
+    ) -> Int? {
+        let written = buffer.withUnsafeMutableBufferPointer {
+            write($0.baseAddress!, Int32($0.count))
+        }
+        if written > 0 { return Int(written) }
+        guard written < 0 else { return nil }
+        buffer = [CChar](repeating: 0, count: Int(-written))
+        let retried = buffer.withUnsafeMutableBufferPointer {
+            write($0.baseAddress!, Int32($0.count))
+        }
+        return retried > 0 ? Int(retried) : nil
     }
 
     static func weightsFootprintMB(path: String) -> Int? {
