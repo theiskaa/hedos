@@ -14,6 +14,46 @@ import Testing
     #expect(decoded == record)
 }
 
+@Test func decodesLegacyRecordWithoutContextFields() throws {
+    var legacy = Fixtures.gguf()
+    legacy.contextLength = nil
+    legacy.hasChatTemplate = nil
+    legacy.stopTokens = nil
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    var json = try JSONSerialization.jsonObject(with: try encoder.encode(legacy))
+        as! [String: Any]
+    json.removeValue(forKey: "contextLength")
+    json.removeValue(forKey: "hasChatTemplate")
+    json.removeValue(forKey: "stopTokens")
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(
+        ModelRecord.self, from: try JSONSerialization.data(withJSONObject: json))
+    #expect(decoded.contextLength == nil)
+    #expect(decoded.hasChatTemplate == nil)
+    #expect(decoded.stopTokens == nil)
+    #expect(decoded.id == legacy.id)
+}
+
+@Test func roundTripsContextFields() throws {
+    var record = Fixtures.gguf()
+    record.contextLength = 32768
+    record.hasChatTemplate = true
+    record.stopTokens = ["<|im_end|>"]
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+
+    let decoded = try decoder.decode(ModelRecord.self, from: try encoder.encode(record))
+    #expect(decoded == record)
+    #expect(decoded.contextLength == 32768)
+    #expect(decoded.hasChatTemplate == true)
+    #expect(decoded.stopTokens == ["<|im_end|>"])
+}
+
 @Test func paramSpecEncodesDefaultKeyAsJSON() throws {
     let spec = ParamSpec(key: "steps", type: .int, defaultValue: .int(4))
     let json = String(data: try JSONEncoder().encode(spec), encoding: .utf8)!

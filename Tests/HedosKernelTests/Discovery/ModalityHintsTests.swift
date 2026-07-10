@@ -33,6 +33,33 @@ private func writeJSON(_ json: String, in dir: URL, name: String) throws -> URL 
     #expect(ModalityHints.fromConfigJSON(at: unmatched) == nil)
 }
 
+@Test func configJSONCarriesMaxPositionEmbeddings() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = try writeJSON(
+        #"{"architectures": ["Qwen3ForCausalLM"], "max_position_embeddings": 40960}"#,
+        in: dir, name: "config.json")
+
+    let hint = try #require(ModalityHints.fromConfigJSON(at: url))
+    #expect(hint.modality == .text)
+    #expect(hint.contextLength == 40960)
+}
+
+@Test func nPositionsFallbackApplies() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = try writeJSON(
+        #"{"architectures": ["GPT2LMHeadModel"], "n_positions": 1024}"#,
+        in: dir, name: "config.json")
+
+    let hint = try #require(ModalityHints.fromConfigJSON(at: url))
+    #expect(hint.contextLength == 1024)
+
+    let windowless = try writeJSON(
+        #"{"architectures": ["GPT2LMHeadModel"]}"#, in: dir, name: "bare.json")
+    #expect(try #require(ModalityHints.fromConfigJSON(at: windowless)).contextLength == nil)
+}
+
 @Test func modelIndexHintConsultsFamilyRegistry() throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

@@ -101,6 +101,15 @@ public actor DiscoveryService {
                 record.primaryWeightPath = model.primaryWeightPath
                 if let modality = model.modalityHint { record.modality = modality }
                 if !model.capabilitiesHint.isEmpty { record.capabilities = model.capabilitiesHint }
+                if let contextLength = model.contextLengthHint {
+                    record.contextLength = contextLength
+                }
+                if let hasChatTemplate = model.hasChatTemplateHint {
+                    record.hasChatTemplate = hasChatTemplate
+                }
+                if let stopTokens = model.stopTokensHint {
+                    record.stopTokens = stopTokens
+                }
                 record.execution = model.executionHint
                 if record.state == .missing { record.state = .unresolved }
                 toRegister.append(record)
@@ -112,7 +121,10 @@ public actor DiscoveryService {
                     source: model.source,
                     execution: model.executionHint,
                     footprintMB: Int(model.footprintBytes / (1 << 20)),
-                    state: .unresolved)
+                    state: .unresolved,
+                    contextLength: model.contextLengthHint,
+                    hasChatTemplate: model.hasChatTemplateHint,
+                    stopTokens: model.stopTokensHint)
                 record.primaryWeightPath = model.primaryWeightPath
                 toRegister.append(record)
             }

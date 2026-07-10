@@ -161,6 +161,30 @@ private func ggufRecord(at dir: URL, name: String = "tiny") throws -> ModelRecor
     #expect(resolved.state == .unresolved)
 }
 
+@Test func resolveCopiesGGUFContextLengthOntoRecord() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let url = dir.appendingPathComponent("windowed.gguf")
+    var builder = GGUFFixtureBuilder(keyValueCount: 3)
+    builder.addString(key: "general.architecture", value: "llama")
+    builder.addUInt32(key: "llama.context_length", value: 32768)
+    builder.addString(key: "tokenizer.chat_template", value: "{{ messages }}")
+    try builder.write(to: url)
+    let record = ModelRecord(
+        name: "windowed", modality: .text, capabilities: [.chat, .complete],
+        source: ModelSource(kind: .file, path: url.path), execution: .stream)
+    try await registry.register(record)
+
+    try await ResolutionEngine(adapters: [LlamaCppAdapter(), OllamaAdapter()])
+        .resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.get(id: record.id))
+    #expect(resolved.contextLength == 32768)
+    #expect(resolved.hasChatTemplate == true)
+    #expect(resolved.state == .ready)
+}
+
 @Test func resolveAllScopedToKindsLeavesOtherKindsUntouched() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

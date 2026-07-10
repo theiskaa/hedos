@@ -99,6 +99,10 @@ public actor ResolutionEngine {
         if let modality = identified.modality { updated.modality = modality }
         if !identified.capabilities.isEmpty { updated.capabilities = identified.capabilities }
         if !identified.params.isEmpty { updated.params = identified.params }
+        if let contextLength = identified.contextLength { updated.contextLength = contextLength }
+        if let hasChatTemplate = identified.hasChatTemplate {
+            updated.hasChatTemplate = hasChatTemplate
+        }
         updated.execution = identified.execution
         if let winner = bids.first,
             let backed = adapters.first(where: { $0.id == winner.id }) as? any ManifestBacked

@@ -19,6 +19,14 @@ public struct IdentifiedModel: Sendable, Hashable {
     public var execution: ExecutionMode
     public var params: [ParamSpec] = []
     public var pipelineClass: String? = nil
+    public var contextLength: Int? = nil
+    public var hasChatTemplate: Bool? = nil
+}
+
+public struct GGUFFacts: Sendable, Hashable {
+    public var architecture: String?
+    public var contextLength: Int?
+    public var hasChatTemplate: Bool
 }
 
 public struct GGUFArchitectureProfile: Sendable, Hashable {
@@ -67,20 +75,25 @@ public enum Identification {
         }
 
         if base.pathExtension.lowercased() == "gguf" || hasGGUFMagic(at: base) {
-            if let architecture = ggufGeneralArchitecture(at: base),
+            let facts = ggufFacts(at: base)
+            if let architecture = facts?.architecture,
                 let profile = ggufArchitectureProfiles[architecture]
             {
                 return IdentifiedModel(
                     format: .gguf,
                     modality: profile.modality,
                     capabilities: profile.capabilities,
-                    execution: profile.execution)
+                    execution: profile.execution,
+                    contextLength: facts?.contextLength,
+                    hasChatTemplate: facts?.hasChatTemplate)
             }
             return IdentifiedModel(
                 format: .gguf,
                 modality: .text,
                 capabilities: [.chat, .complete],
-                execution: .stream)
+                execution: .stream,
+                contextLength: facts?.contextLength,
+                hasChatTemplate: facts?.hasChatTemplate)
         }
 
         let modelIndexURL = container.appendingPathComponent("model_index.json")
@@ -117,14 +130,16 @@ public enum Identification {
                 format: safetensorsFormat,
                 modality: hint?.modality,
                 capabilities: hint?.capabilities ?? [],
-                execution: hint?.execution ?? .sync)
+                execution: hint?.execution ?? .sync,
+                contextLength: hint?.contextLength)
         }
         if let hint {
             return IdentifiedModel(
                 format: .unknown,
                 modality: hint.modality,
                 capabilities: hint.capabilities,
-                execution: hint.execution)
+                execution: hint.execution,
+                contextLength: hint.contextLength)
         }
         return IdentifiedModel(
             format: .unknown, modality: nil, capabilities: [], execution: .sync)
@@ -182,6 +197,10 @@ public enum Identification {
     ]
 
     static func ggufGeneralArchitecture(at url: URL) -> String? {
+        ggufFacts(at: url)?.architecture
+    }
+
+    static func ggufFacts(at url: URL) -> GGUFFacts? {
         guard let handle = FileHandle(forReadingAtPath: url.path) else { return nil }
         defer { try? handle.close() }
         guard let magic = try? handle.read(upToCount: 4), magic == Data("GGUF".utf8),
@@ -190,17 +209,49 @@ public enum Identification {
             let keyValueCount: UInt64 = readLittleEndian(handle)
         else { return nil }
 
-        for _ in 0..<min(keyValueCount, 512) {
+        var architecture: String?
+        var contextLengths: [String: Int] = [:]
+        var hasChatTemplate = false
+
+        walk: for _ in 0..<min(keyValueCount, 512) {
             guard let key = readGGUFString(handle),
                 let valueType: UInt32 = readLittleEndian(handle)
-            else { return nil }
+            else { break walk }
             if key == "general.architecture" {
-                guard valueType == 8 else { return nil }
-                return readGGUFString(handle)
+                guard valueType == 8, let value = readGGUFString(handle) else { break walk }
+                architecture = value
+            } else if key == "tokenizer.chat_template" {
+                hasChatTemplate = true
+                guard skipGGUFValue(handle, type: valueType) else { break walk }
+            } else if key.hasSuffix(".context_length"),
+                let value = readGGUFInteger(handle, type: valueType)
+            {
+                contextLengths[key] = value
+            } else {
+                guard skipGGUFValue(handle, type: valueType) else { break walk }
             }
-            guard skipGGUFValue(handle, type: valueType) else { return nil }
         }
-        return nil
+
+        var contextLength: Int?
+        if let architecture, let matched = contextLengths["\(architecture).context_length"] {
+            contextLength = matched
+        } else if contextLengths.count == 1 {
+            contextLength = contextLengths.values.first
+        }
+        return GGUFFacts(
+            architecture: architecture,
+            contextLength: contextLength,
+            hasChatTemplate: hasChatTemplate)
+    }
+
+    private static func readGGUFInteger(_ handle: FileHandle, type: UInt32) -> Int? {
+        switch type {
+        case 4: (readLittleEndian(handle) as UInt32?).map { Int($0) }
+        case 5: (readLittleEndian(handle) as Int32?).map { Int($0) }
+        case 10: (readLittleEndian(handle) as UInt64?).map { Int(clamping: $0) }
+        case 11: (readLittleEndian(handle) as Int64?).map { Int(clamping: $0) }
+        default: nil
+        }
     }
 
     private static func readLittleEndian<T: FixedWidthInteger>(_ handle: FileHandle) -> T? {

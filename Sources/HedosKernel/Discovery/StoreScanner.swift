@@ -9,6 +9,9 @@ public struct DiscoveredModel: Sendable, Hashable {
     public var footprintBytes: Int64
     public var primaryWeightPath: String?
     public var diagnostics: [String]
+    public var contextLengthHint: Int?
+    public var hasChatTemplateHint: Bool?
+    public var stopTokensHint: [String]?
 
     public init(
         name: String,
@@ -18,7 +21,10 @@ public struct DiscoveredModel: Sendable, Hashable {
         executionHint: ExecutionMode = .sync,
         footprintBytes: Int64 = 0,
         primaryWeightPath: String? = nil,
-        diagnostics: [String] = []
+        diagnostics: [String] = [],
+        contextLengthHint: Int? = nil,
+        hasChatTemplateHint: Bool? = nil,
+        stopTokensHint: [String]? = nil
     ) {
         self.name = name
         self.source = source
@@ -28,6 +34,9 @@ public struct DiscoveredModel: Sendable, Hashable {
         self.footprintBytes = footprintBytes
         self.primaryWeightPath = primaryWeightPath
         self.diagnostics = diagnostics
+        self.contextLengthHint = contextLengthHint
+        self.hasChatTemplateHint = hasChatTemplateHint
+        self.stopTokensHint = stopTokensHint
     }
 }
 

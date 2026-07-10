@@ -42,6 +42,63 @@ import Testing
     #expect(result.issues.count == 1)
 }
 
+@Test func ollamaScannerReadsNumCtxStopAndTemplatePresence() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: root,
+        tags: [
+            .init(
+                model: "qwen3.5", tag: "9b", modelBytes: 4096,
+                paramsJSON: #"{"num_ctx": 8192, "stop": ["<|im_end|>", "<|endoftext|>"]}"#,
+                hasTemplateLayer: true)
+        ])
+
+    let result = await OllamaStoreScanner(root: root).scan()
+    #expect(result.issues.isEmpty)
+    let model = try #require(result.discovered.first)
+    #expect(model.contextLengthHint == 8192)
+    #expect(model.stopTokensHint == ["<|im_end|>", "<|endoftext|>"])
+    #expect(model.hasChatTemplateHint == true)
+}
+
+@Test func paramsBlobWithoutNumCtxYieldsNilHint() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: root,
+        tags: [
+            .init(
+                model: "gemma4", tag: "latest", modelBytes: 2048,
+                paramsJSON: #"{"temperature": 1, "top_k": 64, "top_p": 0.95}"#)
+        ])
+
+    let result = await OllamaStoreScanner(root: root).scan()
+    #expect(result.issues.isEmpty)
+    let model = try #require(result.discovered.first)
+    #expect(model.contextLengthHint == nil)
+    #expect(model.stopTokensHint == nil)
+    #expect(model.hasChatTemplateHint == nil)
+}
+
+@Test func unreadableParamsBlobStillRegistersWithIssue() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: root,
+        tags: [
+            .init(
+                model: "qwen3.5", tag: "9b", modelBytes: 2048,
+                paramsJSON: #"{"num_ctx": 8192}"#,
+                paramsBlobMissing: true)
+        ])
+
+    let result = await OllamaStoreScanner(root: root).scan()
+    #expect(result.discovered.count == 1)
+    #expect(result.discovered.first?.contextLengthHint == nil)
+    #expect(result.issues == ["ollama: unreadable params blob for qwen3.5:9b"])
+}
+
 @Test func unreadableOllamaRootReportsFailedKind() async throws {
     let root = try Fixtures.tempDirectory()
     defer {
@@ -95,6 +152,23 @@ import Testing
 
     let result = await HFCacheScanner(roots: [], userRoots: [gone]).scan()
     #expect(result.failedKinds == [.huggingfaceCache])
+}
+
+@Test func hfScannerCarriesContextLengthHint() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "mlx-community", repo: "Tiny-Chat-4bit",
+            files: [("model.safetensors", 512), ("tokenizer.json", 64)],
+            configJSON:
+                #"{"architectures": ["LlamaForCausalLM"], "max_position_embeddings": 8192}"#))
+
+    let result = await HFCacheScanner(root: hub).scan()
+    let model = try #require(result.discovered.first)
+    #expect(model.contextLengthHint == 8192)
+    #expect(model.modalityHint == .text)
 }
 
 @Test func hfScannerClassifiesAndMeasures() async throws {

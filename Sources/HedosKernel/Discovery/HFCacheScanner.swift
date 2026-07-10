@@ -121,7 +121,8 @@ public struct HFCacheScanner: StoreScanner {
                     executionHint: hint.execution,
                     footprintBytes: directoryBytes(repoDir.appendingPathComponent("blobs")),
                     primaryWeightPath: largestWeight(in: snapshot.url),
-                    diagnostics: diagnostics))
+                    diagnostics: diagnostics,
+                    contextLengthHint: hint.contextLength))
         }
     }
 

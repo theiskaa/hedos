@@ -124,6 +124,7 @@ public struct LooseFileScanner: StoreScanner {
             capabilitiesHint: hint.capabilities,
             executionHint: hint.execution,
             footprintBytes: total,
-            primaryWeightPath: largest?.path)
+            primaryWeightPath: largest?.path,
+            contextLengthHint: hint.contextLength)
     }
 }

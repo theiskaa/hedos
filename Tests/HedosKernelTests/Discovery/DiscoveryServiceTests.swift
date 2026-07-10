@@ -101,6 +101,38 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     #expect(missing.state == .missing)
 }
 
+@Test func rescanWithoutHintPreservesKnownContextLength() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let ollama = root.appendingPathComponent("ollama")
+    let registry = Registry(directory: root.appendingPathComponent("appsupport"))
+
+    try DiscoveryFixtures.makeOllamaStore(
+        at: ollama,
+        tags: [
+            .init(
+                model: "qwen3.5", tag: "9b", modelBytes: 2048,
+                paramsJSON: #"{"num_ctx": 8192}"#)
+        ])
+    let service = DiscoveryService(
+        scanners: [OllamaStoreScanner(root: ollama)], duplicateThreshold: 1024)
+    _ = try await service.discover(into: registry)
+    let known = try #require(try await registry.list().first)
+    #expect(known.contextLength == 8192)
+
+    try FileManager.default.removeItem(at: ollama)
+    try DiscoveryFixtures.makeOllamaStore(
+        at: ollama,
+        tags: [
+            .init(
+                model: "qwen3.5", tag: "9b", modelBytes: 2048,
+                paramsJSON: #"{"temperature": 1}"#)
+        ])
+    _ = try await service.discover(into: registry)
+    let preserved = try #require(try await registry.list().first)
+    #expect(preserved.contextLength == 8192)
+}
+
 @Test func discoveryPassWritesStoreOnce() async throws {
     let (root, scanners) = try makeCompositeMachine()
     defer { try? FileManager.default.removeItem(at: root) }

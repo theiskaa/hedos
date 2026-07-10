@@ -15,6 +15,9 @@ enum DiscoveryFixtures {
         var modelBytes: Int
         var extraBytes: Int = 0
         var malformed = false
+        var paramsJSON: String? = nil
+        var paramsBlobMissing = false
+        var hasTemplateLayer = false
     }
 
     static func makeOllamaStore(at root: URL, tags: [OllamaTag]) throws {
@@ -44,12 +47,27 @@ enum DiscoveryFixtures {
                     "digest": "sha256:\(digest)",
                 ]
             ]
-            if tag.extraBytes > 0 {
+            if tag.extraBytes > 0 || tag.paramsJSON != nil {
+                let paramsDigest = String(format: "%064d", 900 + index)
+                let blob = Data((tag.paramsJSON ?? "{}").utf8)
                 layers.append([
                     "mediaType": "application/vnd.ollama.image.params",
-                    "size": tag.extraBytes,
-                    "digest": "sha256:\(String(format: "%064d", 900 + index))",
+                    "size": tag.extraBytes > 0 ? tag.extraBytes : blob.count,
+                    "digest": "sha256:\(paramsDigest)",
                 ])
+                if !tag.paramsBlobMissing {
+                    try blob.write(to: blobs.appendingPathComponent("sha256-\(paramsDigest)"))
+                }
+            }
+            if tag.hasTemplateLayer {
+                let templateDigest = String(format: "%064d", 800 + index)
+                let blob = Data("{{ .Prompt }}".utf8)
+                layers.append([
+                    "mediaType": "application/vnd.ollama.image.template",
+                    "size": blob.count,
+                    "digest": "sha256:\(templateDigest)",
+                ])
+                try blob.write(to: blobs.appendingPathComponent("sha256-\(templateDigest)"))
             }
             let manifest: [String: Any] = [
                 "schemaVersion": 2,
@@ -134,5 +152,59 @@ enum DiscoveryFixtures {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data(bytes: bytes, fill: fill).write(to: url)
+    }
+}
+
+struct GGUFFixtureBuilder {
+    var data = Data("GGUF".utf8)
+
+    init(keyValueCount: Int) {
+        append(UInt32(3))
+        append(UInt64(0))
+        append(UInt64(keyValueCount))
+    }
+
+    mutating func append<T: FixedWidthInteger>(_ value: T) {
+        var little = value.littleEndian
+        withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+
+    mutating func appendString(_ string: String) {
+        append(UInt64(string.utf8.count))
+        data.append(Data(string.utf8))
+    }
+
+    mutating func addString(key: String, value: String) {
+        appendString(key)
+        append(UInt32(8))
+        appendString(value)
+    }
+
+    mutating func addUInt32(key: String, value: UInt32) {
+        appendString(key)
+        append(UInt32(4))
+        append(value)
+    }
+
+    mutating func addUInt64(key: String, value: UInt64) {
+        appendString(key)
+        append(UInt32(10))
+        append(value)
+    }
+
+    mutating func addStringArray(key: String, values: [String]) {
+        appendString(key)
+        append(UInt32(9))
+        append(UInt32(8))
+        append(UInt64(values.count))
+        for value in values {
+            appendString(value)
+        }
+    }
+
+    func write(to url: URL, trailingBytes: Int = 64) throws {
+        var payload = data
+        payload.append(DiscoveryFixtures.data(bytes: trailingBytes))
+        try payload.write(to: url)
     }
 }

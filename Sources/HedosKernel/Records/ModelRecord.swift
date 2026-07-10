@@ -100,6 +100,9 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
     public var state: ModelState
     public var registeredAt: Date
     public var primaryWeightPath: String?
+    public var contextLength: Int?
+    public var hasChatTemplate: Bool?
+    public var stopTokens: [String]?
 
     public init(
         name: String,
@@ -114,7 +117,10 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         execution: ExecutionMode = .sync,
         footprintMB: Int? = nil,
         state: ModelState = .unresolved,
-        registeredAt: Date = Date()
+        registeredAt: Date = Date(),
+        contextLength: Int? = nil,
+        hasChatTemplate: Bool? = nil,
+        stopTokens: [String]? = nil
     ) {
         self.id = Self.stableID(for: source)
         self.name = name
@@ -130,12 +136,16 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         self.footprintMB = footprintMB
         self.state = state
         self.registeredAt = registeredAt
+        self.contextLength = contextLength
+        self.hasChatTemplate = hasChatTemplate
+        self.stopTokens = stopTokens
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, modality, capabilities, source, runtime, params, paramValues
         case systemPrompt, alias, execution, footprintMB, state, registeredAt
         case primaryWeightPath
+        case contextLength, hasChatTemplate, stopTokens
     }
 
     public init(from decoder: any Decoder) throws {
@@ -157,6 +167,9 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         self.registeredAt = try container.decode(Date.self, forKey: .registeredAt)
         self.primaryWeightPath = try container.decodeIfPresent(
             String.self, forKey: .primaryWeightPath)
+        self.contextLength = try container.decodeIfPresent(Int.self, forKey: .contextLength)
+        self.hasChatTemplate = try container.decodeIfPresent(Bool.self, forKey: .hasChatTemplate)
+        self.stopTokens = try container.decodeIfPresent([String].self, forKey: .stopTokens)
     }
 
     public var displayName: String {

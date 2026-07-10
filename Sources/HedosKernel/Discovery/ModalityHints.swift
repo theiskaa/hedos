@@ -5,6 +5,7 @@ enum ModalityHints {
         var modality: Modality?
         var capabilities: [Capability]
         var execution: ExecutionMode
+        var contextLength: Int? = nil
     }
 
     struct ArchitectureRule {
@@ -56,16 +57,24 @@ enum ModalityHints {
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         let architectures = (json["architectures"] as? [String]) ?? []
+        let contextLength =
+            (json["max_position_embeddings"] as? Int)
+            ?? (json["n_positions"] as? Int)
+            ?? (json["max_seq_len"] as? Int)
 
         for arch in architectures {
             if let rule = architectureRules.first(where: { $0.matches(arch) }) {
-                return rule.hint
+                var hint = rule.hint
+                hint.contextLength = contextLength
+                return hint
             }
         }
 
         let keys = Set(json.keys)
         if let rule = configKeyRules.first(where: { $0.requiredKeys.isSubset(of: keys) }) {
-            return rule.hint
+            var hint = rule.hint
+            hint.contextLength = contextLength
+            return hint
         }
         return nil
     }

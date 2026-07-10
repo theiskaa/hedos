@@ -56,13 +56,33 @@ public struct OllamaStoreScanner: StoreScanner {
                     namespace == "library"
                     ? "\(model):\(tag)" : "\(namespace)/\(model):\(tag)"
                 let footprint = manifest.layers.reduce(Int64(0)) { $0 + $1.size }
+                func blobPath(_ layer: Manifest.Layer) -> String {
+                    root.appendingPathComponent("blobs")
+                        .appendingPathComponent(
+                            layer.digest.replacingOccurrences(of: ":", with: "-"))
+                        .path
+                }
                 let weightBlob = manifest.layers
                     .first { $0.mediaType.hasSuffix(".model") }
-                    .map {
-                        root.appendingPathComponent("blobs")
-                            .appendingPathComponent($0.digest.replacingOccurrences(of: ":", with: "-"))
-                            .path
+                    .map(blobPath)
+                let templateLayer = manifest.layers.first { $0.mediaType.hasSuffix(".template") }
+
+                var contextLengthHint: Int?
+                var stopTokensHint: [String]?
+                if let paramsLayer = manifest.layers.first(where: {
+                    $0.mediaType.hasSuffix(".params")
+                }) {
+                    if let blob = FileManager.default.contents(atPath: blobPath(paramsLayer)),
+                        let object = try? JSONSerialization.jsonObject(with: blob)
+                            as? [String: Any]
+                    {
+                        contextLengthHint = object["num_ctx"] as? Int
+                        stopTokensHint = object["stop"] as? [String]
+                    } else {
+                        result.issues.append("ollama: unreadable params blob for \(name)")
                     }
+                }
+
                 result.discovered.append(
                     DiscoveredModel(
                         name: name,
@@ -71,7 +91,10 @@ public struct OllamaStoreScanner: StoreScanner {
                         capabilitiesHint: [.chat, .complete],
                         executionHint: .stream,
                         footprintBytes: footprint,
-                        primaryWeightPath: weightBlob))
+                        primaryWeightPath: weightBlob,
+                        contextLengthHint: contextLengthHint,
+                        hasChatTemplateHint: templateLayer != nil ? true : nil,
+                        stopTokensHint: stopTokensHint))
             } catch {
                 result.issues.append("ollama: unreadable manifest \(url.lastPathComponent): \(error.localizedDescription)")
             }
