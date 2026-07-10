@@ -103,6 +103,8 @@ enum DiscoveryFixtures {
         var schedulerConfigJSON: String?
         var writeRefsMain = true
         var revision = "abc123def456"
+        var incompleteBlobs: [String] = []
+        var safetensorsIndexJSON: String? = nil
     }
 
     static func makeHFRepo(at hubRoot: URL, _ spec: HFRepo) throws {
@@ -147,6 +149,37 @@ enum DiscoveryFixtures {
                 at: schedulerDir.appendingPathComponent("scheduler_config.json"),
                 withDestinationURL: blob)
         }
+        for (index, name) in spec.incompleteBlobs.enumerated() {
+            try data(bytes: 64, fill: UInt8(0x60 + index))
+                .write(to: blobs.appendingPathComponent("\(name).incomplete"))
+        }
+        if let indexJSON = spec.safetensorsIndexJSON {
+            let blob = blobs.appendingPathComponent("blob-safetensors-index")
+            try Data(indexJSON.utf8).write(to: blob)
+            try fm.createSymbolicLink(
+                at: snapshot.appendingPathComponent("model.safetensors.index.json"),
+                withDestinationURL: blob)
+        }
+    }
+
+    @discardableResult
+    static func makeShardedGGUF(
+        at dir: URL, baseName: String, parts: Int, presentParts: Set<Int>? = nil,
+        bytesPerPart: Int = 1024
+    ) throws -> [URL] {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var written: [URL] = []
+        for part in 1...parts {
+            guard presentParts?.contains(part) ?? true else { continue }
+            let name = String(
+                format: "%@-%05d-of-%05d.gguf", baseName, part, parts)
+            let url = dir.appendingPathComponent(name)
+            var builder = GGUFFixtureBuilder(keyValueCount: 1)
+            builder.addString(key: "general.architecture", value: "llama")
+            try builder.write(to: url, trailingBytes: bytesPerPart)
+            written.append(url)
+        }
+        return written
     }
 
     static let kokoroConfig =

@@ -70,7 +70,12 @@ public actor ResolutionEngine {
     }
 
     private func resolvedUpdate(for record: ModelRecord) -> ModelRecord? {
-        guard record.runtime.resolved != .user else { return nil }
+        if record.runtime.resolved == .user,
+            let pinned = record.runtime.id,
+            adapters.contains(where: { $0.id == pinned })
+        {
+            return nil
+        }
         guard record.state != .missing else { return nil }
 
         let identified = identificationCache?.identify(record) ?? Identification.identify(record)

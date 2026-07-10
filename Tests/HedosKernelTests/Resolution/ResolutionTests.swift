@@ -303,6 +303,31 @@ private func ggufRecord(at dir: URL, name: String = "tiny") throws -> ModelRecor
     #expect(after.runtime.resolved == .user)
 }
 
+@Test func pinnedRuntimeWhoseAdapterVanishedDemotesHonestly() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let bundle = dir.appendingPathComponent("dark-model")
+    try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+    try Data("xyz".utf8).write(to: bundle.appendingPathComponent("weights.xyz"))
+    var record = ModelRecord(
+        name: "dark-model", modality: .text, capabilities: [.chat],
+        source: ModelSource(kind: SourceKind(rawValue: "fixture"), path: bundle.path))
+    record.runtime = RuntimeRef(
+        id: "dark-runner", resolved: .user, tier: .managed, confirmedAt: Date())
+    record.state = .ready
+    try await registry.register(record)
+
+    try await ResolutionEngine(adapters: [LlamaCppAdapter(), OllamaAdapter()])
+        .resolveAll(in: registry)
+
+    let demoted = try #require(try await registry.get(id: record.id))
+    #expect(demoted.runtime.id == nil)
+    #expect(demoted.runtime.resolved == .unresolved)
+    #expect(demoted.runtime.tier == .recipeNeeded)
+    #expect(demoted.state == .unresolved)
+}
+
 @Test func confirmStampsAndSurvivesReResolution() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
