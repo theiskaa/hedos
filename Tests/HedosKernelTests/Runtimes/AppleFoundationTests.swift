@@ -241,6 +241,25 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(AppleFoundationAdapter.delta(previous: "same", current: "same") == "")
 }
 
+@Test func overflowMapsToContextExceeded() async throws {
+    var backend = FakeFoundationBackend(events: [])
+    backend.failure = .contextExceeded(model: "Apple Intelligence")
+    let adapter = AppleFoundationAdapter(backend: backend)
+    let payload: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])])
+    ])
+
+    do {
+        for try await _ in adapter.invoke(builtinRecord(), .chat, payload: payload) {}
+        Issue.record("an overflow must surface as contextExceeded")
+    } catch let KernelError.contextExceeded(model) {
+        #expect(model == "Apple Intelligence")
+        #expect(
+            KernelError.contextExceeded(model: model).errorDescription?.contains(
+                "no longer fits") == true)
+    }
+}
+
 @Test func adapterReportsStatsFromBackendAndClock() async throws {
     let backend = FakeFoundationBackend(events: [
         .snapshot("hello"), .done(promptTokens: 12, completionTokens: 34),

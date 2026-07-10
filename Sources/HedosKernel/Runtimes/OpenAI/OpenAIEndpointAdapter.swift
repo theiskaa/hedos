@@ -143,10 +143,8 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
                         )
                     }
                     guard http.statusCode == 200 else {
-                        await Self.markUnreachable(recordID, registry: registry)
-                        throw KernelError.runtimeUnavailable(
-                            hint:
-                                "The server answered with HTTP \(http.statusCode). Check that it's serving the OpenAI API and the model is available."
+                        throw KernelError.runtimeFailed(
+                            "The server answered with HTTP \(http.statusCode). Check that it's serving the OpenAI API and the model is available."
                         )
                     }
                     await Self.markReachable(recordID, registry: registry)

@@ -553,8 +553,17 @@ final class ChatViewModel {
         boundModelID = record.id
         let kernel = kernel
         let sessionID = sessionID
+        let recordID = record.id
+        let displayName = record.displayName
         Task {
-            try? await kernel.chats.rebindSession(id: sessionID, modelID: record.id)
+            try? await kernel.chats.rebindSession(id: sessionID, modelID: recordID)
+            let assessment =
+                (try? await kernel.chatContextAssessment(
+                    sessionID: sessionID, modelID: recordID)) ?? nil
+            if let assessment, !assessment.fits {
+                notice =
+                    "This conversation is longer than \(displayName) can hold — older turns will not fit. Start a new chat or pick a larger model."
+            }
             onSessionsChanged?()
         }
     }
@@ -1111,7 +1120,12 @@ struct ChatView: View {
     }
 
     private var contextNotice: String? {
-        guard model.transcriptCharacterCount > 16000 else { return nil }
+        guard let record = library.records.first(where: { $0.id == model.boundModelID }),
+            let window = ContextBudget.effectiveWindow(for: record)
+        else { return nil }
+        let estimated = ContextBudget.estimatedTokens(
+            characters: model.transcriptCharacterCount)
+        guard estimated * 5 > window * 4 else { return nil }
         return "This conversation is getting long; early turns may drop out of context."
     }
 

@@ -155,6 +155,52 @@ private func endpointRecord(port: Int, model: String = "fake-chat-1") -> ModelRe
     #expect(healed.state == .ready)
 }
 
+@Test func http400DoesNotDemoteRecord() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let adapter = OpenAIEndpointAdapter(secrets: InMemorySecretStore(), registry: registry)
+    let server = try startSSEServer(mode: "badrequest")
+    defer { server.process.terminate() }
+    let record = endpointRecord(port: server.port)
+    try await registry.register(record)
+
+    let payload: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])])
+    ])
+    do {
+        for try await _ in adapter.invoke(record, .chat, payload: payload) {}
+        Issue.record("a 400 must surface as an error")
+    } catch let KernelError.runtimeFailed(message) {
+        #expect(message.contains("HTTP 400"))
+    }
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .ready)
+}
+
+@Test func http401StillDemotes() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let adapter = OpenAIEndpointAdapter(secrets: InMemorySecretStore(), registry: registry)
+    let server = try startSSEServer(mode: "locked")
+    defer { server.process.terminate() }
+    let record = endpointRecord(port: server.port)
+    try await registry.register(record)
+
+    let payload: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])])
+    ])
+    do {
+        for try await _ in adapter.invoke(record, .chat, payload: payload) {}
+        Issue.record("a 401 must surface as an error")
+    } catch {
+        #expect(String(describing: error).contains("refused the API key"))
+    }
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .missing)
+}
+
 @Test func cancelledInvokeDoesNotDemoteHealthyEndpoint() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

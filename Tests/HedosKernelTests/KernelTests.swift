@@ -36,6 +36,95 @@ import Testing
     #expect(record.state == .ready)
 }
 
+private final class BudgetPayloadBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var payloads: [JSONValue] = []
+
+    func record(_ payload: JSONValue) {
+        lock.withLock { payloads.append(payload) }
+    }
+
+    var lastMaxTokens: Int? {
+        lock.withLock {
+            guard case .object(let fields)? = payloads.last else { return nil }
+            return fields["max_tokens"]?.intValue
+        }
+    }
+}
+
+private struct BudgetCapturingAdapter: RuntimeAdapter {
+    let box: BudgetPayloadBox
+
+    var id: String { "ollama" }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+        capability == .chat
+    }
+
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        nil
+    }
+
+    func invoke(
+        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        box.record(payload)
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.text("ok"))
+            continuation.finish()
+        }
+    }
+}
+
+private func smallWindowRecord() -> ModelRecord {
+    var record = Fixtures.gguf()
+    record.runtime = RuntimeRef(id: "ollama", resolved: .user, tier: .native)
+    record.contextLength = 512
+    record.state = .ready
+    return record
+}
+
+@Test func oversizedChatIsRefusedWithContextExceeded() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let box = BudgetPayloadBox()
+    let kernel = Kernel(
+        directory: dir, adapters: [BudgetCapturingAdapter(box: box)],
+        secrets: InMemorySecretStore())
+    let record = smallWindowRecord()
+    try await kernel.registry.register(record)
+
+    let oversized = String(repeating: "a", count: 4000)
+    do {
+        _ = try await kernel.chat(
+            record.id, messages: [ChatMessage(role: .user, content: oversized)])
+        Issue.record("an oversized chat must refuse before dispatch")
+    } catch let KernelError.contextExceeded(model) {
+        #expect(model == record.name)
+    }
+    #expect(box.lastMaxTokens == nil)
+}
+
+@Test func fittingChatClampsMaxTokens() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let box = BudgetPayloadBox()
+    let kernel = Kernel(
+        directory: dir, adapters: [BudgetCapturingAdapter(box: box)],
+        secrets: InMemorySecretStore())
+    let record = smallWindowRecord()
+    try await kernel.registry.register(record)
+
+    let fitting = String(repeating: "a", count: 400)
+    let stream = try await kernel.chat(
+        record.id, messages: [ChatMessage(role: .user, content: fitting)])
+    for try await _ in stream {}
+
+    let clamped = try #require(box.lastMaxTokens)
+    #expect(clamped <= 512 - 100)
+    #expect(clamped >= 256)
+}
+
 @Test func scopedRescanWithNoChangesWritesNothing() async throws {
     let home = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: home) }

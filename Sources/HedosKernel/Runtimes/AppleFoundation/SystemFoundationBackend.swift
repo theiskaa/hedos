@@ -120,8 +120,7 @@ public struct SystemFoundationBackend: AppleFoundationBackend {
         case .guardrailViolation, .refusal:
             return .runtimeFailed("Apple's model declined this request.")
         case .exceededContextWindowSize:
-            return .runtimeFailed(
-                "The conversation is longer than Apple's model can hold (about 4,000 tokens).")
+            return .contextExceeded(model: "Apple Intelligence")
         case .rateLimited:
             return .runtimeFailed("Apple's model is rate limiting requests — try again in a moment.")
         case .concurrentRequests:

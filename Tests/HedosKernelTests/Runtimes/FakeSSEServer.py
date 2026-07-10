@@ -44,6 +44,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.end_headers()
             return
+        if mode == "badrequest":
+            self.send_response(400)
+            self.end_headers()
+            return
         length = int(self.headers.get("Content-Length", 0))
         request = json.loads(self.rfile.read(length) or b"{}")
 

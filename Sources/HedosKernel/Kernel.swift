@@ -35,6 +35,12 @@ public enum KernelError: Error, Sendable, LocalizedError {
     }
 }
 
+public struct ChatContextAssessment: Sendable, Hashable {
+    public let estimatedTokens: Int
+    public let window: Int
+    public let fits: Bool
+}
+
 public actor Kernel {
     public static let version = "0.1.0"
 
@@ -445,6 +451,31 @@ public actor Kernel {
         try await chatFlow().autoTitleIfNeeded(sessionID: sessionID)
     }
 
+    public func chatContextAssessment(
+        sessionID: String, modelID: String
+    ) async throws -> ChatContextAssessment? {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        guard let window = ContextBudget.effectiveWindow(for: record) else { return nil }
+        guard let transcript = try await chats.session(id: sessionID) else {
+            throw KernelError.runtimeFailed("no chat session with id \(sessionID)")
+        }
+        let messages = ChatFlow.messages(from: transcript.turns)
+        let characters = messages.reduce(0) { $0 + $1.content.count }
+        let fits: Bool =
+            switch ContextBudget.assess(
+                promptCharacters: characters, window: window, requestedMaxTokens: nil)
+            {
+            case .fits: true
+            case .exceeds: false
+            }
+        return ChatContextAssessment(
+            estimatedTokens: ContextBudget.estimatedTokens(characters: characters),
+            window: window,
+            fits: fits)
+    }
+
     public func editChatTurn(
         sessionID: String, turnID: String, text: String
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
@@ -563,9 +594,27 @@ public actor Kernel {
             throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
         }
         let fallback = capability == .chat ? try? await chatSettings().defaultSystemPrompt : nil
-        let configured = ModelConfiguration.merged(
+        var configured = ModelConfiguration.merged(
             record: record, capability: capability, payload: payload,
             fallbackPrompt: fallback ?? nil)
+        if capability == .chat || capability == .complete,
+            let window = ContextBudget.effectiveWindow(for: record),
+            case .object(var object) = configured
+        {
+            let verdict = ContextBudget.assess(
+                promptCharacters: ContextBudget.promptCharacters(of: configured),
+                window: window,
+                requestedMaxTokens: object["max_tokens"]?.intValue)
+            switch verdict {
+            case .exceeds:
+                throw KernelError.contextExceeded(model: record.displayName)
+            case .fits(let clampedMaxTokens):
+                if let clampedMaxTokens {
+                    object["max_tokens"] = .int(clampedMaxTokens)
+                    configured = .object(object)
+                }
+            }
+        }
         return adapter.invoke(record, capability, payload: configured)
     }
 
