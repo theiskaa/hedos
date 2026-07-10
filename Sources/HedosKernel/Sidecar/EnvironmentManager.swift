@@ -139,26 +139,56 @@ public actor EnvironmentManager {
     }
 
     static func runProcess(
-        _ executable: URL, _ arguments: [String], environment extra: [String: String]
+        _ executable: URL, _ arguments: [String], environment extra: [String: String],
+        timeout: Duration = .seconds(900)
     ) async throws {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.environment = scrubbedEnvironment(
             base: ProcessInfo.processInfo.environment, overrides: extra)
+        let unusedStdout = Pipe()
+        try? unusedStdout.fileHandleForWriting.close()
         let errPipe = Pipe()
         process.standardOutput = FileHandle.nullDevice
         process.standardError = errPipe
+        let drain = PipeDrain(stdout: unusedStdout, stderr: errPipe)
 
         try process.run()
-        await withCheckedContinuation { continuation in
-            process.terminationHandler = { _ in continuation.resume() }
+        let expired = ExpiryMark()
+        let watchdog = Task {
+            try await Task.sleep(for: timeout)
+            expired.mark()
+            process.terminate()
+            try? await Task.sleep(for: .seconds(5))
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        let output = await drain.collect(process: process)
+        watchdog.cancel()
+
+        let stderrTail = String(decoding: output.stderr, as: UTF8.self).suffix(400)
+        let command = "\(executable.lastPathComponent) \(arguments.first ?? "")"
+        if expired.wasMarked {
+            throw KernelError.runtimeFailed(
+                "\(command) timed out after \(timeout.components.seconds)s: \(stderrTail)")
         }
         guard process.terminationStatus == 0 else {
-            let stderr = String(
-                decoding: errPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            throw KernelError.runtimeFailed(
-                "\(executable.lastPathComponent) \(arguments.first ?? "") failed: \(stderr.suffix(400))")
+            throw KernelError.runtimeFailed("\(command) failed: \(stderrTail)")
         }
+    }
+}
+
+private final class ExpiryMark: @unchecked Sendable {
+    private let lock = NSLock()
+    private var marked = false
+
+    func mark() {
+        lock.withLock { marked = true }
+    }
+
+    var wasMarked: Bool {
+        lock.withLock { marked }
     }
 }
