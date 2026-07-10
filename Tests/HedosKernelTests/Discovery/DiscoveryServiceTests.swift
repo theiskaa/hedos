@@ -101,6 +101,47 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     #expect(missing.state == .missing)
 }
 
+@Test func failedScanKindSkipsMissingSweep() async throws {
+    let (root, scanners) = try makeCompositeMachine()
+    let ollama = root.appendingPathComponent("ollama")
+    defer {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: ollama.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let registry = Registry(directory: root.appendingPathComponent("appsupport"))
+    let service = DiscoveryService(scanners: scanners, duplicateThreshold: 1024)
+    _ = try await service.discover(into: registry)
+
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o000], ofItemAtPath: ollama.path)
+    let summary = try await service.discover(into: registry)
+
+    #expect(summary.failedKinds == [.ollama])
+    #expect(
+        summary.issues.contains(
+            "skipped the missing check for ollama — its store could not be read"))
+    let ollamaRecords = try await registry.list().filter { $0.source.kind == .ollama }
+    #expect(ollamaRecords.count == 2)
+    #expect(ollamaRecords.allSatisfy { $0.state != .missing })
+}
+
+@Test func foundNothingStillDemotes() async throws {
+    let (root, scanners) = try makeCompositeMachine()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = Registry(directory: root.appendingPathComponent("appsupport"))
+    let service = DiscoveryService(scanners: scanners, duplicateThreshold: 1024)
+    _ = try await service.discover(into: registry)
+
+    try FileManager.default.removeItem(at: root.appendingPathComponent("lmstudio"))
+    let summary = try await service.discover(into: registry)
+
+    #expect(summary.failedKinds.isEmpty)
+    let lmRecords = try await registry.list().filter { $0.source.kind == .lmStudio }
+    #expect(lmRecords.count == 1)
+    #expect(lmRecords.allSatisfy { $0.state == .missing })
+}
+
 @Test func userRuntimeChoiceSurvivesRescan() async throws {
     let (root, scanners) = try makeCompositeMachine()
     defer { try? FileManager.default.removeItem(at: root) }

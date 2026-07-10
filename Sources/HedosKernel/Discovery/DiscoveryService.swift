@@ -11,6 +11,7 @@ public struct DiscoverySummary: Sendable {
     public var totalBytes: Int64
     public var duplicates: [DuplicateGroup]
     public var issues: [String]
+    public var failedKinds: Set<SourceKind> = []
 
     public var headline: String {
         guard totalCount > 0 else {
@@ -68,6 +69,7 @@ public actor DiscoveryService {
     public func discover(into registry: Registry) async throws -> DiscoverySummary {
         var discovered: [DiscoveredModel] = []
         var issues: [String] = []
+        var failedKinds: Set<SourceKind> = []
         await withTaskGroup(of: ScanResult.self) { group in
             for scanner in scanners {
                 group.addTask { await scanner.scan() }
@@ -75,7 +77,11 @@ public actor DiscoveryService {
             for await result in group {
                 discovered.append(contentsOf: result.discovered)
                 issues.append(contentsOf: result.issues)
+                failedKinds.formUnion(result.failedKinds)
             }
+        }
+        for kind in failedKinds.map(\.rawValue).sorted() {
+            issues.append("skipped the missing check for \(kind) — its store could not be read")
         }
 
         let existing = try await registry.list()
@@ -111,7 +117,7 @@ public actor DiscoveryService {
             }
         }
 
-        let scannedKinds = Set(scanners.flatMap(\.kinds))
+        let scannedKinds = Set(scanners.flatMap(\.kinds)).subtracting(failedKinds)
         for record in existing
         where scannedKinds.contains(record.source.kind) && !seenIDs.contains(record.id)
             && record.state != .missing
@@ -133,6 +139,7 @@ public actor DiscoveryService {
             totalCount: discovered.count,
             totalBytes: discovered.reduce(0) { $0 + $1.footprintBytes },
             duplicates: DuplicateDetector.detect(in: discovered, threshold: duplicateThreshold),
-            issues: issues)
+            issues: issues,
+            failedKinds: failedKinds)
     }
 }

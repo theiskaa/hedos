@@ -46,17 +46,19 @@ public struct ModelHabitat: Sendable {
         if wanted([.huggingfaceCache]) {
             scanners.append(
                 HFCacheScanner(
-                    roots: HFCacheScanner.defaultRoots(
-                        environment: environment, user: models.hfCacheRoots, home: home)))
+                    roots: HFCacheScanner.defaultRoots(environment: environment, home: home),
+                    userRoots: HFCacheScanner.userRoots(models.hfCacheRoots)))
         }
         if wanted([.lmStudio]) {
             scanners.append(LMStudioScanner(roots: LMStudioScanner.defaultRoots(home: home)))
         }
         if wanted([.file, .folder]) {
-            let directories =
-                LooseFileScanner.defaultDirectories(home: home)
-                + models.watchedFolders.map { URL(fileURLWithPath: $0, isDirectory: true) }
-            scanners.append(LooseFileScanner(directories: directories))
+            scanners.append(
+                LooseFileScanner(
+                    directories: LooseFileScanner.defaultDirectories(home: home),
+                    userDirectories: models.watchedFolders.map {
+                        URL(fileURLWithPath: $0, isDirectory: true)
+                    }))
         }
         if wanted([.builtin]) {
             scanners.append(AppleFoundationScanner())

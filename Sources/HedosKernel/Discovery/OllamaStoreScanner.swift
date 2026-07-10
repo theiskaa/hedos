@@ -22,16 +22,24 @@ public struct OllamaStoreScanner: StoreScanner {
     }
 
     private func scanSynchronously() -> ScanResult {
-    let fm = FileManager.default
+        let fm = FileManager.default
         let manifests = root.appendingPathComponent("manifests")
-        guard fm.fileExists(atPath: manifests.path) else { return ScanResult() }
 
         var result = ScanResult()
-        guard
+        guard fm.fileExists(atPath: root.path) else { return result }
+        guard fm.isReadableFile(atPath: root.path) else {
+            result.failedKinds = [.ollama]
+            return result
+        }
+        guard fm.fileExists(atPath: manifests.path) else { return result }
+        guard fm.isReadableFile(atPath: manifests.path),
             let enumerator = fm.enumerator(
                 at: manifests, includingPropertiesForKeys: [.isRegularFileKey],
                 options: [.skipsHiddenFiles, .producesRelativePathURLs])
-        else { return result }
+        else {
+            result.failedKinds = [.ollama]
+            return result
+        }
 
         for case let url as URL in enumerator {
             guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true

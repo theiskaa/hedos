@@ -34,10 +34,15 @@ public struct DiscoveredModel: Sendable, Hashable {
 public struct ScanResult: Sendable {
     public var discovered: [DiscoveredModel]
     public var issues: [String]
+    public var failedKinds: Set<SourceKind>
 
-    public init(discovered: [DiscoveredModel] = [], issues: [String] = []) {
+    public init(
+        discovered: [DiscoveredModel] = [], issues: [String] = [],
+        failedKinds: Set<SourceKind> = []
+    ) {
         self.discovered = discovered
         self.issues = issues
+        self.failedKinds = failedKinds
     }
 }
 

@@ -3,13 +3,15 @@ import Foundation
 public struct HFCacheScanner: StoreScanner {
     public var kinds: Set<SourceKind> { [.huggingfaceCache] }
     public let roots: [URL]
+    public let userRoots: [URL]
 
-    public init(roots: [URL]) {
+    public init(roots: [URL], userRoots: [URL] = []) {
         self.roots = roots
+        self.userRoots = userRoots
     }
 
     public init(root: URL) {
-        self.roots = [root]
+        self.init(roots: [root])
     }
 
     public static func defaultRoots(
@@ -27,37 +29,50 @@ public struct HFCacheScanner: StoreScanner {
                     .appendingPathComponent("hub"))
         }
         candidates.append(home.appendingPathComponent(".cache/huggingface/hub"))
-        for path in user {
+        candidates.append(contentsOf: userRoots(user))
+
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    public static func userRoots(_ paths: [String]) -> [URL] {
+        paths.map { path in
             let base = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
             let hub = base.appendingPathComponent("hub")
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: hub.path, isDirectory: &isDirectory),
                 isDirectory.boolValue
             {
-                candidates.append(hub)
-            } else {
-                candidates.append(base)
+                return hub
             }
+            return base
         }
-
-        var seen = Set<String>()
-        return candidates.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 
     public func scan() async -> ScanResult {
         var result = ScanResult()
         for root in roots {
-            scanRoot(root, into: &result)
+            scanRoot(root, required: false, into: &result)
+        }
+        for root in userRoots {
+            scanRoot(root, required: true, into: &result)
         }
         return result
     }
 
-    private func scanRoot(_ root: URL, into result: inout ScanResult) {
+    private func scanRoot(_ root: URL, required: Bool, into result: inout ScanResult) {
         let fm = FileManager.default
-        guard
+        guard fm.fileExists(atPath: root.path) else {
+            if required { result.failedKinds.insert(.huggingfaceCache) }
+            return
+        }
+        guard fm.isReadableFile(atPath: root.path),
             let entries = try? fm.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
-        else { return }
+        else {
+            result.failedKinds.insert(.huggingfaceCache)
+            return
+        }
 
         for repoDir in entries where repoDir.lastPathComponent.hasPrefix("models--") {
             let repo = repoDir.lastPathComponent

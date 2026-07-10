@@ -3,10 +3,12 @@ import Foundation
 public struct LooseFileScanner: StoreScanner {
     public var kinds: Set<SourceKind> { [.file, .folder] }
     public let directories: [URL]
+    public let userDirectories: [URL]
     private let maxDepth = 2
 
-    public init(directories: [URL]) {
+    public init(directories: [URL], userDirectories: [URL] = []) {
         self.directories = directories
+        self.userDirectories = userDirectories
     }
 
     public static func defaultDirectories(
@@ -21,9 +23,25 @@ public struct LooseFileScanner: StoreScanner {
     public func scan() async -> ScanResult {
         var result = ScanResult()
         for dir in directories {
-            sweep(dir, depth: 0, into: &result)
+            scanRoot(dir, required: false, into: &result)
+        }
+        for dir in userDirectories {
+            scanRoot(dir, required: true, into: &result)
         }
         return result
+    }
+
+    private func scanRoot(_ dir: URL, required: Bool, into result: inout ScanResult) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path) else {
+            if required { result.failedKinds.formUnion([.file, .folder]) }
+            return
+        }
+        guard fm.isReadableFile(atPath: dir.path) else {
+            result.failedKinds.formUnion([.file, .folder])
+            return
+        }
+        sweep(dir, depth: 0, into: &result)
     }
 
     private func sweep(_ dir: URL, depth: Int, into result: inout ScanResult) {

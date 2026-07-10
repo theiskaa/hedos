@@ -42,6 +42,61 @@ import Testing
     #expect(result.issues.count == 1)
 }
 
+@Test func unreadableOllamaRootReportsFailedKind() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer {
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: root, tags: [.init(model: "qwen3.5", tag: "9b", modelBytes: 4096)])
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o000], ofItemAtPath: root.path)
+
+    let result = await OllamaStoreScanner(root: root).scan()
+    #expect(result.failedKinds == [.ollama])
+    #expect(result.discovered.isEmpty)
+}
+
+@Test func absentUserWatchedFolderReportsFailedKind() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gone = root.appendingPathComponent("unmounted-drive/models")
+
+    let result = await LooseFileScanner(directories: [], userDirectories: [gone]).scan()
+    #expect(result.failedKinds == [.file, .folder])
+    #expect(result.discovered.isEmpty)
+}
+
+@Test func absentDefaultRootReportsFoundNothing() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gone = root.appendingPathComponent("never-installed")
+
+    let ollama = await OllamaStoreScanner(root: gone).scan()
+    #expect(ollama.failedKinds.isEmpty)
+    #expect(ollama.discovered.isEmpty)
+
+    let loose = await LooseFileScanner(directories: [gone]).scan()
+    #expect(loose.failedKinds.isEmpty)
+
+    let lmstudio = await LMStudioScanner(roots: [gone]).scan()
+    #expect(lmstudio.failedKinds.isEmpty)
+
+    let hf = await HFCacheScanner(roots: [gone]).scan()
+    #expect(hf.failedKinds.isEmpty)
+}
+
+@Test func absentUserHFCacheRootReportsFailedKind() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gone = root.appendingPathComponent("external/hf")
+
+    let result = await HFCacheScanner(roots: [], userRoots: [gone]).scan()
+    #expect(result.failedKinds == [.huggingfaceCache])
+}
+
 @Test func hfScannerClassifiesAndMeasures() async throws {
     let hub = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: hub) }

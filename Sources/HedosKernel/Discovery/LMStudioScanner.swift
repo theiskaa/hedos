@@ -26,11 +26,14 @@ public struct LMStudioScanner: StoreScanner {
         var result = ScanResult()
 
         for root in roots where fm.fileExists(atPath: root.path) {
-            guard
+            guard fm.isReadableFile(atPath: root.path),
                 let enumerator = fm.enumerator(
                     at: root, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
                     options: [.skipsHiddenFiles, .producesRelativePathURLs])
-            else { continue }
+            else {
+                result.failedKinds.insert(.lmStudio)
+                continue
+            }
             for case let url as URL in enumerator {
                 guard url.pathExtension.lowercased() == "gguf",
                     (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true

@@ -232,7 +232,7 @@ public actor Kernel {
         let duplicates = await recomputeDuplicates()
 
         guard var summary = lastSummary else { return }
-        for kind in affected {
+        for kind in affected where !partial.failedKinds.contains(kind) {
             summary.perKind[kind] = partial.perKind[kind]
         }
         summary.totalCount = summary.perKind.values.reduce(0) { $0 + $1.count }
