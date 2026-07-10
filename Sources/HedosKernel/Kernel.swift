@@ -4,7 +4,6 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case notImplemented(String)
     case modelNotFound(String)
     case artifactNotFound(String)
-    case promptNotFound(String)
     case pipelineNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case paramUnsupported(model: String, key: String)
@@ -14,6 +13,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case bundleMissing(runtimeID: RuntimeID)
     case wrongExecutionMode(runtimeID: RuntimeID, expected: ExecutionMode)
     case noBoundModel
+    case sidecarDied(runtimeID: String, detail: String)
+    case payloadInvalid(String)
 
     public var errorDescription: String? {
         switch self {
@@ -23,8 +24,6 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "No model with id \(id) is registered."
         case .artifactNotFound(let id):
             "No artifact with id \(id) is stored."
-        case .promptNotFound(let id):
-            "No prompt with id \(id) is stored."
         case .pipelineNotFound(let id):
             "No pipeline with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
@@ -45,6 +44,10 @@ public enum KernelError: Error, Sendable, LocalizedError {
                 : "\(runtimeID) streams, it does not run jobs."
         case .noBoundModel:
             "No model is bound to this chat."
+        case .sidecarDied(let runtimeID, let detail):
+            "The \(runtimeID) sidecar \(detail)"
+        case .payloadInvalid(let message):
+            message
         }
     }
 }
@@ -56,8 +59,6 @@ public struct ChatContextAssessment: Sendable, Hashable {
 }
 
 public actor Kernel {
-    public static let version = "0.1.0"
-
     public nonisolated let directory: URL
     public let registry: Registry
     public let settings: SettingsStore
@@ -66,13 +67,14 @@ public actor Kernel {
     public let chats: ChatStore
     public let promptStore: PromptStore
     public let pipelineStore: PipelineStore
+    public nonisolated let runtimeCatalog: RuntimeCatalog
     private let baseAdapters: [any RuntimeAdapter]
     private var adapters: [any RuntimeAdapter]
     let secrets: any SecretStore
     let habitat: ModelHabitat
-    let scheduler: JobScheduler
-    let gatewayClientStore: GatewayClientStore
-    let gatewayAuditLog: GatewayAuditLog
+    public nonisolated let scheduler: JobScheduler
+    public nonisolated let gatewayClientStore: GatewayClientStore
+    public nonisolated let gatewayAuditLog: GatewayAuditLog
     var gateway: GatewayServer?
     let vmHost: any VMHost
     private var shelfWatcher: ShelfWatcher?
@@ -83,6 +85,9 @@ public actor Kernel {
     private let duplicateThreshold: Int64
     private let identificationCache = IdentificationCache()
     private var loadedManifests: [RuntimeManifest] = []
+    private nonisolated(unsafe) var settingsReaction: Task<Void, Never>?
+    private var knownWatchedFolders: [String]?
+    private var knownHFCacheRoots: [String]?
 
     public init(
         directory: URL,
@@ -107,12 +112,16 @@ public actor Kernel {
         self.promptStore = PromptStore(
             directory: directory.appendingPathComponent("prompts", isDirectory: true))
         self.pipelineStore = PipelineStore(
-            directory: directory.appendingPathComponent("pipelines", isDirectory: true))
+            directory: directory.appendingPathComponent("pipelines", isDirectory: true),
+            shelf: { try await registry.list() })
         self.secrets = secrets
         let base =
             adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets, registry: registry)
         self.baseAdapters = base
         self.adapters = base
+        self.runtimeCatalog = RuntimeCatalog(
+            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true),
+            reservedIDs: Set(base.map(\.id.rawValue)))
         self.scheduler = JobScheduler(
             history: JobHistoryStore(directory: directory),
             admission: GovernorAdmission(governor: governor, registry: registry),
@@ -121,6 +130,36 @@ public actor Kernel {
         self.gatewayClientStore = GatewayClientStore(directory: gatewayDirectory, secrets: secrets)
         self.gatewayAuditLog = GatewayAuditLog(directory: gatewayDirectory)
         self.vmHost = vmHost ?? ContainerizationVMHost(directory: directory)
+        let changes = self.settings.changes()
+        settingsReaction = Task { [weak self] in
+            for await domain in changes {
+                guard let self else { return }
+                await self.react(toSettingsDomain: domain)
+            }
+        }
+    }
+
+    deinit {
+        settingsReaction?.cancel()
+    }
+
+    private func react(toSettingsDomain domain: String) async {
+        switch domain {
+        case ModelsSettings.domainName:
+            await applyStoredPolicies()
+            let models = await settings.models()
+            if knownWatchedFolders != models.watchedFolders
+                || knownHFCacheRoots != models.hfCacheRoots
+            {
+                knownWatchedFolders = models.watchedFolders
+                knownHFCacheRoots = models.hfCacheRoots
+                await rearmWatcherIfActive()
+            }
+        case AdvancedSettings.domainName:
+            await applyStoredPolicies()
+        default:
+            break
+        }
     }
 
     public init() {
@@ -144,18 +183,9 @@ public actor Kernel {
         ]
     }
 
-    public nonisolated func userRuntimesDirectory() -> URL {
-        let dir = directory.appendingPathComponent("runtimes.d", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir
-    }
-
     private func reloadUserRuntimes() async -> [String] {
         let models = await settings.models()
-        let reserved = Set(baseAdapters.map(\.id.rawValue))
-        let store = UserRuntimeStore(
-            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, issues) = store.load(reservedIDs: reserved)
+        let (manifests, issues) = runtimeCatalog.load()
         let workdirRoot = directory.appendingPathComponent("workdirs", isDirectory: true)
         var manifestAdapters: [any RuntimeAdapter] = []
         for manifest in manifests {
@@ -226,6 +256,13 @@ public actor Kernel {
 
     public func stopWatching() async {
         await stopWatchingInternal()
+    }
+
+    public func suspendForQuit() async {
+        await stopWatchingInternal()
+        await stopGateway()
+        await governor.suspendForQuit()
+        await SidecarSupervisor.shared.terminateAll()
     }
 
     private func stopWatchingInternal() async {
@@ -300,33 +337,10 @@ public actor Kernel {
         try await ResolutionEngine(adapters: adapters).explainAll(in: registry)
     }
 
-    public func watchedFolders() async throws -> [String] {
-        await settings.models().watchedFolders
-    }
-
-    public func addWatchedFolder(_ path: String) async throws {
-        _ = try await settings.addWatchedFolder(path)
-        await rearmWatcherIfActive()
-    }
-
-    public func removeWatchedFolder(_ path: String) async throws {
-        _ = try await settings.removeWatchedFolder(path)
-        await rearmWatcherIfActive()
-    }
-
-    public func manifestTemplate(for modelID: String) async throws -> String {
-        guard let record = try await registry.get(id: modelID) else {
-            throw KernelError.modelNotFound(modelID)
-        }
-        return ManifestTemplate.render(record: record, identified: Identification.identify(record))
-    }
-
     public func pendingNetworkConsent(for modelID: String) async throws -> ManifestConsentInfo? {
         guard let record = try await registry.get(id: modelID) else { return nil }
         let models = await settings.models()
-        let store = UserRuntimeStore(
-            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
+        let (manifests, _) = runtimeCatalog.load()
         for manifest in manifests
         where manifest.permissions.network && !Self.isNetworkApproved(manifest, in: models) {
             if manifest.detect?.matches(record) == true {
@@ -342,9 +356,7 @@ public actor Kernel {
     }
 
     public func approveNetworkRuntime(_ id: String) async throws {
-        let store = UserRuntimeStore(
-            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
+        let (manifests, _) = runtimeCatalog.load()
         let contentHash = manifests.first(where: { $0.id == id })?.contentHash
         _ = try await settings.approveNetworkRuntime(id, contentHash: contentHash)
         _ = await reloadUserRuntimes()
@@ -353,8 +365,8 @@ public actor Kernel {
 
     private var manifestInstaller: ManifestInstaller {
         ManifestInstaller(
-            runtimesDirectory: directory.appendingPathComponent("runtimes.d", isDirectory: true),
-            reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
+            runtimesDirectory: runtimeCatalog.directory,
+            reservedIDs: runtimeCatalog.reservedIDs)
     }
 
     public func previewRuntimeInstall(from source: URL) async throws -> RuntimeInstallPreview {
@@ -372,13 +384,6 @@ public actor Kernel {
         try manifestInstaller.uninstall(id: id)
         _ = await reloadUserRuntimes()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
-    }
-
-    public func installedRuntimes() async -> [RuntimeManifest] {
-        let store = UserRuntimeStore(
-            directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
-        return manifests.filter { $0.provenance?.isCommunity == true }
     }
 
     public func addServer(baseURL: String, apiKey: String?) async throws -> [String] {
@@ -423,36 +428,6 @@ public actor Kernel {
         }
     }
 
-    public func hfCacheRoots() async throws -> [String] {
-        await settings.models().hfCacheRoots
-    }
-
-    public func addHFCacheRoot(_ path: String) async throws {
-        _ = try await settings.addHFCacheRoot(path)
-        await rearmWatcherIfActive()
-    }
-
-    public func removeHFCacheRoot(_ path: String) async throws {
-        _ = try await settings.removeHFCacheRoot(path)
-        await rearmWatcherIfActive()
-    }
-
-    public func shellState() async throws -> ShellState {
-        await settings.shellState()
-    }
-
-    public func saveShellState(_ shell: ShellState) async throws {
-        try await settings.saveShellState(shell)
-    }
-
-    public func defaultChatModelID() async throws -> String? {
-        await settings.defaultChatModelID()
-    }
-
-    public func setDefaultChatModel(_ modelID: String?) async throws {
-        try await settings.setDefaultChatModelID(modelID)
-    }
-
     public func sendChat(sessionID: String, text: String) async throws -> AsyncThrowingStream<
         CapabilityChunk, Error
     > {
@@ -484,8 +459,8 @@ public actor Kernel {
         guard let transcript = try await chats.session(id: sessionID) else {
             throw ChatStoreError.sessionNotFound(sessionID)
         }
-        let fallbackPrompt = try? await chatSettings().defaultSystemPrompt
-        let systemPrompt = record.systemPrompt ?? (fallbackPrompt ?? nil)
+        let fallbackPrompt = await settings.chat().defaultSystemPrompt
+        let systemPrompt = record.systemPrompt ?? fallbackPrompt
         let messages = ChatFlow.messages(from: transcript.turns)
         let characters =
             messages.reduce(0) { $0 + $1.content.count } + (systemPrompt?.count ?? 0)
@@ -535,19 +510,6 @@ public actor Kernel {
         for reference in retired {
             try? await artifactStore.delete(id: reference)
         }
-    }
-
-    public func recordGeneratedTurn(
-        sessionID: String, prompt: String, artifactID: String, tag: String
-    ) async throws {
-        guard try await chats.session(id: sessionID) != nil else {
-            throw ChatStoreError.sessionNotFound(sessionID)
-        }
-        _ = try await chats.appendTurn(TurnDraft(role: .user, content: prompt), to: sessionID)
-        _ = try await chats.appendTurn(
-            TurnDraft(role: .assistant, content: "", artifactRefs: [artifactID]),
-            to: sessionID,
-            mergingCapabilityTags: [tag])
     }
 
     private func chatFlow() -> ChatFlow {
@@ -601,7 +563,7 @@ public actor Kernel {
         try await registry.list()
     }
 
-    public func voices(_ modelID: String) async throws -> [String] {
+    public func voices(for modelID: String) async throws -> [String] {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
         }
@@ -622,10 +584,10 @@ public actor Kernel {
         guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
             throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
         }
-        let fallback = capability == .chat ? try? await chatSettings().defaultSystemPrompt : nil
+        let fallback = capability == .chat ? await settings.chat().defaultSystemPrompt : nil
         var configured = ModelConfiguration.merged(
             record: record, capability: capability, payload: payload,
-            fallbackPrompt: fallback ?? nil)
+            fallbackPrompt: fallback)
         if capability == .chat || capability == .complete,
             case .object(var object) = configured,
             let window = ContextBudget.effectiveWindow(
@@ -680,36 +642,16 @@ public actor Kernel {
             throw KernelError.runtimeFailed(
                 "\(adapter.id) cannot run \(capability.rawValue) as a job")
         }
-        let seededPayload = Self.seeded(
+        let seededPayload = PayloadSeeding.seeded(
             ModelConfiguration.merged(
                 record: record, capability: capability, payload: payload,
                 fallbackPrompt: capability == .chat
-                    ? ((try? await chatSettings().defaultSystemPrompt) ?? nil) : nil))
+                    ? await settings.chat().defaultSystemPrompt : nil))
         return await scheduler.submit(
             modelID: modelID, capability: capability, payload: seededPayload
         ) {
             runner.run(record, capability, payload: seededPayload)
         }
-    }
-
-    public func job(id: String) async throws -> Job? {
-        try await scheduler.job(id: id)
-    }
-
-    public func jobEvents(id: String) async -> AsyncStream<JobEvent> {
-        await scheduler.events(id: id)
-    }
-
-    public func cancel(jobID: String) async {
-        await scheduler.cancel(jobID)
-    }
-
-    public func jobHistory() async throws -> [Job] {
-        try await scheduler.history.list()
-    }
-
-    public func activeJobs() async -> [Job] {
-        await scheduler.active()
     }
 
     public func saveSpeech(
@@ -767,30 +709,6 @@ public actor Kernel {
         return entries
     }
 
-    public func artifacts() async throws -> [Artifact] {
-        try await artifactStore.list()
-    }
-
-    public func artifactOwners() async throws -> [String: String] {
-        try await chats.artifactOwners()
-    }
-
-    public func artifact(id: String) async throws -> Artifact? {
-        try await artifactStore.get(id: id)
-    }
-
-    public func artifactURL(id: String) async throws -> URL? {
-        try await artifactStore.url(id: id)
-    }
-
-    public func artifactPreview(id: String) async throws -> Data? {
-        try await artifactStore.previewData(id: id)
-    }
-
-    public func deleteArtifact(id: String) async throws {
-        try await artifactStore.delete(id: id)
-    }
-
     public func rerun(artifactID: String) async throws -> String {
         guard let artifact = try await artifactStore.get(id: artifactID) else {
             throw KernelError.artifactNotFound(artifactID)
@@ -803,36 +721,7 @@ public actor Kernel {
             throw KernelError.artifactNotFound(artifactID)
         }
         return try await submit(
-            artifact.modelID, artifact.capability, payload: Self.reseeded(artifact.params))
+            artifact.modelID, artifact.capability, payload: PayloadSeeding.reseeded(artifact.params))
     }
 
-    private static func seeded(_ payload: JSONValue) -> JSONValue {
-        guard var fields = seedableFields(payload) else { return payload }
-        if let seed = fields["seed"], seed != .null { return .object(fields) }
-        fields["seed"] = .int(randomSeed())
-        return .object(fields)
-    }
-
-    private static func reseeded(_ params: JSONValue) -> JSONValue {
-        guard var fields = seedableFields(params) else { return params }
-        let previous = fields["seed"]
-        var fresh = JSONValue.int(randomSeed())
-        while fresh == previous {
-            fresh = .int(randomSeed())
-        }
-        fields["seed"] = fresh
-        return .object(fields)
-    }
-
-    private static func seedableFields(_ payload: JSONValue) -> [String: JSONValue]? {
-        switch payload {
-        case .object(let fields): fields
-        case .null: [:]
-        default: nil
-        }
-    }
-
-    private static func randomSeed() -> Int {
-        Int.random(in: 0..<Int(UInt32.max))
-    }
 }

@@ -464,7 +464,7 @@ final class MenuBarController {
         activityTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, let shell = self.shell else { return }
-                let active = await shell.kernel.activeJobs().count > 0
+                let active = await shell.kernel.scheduler.active().count > 0
                 self.setActivityDot(visible: active)
                 try? await Task.sleep(for: .seconds(3))
             }

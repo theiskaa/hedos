@@ -7,7 +7,6 @@ public struct SidecarSpec: Sendable {
     public var environment: [String: String]
     public var workingDirectory: URL?
     public var readyTimeout: Duration
-    public var idleTimeout: Duration
     public var cooperativeCancel: Bool
     public var cancelGraceTimeout: Duration
 
@@ -18,7 +17,6 @@ public struct SidecarSpec: Sendable {
         environment: [String: String] = [:],
         workingDirectory: URL? = nil,
         readyTimeout: Duration = .seconds(180),
-        idleTimeout: Duration = .seconds(120),
         cooperativeCancel: Bool = false,
         cancelGraceTimeout: Duration = .seconds(10)
     ) {
@@ -28,7 +26,6 @@ public struct SidecarSpec: Sendable {
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.readyTimeout = readyTimeout
-        self.idleTimeout = idleTimeout
         self.cooperativeCancel = cooperativeCancel
         self.cancelGraceTimeout = cancelGraceTimeout
     }
@@ -139,8 +136,8 @@ public actor SidecarSupervisor {
         else {
             let tail = stderrTail(id)
             kill(id)
-            throw KernelError.runtimeFailed(
-                "The runtime failed to start: \(ManifestSupport.errorSummary(tail))")
+            throw KernelError.sidecarDied(
+                runtimeID: id, detail: "failed to start: \(ManifestSupport.errorSummary(tail))")
         }
         if let rate = ready.controlField("sample_rate")?.intValue {
             sidecar.sampleRate = rate
@@ -337,8 +334,9 @@ public actor SidecarSupervisor {
                 continue
             }
         }
-        throw KernelError.runtimeFailed(
-            "The runtime stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
+        throw KernelError.sidecarDied(
+            runtimeID: id,
+            detail: "stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
     }
 
     private func nextBinaryFrame(_ id: String) async -> Data? {
@@ -385,8 +383,9 @@ public actor SidecarSupervisor {
                 }
             }
         }
-        throw KernelError.runtimeFailed(
-            "The runtime stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
+        throw KernelError.sidecarDied(
+            runtimeID: id,
+            detail: "stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
     }
 
     private func ingest(_ data: Data, for id: String) {
@@ -457,7 +456,7 @@ public actor SidecarSupervisor {
 
     private func send(_ id: String, _ control: JSONValue) throws {
         guard let sidecar = sidecars[id], sidecar.process.isRunning else {
-            throw KernelError.runtimeFailed("sidecar \(id) is not running")
+            throw KernelError.sidecarDied(runtimeID: id, detail: "is not running")
         }
         let data = try FrameCodec.encode(.control(control))
         try sidecar.stdin.fileHandleForWriting.write(contentsOf: data)

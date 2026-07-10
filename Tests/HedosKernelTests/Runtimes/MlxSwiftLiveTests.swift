@@ -19,7 +19,7 @@ import Testing
     else { return }
 
     let governor = MemoryGovernor()
-    let footprintMB = MlxSwiftEngine.directoryFootprintMB(path: path)
+    let footprintMB = Footprint.directoryMB(path: path)
 
     var chunks: [CapabilityChunk] = []
     let stream = AsyncThrowingStream<CapabilityChunk, Error> { continuation in

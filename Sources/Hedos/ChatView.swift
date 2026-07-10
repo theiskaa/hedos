@@ -115,7 +115,7 @@ final class ChatViewModel {
         if !isStreaming, let stored = try? await kernel.chats.session(id: sessionID) {
             apply(stored)
         }
-        defaultModelID = (try? await kernel.defaultChatModelID()) ?? nil
+        defaultModelID = await kernel.settings.defaultChatModelID()
     }
 
     private func apply(_ stored: ChatTranscript) {
@@ -221,9 +221,9 @@ final class ChatViewModel {
         voice = candidate
         let kernel = kernel
         Task {
-            var settings = await kernel.voiceSettings()
+            var settings = await kernel.settings.voice()
             settings.defaultVoice = candidate
-            try? await kernel.updateVoiceSettings(settings)
+            try? await kernel.settings.save(settings)
         }
     }
 
@@ -272,8 +272,8 @@ final class ChatViewModel {
     func bindVoice(to record: ModelRecord) async {
         guard voiceModelID != record.id || voices.isEmpty else { return }
         voiceModelID = record.id
-        voices = (try? await kernel.voices(record.id)) ?? []
-        let fallback = await kernel.voiceSettings().defaultVoice
+        voices = (try? await kernel.voices(for: record.id)) ?? []
+        let fallback = await kernel.settings.voice().defaultVoice
         if case .string(let configured)? = record.paramValues["voice"],
             voices.contains(configured)
         {
@@ -394,7 +394,7 @@ final class ChatViewModel {
                 let id = try await submit()
                 self.jobID = id
                 if self.cancelRequested {
-                    await self.kernel.cancel(jobID: id)
+                    await self.kernel.scheduler.cancel(id)
                 }
                 await self.watchImage(id, prompt: prompt)
             } catch {
@@ -406,7 +406,7 @@ final class ChatViewModel {
     }
 
     private func watchImage(_ id: String, prompt: String) async {
-        for await event in await kernel.jobEvents(id: id) {
+        for await event in await kernel.scheduler.events(id: id) {
             switch event {
             case .queued(let reason):
                 imagePhase = .queued(reason)
@@ -441,9 +441,9 @@ final class ChatViewModel {
     private func landImage(_ result: [String], prompt: String) async {
         imagePhase = .idle
         guard let artifactID = result.first else { return }
-        try? await kernel.recordGeneratedTurn(
-            sessionID: sessionID, prompt: prompt, artifactID: artifactID,
-            tag: SessionTag.generatedImage)
+        try? await kernel.chats.appendGeneratedTurn(
+            prompt: prompt, artifactID: artifactID,
+            capabilityTag: SessionTag.generatedImage, to: sessionID)
         await reload()
         Haptics.completion()
     }
@@ -453,7 +453,7 @@ final class ChatViewModel {
         cancelRequested = true
         guard let jobID else { return }
         let kernel = kernel
-        Task { await kernel.cancel(jobID: jobID) }
+        Task { await kernel.scheduler.cancel(jobID) }
     }
 
     func copyImageFailureDetails() {
@@ -481,7 +481,7 @@ final class ChatViewModel {
             guard let self else { return }
             var pcm = Data()
             var sampleRate = 24000
-            let playsLive = await kernel.voiceSettings().autoSpeak
+            let playsLive = await kernel.settings.voice().autoSpeak
             audio.beginLive(
                 AudioSession.Track(id: liveID, title: content, subtitle: voice),
                 audible: playsLive,
@@ -493,7 +493,7 @@ final class ChatViewModel {
                 ]
                 let record = recordsProvider?().first { $0.id == modelID }
                 if record?.paramValues["speed"] == nil {
-                    let speed = await kernel.voiceSettings().speed
+                    let speed = await kernel.settings.voice().speed
                     if speed != 1.0 {
                         payload["speed"] = .double(speed)
                     }
@@ -517,9 +517,9 @@ final class ChatViewModel {
                     let artifact = try await kernel.saveSpeech(
                         modelID: modelID, voice: voice, text: content,
                         sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
-                    try await kernel.recordGeneratedTurn(
-                        sessionID: sessionID, prompt: content, artifactID: artifact.id,
-                        tag: SessionTag.spoke)
+                    try await kernel.chats.appendGeneratedTurn(
+                        prompt: content, artifactID: artifact.id,
+                        capabilityTag: SessionTag.spoke, to: sessionID)
                     audio.finishLive(liveID)
                     await reload()
                     Haptics.completion()
@@ -576,7 +576,7 @@ final class ChatViewModel {
         defaultModelID = record.id
         let kernel = kernel
         Task {
-            try? await kernel.setDefaultChatModel(record.id)
+            try? await kernel.settings.setDefaultChatModelID(record.id)
         }
     }
 
@@ -855,7 +855,7 @@ final class ChatViewModel {
             var pcm = Data()
             var sampleRate = 24000
             do {
-                let voices = (try? await kernel.voices(speaker.id)) ?? []
+                let voices = (try? await kernel.voices(for: speaker.id)) ?? []
                 var chosen: String?
                 if speaker.id == voiceModelID, voices.contains(voice) {
                     chosen = voice
@@ -863,7 +863,7 @@ final class ChatViewModel {
                     voices.contains(configured)
                 {
                     chosen = configured
-                } else if let fallback = await kernel.voiceSettings().defaultVoice,
+                } else if let fallback = await kernel.settings.voice().defaultVoice,
                     voices.contains(fallback)
                 {
                     chosen = fallback
@@ -880,7 +880,7 @@ final class ChatViewModel {
                     "voice": .string(voice),
                 ]
                 if speaker.paramValues["speed"] == nil {
-                    let speed = await kernel.voiceSettings().speed
+                    let speed = await kernel.settings.voice().speed
                     if speed != 1.0 {
                         payload["speed"] = .double(speed)
                     }
@@ -936,7 +936,7 @@ final class ChatViewModel {
     func autoSpeakIfWanted() {
         let kernel = kernel
         Task { [weak self] in
-            guard await kernel.voiceSettings().autoSpeak else { return }
+            guard await kernel.settings.voice().autoSpeak else { return }
             guard let self, isVisible, !isStreaming, speakingEntryID == nil,
                 let last = transcript.last, last.role == .assistant, !last.text.isEmpty
             else { return }

@@ -207,11 +207,11 @@ import Testing
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [])
 
-    #expect(try await kernel.shellState() == ShellState())
+    #expect(await kernel.settings.shellState() == ShellState())
     let state = ShellState(mode: .chat, chatSessionID: "session-9")
-    try await kernel.saveShellState(state)
-    #expect(try await kernel.shellState() == state)
+    try await kernel.settings.saveShellState(state)
+    #expect(await kernel.settings.shellState() == state)
 
     let relaunched = Kernel(directory: dir, adapters: [])
-    #expect(try await relaunched.shellState() == state)
+    #expect(await relaunched.settings.shellState() == state)
 }

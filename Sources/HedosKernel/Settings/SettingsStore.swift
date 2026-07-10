@@ -1,11 +1,49 @@
 import Foundation
 
+private final class SettingsSubscribers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [UUID: AsyncStream<String>.Continuation] = [:]
+
+    func add(_ id: UUID, _ continuation: AsyncStream<String>.Continuation) {
+        lock.lock()
+        continuations[id] = continuation
+        lock.unlock()
+    }
+
+    func remove(_ id: UUID) {
+        lock.lock()
+        continuations.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func yield(_ domain: String) {
+        lock.lock()
+        let all = Array(continuations.values)
+        lock.unlock()
+        for continuation in all {
+            continuation.yield(domain)
+        }
+    }
+}
+
 public actor SettingsStore {
     public let directory: URL
     private var cache: [String: any SettingsDomain] = [:]
+    private let subscribers = SettingsSubscribers()
 
     public init(directory: URL) {
         self.directory = directory
+    }
+
+    public nonisolated func changes() -> AsyncStream<String> {
+        let id = UUID()
+        let subscribers = subscribers
+        return AsyncStream { continuation in
+            subscribers.add(id, continuation)
+            continuation.onTermination = { _ in
+                subscribers.remove(id)
+            }
+        }
     }
 
     private var settingsDirectory: URL {
@@ -28,6 +66,7 @@ public actor SettingsStore {
             at: settingsDirectory, withIntermediateDirectories: true)
         try StoreCoding.encoder().encode(domain).write(to: fileURL(D.self), options: .atomic)
         cache[D.domainName] = domain
+        subscribers.yield(D.domainName)
     }
 
     private func read<D: SettingsDomain>(_ type: D.Type) -> D {

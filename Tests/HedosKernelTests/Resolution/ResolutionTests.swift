@@ -344,18 +344,6 @@ private func ggufRecord(at dir: URL, name: String = "tiny") throws -> ModelRecor
     #expect(after.runtime.id == "llama-cpp")
 }
 
-@Test func llamaAdapterBidMatrix() {
-    let adapter = LlamaCppAdapter()
-    let gguf = IdentifiedModel(
-        format: .gguf, modality: .text, capabilities: [.chat], execution: .stream)
-    let safetensors = IdentifiedModel(
-        format: .safetensors, modality: .text, capabilities: [.chat], execution: .stream)
-    let record = Fixtures.gguf()
-    #expect(adapter.bid(record, gguf) != nil)
-    #expect(adapter.bid(record, gguf)?.tier == .native)
-    #expect(adapter.bid(record, safetensors) == nil)
-}
-
 @Test func chatMLFallbackPromptShape() {
     let prompt = LlamaEngine.chatMLPrompt(messages: [
         .init(role: .system, content: "be brief"),

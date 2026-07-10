@@ -25,7 +25,7 @@ struct OpenAISpeechHandler: GatewayHandling {
 
         var voice = body["voice"] as? String
         if voice == nil || voice!.isEmpty {
-            voice = try await port.voices(record.id).first
+            voice = try await port.voices(for: record.id).first
         }
         var payload: [String: JSONValue] = ["text": .string(input)]
         if let voice { payload["voice"] = .string(voice) }

@@ -11,7 +11,7 @@ struct TranscriptionAudio: Sendable, Hashable {
 
     static func from(payload: JSONValue) throws -> TranscriptionAudio {
         guard case .object(let fields) = payload else {
-            throw KernelError.runtimeFailed("transcribe payload must be an object")
+            throw KernelError.payloadInvalid("transcribe payload must be an object")
         }
         if case .string(let path)? = fields["audio"] {
             let expanded = (path as NSString).expandingTildeInPath
@@ -19,20 +19,20 @@ struct TranscriptionAudio: Sendable, Hashable {
         }
         if case .string(let base64)? = fields["pcm"] {
             guard let data = Data(base64Encoded: base64) else {
-                throw KernelError.runtimeFailed("transcribe pcm payload is not valid base64")
+                throw KernelError.payloadInvalid("transcribe pcm payload is not valid base64")
             }
             guard case .int(let rate)? = fields["sampleRate"], rate > 0 else {
-                throw KernelError.runtimeFailed("transcribe pcm payload needs a sampleRate")
+                throw KernelError.payloadInvalid("transcribe pcm payload needs a sampleRate")
             }
             return TranscriptionAudio(samples: floatSamples(from: data), sampleRate: rate)
         }
-        throw KernelError.runtimeFailed(
+        throw KernelError.payloadInvalid(
             "transcribe payload must carry an audio path or pcm frames")
     }
 
     static func fromWAVFile(_ url: URL) throws -> TranscriptionAudio {
         guard let data = try? Data(contentsOf: url) else {
-            throw KernelError.runtimeFailed("could not read audio at \(url.path)")
+            throw KernelError.payloadInvalid("could not read audio at \(url.path)")
         }
         return try fromWAVData(data)
     }
@@ -42,7 +42,7 @@ struct TranscriptionAudio: Sendable, Hashable {
             data[0..<4] == Data("RIFF".utf8),
             data[8..<12] == Data("WAVE".utf8)
         else {
-            throw KernelError.runtimeFailed("audio is not a RIFF WAVE file")
+            throw KernelError.payloadInvalid("audio is not a RIFF WAVE file")
         }
 
         var offset = 12
@@ -63,7 +63,7 @@ struct TranscriptionAudio: Sendable, Hashable {
             }
             if chunkID == Data("data".utf8) {
                 guard let format, format.channels > 0, format.sampleRate > 0 else {
-                    throw KernelError.runtimeFailed("wave data appears before fmt chunk")
+                    throw KernelError.payloadInvalid("wave data appears before fmt chunk")
                 }
                 let payload = data.subdata(in: body..<body + chunkSize)
                 let interleaved = try decodeSamples(payload, format: format)
@@ -73,7 +73,7 @@ struct TranscriptionAudio: Sendable, Hashable {
             }
             offset = body + chunkSize + (chunkSize % 2)
         }
-        throw KernelError.runtimeFailed("wave file has no data chunk")
+        throw KernelError.payloadInvalid("wave file has no data chunk")
     }
 
     func monoSamples(targetSampleRate: Int) -> [Float] {
@@ -122,7 +122,7 @@ struct TranscriptionAudio: Sendable, Hashable {
         case (3, 32):
             return floatSamples(from: payload)
         default:
-            throw KernelError.runtimeFailed(
+            throw KernelError.payloadInvalid(
                 "unsupported wave encoding (format \(format.audioFormat), \(format.bitsPerSample)-bit)")
         }
     }

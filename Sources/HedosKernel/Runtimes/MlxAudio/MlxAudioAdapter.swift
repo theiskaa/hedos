@@ -4,13 +4,19 @@ struct MlxAudioAdapter: RuntimeAdapter {
     var id: RuntimeID { .mlxAudio }
 
     private let governor: MemoryGovernor
+    private let supervisor: SidecarSupervisor
+    private let environments: EnvironmentManager
+    private let workdirRoot: URL
 
-    init(governor: MemoryGovernor = .shared) {
+    init(
+        governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared,
+        environments: EnvironmentManager = .shared,
+        workdirRoot: URL = SidecarWorkdir.defaultRoot()
+    ) {
         self.governor = governor
-    }
-
-    static func bundleDirectory() -> URL? {
-        RuntimeBundle.directory(named: "python-mlx-audio")
+        self.supervisor = supervisor
+        self.environments = environments
+        self.workdirRoot = workdirRoot
     }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
@@ -28,76 +34,35 @@ struct MlxAudioAdapter: RuntimeAdapter {
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        AsyncThrowingStream { continuation in
-            let governor = governor
-            let runtimeID = id.rawValue
-            let task = Task {
-                await governor.beginGeneration(record.id)
-                do {
-                    guard let bundle = Self.bundleDirectory(),
-                        FileManager.default.fileExists(atPath: bundle.path)
-                    else {
-                        throw KernelError.bundleMissing(runtimeID: .mlxAudio)
-                    }
-                    continuation.yield(.status("Preparing speech runtime…"))
-                    let envDir = try await EnvironmentManager.shared.prepare(
-                        runtimeID: runtimeID,
-                        lockfile: bundle.appendingPathComponent("requirements.lock"),
-                        progress: { message in continuation.yield(.status(message)) })
-
-                    let spec = try Self.spec(
-                        runtimeID: runtimeID, envDir: envDir, bundle: bundle, record: record)
-                    let producer = GPUProducer.generation(modelID: record.id)
-                    try await SidecarWarmLoad.acquire(
-                        governor: governor, supervisor: SidecarSupervisor.shared, spec: spec,
-                        record: record, producer: producer, warmWindow: spec.idleTimeout,
-                        startingStatus: "Starting speech runtime…"
-                    ) { continuation.yield(.status($0)) }
-
-                    var control: [String: JSONValue] = ["op": .string("speak")]
-                    if case .object(let fields) = payload {
-                        for (key, value) in fields { control[key] = value }
-                    }
-                    do {
-                        let stream = await SidecarSupervisor.shared.request(
-                            spec, .object(control))
-                        for try await chunk in stream {
-                            continuation.yield(chunk)
-                        }
-                        await governor.gate.release(producer)
-                    } catch {
-                        await governor.gate.release(producer)
-                        throw error
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-                await governor.endGeneration(record.id)
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        runtime.stream(record, op: .speak, payload: payload)
     }
 
-    static func spec(
-        runtimeID: String, envDir: URL, bundle: URL, record: ModelRecord
-    ) throws -> SidecarSpec {
-        let fm = FileManager.default
-        let paths = SidecarModelPaths.resolve(record)
-        let workdir = Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/python-mlx-audio", isDirectory: true)
-        try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
+    var runtime: PythonSidecarRuntime {
+        PythonSidecarRuntime(
+            descriptor: Self.descriptor(environments: environments, workdirRoot: workdirRoot),
+            governor: governor, supervisor: supervisor)
+    }
 
-        return SidecarSpec(
-            runtimeID: "\(runtimeID)#\(record.id)",
-            executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: SandboxArgv.build(
-                envDir: envDir, bundle: bundle,
-                modelSandboxRoot: URL(fileURLWithPath: paths.sandboxRoot), workdir: workdir,
-                trailingArguments: [
-                    "--model", paths.snapshot,
-                    "--workdir", workdir.path,
-                ]),
-            workingDirectory: workdir)
+    static func descriptor(
+        environments: EnvironmentManager, workdirRoot: URL
+    ) -> PythonSidecarRuntime.Descriptor {
+        PythonSidecarRuntime.Descriptor(
+            runtimeID: RuntimeID.mlxAudio.rawValue,
+            preparingStatus: "Preparing speech runtime…",
+            startingStatus: "Starting speech runtime…",
+            warmWindow: .seconds(120),
+            prepareEnvironment: { progress in
+                let bundle = try SidecarBundle.require("python-mlx-audio", runtimeID: .mlxAudio)
+                return try await environments.prepare(
+                    runtimeID: RuntimeID.mlxAudio.rawValue,
+                    lockfile: bundle.appendingPathComponent("requirements.lock"),
+                    progress: progress)
+            },
+            makeSpec: { record, envDir in
+                let bundle = try SidecarBundle.require("python-mlx-audio", runtimeID: .mlxAudio)
+                return try SidecarBundle.spec(
+                    runtimeID: .mlxAudio, record: record, bundle: bundle, envDir: envDir,
+                    workdirRoot: workdirRoot, workdirName: "python-mlx-audio")
+            })
     }
 }

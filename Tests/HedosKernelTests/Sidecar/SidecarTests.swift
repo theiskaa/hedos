@@ -221,7 +221,7 @@ import Testing
 }
 
 private func fakeSidecarSpec(
-    mode: String = "normal", idle: Duration = .seconds(120),
+    mode: String = "normal",
     cooperativeCancel: Bool = false, grace: Duration = .seconds(10)
 ) -> SidecarSpec {
     let script = URL(fileURLWithPath: #filePath)
@@ -232,7 +232,6 @@ private func fakeSidecarSpec(
         executable: URL(fileURLWithPath: "/usr/bin/env"),
         arguments: ["python3", script.path, mode],
         readyTimeout: .seconds(15),
-        idleTimeout: idle,
         cooperativeCancel: cooperativeCancel,
         cancelGraceTimeout: grace)
 }
@@ -554,8 +553,7 @@ private func processAlive(_ pid: Int32) -> Bool {
         runtimeID: spec.runtimeID,
         executable: spec.executable,
         arguments: spec.arguments,
-        readyTimeout: .milliseconds(800),
-        idleTimeout: spec.idleTimeout)
+        readyTimeout: .milliseconds(800))
     let supervisor = SidecarSupervisor()
     await #expect(throws: KernelError.self) {
         try await supervisor.ensureRunning(spec)
@@ -563,23 +561,8 @@ private func processAlive(_ pid: Int32) -> Bool {
     await supervisor.shutdownAll()
 }
 
-@Test func mlxAudioAdapterBidMatrix() {
-    let adapter = MlxAudioAdapter()
-    let speechMlx = IdentifiedModel(
-        format: .safetensors, modality: .speech, capabilities: [.speak], execution: .stream)
-    let speechUnknown = IdentifiedModel(
-        format: .unknown, modality: .speech, capabilities: [.speak], execution: .stream)
-    let textGguf = IdentifiedModel(
-        format: .gguf, modality: .text, capabilities: [.chat], execution: .stream)
-
-    let record = Fixtures.flux()
-    #expect(adapter.bid(record, speechMlx)?.tier == .managed)
-    #expect(adapter.bid(record, speechUnknown) == nil)
-    #expect(adapter.bid(record, textGguf) == nil)
-}
-
 @Test func runtimeBundleShipsCompleteAndValid() throws {
-    let bundle = try #require(MlxAudioAdapter.bundleDirectory())
+    let bundle = try #require(RuntimeBundle.directory(named: "python-mlx-audio"))
     let fm = FileManager.default
     for file in ["main.py", "manifest.toml", "requirements.lock", "sandbox.sb"] {
         #expect(

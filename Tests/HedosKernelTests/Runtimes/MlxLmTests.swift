@@ -44,7 +44,7 @@ private func mlxTextRecord() -> ModelRecord {
     #expect(lock.contains("mlx-lm=="))
     #expect(lock.contains("--hash=sha256:"))
     let profile = try Data(contentsOf: bundle.appendingPathComponent("sandbox.sb"))
-    let audioBundle = try #require(MlxAudioAdapter.bundleDirectory())
+    let audioBundle = try #require(RuntimeBundle.directory(named: "python-mlx-audio"))
     let audioProfile = try Data(contentsOf: audioBundle.appendingPathComponent("sandbox.sb"))
     #expect(profile == audioProfile)
     let contents = try fm.subpathsOfDirectory(atPath: bundle.path)
@@ -117,7 +117,7 @@ private func mlxTextRecord() -> ModelRecord {
         "top_p": .double(0.9),
         "max_tokens": .int(256),
     ])
-    let chat = MlxLmAdapter.control(.chat, payload: payload).objectValue
+    let chat = PythonSidecarRuntime.control(op: Capability.chat.rawValue, payload: payload).objectValue
     #expect(chat?["op"]?.stringValue == "chat")
     #expect(chat?["temperature"]?.doubleValue == 0.4)
     #expect(chat?["top_p"]?.doubleValue == 0.9)
@@ -128,7 +128,7 @@ private func mlxTextRecord() -> ModelRecord {
         Issue.record("messages missing from control frame")
     }
 
-    let complete = MlxLmAdapter.control(.complete, payload: .object(["prompt": .string("hi")]))
+    let complete = PythonSidecarRuntime.control(op: Capability.complete.rawValue, payload: .object(["prompt": .string("hi")]))
         .objectValue
     #expect(complete?["op"]?.stringValue == "complete")
     #expect(complete?["prompt"]?.stringValue == "hi")
@@ -168,7 +168,7 @@ private func mlxTextRecord() -> ModelRecord {
     var deltas: [String] = []
     var statuses: [String] = []
     var stats: GenerationStats?
-    let stream = await supervisor.request(spec, MlxLmAdapter.control(.chat, payload: payload))
+    let stream = await supervisor.request(spec, PythonSidecarRuntime.control(op: Capability.chat.rawValue, payload: payload))
     for try await chunk in stream {
         switch chunk {
         case .text(let delta): deltas.append(delta)

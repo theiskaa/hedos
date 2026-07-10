@@ -20,15 +20,14 @@ public actor Registry {
             .appendingPathComponent("Hedos", isDirectory: true)
     }
 
-
-    public func register(_ record: ModelRecord) throws {
+    func register(_ record: ModelRecord) throws {
         try loadIfNeeded()
         guard models[record.id] != record else { return }
         models[record.id] = record
         try save()
     }
 
-    public func register(contentsOf records: [ModelRecord]) throws {
+    func register(contentsOf records: [ModelRecord]) throws {
         try loadIfNeeded()
         var changed = false
         for record in records where models[record.id] != record {
@@ -39,13 +38,12 @@ public actor Registry {
     }
 
     @discardableResult
-    public func unregister(id: String) throws -> ModelRecord? {
+    func unregister(id: String) throws -> ModelRecord? {
         try loadIfNeeded()
         let removed = models.removeValue(forKey: id)
         if removed != nil { try save() }
         return removed
     }
-
 
     public func get(id: String) throws -> ModelRecord? {
         try loadIfNeeded()
@@ -53,7 +51,7 @@ public actor Registry {
     }
 
     @discardableResult
-    public func setStateIfPresent(id: String, to state: ModelState) throws -> Bool {
+    func setStateIfPresent(id: String, to state: ModelState) throws -> Bool {
         try loadIfNeeded()
         guard models[id] != nil else { return false }
         models[id]?.state = state
@@ -67,7 +65,6 @@ public actor Registry {
             ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id)
         }
     }
-
 
     private struct Envelope: Codable {
         var schemaVersion: Int

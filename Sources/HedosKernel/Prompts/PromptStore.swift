@@ -1,5 +1,16 @@
 import Foundation
 
+public enum PromptStoreError: Error, Sendable, LocalizedError, Equatable {
+    case notFound(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notFound(let id):
+            "No prompt with id \(id) is stored."
+        }
+    }
+}
+
 public actor PromptStore {
     public let directory: URL
 
@@ -20,6 +31,13 @@ public actor PromptStore {
     public func get(id: String) -> Prompt? {
         loadIfNeeded()
         return prompts[id]
+    }
+
+    public func resolve(id: String, placeholders: [String: String] = [:]) throws -> String {
+        guard let prompt = get(id: id) else {
+            throw PromptStoreError.notFound(id)
+        }
+        return prompt.resolvedBody(placeholders)
     }
 
     @discardableResult

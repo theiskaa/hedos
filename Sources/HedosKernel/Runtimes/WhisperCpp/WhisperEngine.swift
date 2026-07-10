@@ -79,14 +79,23 @@ public actor WhisperEngine {
         governor: MemoryGovernor,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
-        while true {
-            try await ensureLoadedGoverned(
-                path: path, modelID: modelID, modelName: modelName,
-                footprintMB: footprintMB, governor: governor, continuation: continuation)
-            await governor.gate.acquire(producer)
-            if loadedPath == path { return }
-            await governor.gate.release(producer)
-        }
+        try await GovernedEngineLoad.acquireLoaded(
+            governor: governor, producer: producer,
+            modelID: modelID, modelName: modelName, footprintMB: footprintMB,
+            tightStatus: "Memory is tight — transcription may be slow",
+            status: { continuation.yield(.status($0)) },
+            isLoaded: { await self.loadedPath == path },
+            previousModelID: { await self.loadedModelID },
+            unloadPrevious: { await self.unloadBackend() },
+            load: { try await self.loadBackend(path: path, modelID: modelID) },
+            evict: { [weak self] in await self?.unloadIfLoaded(path: path) },
+            observedFootprintMB: { Footprint.weightsMB(path: path) })
+    }
+
+    private func loadBackend(path: String, modelID: String) async throws {
+        try await backend.load(path: path)
+        loadedPath = path
+        loadedModelID = modelID
     }
 
     private func transcribe(
@@ -108,49 +117,6 @@ public actor WhisperEngine {
                     completionTokens: segments,
                     durationMs: Int(elapsed.components.seconds) * 1000
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
-    }
-
-    private func ensureLoadedGoverned(
-        path: String,
-        modelID: String,
-        modelName: String,
-        footprintMB: Int?,
-        governor: MemoryGovernor,
-        continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
-    ) async throws {
-        if loadedPath == path { return }
-        let verdict = try await governor.admit(
-            modelID: modelID, name: modelName, footprintMB: footprintMB
-        ) { reason in
-            continuation.yield(.status(reason))
-        }
-        if verdict == .tight {
-            continuation.yield(.status("Memory is tight — transcription may be slow"))
-        }
-        let producer = GPUProducer.load(modelID: modelID)
-        await governor.gate.acquire(producer)
-        do {
-            if let previousModelID = loadedModelID {
-                await unloadBackend()
-                await governor.markUnloaded(previousModelID)
-            }
-            try await backend.load(path: path)
-            loadedPath = path
-            loadedModelID = modelID
-            await governor.gate.release(producer)
-        } catch {
-            await governor.gate.release(producer)
-            await governor.markUnloaded(modelID)
-            throw error
-        }
-        await governor.markLoaded(
-            modelID: modelID, name: modelName, footprintMB: footprintMB
-        ) { [weak self] in
-            await self?.unloadIfLoaded(path: path)
-        }
-        if let observed = LlamaEngine.weightsFootprintMB(path: path) {
-            await governor.observeFootprint(modelID, footprintMB: observed)
-        }
     }
 
     public func unloadIfLoaded(path: String) async {

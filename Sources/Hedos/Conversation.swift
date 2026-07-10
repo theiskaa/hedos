@@ -143,7 +143,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
         }
         .task(id: slashActive) {
             guard slashActive, let slash else { return }
-            slashPrompts = await slash.kernel.prompts()
+            slashPrompts = await slash.kernel.promptStore.list()
         }
     }
 
@@ -337,16 +337,16 @@ struct ArtifactExchangeView: View {
         content
             .task(id: reference) {
                 resolved = false
-                artifact = try? await kernel.artifact(id: reference)
+                artifact = try? await kernel.artifactStore.get(id: reference)
                 resolved = true
                 if artifact?.capability == .image, image == nil {
                     let scale = NSScreen.main?.backingScaleFactor ?? 2
-                    if let url = try? await kernel.artifactURL(id: reference),
+                    if let url = try? await kernel.artifactStore.url(id: reference),
                         let sharp = GalleryModel.downsampled(
                             url, maxPixel: Design.Bubble.imageMax * scale)
                     {
                         image = sharp
-                    } else if let data = try? await kernel.artifactPreview(id: reference) {
+                    } else if let data = try? await kernel.artifactStore.previewData(id: reference) {
                         image = NSImage(data: data)
                     }
                 }
@@ -442,7 +442,7 @@ struct ArtifactExchangeView: View {
     private func exportArtifact(_ artifact: Artifact, suggested: String) {
         let kernel = kernel
         Task { @MainActor in
-            guard let source = try? await kernel.artifactURL(id: artifact.id),
+            guard let source = try? await kernel.artifactStore.url(id: artifact.id),
                 let data = try? Data(contentsOf: source)
             else { return }
             let panel = NSSavePanel()

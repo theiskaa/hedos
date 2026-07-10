@@ -3,17 +3,16 @@ import Testing
 
 @testable import HedosKernel
 
-@Test func recordGeneratedTurnAppendsPromptAndArtifactTurns() async throws {
+@Test func appendGeneratedTurnAppendsPromptAndArtifactTurns() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [])
 
     let session = try await kernel.chats.createSession(modelID: "mflux:schnell")
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id,
+    try await kernel.chats.appendGeneratedTurn(
         prompt: "a koala riding a bicycle",
         artifactID: "img_abc123",
-        tag: SessionTag.generatedImage)
+        capabilityTag: SessionTag.generatedImage, to: session.id)
 
     let transcript = try #require(try await kernel.chats.session(id: session.id))
     #expect(transcript.turns.count == 2)
@@ -27,18 +26,18 @@ import Testing
     #expect(transcript.session.capabilityTags == [SessionTag.generatedImage])
 }
 
-@Test func recordGeneratedTurnMergesTagsAcrossModalities() async throws {
+@Test func appendGeneratedTurnMergesTagsAcrossModalities() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [])
 
     let session = try await kernel.chats.createSession()
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id, prompt: "a koala", artifactID: "img_1",
-        tag: SessionTag.generatedImage)
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id, prompt: "say hello", artifactID: "wav_1",
-        tag: SessionTag.spoke)
+    try await kernel.chats.appendGeneratedTurn(
+        prompt: "a koala", artifactID: "img_1",
+        capabilityTag: SessionTag.generatedImage, to: session.id)
+    try await kernel.chats.appendGeneratedTurn(
+        prompt: "say hello", artifactID: "wav_1",
+        capabilityTag: SessionTag.spoke, to: session.id)
 
     let transcript = try #require(try await kernel.chats.session(id: session.id))
     #expect(transcript.turns.count == 4)
@@ -55,9 +54,9 @@ import Testing
     let kernel = Kernel(directory: dir, adapters: [])
 
     let session = try await kernel.chats.createSession()
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id, prompt: "a koala riding a bicycle", artifactID: "img_1",
-        tag: SessionTag.generatedImage)
+    try await kernel.chats.appendGeneratedTurn(
+        prompt: "a koala riding a bicycle", artifactID: "img_1",
+        capabilityTag: SessionTag.generatedImage, to: session.id)
 
     let title = try await kernel.autoTitleIfNeeded(sessionID: session.id)
     #expect(title == "a koala riding a bicycle")
@@ -77,14 +76,14 @@ import Testing
     #expect(try await kernel.autoTitleIfNeeded(sessionID: session.id) == nil)
 }
 
-@Test func recordGeneratedTurnRejectsUnknownSession() async throws {
+@Test func appendGeneratedTurnRejectsUnknownSession() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [])
 
     await #expect(throws: ChatStoreError.self) {
-        try await kernel.recordGeneratedTurn(
-            sessionID: "missing", prompt: "a koala", artifactID: "img_1",
-            tag: SessionTag.generatedImage)
+        try await kernel.chats.appendGeneratedTurn(
+        prompt: "a koala", artifactID: "img_1",
+        capabilityTag: SessionTag.generatedImage, to: "missing")
     }
 }

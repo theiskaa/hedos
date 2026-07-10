@@ -173,14 +173,14 @@ final class SettingsModel {
     }
 
     func load() async {
-        general = await kernel.generalSettings()
-        models = await kernel.modelsSettings()
-        chat = await kernel.chatSettings()
-        voice = await kernel.voiceSettings()
-        appearance = await kernel.appearanceSettings()
-        advanced = await kernel.advancedSettings()
-        gateway = await kernel.gatewaySettings()
-        prompts = await kernel.prompts()
+        general = await kernel.settings.general()
+        models = await kernel.settings.models()
+        chat = await kernel.settings.chat()
+        voice = await kernel.settings.voice()
+        appearance = await kernel.settings.appearance()
+        advanced = await kernel.settings.advanced()
+        gateway = await kernel.settings.gateway()
+        prompts = await kernel.promptStore.list()
         await refreshGateway()
         loaded = true
         applyTheme()
@@ -196,7 +196,7 @@ final class SettingsModel {
         let value = prompt
         persist("prompt-\(prompt.id)") { kernel in
             guard !value.title.isEmpty || !value.body.isEmpty else { return }
-            try? await kernel.savePrompt(value)
+            try? await kernel.promptStore.save(value)
         }
     }
 
@@ -206,7 +206,7 @@ final class SettingsModel {
         let kernel = kernel
         let id = prompt.id
         Task {
-            await kernel.deletePrompt(id: id)
+            await kernel.promptStore.delete(id: id)
         }
     }
 
@@ -226,35 +226,35 @@ final class SettingsModel {
             voices = []
             return
         }
-        voices = (try? await kernel.voices(speaker.id)) ?? []
+        voices = (try? await kernel.voices(for: speaker.id)) ?? []
     }
 
     func saveGeneral() {
         applyShellIntegrations()
         let value = general
         persist("general") { kernel in
-            try? await kernel.updateGeneralSettings(value)
+            try? await kernel.settings.save(value)
         }
     }
 
     func saveModels() {
         let value = models
         persist("models") { kernel in
-            try? await kernel.updateModelsSettings(value)
+            try? await kernel.settings.save(value)
         }
     }
 
     func saveChat() {
         let value = chat
         persist("chat") { kernel in
-            try? await kernel.updateChatSettings(value)
+            try? await kernel.settings.save(value)
         }
     }
 
     func saveVoice() {
         let value = voice
         persist("voice") { kernel in
-            try? await kernel.updateVoiceSettings(value)
+            try? await kernel.settings.save(value)
         }
     }
 
@@ -262,21 +262,21 @@ final class SettingsModel {
         applyTheme()
         let value = appearance
         persist("appearance") { kernel in
-            try? await kernel.updateAppearanceSettings(value)
+            try? await kernel.settings.save(value)
         }
     }
 
     func saveAdvanced() {
         let value = advanced
         persist("advanced") { kernel in
-            try? await kernel.updateAdvancedSettings(value)
+            try? await kernel.settings.save(value)
         }
     }
 
     func refreshGateway() async {
         gatewayStatus = await kernel.gatewayStatus()
-        gatewayClients = await kernel.gatewayClients()
-        gatewayAuditEntries = await kernel.gatewayAudit(limit: 20).reversed()
+        gatewayClients = await kernel.gatewayClientStore.list()
+        gatewayAuditEntries = await kernel.gatewayAuditLog.tail(limit: 20).reversed()
     }
 
     func setGatewayEnabled(_ enabled: Bool) {
@@ -285,7 +285,7 @@ final class SettingsModel {
         let value = gateway
         let kernel = kernel
         Task {
-            try? await kernel.updateGatewaySettings(value)
+            try? await kernel.settings.save(value)
             if enabled {
                 do {
                     _ = try await kernel.startGateway()
@@ -305,7 +305,7 @@ final class SettingsModel {
         let value = gateway
         let kernel = kernel
         Task {
-            try? await kernel.updateGatewaySettings(value)
+            try? await kernel.settings.save(value)
             if await kernel.gatewayStatus().running {
                 await kernel.stopGateway()
                 do {
@@ -322,7 +322,7 @@ final class SettingsModel {
     func createGatewayClient(
         name: String, scopes: GatewayScopes
     ) async -> GatewayClientCreation? {
-        let creation = try? await kernel.createGatewayClient(name: name, scopes: scopes)
+        let creation = try? await kernel.gatewayClientStore.create(name: name, scopes: scopes)
         await refreshGateway()
         return creation
     }
@@ -330,17 +330,17 @@ final class SettingsModel {
     func revokeGatewayClient(id: String) {
         let kernel = kernel
         Task {
-            try? await kernel.revokeGatewayClient(id: id)
+            try? await kernel.gatewayClientStore.revoke(id: id)
             await self.refreshGateway()
         }
     }
 
     var gatewayAuditFileURL: URL {
-        kernel.gatewayAuditURL
+        kernel.gatewayAuditLog.logURL
     }
 
     func refreshInstalledRuntimes() async {
-        installedRuntimes = await kernel.installedRuntimes()
+        installedRuntimes = await kernel.runtimeCatalog.installedCommunity()
     }
 
     func previewRuntimeInstall(from url: URL) async throws -> RuntimeInstallPreview {
@@ -431,15 +431,15 @@ final class SettingsModel {
             guard let prompt = prompts.first(where: { $0.id == id }),
                 !prompt.title.isEmpty || !prompt.body.isEmpty
             else { continue }
-            try? await kernel.savePrompt(prompt)
+            try? await kernel.promptStore.save(prompt)
         }
-        try? await kernel.updateGeneralSettings(general)
-        try? await kernel.updateModelsSettings(models)
-        try? await kernel.updateChatSettings(chat)
-        try? await kernel.updateVoiceSettings(voice)
-        try? await kernel.updateAppearanceSettings(appearance)
-        try? await kernel.updateAdvancedSettings(advanced)
-        try? await kernel.updateGatewaySettings(gateway)
+        try? await kernel.settings.save(general)
+        try? await kernel.settings.save(models)
+        try? await kernel.settings.save(chat)
+        try? await kernel.settings.save(voice)
+        try? await kernel.settings.save(appearance)
+        try? await kernel.settings.save(advanced)
+        try? await kernel.settings.save(gateway)
     }
 
     private func persist(_ key: String, _ operation: @escaping (Kernel) async -> Void) {

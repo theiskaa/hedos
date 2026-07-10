@@ -26,6 +26,11 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
         manifest.permissions.network && !approvedNetwork
     }
 
+    private var networkConsentError: KernelError {
+        .runtimeUnavailable(
+            hint: "\(id) needs network permission. Approve it from the model's page.")
+    }
+
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && manifest.capabilities.contains(capability)
     }
@@ -34,7 +39,9 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
         guard let detect = manifest.detect, detect.matches(record), !networkBlocked else {
             return nil
         }
-        return RuntimeBid(tier: .managed, preference: BidPreference.manifest, alternatives: manifest.alternativeIDs)
+        return RuntimeBid(
+            tier: .managed, preference: BidPreference.manifest,
+            alternatives: manifest.alternativeIDs)
     }
 
     func spec(record: ModelRecord, envDir: URL?) throws -> SidecarSpec {
@@ -71,135 +78,38 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        AsyncThrowingStream { continuation in
-            let adapter = self
-            let governor = governor
-            let task = Task {
-                await governor.beginGeneration(record.id)
-                do {
-                    guard !adapter.networkBlocked else {
-                        throw KernelError.runtimeUnavailable(
-                            hint:
-                                "\(adapter.id) needs network permission. Approve it from the model's page."
-                        )
-                    }
-                    continuation.yield(.status("Preparing \(adapter.id)…"))
-                    let envDir = try await ManifestSupport.prepareEnvironmentIfNeeded(
-                        manifest: adapter.manifest
-                    ) { continuation.yield(.status($0)) }
-                    let spec = try adapter.spec(record: record, envDir: envDir)
-                    var control: [String: JSONValue] = ["op": .string(capability.rawValue)]
-                    if case .object(let fields) = payload {
-                        for (key, value) in fields { control[key] = value }
-                    }
-                    let producer = GPUProducer.generation(modelID: record.id)
-                    try await adapter.acquireRunning(record, spec: spec, producer: producer) {
-                        continuation.yield(.status($0))
-                    }
-                    do {
-                        let stream = await adapter.supervisor.request(spec, .object(control))
-                        for try await chunk in stream {
-                            continuation.yield(chunk)
-                        }
-                        await governor.gate.release(producer)
-                    } catch {
-                        await governor.gate.release(producer)
-                        throw error
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-                await governor.endGeneration(record.id)
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        guard !networkBlocked else {
+            let error = networkConsentError
+            return AsyncThrowingStream { $0.finish(throwing: error) }
         }
+        return runtime.stream(record, op: capability, payload: payload)
     }
 
     func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let adapter = self
-            let governor = governor
-            let task = Task {
-                await governor.beginGeneration(record.id)
-                do {
-                    guard !adapter.networkBlocked else {
-                        throw KernelError.runtimeUnavailable(
-                            hint:
-                                "\(adapter.id) needs network permission. Approve it from the model's page."
-                        )
-                    }
-                    continuation.yield(.status("Preparing \(adapter.id)…"))
-                    let envDir = try await ManifestSupport.prepareEnvironmentIfNeeded(
-                        manifest: adapter.manifest
-                    ) { continuation.yield(.status($0)) }
-                    let spec = try adapter.spec(record: record, envDir: envDir)
-                    var control: [String: JSONValue] = ["op": .string(capability.rawValue)]
-                    if case .object(let fields) = payload {
-                        for (key, value) in fields { control[key] = value }
-                    }
-                    let producer = GPUProducer.job(modelID: record.id)
-                    try await adapter.acquireRunning(record, spec: spec, producer: producer) {
-                        continuation.yield(.status($0))
-                    }
-                    do {
-                        let stream = await adapter.supervisor.jobRequest(spec, .object(control))
-                        for try await event in stream {
-                            continuation.yield(event)
-                        }
-                        await governor.gate.release(producer)
-                    } catch {
-                        await governor.gate.release(producer)
-                        throw error
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-                await governor.endGeneration(record.id)
-            }
-            continuation.onTermination = { _ in task.cancel() }
+        guard !networkBlocked else {
+            let error = networkConsentError
+            return AsyncThrowingStream { $0.finish(throwing: error) }
         }
+        return runtime.job(record, op: capability.rawValue, payload: payload)
     }
 
-    private func acquireRunning(
-        _ record: ModelRecord, spec: SidecarSpec, producer: GPUProducer,
-        status: @escaping @Sendable (String) -> Void
-    ) async throws {
-        let supervisor = supervisor
-        let governor = governor
-        while true {
-            if await !supervisor.isRunning(spec.runtimeID) {
-                let verdict = try await governor.admit(
-                    modelID: record.id, name: record.name,
-                    footprintMB: record.footprintMB
-                ) { reason in status(reason) }
-                if verdict == .tight {
-                    status("Memory is tight — loading anyway")
-                }
-                status("Starting \(id)…")
-                let loadProducer = GPUProducer.load(modelID: record.id)
-                await governor.gate.acquire(loadProducer)
-                do {
-                    try await supervisor.ensureRunning(spec)
-                    await governor.gate.release(loadProducer)
-                } catch {
-                    await governor.gate.release(loadProducer)
-                    await governor.markUnloaded(record.id)
-                    throw error
-                }
-                await governor.markLoaded(
-                    modelID: record.id, name: record.name,
-                    footprintMB: record.footprintMB
-                ) {
-                    await supervisor.shutdown(spec.runtimeID)
-                }
-            }
-            await governor.gate.acquire(producer)
-            if await supervisor.isRunning(spec.runtimeID) { return }
-            await governor.gate.release(producer)
-        }
+    var runtime: PythonSidecarRuntime {
+        let adapter = self
+        return PythonSidecarRuntime(
+            descriptor: PythonSidecarRuntime.Descriptor(
+                runtimeID: manifest.id,
+                preparingStatus: "Preparing \(id)…",
+                startingStatus: "Starting \(id)…",
+                warmWindow: nil,
+                prepareEnvironment: { progress in
+                    try await ManifestSupport.prepareEnvironmentIfNeeded(
+                        manifest: adapter.manifest, progress: progress)
+                },
+                makeSpec: { record, envDir in
+                    try adapter.spec(record: record, envDir: envDir)
+                }),
+            governor: governor, supervisor: supervisor)
     }
 }

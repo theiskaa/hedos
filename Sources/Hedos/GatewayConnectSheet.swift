@@ -65,7 +65,7 @@ struct GatewayConnectSheet: View {
         }
         .frame(width: 680, height: 640)
         .task {
-            pipelineID = await shell.kernel.pipelines().first?.id
+            pipelineID = await shell.kernel.pipelineStore.list().first?.id
         }
     }
 

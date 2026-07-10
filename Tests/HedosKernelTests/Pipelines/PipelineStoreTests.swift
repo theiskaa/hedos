@@ -58,13 +58,32 @@ private func chatPipeline(name: String = "greeter", modelID: String = "m1") -> P
 
     let valid = Pipeline(
         name: "ok", stages: [PipelineStage(modelID: chat.id, capability: .chat)])
-    _ = try await kernel.savePipeline(valid)
-    #expect(await kernel.pipelines().count == 1)
+    _ = try await kernel.pipelineStore.save(valid)
+    #expect(await kernel.pipelineStore.list().count == 1)
 
     let invalid = Pipeline(
         name: "bad", stages: [PipelineStage(modelID: chat.id, capability: .speak)])
     await #expect(throws: PipelineValidationError.self) {
-        try await kernel.savePipeline(invalid)
+        try await kernel.pipelineStore.save(invalid)
     }
-    #expect(await kernel.pipelines().count == 1)
+    #expect(await kernel.pipelineStore.list().count == 1)
+}
+
+@Test func shelfProvidedStoreRejectsAPipelineNamingAMissingModel() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = PipelineStore(directory: dir, shelf: { [] })
+
+    await #expect(throws: PipelineValidationError.self) {
+        try await store.save(chatPipeline(modelID: "nowhere"))
+    }
+    #expect(await store.list().isEmpty)
+
+    var record = Fixtures.gguf()
+    record.state = .ready
+    record.capabilities = [.chat]
+    let ready = record
+    let stocked = PipelineStore(directory: dir, shelf: { [ready] })
+    let saved = try await stocked.save(chatPipeline(modelID: ready.id))
+    #expect(await stocked.signature(of: saved) != nil)
 }

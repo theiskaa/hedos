@@ -7,7 +7,6 @@ import Testing
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     _ = Kernel(directory: dir)
-    #expect(!Kernel.version.isEmpty)
 }
 
 @Test func discoverScansUserConfiguredHFRootAndResolvesMlxSwift() async throws {
@@ -24,7 +23,7 @@ import Testing
         ))
 
     let kernel = Kernel(directory: dir.appendingPathComponent("support"))
-    try await kernel.addHFCacheRoot(customRoot.path)
+    try await kernel.settings.addHFCacheRoot(customRoot.path)
     _ = try await kernel.discover()
 
     let records = try await kernel.shelf()

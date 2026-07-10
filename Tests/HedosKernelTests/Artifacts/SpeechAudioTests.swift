@@ -82,9 +82,9 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
         Issue.record("peaks missing")
     }
 
-    let listed = try await kernel.artifacts()
+    let listed = try await kernel.artifactStore.list()
     #expect(listed.contains { $0.id == artifact.id })
-    let url = try await kernel.artifactURL(id: artifact.id)
+    let url = try await kernel.artifactStore.url(id: artifact.id)
     let header = try Data(contentsOf: #require(url)).prefix(4)
     #expect(String(data: header, encoding: .ascii) == "RIFF")
 }
@@ -105,7 +105,7 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
         sampleRate: 24000, pcm: sineWave(samples: 2400))
     #expect(orphan.sessionID == nil)
 
-    let reread = try await kernel.artifacts()
+    let reread = try await kernel.artifactStore.list()
     #expect(reread.first { $0.id == spoken.id }?.sessionID == session.id)
 
     let sidecar = dir.appendingPathComponent("outputs")
@@ -120,7 +120,7 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     try JSONSerialization.data(withJSONObject: fields).write(to: legacy)
 
     let fresh = Kernel(directory: dir, adapters: [])
-    let afterLegacy = try await fresh.artifacts()
+    let afterLegacy = try await fresh.artifactStore.list()
     #expect(afterLegacy.count == 2)
     #expect(afterLegacy.contains { $0.sessionID == nil })
 }
@@ -134,16 +134,16 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     let spoken = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "narrate this",
         sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id, prompt: "narrate this", artifactID: spoken.id,
-        tag: SessionTag.spoke)
+    try await kernel.chats.appendGeneratedTurn(
+        prompt: "narrate this", artifactID: spoken.id,
+        capabilityTag: SessionTag.spoke, to: session.id)
 
-    #expect(try await kernel.artifactOwners()[spoken.id] == session.id)
+    #expect(try await kernel.chats.artifactOwners()[spoken.id] == session.id)
 
     try await kernel.chats.deleteSession(id: session.id)
 
-    #expect(try await kernel.artifactOwners().isEmpty)
-    #expect(try await kernel.artifacts().contains { $0.id == spoken.id })
+    #expect(try await kernel.chats.artifactOwners().isEmpty)
+    #expect(try await kernel.artifactStore.list().contains { $0.id == spoken.id })
 }
 
 private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRecord) {
@@ -188,9 +188,9 @@ private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRec
     let reloaded = try #require(try await kernel.chats.session(id: session.id))
     let turn = try #require(reloaded.turns.first { $0.id == answer.id })
     #expect(turn.artifactRefs == [second.id])
-    #expect(try await kernel.artifact(id: first.id) == nil)
-    #expect(try await kernel.artifact(id: second.id) != nil)
-    #expect(try await kernel.artifacts().count == 1)
+    #expect(try await kernel.artifactStore.get(id: first.id) == nil)
+    #expect(try await kernel.artifactStore.get(id: second.id) != nil)
+    #expect(try await kernel.artifactStore.list().count == 1)
 }
 
 @Test func replaceSpokenArtifactIsIdempotentAndKeepsOtherArtifacts() async throws {
@@ -214,7 +214,7 @@ private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRec
     let reloaded = try #require(try await kernel.chats.session(id: session.id))
     let turn = try #require(reloaded.turns.first { $0.id == answer.id })
     #expect(turn.artifactRefs == ["image-ref", spoken.id])
-    #expect(try await kernel.artifact(id: spoken.id) != nil)
+    #expect(try await kernel.artifactStore.get(id: spoken.id) != nil)
 }
 
 @Test func replaceSpokenArtifactRejectsUnknownTurn() async throws {

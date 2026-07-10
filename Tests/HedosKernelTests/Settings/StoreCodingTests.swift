@@ -52,3 +52,25 @@ import Testing
     let roundTripped = try decoder.decode(Dated.self, from: encoded)
     #expect(roundTripped == fractional)
 }
+
+@Test func directSettingsSaveAppliesStoredPoliciesThroughTheChangeStream() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(
+        directory: dir, adapters: [], governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
+
+    var settings = await kernel.settings.advanced()
+    settings.jobHistoryLimit = 7
+    try await kernel.settings.save(settings)
+
+    var applied = false
+    for _ in 0..<100 {
+        if await kernel.scheduler.history.limit == 7 {
+            applied = true
+            break
+        }
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    #expect(applied)
+}

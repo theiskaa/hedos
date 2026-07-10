@@ -334,3 +334,25 @@ private func makeStore(in directory: URL) -> ChatStore {
     #expect(turns[1].content == "First answer")
     #expect(turns[2].supersededBy == nil)
 }
+
+@Test func sessionMutationsThrowForUnknownAndTombstonedIDs() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite"))
+
+    await #expect(throws: ChatStoreError.sessionNotFound("ghost")) {
+        try await store.renameSession(id: "ghost", title: "new title")
+    }
+    await #expect(throws: ChatStoreError.sessionNotFound("ghost")) {
+        try await store.setPinned(id: "ghost", true)
+    }
+    await #expect(throws: ChatStoreError.sessionNotFound("ghost")) {
+        try await store.deleteSession(id: "ghost")
+    }
+
+    let session = try await store.createSession(title: "alive")
+    try await store.deleteSession(id: session.id)
+    await #expect(throws: ChatStoreError.sessionNotFound(session.id)) {
+        try await store.renameSession(id: session.id, title: "still there?")
+    }
+}

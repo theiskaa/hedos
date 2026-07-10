@@ -30,19 +30,19 @@ import Testing
     let prompt = "a koala riding a bicycle, flat vector"
 
     func sweepLeftovers() async throws {
-        for artifact in (try? await kernel.artifacts()) ?? [] {
+        for artifact in (try? await kernel.artifactStore.list()) ?? [] {
             guard case .object(let fields) = artifact.params else { continue }
             let text = fields["text"].flatMap { if case .string(let v) = $0 { return v } else { return nil } }
             let made = fields["prompt"].flatMap { if case .string(let v) = $0 { return v } else { return nil } }
             if text == line || made == prompt {
-                try? await kernel.deleteArtifact(id: artifact.id)
+                try? await kernel.artifactStore.delete(id: artifact.id)
             }
         }
     }
     try await sweepLeftovers()
 
     let session = try await kernel.chats.createSession(modelID: nil)
-    let voice = (try? await kernel.voices(speaker.id))?.first ?? "af_heart"
+    let voice = (try? await kernel.voices(for: speaker.id))?.first ?? "af_heart"
     var pcm = Data()
     var sampleRate = 24000
     let speech = try await kernel.invoke(
@@ -57,8 +57,9 @@ import Testing
     #expect(!pcm.isEmpty)
     let wav = try await kernel.saveSpeech(
         modelID: speaker.id, voice: voice, text: line, sampleRate: sampleRate, pcm: pcm)
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id, prompt: line, artifactID: wav.id, tag: SessionTag.spoke)
+    try await kernel.chats.appendGeneratedTurn(
+        prompt: line, artifactID: wav.id,
+        capabilityTag: SessionTag.spoke, to: session.id)
 
     _ = try await kernel.chats.appendTurn(
         TurnDraft(role: .user, content: "and now a picture"), to: session.id)
@@ -73,9 +74,9 @@ import Testing
         if case .failed(let message) = event { Issue.record("image job failed: \(message)") }
     }
     let imageID = try #require(produced.first)
-    try await kernel.recordGeneratedTurn(
-        sessionID: session.id, prompt: prompt, artifactID: imageID,
-        tag: SessionTag.generatedImage)
+    try await kernel.chats.appendGeneratedTurn(
+        prompt: prompt, artifactID: imageID,
+        capabilityTag: SessionTag.generatedImage, to: session.id)
 
     let transcript = try #require(try await kernel.chats.session(id: session.id))
     #expect(transcript.turns.count == 6)
@@ -88,12 +89,12 @@ import Testing
         Set(transcript.session.capabilityTags)
             == Set([SessionTag.spoke, SessionTag.generatedImage]))
 
-    let spoken = try #require(try await kernel.artifact(id: wav.id))
-    let drawn = try #require(try await kernel.artifact(id: imageID))
+    let spoken = try #require(try await kernel.artifactStore.get(id: wav.id))
+    let drawn = try #require(try await kernel.artifactStore.get(id: imageID))
     #expect(spoken.capability == .speak)
     #expect(drawn.capability == .image)
 
     try await kernel.chats.deleteSession(id: session.id)
-    try await kernel.deleteArtifact(id: wav.id)
-    try await kernel.deleteArtifact(id: imageID)
+    try await kernel.artifactStore.delete(id: wav.id)
+    try await kernel.artifactStore.delete(id: imageID)
 }

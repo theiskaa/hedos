@@ -113,11 +113,11 @@ private func fluxPayload(prompt: String, seed: Int = 771_342) -> JSONValue {
     for await _ in await kernel.jobEvents(id: jobID) {}
     let job = try #require(try await kernel.job(id: jobID))
     let artifactID = try #require(job.result.first)
-    let artifact = try #require(try await kernel.artifact(id: artifactID))
+    let artifact = try #require(try await kernel.artifactStore.get(id: artifactID))
 
-    let preview = try #require(try await kernel.artifactPreview(id: artifactID))
+    let preview = try #require(try await kernel.artifactStore.previewData(id: artifactID))
     #expect(preview == DeterministicImageAdapter.previewBytes(artifact.params))
-    #expect(try await kernel.artifactPreview(id: "missing") == nil)
+    #expect(try await kernel.artifactStore.previewData(id: "missing") == nil)
 }
 
 @Test func galleryGateRunsAcrossPromptsThenDeletesAndReruns() async throws {
@@ -135,7 +135,7 @@ private func fluxPayload(prompt: String, seed: Int = 771_342) -> JSONValue {
         for await _ in await kernel.jobEvents(id: jobID) {}
     }
 
-    let arranged = Gallery.arrange(try await kernel.artifacts())
+    let arranged = Gallery.arrange(try await kernel.artifactStore.list())
     #expect(arranged.count == 3)
     #expect(
         Set(arranged.compactMap { Provenance.prompt(of: $0.params) })
@@ -149,8 +149,8 @@ private func fluxPayload(prompt: String, seed: Int = 771_342) -> JSONValue {
     #expect(Gallery.models(in: arranged) == [GalleryModel(id: record.id, name: record.name)])
 
     let doomed = try #require(arranged.last)
-    try await kernel.deleteArtifact(id: doomed.id)
-    let remaining = Gallery.arrange(try await kernel.artifacts())
+    try await kernel.artifactStore.delete(id: doomed.id)
+    let remaining = Gallery.arrange(try await kernel.artifactStore.list())
     #expect(remaining.count == 2)
     #expect(!remaining.map(\.id).contains(doomed.id))
 
@@ -159,8 +159,8 @@ private func fluxPayload(prompt: String, seed: Int = 771_342) -> JSONValue {
     for await _ in await kernel.jobEvents(id: rerunJob) {}
     let job = try #require(try await kernel.job(id: rerunJob))
     let reproducedID = try #require(job.result.first)
-    let reproduced = try #require(try await kernel.artifact(id: reproducedID))
+    let reproduced = try #require(try await kernel.artifactStore.get(id: reproducedID))
     #expect(reproduced.contentHash == kept.contentHash)
     #expect(reproduced.params == kept.params)
-    #expect(Gallery.arrange(try await kernel.artifacts()).count == 3)
+    #expect(Gallery.arrange(try await kernel.artifactStore.list()).count == 3)
 }

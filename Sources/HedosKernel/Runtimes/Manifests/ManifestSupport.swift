@@ -39,13 +39,11 @@ enum ManifestSupport {
     }
 
     static func defaultWorkdirRoot() -> URL {
-        Registry.defaultDirectory().appendingPathComponent("workdirs", isDirectory: true)
+        SidecarWorkdir.defaultRoot()
     }
 
     static func workdir(for manifest: RuntimeManifest, root: URL) throws -> URL {
-        let workdir = root.appendingPathComponent(slug(manifest.id), isDirectory: true)
-        try FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
-        return workdir
+        try SidecarWorkdir.directory(root: root, name: slug(manifest.id))
     }
 
     static func canonicalPath(_ url: URL) -> String {

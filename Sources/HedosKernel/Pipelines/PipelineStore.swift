@@ -3,11 +3,13 @@ import Foundation
 public actor PipelineStore {
     public let directory: URL
 
+    private let shelf: (@Sendable () async throws -> [ModelRecord])?
     private var pipelines: [String: Pipeline] = [:]
     private var loaded = false
 
-    public init(directory: URL) {
+    public init(directory: URL, shelf: (@Sendable () async throws -> [ModelRecord])? = nil) {
         self.directory = directory
+        self.shelf = shelf
     }
 
     public func list() -> [Pipeline] {
@@ -23,13 +25,21 @@ public actor PipelineStore {
     }
 
     @discardableResult
-    public func save(_ pipeline: Pipeline) throws -> Pipeline {
+    public func save(_ pipeline: Pipeline) async throws -> Pipeline {
         loadIfNeeded()
+        if let shelf {
+            try PipelineValidator.validate(pipeline.stages, shelf: try await shelf())
+        }
         var updated = pipeline
         updated.updatedAt = Date()
         pipelines[updated.id] = updated
         try write(updated)
         return updated
+    }
+
+    public func signature(of pipeline: Pipeline) async -> PipelineSignature? {
+        guard let shelf, let records = try? await shelf() else { return nil }
+        return try? PipelineValidator.validate(pipeline.stages, shelf: records)
     }
 
     public func delete(id: String) {

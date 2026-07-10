@@ -97,7 +97,7 @@ import Testing
     let status = try await kernel.startGateway(portOverride: 0)
     #expect(status.running)
     let port = status.port!
-    let creation = try await kernel.createGatewayClient(name: "kernel-test", scopes: .all)
+    let creation = try await kernel.gatewayClientStore.create(name: "kernel-test", scopes: .all)
     let (data, response) = try await URLSession.shared.data(
         for: GatewayHarness.request(
             "GET", "http://127.0.0.1:\(port)/v1/models", token: creation.token))
@@ -105,7 +105,7 @@ import Testing
     let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
     #expect(object["object"] as? String == "list")
 
-    let audited = await kernel.gatewayAudit(limit: 5)
+    let audited = await kernel.gatewayAuditLog.tail(limit: 5)
     #expect(audited.last?.outcome == "ok")
 
     await kernel.stopGateway()
@@ -116,10 +116,10 @@ import Testing
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [], secrets: InMemorySecretStore())
-    var settings = await kernel.gatewaySettings()
+    var settings = await kernel.settings.gateway()
     settings.enabled = true
     settings.port = 0
-    try await kernel.updateGatewaySettings(settings)
+    try await kernel.settings.save(settings)
 
     await kernel.startGatewayIfEnabled()
     let status = await kernel.gatewayStatus()

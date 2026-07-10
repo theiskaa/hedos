@@ -220,7 +220,7 @@ final class AudioSession {
         loadTask?.cancel()
         let kernel = kernel
         loadTask = Task { [weak self] in
-            guard let url = try? await kernel.artifactURL(id: artifactID) else { return }
+            guard let url = try? await kernel.artifactStore.url(id: artifactID) else { return }
             guard let self, track?.artifactID == artifactID, !Task.isCancelled else { return }
             startClip(url: url, resumeAt: positions[artifactID] ?? 0)
         }

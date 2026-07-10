@@ -26,7 +26,7 @@ final class GalleryModel {
     }
 
     func load() async {
-        let all = (try? await kernel.artifacts()) ?? []
+        let all = (try? await kernel.artifactStore.list()) ?? []
         artifacts = all.filter { $0.capability == .image }
     }
 
@@ -37,13 +37,13 @@ final class GalleryModel {
     func loadThumbnail(_ artifact: Artifact) async {
         guard thumbnails[artifact.id] == nil else { return }
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        if let url = try? await kernel.artifactURL(id: artifact.id),
+        if let url = try? await kernel.artifactStore.url(id: artifact.id),
             let image = Self.downsampled(url, maxPixel: Design.Bubble.imageMax * scale)
         {
             thumbnails[artifact.id] = image
             return
         }
-        guard let data = try? await kernel.artifactPreview(id: artifact.id),
+        guard let data = try? await kernel.artifactStore.previewData(id: artifact.id),
             let image = NSImage(data: data)
         else { return }
         thumbnails[artifact.id] = image
@@ -51,7 +51,7 @@ final class GalleryModel {
 
     func delete(_ artifact: Artifact) async {
         do {
-            try await kernel.deleteArtifact(id: artifact.id)
+            try await kernel.artifactStore.delete(id: artifact.id)
             thumbnails[artifact.id] = nil
             await load()
         } catch {
@@ -62,7 +62,7 @@ final class GalleryModel {
     func download(_ artifact: Artifact) {
         let kernel = kernel
         Task { @MainActor in
-            guard let url = try? await kernel.artifactURL(id: artifact.id) else { return }
+            guard let url = try? await kernel.artifactStore.url(id: artifact.id) else { return }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = url.lastPathComponent
             panel.begin { response in

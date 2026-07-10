@@ -1,6 +1,10 @@
 import Foundation
 
-enum ManifestTemplate {
+public enum ManifestTemplate {
+    public static func template(for record: ModelRecord) -> String {
+        render(record: record, identified: Identification.identify(record))
+    }
+
     static func render(record: ModelRecord, identified: IdentifiedModel) -> String {
         let slug = ManifestSupport.slug(record.displayName.lowercased())
         let modality = identified.modality ?? record.modality

@@ -302,7 +302,7 @@ private actor EmissionCounter {
         directory: dir, secrets: InMemorySecretStore(), habitat: fixtureHabitat(home: home))
     _ = try await kernel.discover()
     await kernel.startWatching(debounce: .milliseconds(150))
-    try await kernel.addWatchedFolder(extra.path)
+    try await kernel.settings.addWatchedFolder(extra.path)
 
     let payload: Data = {
         var data = Data("GGUF".utf8)

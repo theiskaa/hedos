@@ -14,10 +14,10 @@ final class PipelinesModel {
     }
 
     func refresh() async {
-        pipelines = await kernel.pipelines()
+        pipelines = await kernel.pipelineStore.list()
         var resolved: [String: PipelineSignature] = [:]
         for pipeline in pipelines {
-            if let signature = await kernel.pipelineSignature(pipeline) {
+            if let signature = await kernel.pipelineStore.signature(of: pipeline) {
                 resolved[pipeline.id] = signature
             }
         }
@@ -27,7 +27,7 @@ final class PipelinesModel {
     func delete(_ pipeline: Pipeline) {
         let kernel = kernel
         Task {
-            await kernel.deletePipeline(id: pipeline.id)
+            await kernel.pipelineStore.delete(id: pipeline.id)
             await self.refresh()
         }
     }
@@ -469,7 +469,7 @@ private struct PipelineComposerSheet: View {
         let onSaved = onSaved
         Task { @MainActor in
             do {
-                _ = try await kernel.savePipeline(pipeline)
+                _ = try await kernel.pipelineStore.save(pipeline)
                 onSaved()
             } catch let error as PipelineValidationError {
                 failure = error.description

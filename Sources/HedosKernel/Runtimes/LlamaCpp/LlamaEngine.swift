@@ -75,17 +75,22 @@ actor LlamaEngine {
         governor: MemoryGovernor,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
-        while true {
-            try await ensureLoadedGoverned(
-                path: path, modelID: modelID, modelName: modelName,
-                footprintMB: footprintMB, contextTokens: contextTokens, governor: governor,
-                continuation: continuation)
-            await governor.gate.acquire(producer)
-            if loadedPath == path, loadedContextTokens == contextTokens,
-                model != nil, context != nil
-            { return }
-            await governor.gate.release(producer)
-        }
+        try await GovernedEngineLoad.acquireLoaded(
+            governor: governor, producer: producer,
+            modelID: modelID, modelName: modelName, footprintMB: footprintMB,
+            tightStatus: "Memory is tight — generation may be slow",
+            status: { continuation.yield(.status($0)) },
+            isLoaded: { await self.hasLoaded(path: path, contextTokens: contextTokens) },
+            previousModelID: { await self.loadedModelID },
+            unloadPrevious: { await self.unload() },
+            load: { try await self.load(path: path, modelID: modelID, contextTokens: contextTokens) },
+            evict: { [weak self] in await self?.unloadIfLoaded(path: path) },
+            observedFootprintMB: { Footprint.weightsMB(path: path) })
+    }
+
+    private func hasLoaded(path: String, contextTokens: Int) -> Bool {
+        loadedPath == path && loadedContextTokens == contextTokens
+            && model != nil && context != nil
     }
 
     private func generate(
@@ -178,50 +183,6 @@ actor LlamaEngine {
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
     }
 
-    private func ensureLoadedGoverned(
-        path: String,
-        modelID: String,
-        modelName: String,
-        footprintMB: Int?,
-        contextTokens: Int,
-        governor: MemoryGovernor,
-        continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
-    ) async throws {
-        if loadedPath == path, loadedContextTokens == contextTokens,
-            model != nil, context != nil
-        { return }
-        let verdict = try await governor.admit(
-            modelID: modelID, name: modelName, footprintMB: footprintMB
-        ) { reason in
-            continuation.yield(.status(reason))
-        }
-        if verdict == .tight {
-            continuation.yield(.status("Memory is tight — generation may be slow"))
-        }
-        let producer = GPUProducer.load(modelID: modelID)
-        await governor.gate.acquire(producer)
-        do {
-            if let previousModelID = loadedModelID {
-                unload()
-                await governor.markUnloaded(previousModelID)
-            }
-            try load(path: path, modelID: modelID, contextTokens: contextTokens)
-            await governor.gate.release(producer)
-        } catch {
-            await governor.gate.release(producer)
-            await governor.markUnloaded(modelID)
-            throw error
-        }
-        await governor.markLoaded(
-            modelID: modelID, name: modelName, footprintMB: footprintMB
-        ) {
-            await self.unloadIfLoaded(path: path)
-        }
-        if let observed = Self.weightsFootprintMB(path: path) {
-            await governor.observeFootprint(modelID, footprintMB: observed)
-        }
-    }
-
     private func load(path: String, modelID: String, contextTokens: Int) throws {
         _ = Self.backendReady
         unload()
@@ -263,14 +224,6 @@ actor LlamaEngine {
             write($0.baseAddress!, Int32($0.count))
         }
         return retried > 0 ? Int(retried) : nil
-    }
-
-    static func weightsFootprintMB(path: String) -> Int? {
-        guard
-            let size = try? FileManager.default
-                .attributesOfItem(atPath: path)[.size] as? Int64
-        else { return nil }
-        return Int(size / (1 << 20))
     }
 
     private func unload() {

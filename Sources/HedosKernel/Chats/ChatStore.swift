@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-public enum ChatStoreError: Error, Sendable, LocalizedError {
+public enum ChatStoreError: Error, Sendable, LocalizedError, Equatable {
     case databaseUnavailable(String)
     case statementFailed(String)
     case futureSchema(found: Int, supported: Int)
@@ -336,15 +336,35 @@ public actor ChatStore {
         id: String, at date: Date, write: ChatWrite, change: (inout ChatSession) -> Void
     ) throws {
         if let database = try writableDatabase() {
+            let live = try database.rows(
+                "SELECT 1 FROM sessions WHERE id = ? AND deleted_at IS NULL", [.text(id)]
+            ).first
+            guard live != nil else {
+                throw ChatStoreError.sessionNotFound(id)
+            }
             try apply(write, to: database)
             return
         }
-        if var session = shadowSessions[id] {
-            change(&session)
-            session.updatedAt = date
-            shadowSessions[id] = session
+        guard var session = shadowSessions[id], session.deletedAt == nil else {
+            throw ChatStoreError.sessionNotFound(id)
         }
+        change(&session)
+        session.updatedAt = date
+        shadowSessions[id] = session
         queuedWrites.append(write)
+    }
+
+    public func appendGeneratedTurn(
+        prompt: String, artifactID: String, capabilityTag: String, to sessionID: String
+    ) throws {
+        guard try session(id: sessionID) != nil else {
+            throw ChatStoreError.sessionNotFound(sessionID)
+        }
+        _ = try appendTurn(TurnDraft(role: .user, content: prompt), to: sessionID)
+        _ = try appendTurn(
+            TurnDraft(role: .assistant, content: "", artifactRefs: [artifactID]),
+            to: sessionID,
+            mergingCapabilityTags: [capabilityTag])
     }
 
     private func writableDatabase() throws -> ChatDatabase? {

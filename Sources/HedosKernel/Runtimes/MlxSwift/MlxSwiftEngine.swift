@@ -67,14 +67,21 @@ actor MlxSwiftEngine {
         governor: MemoryGovernor,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
-        while true {
-            try await ensureLoadedGoverned(
-                path: path, modelID: modelID, modelName: modelName,
-                footprintMB: footprintMB, governor: governor, continuation: continuation)
-            await governor.gate.acquire(producer)
-            if loadedPath == path, container != nil { return }
-            await governor.gate.release(producer)
-        }
+        try await GovernedEngineLoad.acquireLoaded(
+            governor: governor, producer: producer,
+            modelID: modelID, modelName: modelName, footprintMB: footprintMB,
+            tightStatus: "Memory is tight — generation may be slow",
+            status: { continuation.yield(.status($0)) },
+            isLoaded: { await self.hasLoaded(path: path) },
+            previousModelID: { await self.loadedModelID },
+            unloadPrevious: { await self.unload() },
+            load: { try await self.load(path: path, modelID: modelID) },
+            evict: { [weak self] in await self?.unloadIfLoaded(path: path) },
+            observedFootprintMB: { Footprint.directoryMB(path: path) })
+    }
+
+    private func hasLoaded(path: String) -> Bool {
+        loadedPath == path && container != nil
     }
 
     private func generate(
@@ -153,47 +160,6 @@ actor MlxSwiftEngine {
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
     }
 
-    private func ensureLoadedGoverned(
-        path: String,
-        modelID: String,
-        modelName: String,
-        footprintMB: Int?,
-        governor: MemoryGovernor,
-        continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
-    ) async throws {
-        if loadedPath == path, container != nil { return }
-        let verdict = try await governor.admit(
-            modelID: modelID, name: modelName, footprintMB: footprintMB
-        ) { reason in
-            continuation.yield(.status(reason))
-        }
-        if verdict == .tight {
-            continuation.yield(.status("Memory is tight — generation may be slow"))
-        }
-        let producer = GPUProducer.load(modelID: modelID)
-        await governor.gate.acquire(producer)
-        do {
-            if let previousModelID = loadedModelID {
-                unload()
-                await governor.markUnloaded(previousModelID)
-            }
-            try await load(path: path, modelID: modelID)
-            await governor.gate.release(producer)
-        } catch {
-            await governor.gate.release(producer)
-            await governor.markUnloaded(modelID)
-            throw error
-        }
-        await governor.markLoaded(
-            modelID: modelID, name: modelName, footprintMB: footprintMB
-        ) {
-            await self.unloadIfLoaded(path: path)
-        }
-        if let observed = Self.directoryFootprintMB(path: path) {
-            await governor.observeFootprint(modelID, footprintMB: observed)
-        }
-    }
-
     private func load(path: String, modelID: String) async throws {
         unload()
         let directory = URL(fileURLWithPath: path)
@@ -202,7 +168,7 @@ actor MlxSwiftEngine {
         container = loaded
         loadedPath = path
         loadedModelID = modelID
-        let footprintMB = Self.directoryFootprintMB(path: path)
+        let footprintMB = Footprint.directoryMB(path: path)
         Self.applyCacheLimit(footprintMB: footprintMB)
     }
 
@@ -239,17 +205,4 @@ actor MlxSwiftEngine {
         return rendered
     }
 
-    static func directoryFootprintMB(path: String) -> Int? {
-        let url = URL(fileURLWithPath: path)
-        guard
-            let enumerator = FileManager.default.enumerator(
-                at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])
-        else { return nil }
-        var total = 0
-        for case let entry as URL in enumerator {
-            let values = try? entry.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            if values?.isRegularFile == true { total += values?.fileSize ?? 0 }
-        }
-        return total / (1 << 20)
-    }
 }

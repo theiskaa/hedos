@@ -110,15 +110,14 @@ final class ShellModel {
         started = true
         system.start()
         await settings.load()
-        if let restored = try? await kernel.shellState() {
-            mode = restored.mode
-            chatSelection = restored.chatSessionID
-            imagesSelection = restored.imagesSelection
-            voiceSelection = restored.voiceModelID
-            pipelineSelection = restored.pipelineSelection
-            librarySelection = restored.libraryModelID
-            sidebarCollapsed = restored.sidebarCollapsed
-        }
+        let restored = await kernel.settings.shellState()
+        mode = restored.mode
+        chatSelection = restored.chatSessionID
+        imagesSelection = restored.imagesSelection
+        voiceSelection = restored.voiceModelID
+        pipelineSelection = restored.pipelineSelection
+        librarySelection = restored.libraryModelID
+        sidebarCollapsed = restored.sidebarCollapsed
         if !settings.general.restoreLastSession {
             mode = settings.general.fixedMode ?? .home
         }
@@ -216,7 +215,7 @@ final class ShellModel {
     func newChat() {
         let kernel = kernel
         Task {
-            let preferred = (try? await kernel.defaultChatModelID()) ?? nil
+            let preferred = await kernel.settings.defaultChatModelID()
             guard let record = Launcher.defaultChatModel(in: library.records, preferring: preferred)
             else { return }
             startChat(bound: record)
@@ -300,7 +299,7 @@ final class ShellModel {
         let kernel = kernel
         let records = library.records
         Task {
-            let preferred = (try? await kernel.defaultChatModelID()) ?? nil
+            let preferred = await kernel.settings.defaultChatModelID()
             let chatModel = Launcher.defaultChatModel(in: records, preferring: preferred)
             let session = try? await kernel.chats.createSession(modelID: chatModel?.id)
             await refreshSessions()
@@ -333,7 +332,7 @@ final class ShellModel {
             sidebarCollapsed: sidebarCollapsed)
         let kernel = kernel
         Task {
-            try? await kernel.saveShellState(state)
+            try? await kernel.settings.saveShellState(state)
         }
     }
 }

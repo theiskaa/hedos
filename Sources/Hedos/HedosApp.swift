@@ -55,11 +55,13 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
-            await QuickAskController.shared.shell?.kernel.stopWatching()
-            await QuickAskController.shared.shell?.kernel.stopGateway()
             await SettingsModel.active?.flush()
-            await MemoryGovernor.shared.suspendForQuit()
-            await SidecarSupervisor.shared.terminateAll()
+            if let kernel = QuickAskController.shared.shell?.kernel {
+                await kernel.suspendForQuit()
+            } else {
+                await MemoryGovernor.shared.suspendForQuit()
+                await SidecarSupervisor.shared.terminateAll()
+            }
             await MainActor.run {
                 sender.reply(toApplicationShouldTerminate: true)
             }
@@ -177,9 +179,6 @@ struct AboutView: View {
             Text("A home for every local model.")
                 .font(Design.caption)
                 .foregroundStyle(Design.inkSoft)
-            Text("kernel \(Kernel.version)")
-                .font(Design.data(11))
-                .foregroundStyle(Design.inkFaint)
             Text("ἕδος — a seat, an abode, a foundation.")
                 .font(Design.plaque(12))
                 .foregroundStyle(Design.inkFaint)

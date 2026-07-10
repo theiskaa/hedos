@@ -106,7 +106,7 @@ struct FakeGatewayPort: GatewayPort {
 
     func cancel(jobID: String) async {}
 
-    func voices(_ modelID: String) async throws -> [String] { voicesList }
+    func voices(for modelID: String) async throws -> [String] { voicesList }
 
     func artifactData(id: String) async throws -> Data? { artifacts[id] }
 

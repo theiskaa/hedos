@@ -569,8 +569,8 @@ struct HomePane: View {
     private static let riverLimit = 8
 
     private func loadArtifacts() async {
-        artifactOwners = (try? await shell.kernel.artifactOwners()) ?? [:]
-        artifacts = (try? await shell.kernel.artifacts()) ?? []
+        artifactOwners = (try? await shell.kernel.chats.artifactOwners()) ?? [:]
+        artifacts = (try? await shell.kernel.artifactStore.list()) ?? []
     }
 
     private func livingArtifacts(_ capability: Capability) -> [RiverItem] {

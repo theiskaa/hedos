@@ -3,7 +3,7 @@ import Testing
 
 @testable import HedosKernel
 
-private func imageSidecarSpec(idleTimeout: Duration = .seconds(120)) -> SidecarSpec {
+private func imageSidecarSpec() -> SidecarSpec {
     let script = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
@@ -12,8 +12,7 @@ private func imageSidecarSpec(idleTimeout: Duration = .seconds(120)) -> SidecarS
         runtimeID: "fake-diffusers-\(UUID().uuidString)",
         executable: URL(fileURLWithPath: "/usr/bin/env"),
         arguments: ["python3", script.path, "normal"],
-        readyTimeout: .seconds(15),
-        idleTimeout: idleTimeout)
+        readyTimeout: .seconds(15))
 }
 
 private func realPythonPath() throws -> String {
@@ -155,7 +154,7 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
 }
 
 @Test func diffusersRuntimeBundleShipsCompleteAndValid() throws {
-    let bundle = try #require(DiffusersAdapter.bundleDirectory())
+    let bundle = try #require(RuntimeBundle.directory(named: "python-diffusers"))
     let fm = FileManager.default
     for file in ["main.py", "manifest.toml", "requirements.in", "requirements.lock", "sandbox.sb"]
     {
@@ -177,7 +176,7 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     #expect(!lock.lowercased().contains("nvidia"))
     #expect(!lock.lowercased().contains("xformers"))
     let profile = try Data(contentsOf: bundle.appendingPathComponent("sandbox.sb"))
-    let mfluxBundle = try #require(MfluxAdapter.bundleDirectory())
+    let mfluxBundle = try #require(RuntimeBundle.directory(named: "python-mflux"))
     let mfluxProfile = try Data(contentsOf: mfluxBundle.appendingPathComponent("sandbox.sb"))
     #expect(profile == mfluxProfile)
     let contents = try fm.subpathsOfDirectory(atPath: bundle.path)
@@ -197,14 +196,14 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
         withDestinationURL: URL(fileURLWithPath: realPython))
     let modelDir = dir.appendingPathComponent("model")
     try fm.createDirectory(at: modelDir, withIntermediateDirectories: true)
-    let workdir = dir.appendingPathComponent("workdir")
-    let bundle = try #require(DiffusersAdapter.bundleDirectory())
+    let bundle = try #require(RuntimeBundle.directory(named: "python-diffusers"))
     let record = ModelRecord(
         name: "sdxl-sandbox-probe", modality: .image, capabilities: [.image],
         source: ModelSource(kind: .folder, path: modelDir.path))
-    let spec = try DiffusersAdapter.spec(
-        runtimeID: "python:diffusers", envDir: envDir, bundle: bundle, record: record,
-        workdir: workdir)
+    let spec = try SidecarBundle.spec(
+        runtimeID: .diffusers, record: record, bundle: bundle, envDir: envDir,
+        workdirRoot: dir, workdirName: "workdir",
+        extraArguments: ["--name", record.name])
 
     let pythonPath = envDir.appendingPathComponent("bin/python").path
     let pythonIndex = try #require(spec.arguments.firstIndex(of: pythonPath))
@@ -406,7 +405,7 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     #expect(job.state == .done)
     #expect(job.result.count == 1)
 
-    let artifact = try #require(try await kernel.artifact(id: job.result[0]))
+    let artifact = try #require(try await kernel.artifactStore.get(id: job.result[0]))
     #expect(artifact.model == "sdxl-turbo")
     #expect(artifact.modelID == record.id)
     #expect(artifact.runtime == "python:diffusers")
@@ -447,7 +446,7 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     let cancelled = try #require(try await kernel.job(id: jobID))
     #expect(cancelled.state == .cancelled)
     #expect(cancelled.result.isEmpty)
-    #expect(try await kernel.artifacts().isEmpty)
+    #expect(try await kernel.artifactStore.list().isEmpty)
     #expect(await supervisor.isRunning(spec.runtimeID))
 
     let secondID = try await kernel.submit(
@@ -460,26 +459,21 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
 }
 
 @Test func diffusersIdleTimeoutReclaimsSidecarViaGovernorState() async throws {
-    let spec = imageSidecarSpec(idleTimeout: .seconds(1))
+    let spec = imageSidecarSpec()
     let supervisor = SidecarSupervisor()
     let governor = MemoryGovernor(totalMemoryMB: 262_144)
-    let adapter = DiffusersAdapter(governor: governor, supervisor: supervisor)
+    let runtime = PythonSidecarRuntime(
+        descriptor: fakeSidecarDescriptor(spec: spec, warmWindow: .seconds(1)),
+        governor: governor, supervisor: supervisor)
     let record = sdxlRecord()
 
-    let (stream, continuation) = AsyncThrowingStream<JobRuntimeEvent, Error>.makeStream()
-    let consumer = Task<Bool, Error> {
-        var sawResult = false
-        for try await event in stream {
-            if case .result = event {
-                sawResult = true
-            }
-        }
-        return sawResult
+    var sawResult = false
+    for try await event in runtime.job(
+        record, op: "image", payload: imagePayload(steps: 2, seed: 3))
+    {
+        if case .result = event { sawResult = true }
     }
-    try await adapter.executeJob(
-        record, spec: spec, payload: imagePayload(steps: 2, seed: 3), into: continuation)
-    continuation.finish()
-    #expect(try await consumer.value)
+    #expect(sawResult)
 
     #expect(await governor.isResident(record.id))
     #expect(await supervisor.isRunning(spec.runtimeID))

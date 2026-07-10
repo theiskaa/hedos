@@ -194,7 +194,7 @@ private func speakRecord() -> ModelRecord {
     let kernel = Kernel(
         directory: dir, adapters: [], secrets: InMemorySecretStore(), vmHost: host)
     _ = try await kernel.discover()
-    let installed = await kernel.installedRuntimes()
+    let installed = await kernel.runtimeCatalog.installedCommunity()
     #expect(installed.count == 1)
     #expect(installed[0].id == "vm-speak-test")
     #expect(installed[0].provenance?.isCommunity == true)

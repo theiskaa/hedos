@@ -87,7 +87,7 @@ private func runToDone(_ kernel: Kernel, _ jobID: String) async throws -> Job {
 
 private func resultArtifact(_ kernel: Kernel, of job: Job) async throws -> Artifact {
     let artifactID = try #require(job.result.first)
-    return try #require(try await kernel.artifact(id: artifactID))
+    return try #require(try await kernel.artifactStore.get(id: artifactID))
 }
 
 private func seedValue(_ params: JSONValue) throws -> Int {
@@ -109,7 +109,7 @@ private func seedValue(_ params: JSONValue) throws -> Int {
     let jobID = try await kernel.submit(record.id, .image, payload: payload)
     let job = try await runToDone(kernel, jobID)
 
-    let listed = try await kernel.artifacts()
+    let listed = try await kernel.artifactStore.list()
     #expect(listed.count == 1)
     let artifact = try #require(listed.first)
     #expect(job.result == [artifact.id])
@@ -153,7 +153,7 @@ private func seedValue(_ params: JSONValue) throws -> Int {
 
     let firstJob = try await kernel.submit(record.id, .image, payload: imagePayload())
     _ = try await runToDone(kernel, firstJob)
-    let original = try #require(try await kernel.artifacts().first)
+    let original = try #require(try await kernel.artifactStore.list().first)
 
     let rerunJob = try await kernel.rerun(artifactID: original.id)
     #expect(rerunJob != firstJob)
@@ -171,7 +171,7 @@ private func seedValue(_ params: JSONValue) throws -> Int {
     #expect(blob == DeterministicImageAdapter.imageBytes(original.params))
 
     let reloaded = Kernel(directory: dir, adapters: [])
-    let listed = try await reloaded.artifacts()
+    let listed = try await reloaded.artifactStore.list()
     #expect(listed.count == 2)
     #expect(Set(listed.map(\.id)) == [original.id, rerunArtifact.id])
     for artifact in listed {
@@ -193,7 +193,7 @@ private func seedValue(_ params: JSONValue) throws -> Int {
 
     let firstJob = try await kernel.submit(record.id, .image, payload: imagePayload())
     _ = try await runToDone(kernel, firstJob)
-    let original = try #require(try await kernel.artifacts().first)
+    let original = try #require(try await kernel.artifactStore.list().first)
 
     let varyJob = try await kernel.vary(artifactID: original.id)
     let job = try await runToDone(kernel, varyJob)
@@ -243,7 +243,7 @@ private func seedValue(_ params: JSONValue) throws -> Int {
 
     let firstJob = try await kernel.submit(record.id, .image, payload: imagePayload())
     _ = try await runToDone(kernel, firstJob)
-    let original = try #require(try await kernel.artifacts().first)
+    let original = try #require(try await kernel.artifactStore.list().first)
     let rerunJob = try await kernel.rerun(artifactID: original.id)
     let rerun = try await runToDone(kernel, rerunJob)
     let duplicate = try await resultArtifact(kernel, of: rerun)
@@ -252,22 +252,22 @@ private func seedValue(_ params: JSONValue) throws -> Int {
     let blobURL = outputs.appendingPathComponent(original.path)
     let year = String(Calendar(identifier: .gregorian).component(.year, from: original.createdAt))
 
-    try await kernel.deleteArtifact(id: duplicate.id)
-    #expect(try await kernel.artifacts().map(\.id) == [original.id])
+    try await kernel.artifactStore.delete(id: duplicate.id)
+    #expect(try await kernel.artifactStore.list().map(\.id) == [original.id])
     #expect(
         !FileManager.default.fileExists(
             atPath: outputs.appendingPathComponent("\(year)/\(duplicate.id).json").path))
     #expect(FileManager.default.fileExists(atPath: blobURL.path))
 
-    try await kernel.deleteArtifact(id: original.id)
-    #expect(try await kernel.artifacts().isEmpty)
+    try await kernel.artifactStore.delete(id: original.id)
+    #expect(try await kernel.artifactStore.list().isEmpty)
     #expect(!FileManager.default.fileExists(atPath: blobURL.path))
     #expect(
         !FileManager.default.fileExists(
             atPath: outputs.appendingPathComponent("\(year)/\(original.id).json").path))
 
     await #expect(throws: ArtifactStoreError.notFound(original.id)) {
-        try await kernel.deleteArtifact(id: original.id)
+        try await kernel.artifactStore.delete(id: original.id)
     }
 }
 
@@ -322,10 +322,10 @@ private func seedValue(_ params: JSONValue) throws -> Int {
     let job = try await runToDone(kernel, jobID)
     let artifact = try await resultArtifact(kernel, of: job)
 
-    let url = try #require(try await kernel.artifactURL(id: artifact.id))
+    let url = try #require(try await kernel.artifactStore.url(id: artifact.id))
     #expect(url == dir.appendingPathComponent("outputs").appendingPathComponent(artifact.path))
     #expect(try Data(contentsOf: url) == DeterministicImageAdapter.imageBytes(artifact.params))
-    #expect(try await kernel.artifactURL(id: "missing") == nil)
+    #expect(try await kernel.artifactStore.url(id: "missing") == nil)
 }
 
 @Test func rerunAndVaryOnUnknownArtifactThrowArtifactNotFound() async throws {

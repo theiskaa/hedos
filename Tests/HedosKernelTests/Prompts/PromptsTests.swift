@@ -95,20 +95,20 @@ import Testing
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [])
 
-    let prompt = try await kernel.savePrompt(
+    let prompt = try await kernel.promptStore.save(
         Prompt(title: "Ask", body: "Answer about {selection}", capability: .chat))
-    #expect(await kernel.prompts().count == 1)
-    #expect(await kernel.prompt(id: prompt.id)?.title == "Ask")
+    #expect(await kernel.promptStore.list().count == 1)
+    #expect(await kernel.promptStore.get(id: prompt.id)?.title == "Ask")
 
-    let resolved = try await kernel.resolvePrompt(
+    let resolved = try await kernel.promptStore.resolve(
         id: prompt.id, placeholders: ["selection": "lighthouses"])
     #expect(resolved == "Answer about lighthouses")
 
-    await kernel.deletePrompt(id: prompt.id)
-    #expect(await kernel.prompts().isEmpty)
+    await kernel.promptStore.delete(id: prompt.id)
+    #expect(await kernel.promptStore.list().isEmpty)
 
-    await #expect(throws: KernelError.self) {
-        _ = try await kernel.resolvePrompt(id: prompt.id)
+    await #expect(throws: PromptStoreError.notFound(prompt.id)) {
+        _ = try await kernel.promptStore.resolve(id: prompt.id)
     }
 }
 

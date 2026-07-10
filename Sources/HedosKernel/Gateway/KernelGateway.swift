@@ -2,8 +2,28 @@ import Foundation
 
 extension Kernel: GatewayPort {
     public func artifactData(id: String) async throws -> Data? {
-        guard let url = try await artifactURL(id: id) else { return nil }
+        guard let url = try await artifactStore.url(id: id) else { return nil }
         return try Data(contentsOf: url)
+    }
+
+    public func job(id: String) async throws -> Job? {
+        try await scheduler.job(id: id)
+    }
+
+    public func jobEvents(id: String) async -> AsyncStream<JobEvent> {
+        await scheduler.events(id: id)
+    }
+
+    public func cancel(jobID: String) async {
+        await scheduler.cancel(jobID)
+    }
+
+    public func pipelines() async -> [Pipeline] {
+        await pipelineStore.list()
+    }
+
+    public func pipeline(id: String) async -> Pipeline? {
+        await pipelineStore.get(id: id)
     }
 
     public func admissionState(
@@ -24,14 +44,6 @@ extension Kernel: GatewayPort {
 }
 
 extension Kernel {
-    public func gatewaySettings() async -> GatewaySettings {
-        await settings.gateway()
-    }
-
-    public func updateGatewaySettings(_ value: GatewaySettings) async throws {
-        try await settings.save(value)
-    }
-
     @discardableResult
     public func startGateway(portOverride: Int? = nil) async throws -> GatewayStatus {
         if let gateway, await gateway.status.running {
@@ -73,27 +85,5 @@ extension Kernel {
             return await gateway.status
         }
         return GatewayStatus(running: false)
-    }
-
-    public func createGatewayClient(
-        name: String, scopes: GatewayScopes
-    ) async throws -> GatewayClientCreation {
-        try await gatewayClientStore.create(name: name, scopes: scopes)
-    }
-
-    public func gatewayClients() async -> [GatewayClient] {
-        await gatewayClientStore.list()
-    }
-
-    public func revokeGatewayClient(id: String) async throws {
-        try await gatewayClientStore.revoke(id: id)
-    }
-
-    public func gatewayAudit(limit: Int = 20) async -> [GatewayAuditEntry] {
-        await gatewayAuditLog.tail(limit: limit)
-    }
-
-    public nonisolated var gatewayAuditURL: URL {
-        gatewayAuditLog.logURL
     }
 }

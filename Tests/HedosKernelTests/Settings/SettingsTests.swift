@@ -214,18 +214,18 @@ private func waitUntil(
 
     let kernelDir = dir.appendingPathComponent("appsupport")
     let kernel = Kernel(directory: kernelDir, adapters: [])
-    try await kernel.addWatchedFolder(modelsDir.path)
-    #expect(try await kernel.watchedFolders() == [modelsDir.path])
+    try await kernel.settings.addWatchedFolder(modelsDir.path)
+    #expect(try await kernel.settings.models().watchedFolders == [modelsDir.path])
 
     let scanner = LooseFileScanner(
-        directories: (try await kernel.watchedFolders()).map {
+        directories: (try await kernel.settings.models().watchedFolders).map {
             URL(fileURLWithPath: $0, isDirectory: true)
         })
     let result = await scanner.scan()
     #expect(result.discovered.contains { $0.name == "hidden-model" })
 
-    try await kernel.removeWatchedFolder(modelsDir.path)
-    #expect(try await kernel.watchedFolders().isEmpty)
+    try await kernel.settings.removeWatchedFolder(modelsDir.path)
+    #expect(try await kernel.settings.models().watchedFolders.isEmpty)
 }
 
 @Test func updatingModelsSettingsDrivesGovernorResidencyPolicy() async throws {
@@ -235,14 +235,14 @@ private func waitUntil(
         totalMemoryMB: 65536, heavyThresholdMB: 1024, defaultWarmWindow: .seconds(300))
     let kernel = Kernel(directory: dir, adapters: [], governor: governor)
 
-    var models = await kernel.modelsSettings()
+    var models = await kernel.settings.models()
     models.keepWarm = .never
     models.eviction = .budgeted
     models.ramBudgetMB = 20000
-    try await kernel.updateModelsSettings(models)
+    try await kernel.settings.save(models)
 
+    try await waitUntil { await governor.currentEvictionPolicy() == .budgeted }
     #expect(await governor.residency.warmWindow(for: "any-model") == .zero)
-    #expect(await governor.currentEvictionPolicy() == .budgeted)
 
     let unloaded = CleanupFlag()
     await governor.markLoaded(modelID: "llm", name: "llm", footprintMB: 4000) {
@@ -282,10 +282,11 @@ private func waitUntil(
     defer { try? FileManager.default.removeItem(at: dir) }
     let kernel = Kernel(directory: dir, adapters: [])
 
-    var advanced = await kernel.advancedSettings()
+    var advanced = await kernel.settings.advanced()
     advanced.jobHistoryLimit = 2
-    try await kernel.updateAdvancedSettings(advanced)
+    try await kernel.settings.save(advanced)
 
+    try await waitUntil { await kernel.scheduler.history.limit == 2 }
     #expect(await kernel.scheduler.history.limit == 2)
 }
 

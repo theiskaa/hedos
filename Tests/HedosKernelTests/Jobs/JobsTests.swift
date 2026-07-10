@@ -252,7 +252,7 @@ private func waitUntil(
     let freshKernel = Kernel(directory: dir, adapters: [])
     let fromHistory = try #require(try await freshKernel.job(id: jobID))
     #expect(fromHistory.state == .done)
-    #expect(try await freshKernel.jobHistory().map(\.id).contains(jobID))
+    #expect(try await freshKernel.scheduler.history.list().map(\.id).contains(jobID))
 }
 
 @Test func jobWaitsInQueuedVisiblyUntilAdmitted() async throws {
@@ -435,7 +435,7 @@ private func waitUntil(
     await #expect(throws: KernelError.self) {
         try await kernel.submit(record.id, .image, payload: .null)
     }
-    #expect(await kernel.activeJobs().isEmpty)
+    #expect(await kernel.scheduler.active().isEmpty)
 }
 
 @Test func historyKeepsOnlyMostRecentJobs() async throws {

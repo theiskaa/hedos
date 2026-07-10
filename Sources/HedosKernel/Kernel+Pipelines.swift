@@ -3,30 +3,6 @@ import Foundation
 extension Kernel: PipelineBackend {}
 
 extension Kernel {
-    public func pipelines() async -> [Pipeline] {
-        await pipelineStore.list()
-    }
-
-    public func pipeline(id: String) async -> Pipeline? {
-        await pipelineStore.get(id: id)
-    }
-
-    @discardableResult
-    public func savePipeline(_ pipeline: Pipeline) async throws -> Pipeline {
-        let shelf = try await registry.list()
-        try PipelineValidator.validate(pipeline.stages, shelf: shelf)
-        return try await pipelineStore.save(pipeline)
-    }
-
-    public func deletePipeline(id: String) async {
-        await pipelineStore.delete(id: id)
-    }
-
-    public func pipelineSignature(_ pipeline: Pipeline) async -> PipelineSignature? {
-        let shelf = (try? await registry.list()) ?? []
-        return try? PipelineValidator.validate(pipeline.stages, shelf: shelf)
-    }
-
     public func runPipeline(id: String, input: PipelineInput) async throws
         -> AsyncStream<PipelineEvent>
     {

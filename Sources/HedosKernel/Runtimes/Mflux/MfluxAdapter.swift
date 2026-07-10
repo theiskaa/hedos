@@ -7,14 +7,18 @@ struct MfluxAdapter: RuntimeAdapter, JobRunning {
 
     private let governor: MemoryGovernor
     private let supervisor: SidecarSupervisor
+    private let environments: EnvironmentManager
+    private let workdirRoot: URL
 
-    init(governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared) {
+    init(
+        governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared,
+        environments: EnvironmentManager = .shared,
+        workdirRoot: URL = SidecarWorkdir.defaultRoot()
+    ) {
         self.governor = governor
         self.supervisor = supervisor
-    }
-
-    static func bundleDirectory() -> URL? {
-        RuntimeBundle.directory(named: "python-mflux")
+        self.environments = environments
+        self.workdirRoot = workdirRoot
     }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
@@ -43,101 +47,36 @@ struct MfluxAdapter: RuntimeAdapter, JobRunning {
     func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let adapter = self
-            let runtimeID = id.rawValue
-            let task = Task {
-                do {
-                    guard let bundle = Self.bundleDirectory(),
-                        FileManager.default.fileExists(atPath: bundle.path)
-                    else {
-                        throw KernelError.bundleMissing(runtimeID: .mflux)
-                    }
-                    continuation.yield(.status("Preparing image runtime…"))
-                    let envDir = try await EnvironmentManager.shared.prepare(
-                        runtimeID: runtimeID,
-                        lockfile: bundle.appendingPathComponent("requirements.lock"),
-                        progress: { message in continuation.yield(.status(message)) })
-
-                    let spec = try Self.spec(
-                        runtimeID: runtimeID, envDir: envDir, bundle: bundle, record: record)
-                    try await adapter.executeJob(
-                        record, spec: spec, payload: payload, into: continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        runtime.job(record, op: "image", payload: payload)
     }
 
-    func executeJob(
-        _ record: ModelRecord, spec: SidecarSpec, payload: JSONValue,
-        into continuation: AsyncThrowingStream<JobRuntimeEvent, Error>.Continuation
-    ) async throws {
-        await governor.beginGeneration(record.id)
-        do {
-            try await runThroughSidecar(record, spec: spec, payload: payload, into: continuation)
-            await governor.endGeneration(record.id)
-        } catch {
-            await governor.endGeneration(record.id)
-            throw error
-        }
+    var runtime: PythonSidecarRuntime {
+        PythonSidecarRuntime(
+            descriptor: Self.descriptor(environments: environments, workdirRoot: workdirRoot),
+            governor: governor, supervisor: supervisor)
     }
 
-    private func runThroughSidecar(
-        _ record: ModelRecord, spec: SidecarSpec, payload: JSONValue,
-        into continuation: AsyncThrowingStream<JobRuntimeEvent, Error>.Continuation
-    ) async throws {
-        let producer = GPUProducer.job(modelID: record.id)
-        try await SidecarWarmLoad.acquire(
-            governor: governor, supervisor: supervisor, spec: spec, record: record,
-            producer: producer, warmWindow: spec.idleTimeout,
-            startingStatus: "Starting image runtime…"
-        ) { continuation.yield(.status($0)) }
-
-        var control: [String: JSONValue] = ["op": .string("image")]
-        if case .object(let fields) = payload {
-            for (key, value) in fields { control[key] = value }
-        }
-        do {
-            let stream = await supervisor.jobRequest(spec, .object(control))
-            for try await event in stream {
-                continuation.yield(event)
-            }
-            await governor.gate.release(producer)
-        } catch {
-            await governor.gate.release(producer)
-            throw error
-        }
-    }
-
-    static func spec(
-        runtimeID: String, envDir: URL, bundle: URL, record: ModelRecord, workdir: URL? = nil
-    ) throws -> SidecarSpec {
-        let fm = FileManager.default
-        let paths = SidecarModelPaths.resolve(record)
-        let workdir =
-            workdir
-            ?? Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/python-mflux", isDirectory: true)
-        try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
-
-        return SidecarSpec(
-            runtimeID: "\(runtimeID)#\(record.id)",
-            executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
-            arguments: SandboxArgv.build(
-                envDir: envDir, bundle: bundle,
-                modelSandboxRoot: URL(fileURLWithPath: paths.sandboxRoot), workdir: workdir,
-                trailingArguments: [
-                    "--model", paths.snapshot,
-                    "--name", record.name,
-                    "--workdir", workdir.path,
-                ]),
-            environment: ["PYTHONDONTWRITEBYTECODE": "1"],
-            workingDirectory: workdir,
-            readyTimeout: .seconds(600),
-            idleTimeout: .seconds(60))
+    static func descriptor(
+        environments: EnvironmentManager, workdirRoot: URL
+    ) -> PythonSidecarRuntime.Descriptor {
+        PythonSidecarRuntime.Descriptor(
+            runtimeID: RuntimeID.mflux.rawValue,
+            preparingStatus: "Preparing image runtime…",
+            startingStatus: "Starting image runtime…",
+            warmWindow: .seconds(60),
+            prepareEnvironment: { progress in
+                let bundle = try SidecarBundle.require("python-mflux", runtimeID: .mflux)
+                return try await environments.prepare(
+                    runtimeID: RuntimeID.mflux.rawValue,
+                    lockfile: bundle.appendingPathComponent("requirements.lock"),
+                    progress: progress)
+            },
+            makeSpec: { record, envDir in
+                let bundle = try SidecarBundle.require("python-mflux", runtimeID: .mflux)
+                return try SidecarBundle.spec(
+                    runtimeID: .mflux, record: record, bundle: bundle, envDir: envDir,
+                    workdirRoot: workdirRoot, workdirName: "python-mflux",
+                    extraArguments: ["--name", record.name])
+            })
     }
 }

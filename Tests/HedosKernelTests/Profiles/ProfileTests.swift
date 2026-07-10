@@ -472,9 +472,9 @@ private struct AnyBidAdapter: RuntimeAdapter {
     let record = capturedTextRecord()
     try await kernel.registry.register(record)
 
-    var chat = await kernel.chatSettings()
+    var chat = await kernel.settings.chat()
     chat.defaultSystemPrompt = "Answer in one sentence."
-    try await kernel.updateChatSettings(chat)
+    try await kernel.settings.save(chat)
 
     let stream = try await kernel.chat(record.id, messages: [.init(role: .user, content: "hi")])
     for try await _ in stream {}

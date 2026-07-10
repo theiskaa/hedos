@@ -688,12 +688,9 @@ struct ModelDetailSheet: View {
                 }
                 HStack(spacing: Design.Space.m) {
                     Button(copiedTemplate ? "Copied" : "Copy manifest template") {
-                        let shell = shell
-                        let id = record.id
+                        let record = record
                         Task { @MainActor in
-                            guard
-                                let template = try? await shell.kernel.manifestTemplate(for: id)
-                            else { return }
+                            let template = ManifestTemplate.template(for: record)
                             let pasteboard = NSPasteboard.general
                             pasteboard.clearContents()
                             pasteboard.setString(template, forType: .string)
@@ -705,7 +702,7 @@ struct ModelDetailSheet: View {
                     .buttonStyle(QuietButtonStyle())
                     Button("Open runtimes.d…") {
                         NSWorkspace.shared.activateFileViewerSelecting(
-                            [shell.kernel.userRuntimesDirectory()])
+                            [shell.kernel.runtimeCatalog.ensuredDirectory()])
                     }
                     .buttonStyle(QuietButtonStyle())
                 }
@@ -723,7 +720,7 @@ struct ModelDetailSheet: View {
                 if isChatModel {
                     Button("Make this the default chat model") {
                         Task {
-                            try? await shell.kernel.setDefaultChatModel(record.id)
+                            try? await shell.kernel.settings.setDefaultChatModelID(record.id)
                         }
                     }
                     .buttonStyle(.plain)
@@ -887,7 +884,7 @@ struct ModelConfigureSection: View {
         .onAppear { seedDrafts() }
         .task(id: record.id) {
             guard record.capabilities.contains(.speak) else { return }
-            voices = (try? await shell.kernel.voices(record.id)) ?? []
+            voices = (try? await shell.kernel.voices(for: record.id)) ?? []
         }
         .onChange(of: record.id) {
             seeded = false
