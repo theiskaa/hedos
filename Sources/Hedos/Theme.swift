@@ -135,12 +135,26 @@ enum ThemeTOML {
         return theme
     }
 
+    private static func stripComment(_ line: String) -> String {
+        var quote: Character?
+        for index in line.indices {
+            let character = line[index]
+            if let open = quote {
+                if character == open { quote = nil }
+            } else if character == "\"" || character == "'" {
+                quote = character
+            } else if character == "#" {
+                return String(line[..<index])
+            }
+        }
+        return line
+    }
+
     private static func parse(_ source: String) -> [String: String] {
         var result: [String: String] = [:]
         var section = ""
         for rawLine in source.split(whereSeparator: \.isNewline) {
-            var line = String(rawLine)
-            if let hash = line.firstIndex(of: "#") { line = String(line[..<hash]) }
+            var line = stripComment(String(rawLine))
             line = line.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             if line.hasPrefix("[") && line.hasSuffix("]") {
