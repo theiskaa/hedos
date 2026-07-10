@@ -171,8 +171,8 @@ private func endpointRecord(port: Int, model: String = "fake-chat-1") -> ModelRe
     do {
         for try await _ in adapter.invoke(record, .chat, payload: payload) {}
         Issue.record("a 400 must surface as an error")
-    } catch let KernelError.runtimeFailed(message) {
-        #expect(message.contains("HTTP 400"))
+    } catch let KernelError.runtimeUnavailable(hint) {
+        #expect(hint.contains("HTTP 400"))
     }
     let after = try #require(try await registry.get(id: record.id))
     #expect(after.state == .ready)
