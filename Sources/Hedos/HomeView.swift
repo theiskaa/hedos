@@ -393,7 +393,7 @@ struct HomePane: View {
             parts.append(DiscoverySummary.formatBytes(Int64(mb) << 20))
         }
         if let runtime = pick.runtime.id {
-            parts.append(runtime)
+            parts.append(runtime.rawValue)
         }
         parts.append("ready")
         return parts.joined(separator: " · ")

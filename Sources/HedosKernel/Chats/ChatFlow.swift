@@ -98,7 +98,7 @@ struct ChatFlow: Sendable {
         session: ChatSession, history: [ChatMessage], retiring: [ChatTurn] = []
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let modelID = session.modelID else {
-            throw KernelError.runtimeFailed("No model is bound to this chat.")
+            throw KernelError.noBoundModel
         }
         let upstream = try await stream(modelID, history)
         let chats = chats

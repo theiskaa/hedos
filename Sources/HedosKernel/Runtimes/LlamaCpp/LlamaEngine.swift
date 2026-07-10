@@ -1,8 +1,8 @@
 import Foundation
 import LlamaSwift
 
-public actor LlamaEngine {
-    public static let shared = LlamaEngine()
+actor LlamaEngine {
+    static let shared = LlamaEngine()
 
     private static let backendReady: Void = {
         llama_log_set({ _, _, _ in }, nil)
@@ -16,19 +16,19 @@ public actor LlamaEngine {
     private var context: OpaquePointer?
     private let generationSlot = GenerationSlot()
 
-    public struct GenerationParams: Sendable {
-        public var temperature: Float
-        public var topP: Float?
-        public var maxTokens: Int
+    struct GenerationParams: Sendable {
+        var temperature: Float
+        var topP: Float?
+        var maxTokens: Int
 
-        public init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
+        init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
         }
     }
 
-    public func run(
+    func run(
         path: String,
         modelID: String,
         modelName: String,
@@ -215,7 +215,7 @@ public actor LlamaEngine {
         await governor.markLoaded(
             modelID: modelID, name: modelName, footprintMB: footprintMB
         ) {
-            await LlamaEngine.shared.unloadIfLoaded(path: path)
+            await self.unloadIfLoaded(path: path)
         }
         if let observed = Self.weightsFootprintMB(path: path) {
             await governor.observeFootprint(modelID, footprintMB: observed)
@@ -244,7 +244,7 @@ public actor LlamaEngine {
         loadedContextTokens = contextTokens
     }
 
-    public func unloadIfLoaded(path: String) {
+    func unloadIfLoaded(path: String) {
         guard loadedPath == path else { return }
         unload()
     }

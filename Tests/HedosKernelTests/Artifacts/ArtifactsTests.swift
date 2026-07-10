@@ -6,7 +6,7 @@ import Testing
 struct DeterministicImageAdapter: RuntimeAdapter, JobRunning {
     var emitPreview = true
 
-    var id: String { "fake:image" }
+    var id: RuntimeID { "fake:image" }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && capability == .image
@@ -266,7 +266,7 @@ private func seedValue(_ params: JSONValue) throws -> Int {
         !FileManager.default.fileExists(
             atPath: outputs.appendingPathComponent("\(year)/\(original.id).json").path))
 
-    await #expect(throws: KernelError.self) {
+    await #expect(throws: ArtifactStoreError.notFound(original.id)) {
         try await kernel.deleteArtifact(id: original.id)
     }
 }

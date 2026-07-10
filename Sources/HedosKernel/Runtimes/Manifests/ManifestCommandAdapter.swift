@@ -1,33 +1,38 @@
 import Darwin
 import Foundation
 
-public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
-    public let manifest: RuntimeManifest
-    public let approvedNetwork: Bool
+struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
+    let manifest: RuntimeManifest
+    let approvedNetwork: Bool
+    let workdirRoot: URL
 
-    public var id: String { manifest.id }
+    var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
-    public init(manifest: RuntimeManifest, approvedNetwork: Bool) {
+    init(
+        manifest: RuntimeManifest, approvedNetwork: Bool,
+        workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
+    ) {
         self.manifest = manifest
         self.approvedNetwork = approvedNetwork
+        self.workdirRoot = workdirRoot
     }
 
     private var networkBlocked: Bool {
         manifest.permissions.network && !approvedNetwork
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && manifest.capabilities.contains(capability)
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard let detect = manifest.detect, detect.matches(record), !networkBlocked else {
             return nil
         }
-        return RuntimeBid(tier: .managed, preference: 100, alternatives: manifest.alternatives)
+        return RuntimeBid(tier: .managed, preference: BidPreference.manifest, alternatives: manifest.alternativeIDs)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -35,8 +40,8 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
             let task = Task {
                 do {
                     guard adapter.manifest.execution != .job else {
-                        throw KernelError.runtimeFailed(
-                            "\(adapter.id) runs as jobs, not streams")
+                        throw KernelError.wrongExecutionMode(
+                            runtimeID: adapter.id, expected: .job)
                     }
                     continuation.yield(.status("Running \(adapter.id)…"))
                     let output = try await adapter.runCommand(record, payload: payload) {
@@ -55,7 +60,7 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
         }
     }
 
-    public func run(
+    func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -63,8 +68,8 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
             let task = Task {
                 do {
                     guard adapter.manifest.execution == .job else {
-                        throw KernelError.runtimeFailed(
-                            "\(adapter.id) streams, it does not run jobs")
+                        throw KernelError.wrongExecutionMode(
+                            runtimeID: adapter.id, expected: .stream)
                     }
                     continuation.yield(.status("Running \(adapter.id)…"))
                     let outputs = try await adapter.runJob(record, payload: payload) {
@@ -124,7 +129,7 @@ public struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked
 
         let envDir = try await ManifestSupport.prepareEnvironmentIfNeeded(
             manifest: manifest, progress: progress)
-        let workdir = try ManifestSupport.workdir(for: manifest)
+        let workdir = try ManifestSupport.workdir(for: manifest, root: workdirRoot)
         let outputs = workdir.appendingPathComponent("outputs", isDirectory: true)
         try? FileManager.default.removeItem(at: outputs)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)

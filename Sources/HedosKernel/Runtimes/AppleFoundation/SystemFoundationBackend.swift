@@ -1,10 +1,10 @@
 import Foundation
 import FoundationModels
 
-public struct SystemFoundationBackend: AppleFoundationBackend {
-    public init() {}
+struct SystemFoundationBackend: AppleFoundationBackend {
+    init() {}
 
-    public func availability() -> BuiltinAvailability {
+    func availability() -> BuiltinAvailability {
         switch SystemLanguageModel.default.availability {
         case .available:
             return .available
@@ -40,7 +40,7 @@ public struct SystemFoundationBackend: AppleFoundationBackend {
         )
     }
 
-    public func stream(
+    func stream(
         messages: [ChatMessage], temperature: Double?, maxTokens: Int?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         AsyncThrowingStream { continuation in

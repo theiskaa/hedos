@@ -49,12 +49,13 @@ public actor PromptStore {
             (try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
             ?? []
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = StoreCoding.decoder()
         for file in files where file.pathExtension.lowercased() == "json" {
-            guard let data = try? Data(contentsOf: file),
-                let decoded = try? decoder.decode(Prompt.self, from: data)
-            else { continue }
+            guard let data = try? Data(contentsOf: file) else { continue }
+            guard let decoded = try? decoder.decode(Prompt.self, from: data) else {
+                StoreCoding.quarantine(file)
+                continue
+            }
             let prompt =
                 decoded.id.isEmpty
                 ? decoded.identified(as: file.deletingPathExtension().lastPathComponent)
@@ -66,9 +67,6 @@ public actor PromptStore {
     private func write(_ prompt: Prompt) throws {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(prompt).write(to: fileURL(prompt.id), options: .atomic)
+        try StoreCoding.encoder().encode(prompt).write(to: fileURL(prompt.id), options: .atomic)
     }
 }

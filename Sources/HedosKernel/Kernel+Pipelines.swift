@@ -31,7 +31,7 @@ extension Kernel {
         -> AsyncStream<PipelineEvent>
     {
         guard let pipeline = await pipelineStore.get(id: id) else {
-            throw KernelError.runtimeFailed("no pipeline with id \(id)")
+            throw KernelError.pipelineNotFound(id)
         }
         return try await runPipeline(pipeline, input: input)
     }

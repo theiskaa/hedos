@@ -1,17 +1,17 @@
 import Foundation
 
-public struct AppleFoundationScanner: StoreScanner {
-    public var kinds: Set<SourceKind> { [.builtin] }
+struct AppleFoundationScanner: StoreScanner {
+    var kinds: Set<SourceKind> { [.builtin] }
 
     static let sourcePath = "/System/Library/Frameworks/FoundationModels.framework"
 
     private let backend: any AppleFoundationBackend
 
-    public init(backend: any AppleFoundationBackend = SystemFoundationBackend()) {
+    init(backend: any AppleFoundationBackend = SystemFoundationBackend()) {
         self.backend = backend
     }
 
-    public func scan() async -> ScanResult {
+    func scan() async -> ScanResult {
         switch backend.availability() {
         case .available:
             return ScanResult(discovered: [

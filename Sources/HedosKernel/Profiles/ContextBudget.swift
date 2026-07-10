@@ -13,23 +13,33 @@ public enum ContextBudget {
     }
 
     public static func effectiveWindow(
-        for record: ModelRecord, requestedContextLength: Int? = nil
+        for record: ModelRecord, requestedContextLength: Int? = nil,
+        adapter: (any RuntimeAdapter)? = nil
     ) -> Int? {
         if record.source.kind == .builtin { return 4096 }
         let window: Int?
-        switch record.runtime.id {
-        case "llama-cpp":
-            window = LlamaCppAdapter.effectiveContextTokens(
-                record: record, requested: requestedContextLength)
-        case "ollama":
-            window = requestedContextLength ?? record.contextLength
-        case "mlx-swift", "python:mlx-lm":
-            window = record.contextLength
-        default:
-            window = nil
+        if let adapter {
+            window = adapter.effectiveContextWindow(
+                for: record, requested: requestedContextLength)
+        } else {
+            window = recordPolicyWindow(for: record, requested: requestedContextLength)
         }
         guard let window, window > 0 else { return nil }
         return window
+    }
+
+    static func recordPolicyWindow(for record: ModelRecord, requested: Int?) -> Int? {
+        guard let id = record.runtime.id else { return nil }
+        switch id {
+        case .llamaCpp:
+            return LlamaCppAdapter.effectiveContextTokens(record: record, requested: requested)
+        case .ollama:
+            return requested ?? record.contextLength
+        case .mlxSwift, .mlxLm:
+            return record.contextLength
+        default:
+            return nil
+        }
     }
 
     public static func storedContextLength(of record: ModelRecord) -> Int? {

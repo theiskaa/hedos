@@ -51,7 +51,7 @@ final class LibraryViewModel {
     }
 
     func overrideRuntime(_ id: String, to runtimeID: String) async {
-        try? await kernel.overrideRuntime(id, to: runtimeID)
+        try? await kernel.overrideRuntime(id, to: RuntimeID(rawValue: runtimeID))
         await refreshShelf()
     }
 

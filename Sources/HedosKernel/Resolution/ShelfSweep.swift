@@ -183,7 +183,7 @@ public enum ShelfSweep {
     }
 
     static func isOllamaDaemonDown(_ record: ModelRecord, _ error: KernelError) -> Bool {
-        guard record.runtime.id == "ollama" else { return false }
+        guard record.runtime.id == .ollama else { return false }
         if case .runtimeUnavailable = error { return true }
         return false
     }

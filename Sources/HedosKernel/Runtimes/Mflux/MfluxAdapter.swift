@@ -1,53 +1,57 @@
 import Foundation
 
-public struct DiffusersAdapter: RuntimeAdapter, JobRunning {
-    public var id: String { "python:diffusers" }
+struct MfluxAdapter: RuntimeAdapter, JobRunning {
+    var id: RuntimeID { .mflux }
+
+    static let servedPipelineClasses: Set<String> = ["FluxPipeline"]
 
     private let governor: MemoryGovernor
     private let supervisor: SidecarSupervisor
 
-    public init(governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared) {
+    init(governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared) {
         self.governor = governor
         self.supervisor = supervisor
     }
 
-    public static func bundleDirectory() -> URL? {
-        RuntimeBundle.directory(named: "python-diffusers")
+    static func bundleDirectory() -> URL? {
+        RuntimeBundle.directory(named: "python-mflux")
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && capability == .image
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .diffusers,
             identified.modality == .image,
-            identified.capabilities.contains(.image)
+            identified.capabilities.contains(.image),
+            let pipelineClass = identified.pipelineClass,
+            Self.servedPipelineClasses.contains(pipelineClass)
         else { return nil }
-        return RuntimeBid(tier: .managed, preference: 26, alternatives: [])
+        return RuntimeBid(tier: .managed, preference: BidPreference.mflux, alternatives: [.diffusers])
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream {
             $0.finish(
-                throwing: KernelError.runtimeFailed("python:diffusers runs image generation as jobs"))
+                throwing: KernelError.wrongExecutionMode(runtimeID: .mflux, expected: .job))
         }
     }
 
-    public func run(
+    func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
         AsyncThrowingStream { continuation in
             let adapter = self
-            let runtimeID = id
+            let runtimeID = id.rawValue
             let task = Task {
                 do {
                     guard let bundle = Self.bundleDirectory(),
                         FileManager.default.fileExists(atPath: bundle.path)
                     else {
-                        throw KernelError.runtimeFailed("diffusers runtime bundle missing")
+                        throw KernelError.bundleMissing(runtimeID: .mflux)
                     }
                     continuation.yield(.status("Preparing image runtime…"))
                     let envDir = try await EnvironmentManager.shared.prepare(
@@ -117,7 +121,7 @@ public struct DiffusersAdapter: RuntimeAdapter, JobRunning {
         let workdir =
             workdir
             ?? Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/python-diffusers", isDirectory: true)
+            .appendingPathComponent("workdirs/python-mflux", isDirectory: true)
         try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
 
         return SidecarSpec(

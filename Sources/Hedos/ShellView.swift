@@ -36,8 +36,48 @@ final class ShellModel {
     var residencyBudgetMB = 0
     private var residencyTask: Task<Void, Never>?
     private var started = false
+    @ObservationIgnored private var chatModels: [String: ChatViewModel] = [:]
+    @ObservationIgnored private var chatModelOrder: [String] = []
 
     var kernel: Kernel { library.kernel }
+
+    func chatModel(for session: ChatSession) -> ChatViewModel {
+        if let cached = chatModels[session.id] {
+            chatModelOrder.removeAll { $0 == session.id }
+            chatModelOrder.append(session.id)
+            return cached
+        }
+        let model = ChatViewModel(kernel: kernel, session: session, audio: audio)
+        model.onSessionsChanged = { [weak self] in
+            Task {
+                await self?.refreshSessions()
+                await self?.gallery.load()
+            }
+        }
+        model.recordsProvider = { [weak library] in library?.records ?? [] }
+        chatModels[session.id] = model
+        chatModelOrder.append(session.id)
+        trimChatModels()
+        return model
+    }
+
+    func discardChatModel(_ sessionID: String) {
+        chatModels.removeValue(forKey: sessionID)?.stop()
+        chatModelOrder.removeAll { $0 == sessionID }
+    }
+
+    private func trimChatModels() {
+        var overflow = chatModels.count - 8
+        guard overflow > 0 else { return }
+        for id in chatModelOrder where overflow > 0 {
+            guard id != chatSelection, let model = chatModels[id],
+                !model.isWorking, !model.isTranscribing, model.draft.isEmpty
+            else { continue }
+            chatModels.removeValue(forKey: id)
+            chatModelOrder.removeAll { $0 == id }
+            overflow -= 1
+        }
+    }
 
     static let surfaces: [AppMode] = [.chat, .pipelines]
 
@@ -605,15 +645,10 @@ struct ChatPane: View {
     private var detail: some View {
         if let session = shell.session(id: shell.chatSelection) {
             ChatView(
-                session: session, library: shell.library, kernel: shell.kernel,
+                session: session, model: shell.chatModel(for: session),
+                library: shell.library, kernel: shell.kernel,
                 audio: shell.audio,
                 launch: shell.pendingLaunch,
-                onSessionsChanged: { [weak shell] in
-                    Task {
-                        await shell?.refreshSessions()
-                        await shell?.gallery.load()
-                    }
-                },
                 onOpenArtifacts: { [weak shell] reference in
                     shell?.showArtifact(reference)
                 },
@@ -844,15 +879,16 @@ struct ChatSessionsColumn: View {
 
     @ViewBuilder
     private func rowActions(_ session: ChatSession) -> some View {
+        let live = shell.session(id: session.id) ?? session
         Button("Rename…") {
-            renameTitle = session.title
-            renaming = session
+            renameTitle = live.title
+            renaming = live
         }
-        Button(session.pinned ? "Unpin" : "Pin") {
-            setPinned(session, !session.pinned)
+        Button(live.pinned ? "Unpin" : "Pin") {
+            setPinned(live, !live.pinned)
         }
-        Button(session.archived ? "Unarchive" : "Archive") {
-            setArchived(session, !session.archived)
+        Button(live.archived ? "Unarchive" : "Archive") {
+            setArchived(live, !live.archived)
         }
         Divider()
         if shell.settings.chat.exportFormat == .json {
@@ -912,9 +948,16 @@ struct ChatSessionsColumn: View {
     }
 
     private func delete(_ session: ChatSession) {
-        mutate { try await $0.deleteSession(id: session.id) }
-        if shell.chatSelection == session.id {
-            shell.selectChat(nil)
+        let shell = shell
+        Task {
+            do {
+                try await shell.kernel.chats.deleteSession(id: session.id)
+                shell.discardChatModel(session.id)
+                if shell.chatSelection == session.id {
+                    shell.selectChat(nil)
+                }
+            } catch {}
+            await shell.refreshSessions()
         }
     }
 

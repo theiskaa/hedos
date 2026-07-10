@@ -1,13 +1,13 @@
 import Foundation
 
-public actor SidecarWhisperBackend: WhisperBackend {
-    public typealias SpecFactory = @Sendable (String) async throws -> SidecarSpec
+actor SidecarWhisperBackend: WhisperBackend {
+    typealias SpecFactory = @Sendable (String) async throws -> SidecarSpec
 
     private let supervisor: SidecarSupervisor
     private let specFactory: SpecFactory
     private var spec: SidecarSpec?
 
-    public init(
+    init(
         supervisor: SidecarSupervisor = .shared,
         specFactory: @escaping SpecFactory = SidecarWhisperBackend.bundleSpec
     ) {
@@ -15,21 +15,21 @@ public actor SidecarWhisperBackend: WhisperBackend {
         self.specFactory = specFactory
     }
 
-    public func load(path: String) async throws {
+    func load(path: String) async throws {
         await unload()
         let next = try await specFactory(path)
         try await supervisor.ensureRunning(next)
         spec = next
     }
 
-    public func unload() async {
+    func unload() async {
         if let spec {
             await supervisor.shutdown(spec.runtimeID)
         }
         spec = nil
     }
 
-    public nonisolated func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error> {
+    nonisolated func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -68,12 +68,12 @@ public actor SidecarWhisperBackend: WhisperBackend {
         }
     }
 
-    public static func bundleSpec(path: String) async throws -> SidecarSpec {
+    static func bundleSpec(path: String) async throws -> SidecarSpec {
         let runtimeID = "python:whisper-cpp"
         guard let bundle = RuntimeBundle.directory(named: "python-whisper-cpp"),
             FileManager.default.fileExists(atPath: bundle.path)
         else {
-            throw KernelError.runtimeFailed("whisper runtime bundle missing")
+            throw KernelError.bundleMissing(runtimeID: .whisperCpp)
         }
         let envDir = try await EnvironmentManager.shared.prepare(
             runtimeID: runtimeID,

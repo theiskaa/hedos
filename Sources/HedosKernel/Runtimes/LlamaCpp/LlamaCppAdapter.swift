@@ -1,12 +1,14 @@
 import Foundation
 
-public struct LlamaCppAdapter: RuntimeAdapter {
-    public var id: String { "llama-cpp" }
+struct LlamaCppAdapter: RuntimeAdapter {
+    var id: RuntimeID { .llamaCpp }
 
     private let governor: MemoryGovernor
+    private let engine: LlamaEngine
 
-    public init(governor: MemoryGovernor = .shared) {
+    init(governor: MemoryGovernor = .shared, engine: LlamaEngine = .shared) {
         self.governor = governor
+        self.engine = engine
     }
 
     static func effectiveContextTokens(record: ModelRecord, requested: Int?) -> Int {
@@ -14,6 +16,10 @@ public struct LlamaCppAdapter: RuntimeAdapter {
         let cappedDefault = min(base, 32768)
         let lower = min(512, base)
         return min(max(requested ?? cappedDefault, lower), base)
+    }
+
+    func effectiveContextWindow(for record: ModelRecord, requested: Int?) -> Int? {
+        Self.effectiveContextTokens(record: record, requested: requested)
     }
 
     static func params(from object: [String: JSONValue]) -> LlamaEngine.GenerationParams {
@@ -30,20 +36,20 @@ public struct LlamaCppAdapter: RuntimeAdapter {
         return params
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         guard capability == .chat || capability == .complete else { return false }
         if let runtimeID = record.runtime.id { return runtimeID == id }
         return false
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .gguf, identified.capabilities.contains(.chat) else {
             return nil
         }
-        return RuntimeBid(tier: .native, preference: 10)
+        return RuntimeBid(tier: .native, preference: BidPreference.llamaCpp)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -65,11 +71,12 @@ public struct LlamaCppAdapter: RuntimeAdapter {
             }
             let expanded = (path as NSString).expandingTildeInPath
             let governor = governor
+            let engine = engine
             let params = Self.params(from: object)
             let contextTokens = Self.effectiveContextTokens(
                 record: record, requested: object["context_length"]?.intValue)
             let task = Task {
-                await LlamaEngine.shared.run(
+                await engine.run(
                     path: expanded,
                     modelID: record.id,
                     modelName: record.name,

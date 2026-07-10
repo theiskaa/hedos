@@ -1,14 +1,14 @@
 import CryptoKit
 import Foundation
 
-public struct UserRuntimeStore: Sendable {
-    public let directory: URL
+struct UserRuntimeStore: Sendable {
+    let directory: URL
 
-    public init(directory: URL) {
+    init(directory: URL) {
         self.directory = directory
     }
 
-    public func load(reservedIDs: Set<String>) -> (manifests: [RuntimeManifest], issues: [String]) {
+    func load(reservedIDs: Set<String>) -> (manifests: [RuntimeManifest], issues: [String]) {
         let fm = FileManager.default
         guard
             let entries = try? fm.contentsOfDirectory(
@@ -84,7 +84,7 @@ public struct UserRuntimeStore: Sendable {
         return (manifests, issues)
     }
 
-    public static func contentHash(for text: String) -> String {
+    static func contentHash(for text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }

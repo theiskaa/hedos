@@ -3,7 +3,7 @@ import Testing
 
 @testable import HedosKernel
 
-private func windowedChatRecord(runtimeID: String, window: Int?) -> ModelRecord {
+private func windowedChatRecord(runtimeID: RuntimeID, window: Int?) -> ModelRecord {
     var record = Fixtures.gguf()
     record.runtime = RuntimeRef(id: runtimeID, resolved: .user, tier: .native)
     record.contextLength = window

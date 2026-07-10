@@ -3,9 +3,9 @@ import Foundation
 public struct RuntimeBid: Sendable, Hashable {
     public var tier: RunTier
     public var preference: Int
-    public var alternatives: [String]
+    public var alternatives: [RuntimeID]
 
-    public init(tier: RunTier, preference: Int, alternatives: [String] = []) {
+    public init(tier: RunTier, preference: Int, alternatives: [RuntimeID] = []) {
         self.tier = tier
         self.preference = preference
         self.alternatives = alternatives
@@ -13,11 +13,11 @@ public struct RuntimeBid: Sendable, Hashable {
 }
 
 public struct AdapterBidReport: Sendable, Hashable {
-    public var adapterID: String
+    public var adapterID: RuntimeID
     public var tier: RunTier
     public var preference: Int
 
-    public init(adapterID: String, tier: RunTier, preference: Int) {
+    public init(adapterID: RuntimeID, tier: RunTier, preference: Int) {
         self.adapterID = adapterID
         self.tier = tier
         self.preference = preference
@@ -29,7 +29,7 @@ public struct ResolutionExplanation: Sendable {
     public var identified: IdentifiedModel
     public var bids: [AdapterBidReport]
 
-    public var winner: String? { bids.first?.adapterID }
+    public var winner: RuntimeID? { bids.first?.adapterID }
 
     public init(record: ModelRecord, identified: IdentifiedModel, bids: [AdapterBidReport]) {
         self.record = record
@@ -141,8 +141,8 @@ public actor ResolutionEngine {
 
     private func collectBids(
         _ record: ModelRecord, _ identified: IdentifiedModel
-    ) -> [(id: String, bid: RuntimeBid)] {
-        adapters.compactMap { adapter -> (id: String, bid: RuntimeBid)? in
+    ) -> [(id: RuntimeID, bid: RuntimeBid)] {
+        adapters.compactMap { adapter -> (id: RuntimeID, bid: RuntimeBid)? in
             guard let bid = adapter.bid(record, identified) else { return nil }
             return (adapter.id, bid)
         }

@@ -120,12 +120,9 @@ public actor GatewayClientStore {
             loaded = true
             return
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let decoded = try? decoder.decode([GatewayClient].self, from: data) else {
-            let quarantineURL = fileURL.deletingLastPathComponent()
-                .appendingPathComponent("clients.json.corrupt-\(Int(Date().timeIntervalSince1970))")
-            try? FileManager.default.moveItem(at: fileURL, to: quarantineURL)
+        guard let decoded = try? StoreCoding.decoder().decode([GatewayClient].self, from: data)
+        else {
+            StoreCoding.quarantine(fileURL)
             loaded = true
             return
         }
@@ -139,9 +136,6 @@ public actor GatewayClientStore {
     private func persist() throws {
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(clients).write(to: fileURL, options: .atomic)
+        try StoreCoding.encoder().encode(clients).write(to: fileURL, options: .atomic)
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
-public enum OllamaStreamParser {
-    public static func parse(line: String) -> CapabilityChunk? {
+enum OllamaStreamParser {
+    static func parse(line: String) -> CapabilityChunk? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty,
             let object = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))

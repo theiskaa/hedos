@@ -15,7 +15,7 @@ import Testing
         for runtime in runtimes {
             if let match = shelf.first(where: {
                 $0.state == .ready && $0.capabilities.contains(capability)
-                    && $0.runtime.id == runtime
+                    && $0.runtime.id?.rawValue == runtime
             }) {
                 return match
             }

@@ -1,23 +1,27 @@
 import Foundation
 
-public struct OllamaResident: Hashable, Sendable, Decodable {
-    public let name: String
-    public let size: Int64
+struct OllamaResident: Hashable, Sendable, Decodable {
+    let name: String
+    let size: Int64
 
-    public var sizeMB: Int {
+    var sizeMB: Int {
         Int(size >> 20)
     }
 }
 
-public struct OllamaAdapter: RuntimeAdapter {
-    public var id: String { "ollama" }
-    public let baseURL: URL
+struct OllamaAdapter: RuntimeAdapter {
+    var id: RuntimeID { .ollama }
+    let baseURL: URL
 
-    public init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!) {
+    init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!) {
         self.baseURL = baseURL
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func effectiveContextWindow(for record: ModelRecord, requested: Int?) -> Int? {
+        requested ?? record.contextLength
+    }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         guard capability == .chat || capability == .complete || capability == .embed else {
             return false
         }
@@ -28,12 +32,12 @@ public struct OllamaAdapter: RuntimeAdapter {
         return record.source.kind == .ollama
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .ollamaStore else { return nil }
-        return RuntimeBid(tier: .native, preference: 20)
+        return RuntimeBid(tier: .native, preference: BidPreference.ollama)
     }
 
-    public static func daemonBinary() -> URL? {
+    static func daemonBinary() -> URL? {
         let candidates = [
             "/usr/local/bin/ollama",
             "/opt/homebrew/bin/ollama",
@@ -43,7 +47,7 @@ public struct OllamaAdapter: RuntimeAdapter {
             .map { URL(fileURLWithPath: $0) }
     }
 
-    public func loadedModels() async -> [OllamaResident] {
+    func loadedModels() async -> [OllamaResident] {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/ps"))
         request.timeoutInterval = 2
         guard let (data, _) = try? await URLSession.shared.data(for: request) else {
@@ -52,14 +56,14 @@ public struct OllamaAdapter: RuntimeAdapter {
         return Self.parseLoadedModels(data)
     }
 
-    public static func parseLoadedModels(_ data: Data) -> [OllamaResident] {
+    static func parseLoadedModels(_ data: Data) -> [OllamaResident] {
         struct Payload: Decodable {
             let models: [OllamaResident]
         }
         return (try? JSONDecoder().decode(Payload.self, from: data))?.models ?? []
     }
 
-    public func startDaemon() async throws {
+    func startDaemon() async throws {
         guard let binary = Self.daemonBinary() else {
             throw KernelError.runtimeUnavailable(
                 hint: "Ollama isn't installed. Get it from ollama.com.")
@@ -86,7 +90,7 @@ public struct OllamaAdapter: RuntimeAdapter {
             hint: "Started Ollama but it never became reachable.")
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         capability == .embed

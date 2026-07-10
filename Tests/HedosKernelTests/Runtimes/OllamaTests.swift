@@ -188,7 +188,7 @@ private final class TerminationFlag: @unchecked Sendable {
 }
 
 private struct FakeAdapter: RuntimeAdapter {
-    var id: String { "fake" }
+    var id: RuntimeID { "fake" }
     let chunks: [CapabilityChunk]
     let delayNs: UInt64
     let terminated: TerminationFlag

@@ -3,27 +3,27 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 
-public actor MlxSwiftEngine {
-    public static let shared = MlxSwiftEngine()
+actor MlxSwiftEngine {
+    static let shared = MlxSwiftEngine()
 
     private var loadedPath: String?
     private var loadedModelID: String?
     private var container: ModelContainer?
     private let generationSlot = GenerationSlot()
 
-    public struct GenerationParams: Sendable {
-        public var temperature: Float
-        public var topP: Float?
-        public var maxTokens: Int
+    struct GenerationParams: Sendable {
+        var temperature: Float
+        var topP: Float?
+        var maxTokens: Int
 
-        public init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
+        init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
         }
     }
 
-    public func run(
+    func run(
         path: String,
         modelID: String,
         modelName: String,
@@ -187,7 +187,7 @@ public actor MlxSwiftEngine {
         await governor.markLoaded(
             modelID: modelID, name: modelName, footprintMB: footprintMB
         ) {
-            await MlxSwiftEngine.shared.unloadIfLoaded(path: path)
+            await self.unloadIfLoaded(path: path)
         }
         if let observed = Self.directoryFootprintMB(path: path) {
             await governor.observeFootprint(modelID, footprintMB: observed)
@@ -206,7 +206,7 @@ public actor MlxSwiftEngine {
         Self.applyCacheLimit(footprintMB: footprintMB)
     }
 
-    public func unloadIfLoaded(path: String) {
+    func unloadIfLoaded(path: String) {
         guard loadedPath == path else { return }
         unload()
     }

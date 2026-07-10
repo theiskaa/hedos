@@ -8,7 +8,7 @@ private func sweepRecord(
     capabilities: [Capability],
     state: ModelState = .ready,
     sourceKind: SourceKind = .file,
-    runtimeID: String? = nil
+    runtimeID: RuntimeID? = nil
 ) -> ModelRecord {
     ModelRecord(
         name: name,

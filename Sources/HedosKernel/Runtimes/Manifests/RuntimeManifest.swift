@@ -100,7 +100,7 @@ public struct RuntimeManifest: Sendable, Hashable {
     public var provenance: RuntimeProvenance?
     public var contentHash: String?
 
-    public static func load(table: TOMLTable, directory: URL?) throws -> RuntimeManifest {
+    static func load(table: TOMLTable, directory: URL?) throws -> RuntimeManifest {
         guard let id = table["id"]?.stringValue, !id.isEmpty else {
             throw ManifestValidationError(message: "manifest is missing an id")
         }

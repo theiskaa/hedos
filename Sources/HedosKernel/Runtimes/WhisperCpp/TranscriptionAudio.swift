@@ -1,15 +1,15 @@
 import Foundation
 
-public struct TranscriptionAudio: Sendable, Hashable {
-    public var samples: [Float]
-    public var sampleRate: Int
+struct TranscriptionAudio: Sendable, Hashable {
+    var samples: [Float]
+    var sampleRate: Int
 
-    public init(samples: [Float], sampleRate: Int) {
+    init(samples: [Float], sampleRate: Int) {
         self.samples = samples
         self.sampleRate = sampleRate
     }
 
-    public static func from(payload: JSONValue) throws -> TranscriptionAudio {
+    static func from(payload: JSONValue) throws -> TranscriptionAudio {
         guard case .object(let fields) = payload else {
             throw KernelError.runtimeFailed("transcribe payload must be an object")
         }
@@ -30,14 +30,14 @@ public struct TranscriptionAudio: Sendable, Hashable {
             "transcribe payload must carry an audio path or pcm frames")
     }
 
-    public static func fromWAVFile(_ url: URL) throws -> TranscriptionAudio {
+    static func fromWAVFile(_ url: URL) throws -> TranscriptionAudio {
         guard let data = try? Data(contentsOf: url) else {
             throw KernelError.runtimeFailed("could not read audio at \(url.path)")
         }
         return try fromWAVData(data)
     }
 
-    public static func fromWAVData(_ data: Data) throws -> TranscriptionAudio {
+    static func fromWAVData(_ data: Data) throws -> TranscriptionAudio {
         guard data.count >= 12,
             data[0..<4] == Data("RIFF".utf8),
             data[8..<12] == Data("WAVE".utf8)
@@ -76,7 +76,7 @@ public struct TranscriptionAudio: Sendable, Hashable {
         throw KernelError.runtimeFailed("wave file has no data chunk")
     }
 
-    public func monoSamples(targetSampleRate: Int) -> [Float] {
+    func monoSamples(targetSampleRate: Int) -> [Float] {
         guard sampleRate != targetSampleRate, !samples.isEmpty, targetSampleRate > 0 else {
             return samples
         }

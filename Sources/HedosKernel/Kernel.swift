@@ -5,11 +5,15 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case modelNotFound(String)
     case artifactNotFound(String)
     case promptNotFound(String)
+    case pipelineNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case paramUnsupported(model: String, key: String)
     case runtimeUnavailable(hint: String)
     case runtimeFailed(String)
     case contextExceeded(model: String)
+    case bundleMissing(runtimeID: RuntimeID)
+    case wrongExecutionMode(runtimeID: RuntimeID, expected: ExecutionMode)
+    case noBoundModel
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +25,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "No artifact with id \(id) is stored."
         case .promptNotFound(let id):
             "No prompt with id \(id) is stored."
+        case .pipelineNotFound(let id):
+            "No pipeline with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
             "\(model) has no runtime for \(capability.rawValue)."
         case .paramUnsupported(let model, let key):
@@ -31,6 +37,14 @@ public enum KernelError: Error, Sendable, LocalizedError {
             message
         case .contextExceeded(let model):
             "This conversation no longer fits \(model)'s context window. Start a new chat or switch to a model with a larger window."
+        case .bundleMissing(let runtimeID):
+            "The \(runtimeID) runtime bundle is missing."
+        case .wrongExecutionMode(let runtimeID, let expected):
+            expected == .job
+                ? "\(runtimeID) runs as jobs, not streams."
+                : "\(runtimeID) streams, it does not run jobs."
+        case .noBoundModel:
+            "No model is bound to this chat."
         }
     }
 }
@@ -138,24 +152,28 @@ public actor Kernel {
 
     private func reloadUserRuntimes() async -> [String] {
         let models = await settings.models()
-        let reserved = Set(baseAdapters.map(\.id))
+        let reserved = Set(baseAdapters.map(\.id.rawValue))
         let store = UserRuntimeStore(
             directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
         let (manifests, issues) = store.load(reservedIDs: reserved)
+        let workdirRoot = directory.appendingPathComponent("workdirs", isDirectory: true)
         var manifestAdapters: [any RuntimeAdapter] = []
         for manifest in manifests {
             let approvedNetwork = Self.isNetworkApproved(manifest, in: models)
             if manifest.vm != nil {
-                manifestAdapters.append(VMCommandAdapter(manifest: manifest, host: vmHost))
+                manifestAdapters.append(
+                    VMCommandAdapter(
+                        manifest: manifest, host: vmHost, workdirRoot: workdirRoot))
             } else if manifest.serve != nil {
                 manifestAdapters.append(
                     ManifestSidecarAdapter(
                         manifest: manifest, approvedNetwork: approvedNetwork,
-                        governor: governor))
+                        governor: governor, workdirRoot: workdirRoot))
             } else {
                 manifestAdapters.append(
                     ManifestCommandAdapter(
-                        manifest: manifest, approvedNetwork: approvedNetwork))
+                        manifest: manifest, approvedNetwork: approvedNetwork,
+                        workdirRoot: workdirRoot))
             }
         }
         adapters = baseAdapters + manifestAdapters
@@ -308,7 +326,7 @@ public actor Kernel {
         let models = await settings.models()
         let store = UserRuntimeStore(
             directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
+        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
         for manifest in manifests
         where manifest.permissions.network && !Self.isNetworkApproved(manifest, in: models) {
             if manifest.detect?.matches(record) == true {
@@ -326,7 +344,7 @@ public actor Kernel {
     public func approveNetworkRuntime(_ id: String) async throws {
         let store = UserRuntimeStore(
             directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
+        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
         let contentHash = manifests.first(where: { $0.id == id })?.contentHash
         _ = try await settings.approveNetworkRuntime(id, contentHash: contentHash)
         _ = await reloadUserRuntimes()
@@ -336,7 +354,7 @@ public actor Kernel {
     private var manifestInstaller: ManifestInstaller {
         ManifestInstaller(
             runtimesDirectory: directory.appendingPathComponent("runtimes.d", isDirectory: true),
-            reservedIDs: Set(baseAdapters.map(\.id)))
+            reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
     }
 
     public func previewRuntimeInstall(from source: URL) async throws -> RuntimeInstallPreview {
@@ -359,7 +377,7 @@ public actor Kernel {
     public func installedRuntimes() async -> [RuntimeManifest] {
         let store = UserRuntimeStore(
             directory: directory.appendingPathComponent("runtimes.d", isDirectory: true))
-        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id)))
+        let (manifests, _) = store.load(reservedIDs: Set(baseAdapters.map(\.id.rawValue)))
         return manifests.filter { $0.provenance?.isCommunity == true }
     }
 
@@ -380,7 +398,7 @@ public actor Kernel {
             capabilities: [.chat, .complete],
             source: ModelSource(kind: .endpoint, path: base, repo: model),
             runtime: RuntimeRef(
-                id: "generic:openai-server", resolved: .user, tier: .remote,
+                id: .openAIEndpoint, resolved: .user, tier: .remote,
                 confirmedAt: Date()),
             params: Identification.endpointParams,
             execution: .stream,
@@ -460,10 +478,11 @@ public actor Kernel {
         guard
             let window = ContextBudget.effectiveWindow(
                 for: record,
-                requestedContextLength: ContextBudget.storedContextLength(of: record))
+                requestedContextLength: ContextBudget.storedContextLength(of: record),
+                adapter: adapters.first(where: { $0.id == record.runtime.id }))
         else { return nil }
         guard let transcript = try await chats.session(id: sessionID) else {
-            throw KernelError.runtimeFailed("no chat session with id \(sessionID)")
+            throw ChatStoreError.sessionNotFound(sessionID)
         }
         let fallbackPrompt = try? await chatSettings().defaultSystemPrompt
         let systemPrompt = record.systemPrompt ?? (fallbackPrompt ?? nil)
@@ -554,12 +573,12 @@ public actor Kernel {
         try await registry.register(record)
     }
 
-    public func overrideRuntime(_ modelID: String, to runtimeID: String) async throws {
+    public func overrideRuntime(_ modelID: String, to runtimeID: RuntimeID) async throws {
         guard var record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
         }
         let identified = Identification.identify(record)
-        let bids = adapters.compactMap { adapter -> (id: String, bid: RuntimeBid)? in
+        let bids = adapters.compactMap { adapter -> (id: RuntimeID, bid: RuntimeBid)? in
             guard let bid = adapter.bid(record, identified) else { return nil }
             return (adapter.id, bid)
         }
@@ -610,7 +629,8 @@ public actor Kernel {
         if capability == .chat || capability == .complete,
             case .object(var object) = configured,
             let window = ContextBudget.effectiveWindow(
-                for: record, requestedContextLength: object["context_length"]?.intValue)
+                for: record, requestedContextLength: object["context_length"]?.intValue,
+                adapter: adapter)
         {
             let requestedMaxTokens = object["max_tokens"]?.intValue
             let verdict = ContextBudget.assess(
@@ -706,7 +726,7 @@ public actor Kernel {
             fileExtension: "wav",
             model: record.name,
             modelID: modelID,
-            runtime: record.runtime.id ?? "",
+            runtime: record.runtime.id?.rawValue ?? "",
             capability: .speak,
             params: .object([
                 "text": .string(text),

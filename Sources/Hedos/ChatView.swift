@@ -80,6 +80,8 @@ final class ChatViewModel {
     var transcript: [Entry] = []
     var draft = ""
     var isStreaming = false
+    var isTranscribing = false
+    var isVisible = true
     var notice: String?
     var canStartOllama = false
     var boundModelID: String?
@@ -110,7 +112,7 @@ final class ChatViewModel {
     }
 
     func load() async {
-        if let stored = try? await kernel.chats.session(id: sessionID) {
+        if !isStreaming, let stored = try? await kernel.chats.session(id: sessionID) {
             apply(stored)
         }
         defaultModelID = (try? await kernel.defaultChatModelID()) ?? nil
@@ -626,15 +628,26 @@ final class ChatViewModel {
 
     func teardown() {
         streamTask?.cancel()
+        isStreaming = false
+        suspend()
+    }
+
+    func suspend() {
+        isVisible = false
         speakTask?.cancel()
         if let speakLiveID {
             audio.dismissIfActive(speakLiveID)
         }
         speakLiveID = nil
         stopTicker()
-        isStreaming = false
         isSpeaking = false
         pendingSpeech = nil
+    }
+
+    func resumeUI() {
+        isVisible = true
+        guard isStreaming else { return }
+        startTicker()
     }
 
     func stopVoicePreview() {
@@ -656,6 +669,7 @@ final class ChatViewModel {
             return
         }
         notice = "Transcribing \(url.lastPathComponent)…"
+        isTranscribing = true
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -671,6 +685,7 @@ final class ChatViewModel {
             } catch {
                 notice = error.localizedDescription
             }
+            isTranscribing = false
         }
     }
 
@@ -922,7 +937,7 @@ final class ChatViewModel {
         let kernel = kernel
         Task { [weak self] in
             guard await kernel.voiceSettings().autoSpeak else { return }
-            guard let self, !isStreaming, speakingEntryID == nil,
+            guard let self, isVisible, !isStreaming, speakingEntryID == nil,
                 let last = transcript.last, last.role == .assistant, !last.text.isEmpty
             else { return }
             toggleReadAloud(last)
@@ -943,7 +958,7 @@ struct ChatView: View {
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.transcriptSpacing) private var transcriptSpacing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var model: ChatViewModel
+    @Bindable var model: ChatViewModel
     @State private var followsStream = true
     @State private var expandedThinking: Set<String> = []
     @State private var versionSelection: [String: Int] = [:]
@@ -955,15 +970,16 @@ struct ChatView: View {
     @State private var showParams = false
 
     init(
-        session: ChatSession, library: LibraryViewModel, kernel: Kernel,
+        session: ChatSession, model: ChatViewModel, library: LibraryViewModel,
+        kernel: Kernel,
         audio: AudioSession,
         launch: ShellModel.PendingLaunch? = nil,
-        onSessionsChanged: (() -> Void)? = nil,
         onOpenArtifacts: ((String) -> Void)? = nil,
         onNewChat: (() -> Void)? = nil,
         onLaunchConsumed: (() -> Void)? = nil
     ) {
         self.session = session
+        self.model = model
         self.library = library
         self.kernel = kernel
         self.audio = audio
@@ -971,10 +987,6 @@ struct ChatView: View {
         self.onOpenArtifacts = onOpenArtifacts
         self.onNewChat = onNewChat
         self.onLaunchConsumed = onLaunchConsumed
-        let viewModel = ChatViewModel(kernel: kernel, session: session, audio: audio)
-        viewModel.onSessionsChanged = onSessionsChanged
-        viewModel.recordsProvider = { [weak library] in library?.records ?? [] }
-        _model = State(initialValue: viewModel)
     }
 
     private var boundRecord: ModelRecord? {
@@ -1005,7 +1017,10 @@ struct ChatView: View {
             aux: { composerAux },
             chip: { modelChip }
         )
-        .task(id: session.id) { await model.load() }
+        .task(id: session.id) {
+            model.resumeUI()
+            await model.load()
+        }
         .task(id: library.shelfSignature) { await model.adoptBindings(in: library.records) }
         .task(id: launch) { await applyLaunch() }
         .dropDestination(for: URL.self) { urls, _ in
@@ -1014,7 +1029,7 @@ struct ChatView: View {
             return true
         }
         .onDisappear {
-            model.teardown()
+            model.suspend()
             model.stopReadAloud()
             model.stopVoicePreview()
             voiceConversation.stop()

@@ -1,37 +1,40 @@
 import Foundation
 
-public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
-    public let manifest: RuntimeManifest
-    public let approvedNetwork: Bool
+struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
+    let manifest: RuntimeManifest
+    let approvedNetwork: Bool
+    let workdirRoot: URL
 
     private let governor: MemoryGovernor
     private let supervisor: SidecarSupervisor
 
-    public var id: String { manifest.id }
+    var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
-    public init(
+    init(
         manifest: RuntimeManifest, approvedNetwork: Bool,
-        governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared
+        governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared,
+        workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
     ) {
         self.manifest = manifest
         self.approvedNetwork = approvedNetwork
         self.governor = governor
         self.supervisor = supervisor
+        self.workdirRoot = workdirRoot
     }
 
     private var networkBlocked: Bool {
         manifest.permissions.network && !approvedNetwork
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && manifest.capabilities.contains(capability)
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard let detect = manifest.detect, detect.matches(record), !networkBlocked else {
             return nil
         }
-        return RuntimeBid(tier: .managed, preference: 100, alternatives: manifest.alternatives)
+        return RuntimeBid(tier: .managed, preference: BidPreference.manifest, alternatives: manifest.alternativeIDs)
     }
 
     func spec(record: ModelRecord, envDir: URL?) throws -> SidecarSpec {
@@ -44,7 +47,7 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
         else {
             throw KernelError.runtimeFailed("generic sandbox profile missing")
         }
-        let workdir = try ManifestSupport.workdir(for: manifest)
+        let workdir = try ManifestSupport.workdir(for: manifest, root: workdirRoot)
         let paths = SidecarModelPaths.resolve(record)
         let python =
             envDir?.appendingPathComponent("bin/python").path ?? "/usr/bin/python3"
@@ -65,7 +68,7 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
             cooperativeCancel: manifest.execution == .stream)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -113,7 +116,7 @@ public struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked
         }
     }
 
-    public func run(
+    func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
         AsyncThrowingStream { continuation in

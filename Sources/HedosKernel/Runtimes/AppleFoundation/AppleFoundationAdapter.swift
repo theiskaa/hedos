@@ -1,25 +1,25 @@
 import Foundation
 
-public struct AppleFoundationAdapter: RuntimeAdapter {
-    public var id: String { "apple-foundation" }
+struct AppleFoundationAdapter: RuntimeAdapter {
+    var id: RuntimeID { .appleFoundation }
 
     private let backend: any AppleFoundationBackend
     private let registry: Registry?
 
-    public init(
+    init(
         backend: any AppleFoundationBackend = SystemFoundationBackend(), registry: Registry? = nil
     ) {
         self.backend = backend
         self.registry = registry
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && (capability == .chat || capability == .complete)
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .builtin else { return nil }
-        return RuntimeBid(tier: .native, preference: 15)
+        return RuntimeBid(tier: .native, preference: BidPreference.appleFoundation)
     }
 
     static func delta(previous: String, current: String) -> String {
@@ -50,7 +50,7 @@ public struct AppleFoundationAdapter: RuntimeAdapter {
         }
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in

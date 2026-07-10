@@ -3,7 +3,7 @@ import Testing
 
 @testable import HedosKernel
 
-private func runtimeRecord(_ runtimeID: String?, window: Int?) -> ModelRecord {
+private func runtimeRecord(_ runtimeID: RuntimeID?, window: Int?) -> ModelRecord {
     var record = Fixtures.gguf()
     if let runtimeID {
         record.runtime = RuntimeRef(id: runtimeID, resolved: .auto, tier: .native)
@@ -20,39 +20,62 @@ private func runtimeRecord(_ runtimeID: String?, window: Int?) -> ModelRecord {
     #expect(ContextBudget.estimatedTokens(characters: 4000) == 1000)
 }
 
-@Test func effectiveWindowFollowsEachRuntime() {
+@Test func effectiveWindowFollowsEachRuntimeAdapter() {
     #expect(
-        ContextBudget.effectiveWindow(for: runtimeRecord("llama-cpp", window: 131072)) == 32768)
-    #expect(ContextBudget.effectiveWindow(for: runtimeRecord("llama-cpp", window: nil)) == 4096)
-    #expect(ContextBudget.effectiveWindow(for: runtimeRecord("ollama", window: 8192)) == 8192)
-    #expect(ContextBudget.effectiveWindow(for: runtimeRecord("ollama", window: nil)) == nil)
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.llamaCpp, window: 131072), adapter: LlamaCppAdapter()) == 32768)
     #expect(
-        ContextBudget.effectiveWindow(for: runtimeRecord("mlx-swift", window: 40960)) == 40960)
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.llamaCpp, window: nil), adapter: LlamaCppAdapter()) == 4096)
     #expect(
-        ContextBudget.effectiveWindow(for: runtimeRecord("python:mlx-lm", window: 40960)) == 40960)
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.ollama, window: 8192), adapter: OllamaAdapter()) == 8192)
     #expect(
-        ContextBudget.effectiveWindow(for: runtimeRecord("generic:openai-server", window: nil))
-            == nil)
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.ollama, window: nil), adapter: OllamaAdapter()) == nil)
+    #expect(
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.mlxSwift, window: 40960), adapter: MlxSwiftAdapter()) == 40960)
+    #expect(
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.mlxLm, window: 40960), adapter: MlxLmAdapter()) == 40960)
+    #expect(
+        ContextBudget.effectiveWindow(for: runtimeRecord(.openAIEndpoint, window: nil)) == nil)
 
     var builtin = ModelRecord(
         name: "Apple Intelligence", modality: .text, capabilities: [.chat, .complete],
         source: ModelSource(kind: .builtin, path: "framework://FoundationModels"))
-    builtin.runtime = RuntimeRef(id: "apple-foundation", resolved: .auto, tier: .native)
+    builtin.runtime = RuntimeRef(id: .appleFoundation, resolved: .auto, tier: .native)
     #expect(ContextBudget.effectiveWindow(for: builtin) == 4096)
 }
 
-@Test func knobOverrideFeedsTheWindow() {
-    let record = runtimeRecord("llama-cpp", window: 131072)
+@Test func missingAdapterFallsBackToRecordPolicy() {
     #expect(
-        ContextBudget.effectiveWindow(for: record, requestedContextLength: 65536) == 65536)
+        ContextBudget.effectiveWindow(for: runtimeRecord(.llamaCpp, window: 131072)) == 32768)
+    #expect(ContextBudget.effectiveWindow(for: runtimeRecord(.llamaCpp, window: nil)) == 4096)
+    #expect(
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.ollama, window: nil), requestedContextLength: 8192) == 8192)
+    #expect(ContextBudget.effectiveWindow(for: runtimeRecord(.mlxSwift, window: 40960)) == 40960)
+    #expect(
+        ContextBudget.effectiveWindow(for: runtimeRecord(.openAIEndpoint, window: 8192)) == nil)
+    #expect(ContextBudget.effectiveWindow(for: runtimeRecord(nil, window: 8192)) == nil)
+}
 
-    let ollama = runtimeRecord("ollama", window: nil)
+@Test func knobOverrideFeedsTheWindow() {
+    let record = runtimeRecord(.llamaCpp, window: 131072)
     #expect(
-        ContextBudget.effectiveWindow(for: ollama, requestedContextLength: 8192) == 8192)
+        ContextBudget.effectiveWindow(
+            for: record, requestedContextLength: 65536, adapter: LlamaCppAdapter()) == 65536)
+
+    let ollama = runtimeRecord(.ollama, window: nil)
+    #expect(
+        ContextBudget.effectiveWindow(
+            for: ollama, requestedContextLength: 8192, adapter: OllamaAdapter()) == 8192)
 }
 
 @Test func storedOverrideIsNormalizedAgainstItsSpec() {
-    var record = runtimeRecord("llama-cpp", window: 8192)
+    var record = runtimeRecord(.llamaCpp, window: 8192)
     record.params = [
         ParamSpec(
             key: "context_length", type: .int,
@@ -66,11 +89,16 @@ private func runtimeRecord(_ runtimeID: String?, window: Int?) -> ModelRecord {
 }
 
 @Test func nonPositiveWindowYieldsNoBudget() {
-    #expect(ContextBudget.effectiveWindow(for: runtimeRecord("ollama", window: 0)) == nil)
-    #expect(ContextBudget.effectiveWindow(for: runtimeRecord("mlx-swift", window: -5)) == nil)
     #expect(
         ContextBudget.effectiveWindow(
-            for: runtimeRecord("ollama", window: nil), requestedContextLength: 0) == nil)
+            for: runtimeRecord(.ollama, window: 0), adapter: OllamaAdapter()) == nil)
+    #expect(
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.mlxSwift, window: -5), adapter: MlxSwiftAdapter()) == nil)
+    #expect(
+        ContextBudget.effectiveWindow(
+            for: runtimeRecord(.ollama, window: nil), requestedContextLength: 0,
+            adapter: OllamaAdapter()) == nil)
 }
 
 @Test func assessRefusesAtTheCompletionFloor() {

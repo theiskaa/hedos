@@ -1,28 +1,33 @@
 import Foundation
 
-public struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
-    public let manifest: RuntimeManifest
+struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
+    let manifest: RuntimeManifest
     let host: any VMHost
+    let workdirRoot: URL
 
-    public var id: String { manifest.id }
+    var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
-    public init(manifest: RuntimeManifest, host: any VMHost) {
+    init(
+        manifest: RuntimeManifest, host: any VMHost,
+        workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
+    ) {
         self.manifest = manifest
         self.host = host
+        self.workdirRoot = workdirRoot
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && manifest.capabilities.contains(capability)
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard let detect = manifest.detect, detect.matches(record) else {
             return nil
         }
-        return RuntimeBid(tier: .managed, preference: 100, alternatives: manifest.alternatives)
+        return RuntimeBid(tier: .managed, preference: BidPreference.manifest, alternatives: manifest.alternativeIDs)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -30,8 +35,8 @@ public struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             let task = Task {
                 do {
                     guard adapter.manifest.execution != .job else {
-                        throw KernelError.runtimeFailed(
-                            "\(adapter.id) runs as jobs, not streams")
+                        throw KernelError.wrongExecutionMode(
+                            runtimeID: adapter.id, expected: .job)
                     }
                     continuation.yield(.status("Running \(adapter.id) in its own machine…"))
                     let output = try await adapter.execute(record, payload: payload) {
@@ -68,7 +73,7 @@ public struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
         }
     }
 
-    public func run(
+    func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -76,8 +81,8 @@ public struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             let task = Task {
                 do {
                     guard adapter.manifest.execution == .job else {
-                        throw KernelError.runtimeFailed(
-                            "\(adapter.id) streams, it does not run jobs")
+                        throw KernelError.wrongExecutionMode(
+                            runtimeID: adapter.id, expected: .stream)
                     }
                     continuation.yield(.status("Running \(adapter.id) in its own machine…"))
                     let result = try await adapter.execute(record, payload: payload) {
@@ -114,7 +119,7 @@ public struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             throw KernelError.runtimeFailed("\(id) declares no [invoke] command")
         }
         let paths = SidecarModelPaths.resolve(record)
-        let workdir = try ManifestSupport.workdir(for: manifest)
+        let workdir = try ManifestSupport.workdir(for: manifest, root: workdirRoot)
         let outputs = workdir.appendingPathComponent("outputs", isDirectory: true)
         try? FileManager.default.removeItem(at: outputs)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)

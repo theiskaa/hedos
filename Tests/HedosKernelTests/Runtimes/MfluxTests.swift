@@ -48,7 +48,7 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     let supervisor: SidecarSupervisor
     let spec: SidecarSpec
 
-    var id: String { "python:mflux" }
+    var id: RuntimeID { "python:mflux" }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && capability == .image

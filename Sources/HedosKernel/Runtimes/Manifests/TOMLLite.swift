@@ -1,44 +1,44 @@
 import Foundation
 
-public enum TOMLValue: Sendable, Hashable {
+enum TOMLValue: Sendable, Hashable {
     case string(String)
     case bool(Bool)
     case int(Int)
     case array([TOMLValue])
     case table([String: TOMLValue])
 
-    public var stringValue: String? {
+    var stringValue: String? {
         if case .string(let value) = self { return value }
         return nil
     }
 
-    public var boolValue: Bool? {
+    var boolValue: Bool? {
         if case .bool(let value) = self { return value }
         return nil
     }
 
-    public var stringArray: [String]? {
+    var stringArray: [String]? {
         guard case .array(let values) = self else { return nil }
         return values.compactMap(\.stringValue)
     }
 
-    public var tableValue: [String: TOMLValue]? {
+    var tableValue: [String: TOMLValue]? {
         if case .table(let value) = self { return value }
         return nil
     }
 }
 
-public typealias TOMLTable = [String: TOMLValue]
+typealias TOMLTable = [String: TOMLValue]
 
-public struct TOMLParseError: Error, Sendable, CustomStringConvertible {
-    public let line: Int
-    public let message: String
+struct TOMLParseError: Error, Sendable, CustomStringConvertible {
+    let line: Int
+    let message: String
 
-    public var description: String { "line \(line): \(message)" }
+    var description: String { "line \(line): \(message)" }
 }
 
-public enum TOMLLite {
-    public static func parse(_ text: String) throws -> TOMLTable {
+enum TOMLLite {
+    static func parse(_ text: String) throws -> TOMLTable {
         var root: TOMLTable = [:]
         var currentTable: String?
 

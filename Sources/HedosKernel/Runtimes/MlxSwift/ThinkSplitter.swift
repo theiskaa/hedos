@@ -1,5 +1,5 @@
-public struct ThinkSplitter: Sendable {
-    public enum Piece: Sendable, Hashable {
+struct ThinkSplitter: Sendable {
+    enum Piece: Sendable, Hashable {
         case text(String)
         case thinking(String)
     }
@@ -15,9 +15,9 @@ public struct ThinkSplitter: Sendable {
     private var mode: Mode = .text
     private var buffer = ""
 
-    public init() {}
+    init() {}
 
-    public mutating func feed(_ chunk: String) -> [Piece] {
+    mutating func feed(_ chunk: String) -> [Piece] {
         buffer += chunk
         var output: [Piece] = []
         outer: while true {
@@ -53,7 +53,7 @@ public struct ThinkSplitter: Sendable {
         return output
     }
 
-    public mutating func flush() -> [Piece] {
+    mutating func flush() -> [Piece] {
         guard !buffer.isEmpty else { return [] }
         let piece: Piece = mode == .thinking ? .thinking(buffer) : .text(buffer)
         buffer = ""

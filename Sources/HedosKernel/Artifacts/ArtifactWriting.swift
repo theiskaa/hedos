@@ -26,7 +26,7 @@ public struct ProvenanceArtifactWriter: ArtifactWriting {
                 preview: job.preview,
                 model: record?.name ?? job.modelID,
                 modelID: job.modelID,
-                runtime: record?.runtime.id ?? "unresolved",
+                runtime: record?.runtime.id?.rawValue ?? "unresolved",
                 capability: job.capability,
                 params: job.payload,
                 jobID: job.id,

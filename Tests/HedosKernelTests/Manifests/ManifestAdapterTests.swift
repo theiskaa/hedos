@@ -52,7 +52,7 @@ private func xyzRecord(in dir: URL) throws -> ModelRecord {
 
 private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     var pinnedRecord = record
-    pinnedRecord.runtime = RuntimeRef(id: id, resolved: .auto, tier: .managed)
+    pinnedRecord.runtime = RuntimeRef(id: RuntimeID(rawValue: id), resolved: .auto, tier: .managed)
     return pinnedRecord
 }
 
@@ -120,11 +120,9 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     ).write(to: script)
 
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path) {prompt}")
-    defer {
-        try? FileManager.default.removeItem(at: Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/\(ManifestSupport.slug(manifest.id))"))
-    }
-    let adapter = ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedNetwork: false,
+        workdirRoot: dir.appendingPathComponent("workdirs"))
     let payload: JSONValue = .object([
         "messages": .array([
             .object(["role": .string("user"), "content": .string("ping")])
@@ -157,11 +155,9 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
 
     let manifest = invokeManifest(
         command: "\(try realPythonPath()) \(script.path) {outputs}", execution: .job)
-    defer {
-        try? FileManager.default.removeItem(at: Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/\(ManifestSupport.slug(manifest.id))"))
-    }
-    let adapter = ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedNetwork: false,
+        workdirRoot: dir.appendingPathComponent("workdirs"))
 
     var results: [(Data, String)] = []
     for try await event in adapter.run(
@@ -188,11 +184,9 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     ).write(to: script)
 
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
-    defer {
-        try? FileManager.default.removeItem(at: Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/\(ManifestSupport.slug(manifest.id))"))
-    }
-    let adapter = ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedNetwork: false,
+        workdirRoot: dir.appendingPathComponent("workdirs"))
 
     do {
         for try await _ in adapter.invoke(
@@ -218,11 +212,9 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     ).write(to: script)
 
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
-    defer {
-        try? FileManager.default.removeItem(at: Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/\(ManifestSupport.slug(manifest.id))"))
-    }
-    let adapter = ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedNetwork: false,
+        workdirRoot: dir.appendingPathComponent("workdirs"))
 
     var text = ""
     for try await chunk in adapter.invoke(
@@ -238,7 +230,9 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     defer { try? FileManager.default.removeItem(at: dir) }
     let record = try xyzRecord(in: dir)
     let manifest = invokeManifest(command: "echo hi", network: true)
-    let adapter = ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedNetwork: false,
+        workdirRoot: dir.appendingPathComponent("workdirs"))
 
     do {
         for try await _ in adapter.invoke(

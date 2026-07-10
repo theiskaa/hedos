@@ -94,9 +94,7 @@ public actor Registry {
                 uniquingKeysWith: { _, newer in newer })
             loaded = true
         } catch {
-            let quarantineURL = directory.appendingPathComponent(
-                "models.json.corrupt-\(Int(Date().timeIntervalSince1970))")
-            try? FileManager.default.moveItem(at: storeURL, to: quarantineURL)
+            StoreCoding.quarantine(storeURL)
             throw RegistryError.corruptStore(description: String(describing: error))
         }
     }

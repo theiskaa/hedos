@@ -1,0 +1,54 @@
+import Foundation
+import Testing
+
+@testable import HedosKernel
+
+@Test func corruptSettingsFileIsQuarantinedAndDefaultsReturned() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let settingsDir = dir.appendingPathComponent("settings", isDirectory: true)
+    try FileManager.default.createDirectory(at: settingsDir, withIntermediateDirectories: true)
+    let file = settingsDir.appendingPathComponent("\(GeneralSettings.domainName).json")
+    try Data("not json {{{".utf8).write(to: file)
+
+    let store = SettingsStore(directory: dir)
+    let loaded = await store.general()
+    #expect(loaded == GeneralSettings())
+
+    let siblings = try FileManager.default.contentsOfDirectory(
+        at: settingsDir, includingPropertiesForKeys: nil)
+    #expect(!FileManager.default.fileExists(atPath: file.path))
+    #expect(siblings.contains { $0.lastPathComponent.contains(".corrupt-") })
+}
+
+@Test func corruptPipelineFileIsQuarantinedNotSkipped() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let corrupt = dir.appendingPathComponent("broken.json")
+    try Data("]".utf8).write(to: corrupt)
+
+    let store = PipelineStore(directory: dir)
+    let listed = await store.list()
+    #expect(listed.isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: corrupt.path))
+    let siblings = try FileManager.default.contentsOfDirectory(
+        at: dir, includingPropertiesForKeys: nil)
+    #expect(siblings.contains { $0.lastPathComponent.contains(".corrupt-") })
+}
+
+@Test func storeDecoderReadsBothPlainAndFractionalISO8601Dates() throws {
+    struct Dated: Codable, Equatable {
+        var at: Date
+    }
+    let decoder = StoreCoding.decoder()
+    let plain = try decoder.decode(Dated.self, from: Data(#"{"at":"2026-07-10T06:00:00Z"}"#.utf8))
+    let fractional = try decoder.decode(
+        Dated.self, from: Data(#"{"at":"2026-07-10T06:00:00.250Z"}"#.utf8))
+    #expect(plain.at == Date(timeIntervalSince1970: 1_783_663_200))
+    #expect(fractional.at.timeIntervalSince(plain.at) == 0.25)
+
+    let encoded = try StoreCoding.encoder().encode(fractional)
+    let roundTripped = try decoder.decode(Dated.self, from: encoded)
+    #expect(roundTripped == fractional)
+}

@@ -69,11 +69,20 @@ public struct GatewayError: Error, Sendable, Hashable {
 
     static func wrapping(_ error: any Error) -> GatewayError {
         if let gateway = error as? GatewayError { return gateway }
+        if let store = error as? ArtifactStoreError {
+            switch store {
+            case .notFound:
+                return GatewayError(.notFound, store.errorDescription ?? "not found")
+            }
+        }
+        if error is JobSchedulerError {
+            return GatewayError(.serverError, "the runtime failed to complete the request")
+        }
         if let kernel = error as? KernelError {
             switch kernel {
-            case .modelNotFound, .artifactNotFound, .promptNotFound:
+            case .modelNotFound, .artifactNotFound, .promptNotFound, .pipelineNotFound:
                 return GatewayError(.notFound, kernel.errorDescription ?? "not found")
-            case .capabilityUnsupported, .paramUnsupported:
+            case .capabilityUnsupported, .paramUnsupported, .noBoundModel:
                 return GatewayError(
                     .badRequest, kernel.errorDescription ?? "unsupported request")
             case .contextExceeded:
@@ -86,7 +95,7 @@ public struct GatewayError: Error, Sendable, Hashable {
                     code: "capability_unsupported")
             case .runtimeUnavailable:
                 return GatewayError(.serverError, kernel.errorDescription ?? "runtime failed")
-            case .runtimeFailed:
+            case .runtimeFailed, .bundleMissing, .wrongExecutionMode:
                 return GatewayError(.serverError, "the runtime failed to complete the request")
             }
         }

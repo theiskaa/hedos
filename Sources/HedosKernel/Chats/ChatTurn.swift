@@ -15,7 +15,7 @@ public struct TurnDraft: Sendable, Hashable {
     public var content: String
     public var thinking: String?
     public var modelID: String?
-    public var statsJSON: String?
+    var statsJSON: String?
     public var artifactRefs: [String]
 
     public init(
@@ -72,7 +72,7 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
     public var content: String
     public var thinking: String?
     public var modelID: String?
-    public var statsJSON: String?
+    var statsJSON: String?
     public var artifactRefs: [String]
     public var supersededBy: String?
     public var contentHash: String

@@ -471,7 +471,11 @@ struct ModelDetailSheet: View {
         self.record = record
         self.shell = shell
         self.onClose = onClose
-        _chosenRuntime = State(initialValue: record.runtime.id ?? "")
+        _chosenRuntime = State(initialValue: record.runtime.id?.rawValue ?? "")
+    }
+
+    private var currentRuntimeValue: String {
+        record.runtime.id?.rawValue ?? ""
     }
 
     var body: some View {
@@ -544,7 +548,7 @@ struct ModelDetailSheet: View {
                     FitChip(record: record)
                     TintChip(text: MetaGrid.tierWord(record.runtime.tier))
                     if let runtime = record.runtime.id {
-                        TintChip(text: runtime)
+                        TintChip(text: runtime.rawValue)
                     }
                 }
             }
@@ -554,9 +558,9 @@ struct ModelDetailSheet: View {
     }
 
     private var runtimeOptions: [(value: String, label: String)] {
-        var options = [(value: record.runtime.id ?? "", label: runtimeLabel(record.runtime.id ?? ""))]
+        var options = [(value: currentRuntimeValue, label: runtimeLabel(currentRuntimeValue))]
         for alt in record.runtime.alternatives {
-            options.append((value: alt, label: runtimeLabel(alt)))
+            options.append((value: alt.rawValue, label: runtimeLabel(alt.rawValue)))
         }
         return options
     }
@@ -754,7 +758,7 @@ struct ModelDetailSheet: View {
     }
 
     private func runtimeLabel(_ id: String) -> String {
-        id == record.runtime.id ? "\(id) · suggested" : id
+        id == record.runtime.id?.rawValue ? "\(id) · suggested" : id
     }
 
     private func confirmAndOpen() {
@@ -765,12 +769,12 @@ struct ModelDetailSheet: View {
         onClose()
         Task {
             if confirming {
-                if chosen == record.runtime.id ?? "" {
+                if chosen == currentRuntimeValue {
                     await shell.library.confirmRuntime(record.id)
                 } else {
                     await shell.library.overrideRuntime(record.id, to: chosen)
                 }
-            } else if chosen != record.runtime.id ?? "" {
+            } else if chosen != currentRuntimeValue {
                 await shell.library.overrideRuntime(record.id, to: chosen)
             }
             if let fresh = shell.library.record(id: record.id) {

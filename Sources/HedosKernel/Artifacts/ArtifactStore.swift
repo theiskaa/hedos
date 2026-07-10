@@ -1,6 +1,17 @@
 import CryptoKit
 import Foundation
 
+public enum ArtifactStoreError: Error, Sendable, LocalizedError, Equatable {
+    case notFound(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notFound(let id):
+            "No artifact with id \(id) is stored."
+        }
+    }
+}
+
 public actor ArtifactStore {
     public let root: URL
 
@@ -13,8 +24,7 @@ public actor ArtifactStore {
 
     public func store(_ draft: ArtifactDraft) throws -> Artifact {
         try loadIfNeeded()
-        let createdAt = Date(
-            timeIntervalSince1970: (Date().timeIntervalSince1970 * 1000).rounded() / 1000)
+        let createdAt = Date.millisecondRounded()
         let hash = Self.hex(SHA256.hash(data: draft.data))
         let slug = Self.slug(draft.model)
         let year = Self.year(of: createdAt)
@@ -66,7 +76,7 @@ public actor ArtifactStore {
     public func delete(id: String) throws {
         try loadIfNeeded()
         guard let artifact = artifacts[id] else {
-            throw KernelError.artifactNotFound(id)
+            throw ArtifactStoreError.notFound(id)
         }
         try trash(sidecarURL(for: artifact))
         artifacts[id] = nil
@@ -115,13 +125,7 @@ public actor ArtifactStore {
         let url = sidecarURL(for: artifact)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .custom { date, encoder in
-            var container = encoder.singleValueContainer()
-            try container.encode(date.formatted(Self.dateFormat))
-        }
-        try encoder.encode(artifact).write(to: url, options: .atomic)
+        try StoreCoding.encoder().encode(artifact).write(to: url, options: .atomic)
     }
 
     private func trash(_ url: URL) throws {
@@ -136,19 +140,7 @@ public actor ArtifactStore {
             loaded = true
             return
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let container = try decoder.singleValueContainer()
-            let raw = try container.decode(String.self)
-            guard
-                let date = (try? Date(raw, strategy: Self.dateFormat))
-                    ?? (try? Date(raw, strategy: .iso8601))
-            else {
-                throw DecodingError.dataCorruptedError(
-                    in: container, debugDescription: "Unparseable date \(raw)")
-            }
-            return date
-        }
+        let decoder = StoreCoding.decoder()
         var scanned: [String: Artifact] = [:]
         for entry in try fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil)
@@ -161,9 +153,11 @@ public actor ArtifactStore {
             for sidecar in try fileManager.contentsOfDirectory(
                 at: entry, includingPropertiesForKeys: nil)
             where sidecar.pathExtension == "json" {
-                guard let data = try? Data(contentsOf: sidecar),
-                    let artifact = try? decoder.decode(Artifact.self, from: data)
-                else { continue }
+                guard let data = try? Data(contentsOf: sidecar) else { continue }
+                guard let artifact = try? decoder.decode(Artifact.self, from: data) else {
+                    StoreCoding.quarantine(sidecar)
+                    continue
+                }
                 scanned[artifact.id] = artifact
             }
         }
@@ -186,6 +180,4 @@ public actor ArtifactStore {
     private static func hex(_ digest: SHA256.Digest) -> String {
         digest.map { String(format: "%02x", $0) }.joined()
     }
-
-    private static let dateFormat = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 }

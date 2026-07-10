@@ -4,6 +4,12 @@ public protocol ManifestBacked {
     var manifest: RuntimeManifest { get }
 }
 
+extension RuntimeManifest {
+    var alternativeIDs: [RuntimeID] {
+        alternatives.map(RuntimeID.init(rawValue:))
+    }
+}
+
 public struct ManifestConsentInfo: Sendable, Hashable {
     public let id: String
     public let paths: [String]
@@ -32,9 +38,12 @@ enum ManifestSupport {
             .appendingPathComponent(network ? "generic-net-on.sb" : "generic-net-off.sb")
     }
 
-    static func workdir(for manifest: RuntimeManifest) throws -> URL {
-        let workdir = Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/\(slug(manifest.id))", isDirectory: true)
+    static func defaultWorkdirRoot() -> URL {
+        Registry.defaultDirectory().appendingPathComponent("workdirs", isDirectory: true)
+    }
+
+    static func workdir(for manifest: RuntimeManifest, root: URL) throws -> URL {
+        let workdir = root.appendingPathComponent(slug(manifest.id), isDirectory: true)
         try FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
         return workdir
     }
@@ -142,14 +151,15 @@ enum ManifestSupport {
     }
 
     static func prepareEnvironmentIfNeeded(
-        manifest: RuntimeManifest, progress: @escaping @Sendable (String) -> Void
+        manifest: RuntimeManifest, environments: EnvironmentManager = .shared,
+        progress: @escaping @Sendable (String) -> Void
     ) async throws -> URL? {
         guard let env = manifest.env else { return nil }
         guard let directory = manifest.directory else {
             throw KernelError.runtimeFailed(
                 "manifest \(manifest.id) declares [env] but has no directory")
         }
-        return try await EnvironmentManager.shared.prepare(
+        return try await environments.prepare(
             runtimeID: manifest.id,
             lockfile: directory.appendingPathComponent(env.lockfile),
             progress: progress)

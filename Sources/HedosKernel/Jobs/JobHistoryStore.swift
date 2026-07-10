@@ -50,22 +50,19 @@ public actor JobHistoryStore {
         guard !loaded else { return }
         loaded = true
         guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let data = try? Data(contentsOf: storeURL),
-            let envelope = try? decoder.decode(Envelope.self, from: data)
-        else { return }
+        guard let data = try? Data(contentsOf: storeURL) else { return }
+        guard let envelope = try? StoreCoding.decoder().decode(Envelope.self, from: data) else {
+            StoreCoding.quarantine(storeURL)
+            return
+        }
         jobs = envelope.jobs
     }
 
     private func save() throws {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
         let envelope = Envelope(schemaVersion: 1, jobs: jobs)
-        let data = try encoder.encode(envelope)
+        let data = try StoreCoding.encoder().encode(envelope)
         try data.write(to: storeURL, options: .atomic)
     }
 }

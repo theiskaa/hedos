@@ -49,12 +49,13 @@ public actor PipelineStore {
             (try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
             ?? []
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = StoreCoding.decoder()
         for file in files where file.pathExtension.lowercased() == "json" {
-            guard let data = try? Data(contentsOf: file),
-                let decoded = try? decoder.decode(Pipeline.self, from: data)
-            else { continue }
+            guard let data = try? Data(contentsOf: file) else { continue }
+            guard let decoded = try? decoder.decode(Pipeline.self, from: data) else {
+                StoreCoding.quarantine(file)
+                continue
+            }
             pipelines[decoded.id] = decoded
         }
     }
@@ -62,9 +63,6 @@ public actor PipelineStore {
     private func write(_ pipeline: Pipeline) throws {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(pipeline).write(to: fileURL(pipeline.id), options: .atomic)
+        try StoreCoding.encoder().encode(pipeline).write(to: fileURL(pipeline.id), options: .atomic)
     }
 }

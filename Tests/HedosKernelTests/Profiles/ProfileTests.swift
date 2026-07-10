@@ -24,7 +24,7 @@ private final class PayloadLog: Sendable {
 private struct CapturingAdapter: RuntimeAdapter {
     let log: PayloadLog
 
-    var id: String { "fake:capture" }
+    var id: RuntimeID { "fake:capture" }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id
@@ -46,7 +46,7 @@ private struct CapturingAdapter: RuntimeAdapter {
 }
 
 private struct BiddingChatAdapter: RuntimeAdapter {
-    var id: String { "fake:llm" }
+    var id: RuntimeID { "fake:llm" }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && (capability == .chat || capability == .complete)
@@ -197,7 +197,7 @@ private func speechRecord() -> ModelRecord {
 private struct AnyBidAdapter: RuntimeAdapter {
     let adapterID: String
 
-    var id: String { adapterID }
+    var id: RuntimeID { RuntimeID(rawValue: adapterID) }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         false

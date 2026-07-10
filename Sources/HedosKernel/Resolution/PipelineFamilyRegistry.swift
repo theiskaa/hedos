@@ -121,7 +121,7 @@ public struct PipelineFamilyRegistry: Sendable {
             params: params)
     }
 
-    public static let fluxParams: [ParamSpec] = [
+    static let fluxParams: [ParamSpec] = [
         ParamSpec(key: "steps", type: .int, defaultValue: .int(4), range: [.int(1), .int(50)]),
         ParamSpec(
             key: "guidance", type: .float, defaultValue: .double(4.0),

@@ -26,17 +26,20 @@ public actor SettingsStore {
     public func save<D: SettingsDomain>(_ domain: D) throws {
         try FileManager.default.createDirectory(
             at: settingsDirectory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(domain).write(to: fileURL(D.self), options: .atomic)
+        try StoreCoding.encoder().encode(domain).write(to: fileURL(D.self), options: .atomic)
         cache[D.domainName] = domain
     }
 
     private func read<D: SettingsDomain>(_ type: D.Type) -> D {
-        guard let data = try? Data(contentsOf: fileURL(D.self)) else {
+        let url = fileURL(D.self)
+        guard let data = try? Data(contentsOf: url) else {
             return D.compatibilityRead(from: directory) ?? D()
         }
-        return (try? JSONDecoder().decode(D.self, from: data)) ?? D()
+        guard let decoded = try? StoreCoding.decoder().decode(D.self, from: data) else {
+            StoreCoding.quarantine(url)
+            return D()
+        }
+        return decoded
     }
 
     public func general() -> GeneralSettings { load(GeneralSettings.self) }

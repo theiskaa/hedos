@@ -42,6 +42,40 @@ public struct SourceKind: RawRepresentable, Codable, Hashable, Sendable, Express
     public static let folder = SourceKind(rawValue: "folder")
 }
 
+public struct RuntimeID: RawRepresentable, Codable, Hashable, Sendable, ExpressibleByStringLiteral,
+    CustomStringConvertible
+{
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+    public init(stringLiteral value: String) { self.rawValue = value }
+    public var description: String { rawValue }
+
+    public static let llamaCpp = RuntimeID(rawValue: "llama-cpp")
+    public static let whisperCpp = RuntimeID(rawValue: "whisper-cpp")
+    public static let ollama = RuntimeID(rawValue: "ollama")
+    public static let mlxSwift = RuntimeID(rawValue: "mlx-swift")
+    public static let appleFoundation = RuntimeID(rawValue: "apple-foundation")
+    public static let openAIEndpoint = RuntimeID(rawValue: "generic:openai-server")
+    public static let mflux = RuntimeID(rawValue: "python:mflux")
+    public static let diffusers = RuntimeID(rawValue: "python:diffusers")
+    public static let mlxLm = RuntimeID(rawValue: "python:mlx-lm")
+    public static let mlxAudio = RuntimeID(rawValue: "python:mlx-audio")
+}
+
+public enum BidPreference {
+    public static let llamaCpp = 10
+    public static let whisperCpp = 10
+    public static let endpoint = 10
+    public static let mlxSwift = 15
+    public static let appleFoundation = 15
+    public static let ollama = 20
+    public static let mflux = 25
+    public static let diffusers = 26
+    public static let mlxAudio = 30
+    public static let mlxLm = 40
+    public static let manifest = 100
+}
+
 public enum ExecutionMode: String, Codable, Hashable, Sendable {
     case stream
     case job

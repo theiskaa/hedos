@@ -37,6 +37,27 @@ import Testing
     #expect(decoded.id == legacy.id)
 }
 
+@Test func decodesPreTypedRuntimeIDsFromBareStrings() throws {
+    var record = Fixtures.gguf()
+    record.runtime = RuntimeRef(
+        id: .llamaCpp, resolved: .auto, tier: .native, alternatives: [.ollama, .mlxSwift])
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let json = try JSONSerialization.jsonObject(with: try encoder.encode(record))
+        as! [String: Any]
+    let runtime = json["runtime"] as! [String: Any]
+    #expect(runtime["id"] as? String == "llama-cpp")
+    #expect(runtime["alternatives"] as? [String] == ["ollama", "mlx-swift"])
+
+    let legacy = """
+        {"id": "python:mlx-lm", "resolved": "user", "tier": "managed", \
+        "alternatives": ["ollama"]}
+        """
+    let decoded = try JSONDecoder().decode(RuntimeRef.self, from: Data(legacy.utf8))
+    #expect(decoded.id == .mlxLm)
+    #expect(decoded.alternatives == [.ollama])
+}
+
 @Test func roundTripsContextFields() throws {
     var record = Fixtures.gguf()
     record.contextLength = 32768

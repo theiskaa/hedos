@@ -1,20 +1,20 @@
 import Foundation
 
-public enum Frame: Equatable, Sendable {
+enum Frame: Equatable, Sendable {
     case control(JSONValue)
     case audio(Data)
 }
 
-public enum FrameCodecError: Error {
+enum FrameCodecError: Error {
     case oversizedFrame(Int)
     case unknownType(UInt8)
     case malformedControl
 }
 
-public enum FrameCodec {
-    public static let maxFrameBytes = 16 << 20
+enum FrameCodec {
+    static let maxFrameBytes = 16 << 20
 
-    public static func encode(_ frame: Frame) throws -> Data {
+    static func encode(_ frame: Frame) throws -> Data {
         var payload: Data
         var type: UInt8
         switch frame {
@@ -35,12 +35,12 @@ public enum FrameCodec {
         return out
     }
 
-    public struct Decoder {
+    struct Decoder {
         private var buffer = Data()
 
-        public init() {}
+        init() {}
 
-        public mutating func append(_ data: Data) throws -> [Frame] {
+        mutating func append(_ data: Data) throws -> [Frame] {
             buffer.append(data)
             var frames: [Frame] = []
             while buffer.count >= 4 {
@@ -74,17 +74,17 @@ public enum FrameCodec {
 }
 
 extension JSONValue {
-    public var objectValue: [String: JSONValue]? {
+    var objectValue: [String: JSONValue]? {
         guard case .object(let fields) = self else { return nil }
         return fields
     }
 
-    public var stringValue: String? {
+    var stringValue: String? {
         guard case .string(let value) = self else { return nil }
         return value
     }
 
-    public var intValue: Int? {
+    var intValue: Int? {
         switch self {
         case .int(let value): return value
         case .double(let value): return Int(value)
@@ -92,7 +92,7 @@ extension JSONValue {
         }
     }
 
-    public var doubleValue: Double? {
+    var doubleValue: Double? {
         switch self {
         case .double(let value): return value
         case .int(let value): return Double(value)

@@ -2,7 +2,7 @@ import Containerization
 import CryptoKit
 import Foundation
 
-public actor ContainerizationVMHost: VMHost {
+actor ContainerizationVMHost: VMHost {
     static let kernelURL = URL(
         string:
             "https://github.com/kata-containers/kata-containers/releases/download/3.17.0/kata-static-3.17.0-arm64.tar.xz"
@@ -19,7 +19,7 @@ public actor ContainerizationVMHost: VMHost {
     private let root: URL
     private var running: [String: LinuxContainer] = [:]
 
-    public init(directory: URL) {
+    init(directory: URL) {
         self.root = directory.appendingPathComponent("vm", isDirectory: true)
     }
 
@@ -41,13 +41,13 @@ public actor ContainerizationVMHost: VMHost {
             .map { String(format: "%02x", $0) }.joined()
     }
 
-    public func assetState() async -> VMAssetState {
+    func assetState() async -> VMAssetState {
         FileManager.default.fileExists(atPath: kernelBinary.path)
             ? .ready
             : .absent(approxDownloadMB: Self.kernelDownloadMB)
     }
 
-    public func provisionAssets(onStatus: (@Sendable (String) async -> Void)?) async throws {
+    func provisionAssets(onStatus: (@Sendable (String) async -> Void)?) async throws {
         guard !FileManager.default.fileExists(atPath: kernelBinary.path) else { return }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let tarball = root.appendingPathComponent("kata-static.tar.xz")
@@ -84,7 +84,7 @@ public actor ContainerizationVMHost: VMHost {
         try? FileManager.default.removeItem(at: tarball)
     }
 
-    public func environmentReady(_ request: VMRunRequest) async -> Bool {
+    func environmentReady(_ request: VMRunRequest) async -> Bool {
         let dir = containerDir(request.runtimeID)
         guard
             let stamp = try? String(
@@ -94,7 +94,7 @@ public actor ContainerizationVMHost: VMHost {
             && FileManager.default.fileExists(atPath: dir.appendingPathComponent("rootfs.ext4").path)
     }
 
-    public func provisionEnvironment(
+    func provisionEnvironment(
         _ request: VMRunRequest, onStatus: (@Sendable (String) async -> Void)?
     ) async throws {
         try await provisionAssets(onStatus: onStatus)
@@ -148,7 +148,7 @@ public actor ContainerizationVMHost: VMHost {
             to: dir.appendingPathComponent(".env-ready"), atomically: true, encoding: .utf8)
     }
 
-    public func run(_ request: VMRunRequest) async throws -> VMRunResult {
+    func run(_ request: VMRunRequest) async throws -> VMRunResult {
         let id = containerID(request.runtimeID)
         let rootfs = containerDir(request.runtimeID).appendingPathComponent("rootfs.ext4")
         guard FileManager.default.fileExists(atPath: rootfs.path) else {
@@ -199,7 +199,7 @@ public actor ContainerizationVMHost: VMHost {
         }
     }
 
-    public func cancel(runtimeID: String) async {
+    func cancel(runtimeID: String) async {
         if let container = running.removeValue(forKey: runtimeID) {
             try? await container.stop()
         }

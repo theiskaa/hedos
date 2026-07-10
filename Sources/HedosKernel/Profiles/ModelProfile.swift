@@ -36,7 +36,7 @@ public struct ProfileRegistry: Sendable {
         return specs
     }
 
-    static let contextHonoringRuntimes: Set<String> = ["ollama", "llama-cpp"]
+    static let contextHonoringRuntimes: Set<RuntimeID> = [.ollama, .llamaCpp]
 
     public static func contextLengthSpec(for record: ModelRecord) -> ParamSpec? {
         guard record.capabilities.contains(.chat) || record.capabilities.contains(.complete)
@@ -61,7 +61,7 @@ public struct ProfileRegistry: Sendable {
         return updated
     }
 
-    static let thinkingRuntimes: Set<String> = ["ollama"]
+    static let thinkingRuntimes: Set<RuntimeID> = [.ollama]
 
     public static let builtin = ProfileRegistry(profiles: [
         ModelProfile(
@@ -88,7 +88,7 @@ public struct ProfileRegistry: Sendable {
             schema: [ParamSpec(key: "thinking", type: .bool)],
             matches: { record in
                 record.capabilities.contains(.chat)
-                    && thinkingRuntimes.contains(record.runtime.id ?? "")
+                    && record.runtime.id.map(thinkingRuntimes.contains) ?? false
             }),
     ])
 }

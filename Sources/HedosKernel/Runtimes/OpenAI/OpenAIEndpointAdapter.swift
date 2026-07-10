@@ -32,8 +32,8 @@ final class OpenAIEndpointConcurrencyGate: @unchecked Sendable {
     }
 }
 
-public struct OpenAIEndpointAdapter: RuntimeAdapter {
-    public var id: String { "generic:openai-server" }
+struct OpenAIEndpointAdapter: RuntimeAdapter {
+    var id: RuntimeID { .openAIEndpoint }
 
     static let defaultMaxResponseBytes = 32 * 1024 * 1024
     static let defaultMaxLineBytes = 2 * 1024 * 1024
@@ -44,19 +44,9 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
     let maxResponseBytes: Int
     let maxLineBytes: Int
 
-    public init(
-        secrets: any SecretStore = KeychainStore(), registry: Registry? = nil
-    ) {
-        self.secrets = secrets
-        self.registry = registry
-        self.concurrencyGate = .shared
-        self.maxResponseBytes = Self.defaultMaxResponseBytes
-        self.maxLineBytes = Self.defaultMaxLineBytes
-    }
-
     init(
-        secrets: any SecretStore, registry: Registry?,
-        concurrencyGate: OpenAIEndpointConcurrencyGate,
+        secrets: any SecretStore = KeychainStore(), registry: Registry? = nil,
+        concurrencyGate: OpenAIEndpointConcurrencyGate = .shared,
         maxResponseBytes: Int = OpenAIEndpointAdapter.defaultMaxResponseBytes,
         maxLineBytes: Int = OpenAIEndpointAdapter.defaultMaxLineBytes
     ) {
@@ -67,7 +57,7 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
         self.maxLineBytes = maxLineBytes
     }
 
-    public static func normalizedBase(_ raw: String) -> String {
+    static func normalizedBase(_ raw: String) -> String {
         var base = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if !base.contains("://") {
             base = "http://\(base)"
@@ -84,20 +74,20 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
         return base
     }
 
-    public static func account(for base: String) -> String {
+    static func account(for base: String) -> String {
         normalizedBase(base)
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && (capability == .chat || capability == .complete)
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .endpoint else { return nil }
-        return RuntimeBid(tier: .remote, preference: 10)
+        return RuntimeBid(tier: .remote, preference: BidPreference.endpoint)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -256,7 +246,7 @@ public struct OpenAIEndpointAdapter: RuntimeAdapter {
         return try JSONEncoder().encode(JSONValue.object(body))
     }
 
-    public static func listModels(baseURL: String, key: String?) async throws -> [String] {
+    static func listModels(baseURL: String, key: String?) async throws -> [String] {
         let base = normalizedBase(baseURL)
         guard let url = URL(string: "\(base)/v1/models") else {
             throw KernelError.runtimeFailed("\(base) is not a valid server URL")

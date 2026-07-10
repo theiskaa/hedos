@@ -1,53 +1,45 @@
 import Foundation
 
-public struct MlxLmAdapter: RuntimeAdapter {
-    public var id: String { "python:mlx-lm" }
+struct MlxAudioAdapter: RuntimeAdapter {
+    var id: RuntimeID { .mlxAudio }
 
     private let governor: MemoryGovernor
 
-    public init(governor: MemoryGovernor = .shared) {
+    init(governor: MemoryGovernor = .shared) {
         self.governor = governor
     }
 
-    public static func bundleDirectory() -> URL? {
-        RuntimeBundle.directory(named: "python-mlx-lm")
+    static func bundleDirectory() -> URL? {
+        RuntimeBundle.directory(named: "python-mlx-audio")
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
-        record.runtime.id == id && (capability == .chat || capability == .complete)
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+        record.runtime.id == id && capability == .speak
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
-        guard identified.format == .mlxSafetensors,
-            identified.modality == .text,
-            identified.capabilities.contains(.chat)
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        guard identified.modality == .speech,
+            identified.capabilities.contains(.speak),
+            identified.format == .safetensors || identified.format == .mlxSafetensors
         else { return nil }
-        return RuntimeBid(tier: .managed, preference: 40)
+        return RuntimeBid(tier: .managed, preference: BidPreference.mlxAudio)
     }
 
-    static func control(_ capability: Capability, payload: JSONValue) -> JSONValue {
-        var control: [String: JSONValue] = ["op": .string(capability.rawValue)]
-        if case .object(let fields) = payload {
-            for (key, value) in fields { control[key] = value }
-        }
-        return .object(control)
-    }
-
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
             let governor = governor
-            let runtimeID = id
+            let runtimeID = id.rawValue
             let task = Task {
                 await governor.beginGeneration(record.id)
                 do {
                     guard let bundle = Self.bundleDirectory(),
                         FileManager.default.fileExists(atPath: bundle.path)
                     else {
-                        throw KernelError.runtimeFailed("mlx-lm runtime bundle missing")
+                        throw KernelError.bundleMissing(runtimeID: .mlxAudio)
                     }
-                    continuation.yield(.status("Preparing text runtime…"))
+                    continuation.yield(.status("Preparing speech runtime…"))
                     let envDir = try await EnvironmentManager.shared.prepare(
                         runtimeID: runtimeID,
                         lockfile: bundle.appendingPathComponent("requirements.lock"),
@@ -58,13 +50,17 @@ public struct MlxLmAdapter: RuntimeAdapter {
                     let producer = GPUProducer.generation(modelID: record.id)
                     try await SidecarWarmLoad.acquire(
                         governor: governor, supervisor: SidecarSupervisor.shared, spec: spec,
-                        record: record, producer: producer,
-                        startingStatus: "Starting text runtime…"
+                        record: record, producer: producer, warmWindow: spec.idleTimeout,
+                        startingStatus: "Starting speech runtime…"
                     ) { continuation.yield(.status($0)) }
 
+                    var control: [String: JSONValue] = ["op": .string("speak")]
+                    if case .object(let fields) = payload {
+                        for (key, value) in fields { control[key] = value }
+                    }
                     do {
                         let stream = await SidecarSupervisor.shared.request(
-                            spec, Self.control(capability, payload: payload))
+                            spec, .object(control))
                         for try await chunk in stream {
                             continuation.yield(chunk)
                         }
@@ -89,7 +85,7 @@ public struct MlxLmAdapter: RuntimeAdapter {
         let fm = FileManager.default
         let paths = SidecarModelPaths.resolve(record)
         let workdir = Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/python-mlx-lm", isDirectory: true)
+            .appendingPathComponent("workdirs/python-mlx-audio", isDirectory: true)
         try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
 
         return SidecarSpec(
@@ -102,8 +98,6 @@ public struct MlxLmAdapter: RuntimeAdapter {
                     "--model", paths.snapshot,
                     "--workdir", workdir.path,
                 ]),
-            workingDirectory: workdir,
-            readyTimeout: .seconds(600),
-            cooperativeCancel: true)
+            workingDirectory: workdir)
     }
 }

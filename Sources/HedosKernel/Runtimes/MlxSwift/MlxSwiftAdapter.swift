@@ -1,12 +1,14 @@
 import Foundation
 
-public struct MlxSwiftAdapter: RuntimeAdapter {
-    public var id: String { "mlx-swift" }
+struct MlxSwiftAdapter: RuntimeAdapter {
+    var id: RuntimeID { .mlxSwift }
 
     private let governor: MemoryGovernor
+    private let engine: MlxSwiftEngine
 
-    public init(governor: MemoryGovernor = .shared) {
+    init(governor: MemoryGovernor = .shared, engine: MlxSwiftEngine = .shared) {
         self.governor = governor
+        self.engine = engine
     }
 
     static func params(from object: [String: JSONValue]) -> MlxSwiftEngine.GenerationParams {
@@ -23,21 +25,25 @@ public struct MlxSwiftAdapter: RuntimeAdapter {
         return params
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func effectiveContextWindow(for record: ModelRecord, requested: Int?) -> Int? {
+        record.contextLength
+    }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         guard capability == .chat || capability == .complete else { return false }
         if let runtimeID = record.runtime.id { return runtimeID == id }
         return false
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .mlxSafetensors,
             identified.modality == .text,
             identified.capabilities.contains(.chat)
         else { return nil }
-        return RuntimeBid(tier: .native, preference: 15, alternatives: [])
+        return RuntimeBid(tier: .native, preference: BidPreference.mlxSwift)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
@@ -58,9 +64,10 @@ public struct MlxSwiftAdapter: RuntimeAdapter {
             }
             let directory = SidecarModelPaths.resolve(record).snapshot
             let governor = governor
+            let engine = engine
             let params = Self.params(from: object)
             let task = Task {
-                await MlxSwiftEngine.shared.run(
+                await engine.run(
                     path: directory,
                     modelID: record.id,
                     modelName: record.name,

@@ -1,5 +1,16 @@
 import Foundation
 
+public enum JobSchedulerError: Error, Sendable, LocalizedError, Equatable {
+    case artifactSinkMissing
+
+    public var errorDescription: String? {
+        switch self {
+        case .artifactSinkMissing:
+            "No artifact store is attached to the job scheduler."
+        }
+    }
+}
+
 public actor JobScheduler {
     public typealias Runner = @Sendable () -> AsyncThrowingStream<JobRuntimeEvent, Error>
 
@@ -174,7 +185,7 @@ public actor JobScheduler {
     private func persist(_ data: Data, fileExtension: String, jobID: String) async throws {
         guard let job = jobs[jobID] else { return }
         guard let artifacts else {
-            throw KernelError.runtimeFailed("no artifact store is attached to the job scheduler")
+            throw JobSchedulerError.artifactSinkMissing
         }
         let artifact = try await artifacts.write(data, fileExtension: fileExtension, for: job)
         mutate(jobID) { $0.result.append(artifact.id) }

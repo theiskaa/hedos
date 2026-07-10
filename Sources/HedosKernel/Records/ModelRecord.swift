@@ -26,17 +26,17 @@ public struct RuntimeRef: Codable, Hashable, Sendable {
         case unresolved
     }
 
-    public var id: String?
+    public var id: RuntimeID?
     public var resolved: Resolution
     public var tier: RunTier
-    public var alternatives: [String]
+    public var alternatives: [RuntimeID]
     public var confirmedAt: Date?
 
     public init(
-        id: String? = nil,
+        id: RuntimeID? = nil,
         resolved: Resolution = .unresolved,
         tier: RunTier = .recipeNeeded,
-        alternatives: [String] = [],
+        alternatives: [RuntimeID] = [],
         confirmedAt: Date? = nil
     ) {
         self.id = id

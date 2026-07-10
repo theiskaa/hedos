@@ -1,29 +1,29 @@
 import CryptoKit
 import Foundation
 
-public actor EnvironmentManager {
-    public typealias Builder = @Sendable (
+actor EnvironmentManager {
+    typealias Builder = @Sendable (
         _ envDir: URL, _ lockfile: URL, _ cacheDir: URL,
         _ progress: @Sendable (String) -> Void
     ) async throws -> Void
 
-    public static let shared = EnvironmentManager(root: Registry.defaultDirectory())
+    static let shared = EnvironmentManager(root: Registry.defaultDirectory())
 
     private let root: URL
     private let builder: Builder
     private var inFlight: [String: Task<URL, Error>] = [:]
 
-    public init(root: URL, builder: Builder? = nil) {
+    init(root: URL, builder: Builder? = nil) {
         self.root = root
         self.builder = builder ?? EnvironmentManager.uvBuilder
     }
 
-    public static func lockHash(_ lockfile: URL) throws -> String {
+    static func lockHash(_ lockfile: URL) throws -> String {
         let digest = SHA256.hash(data: try Data(contentsOf: lockfile))
         return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    public func prepare(
+    func prepare(
         runtimeID: String, lockfile: URL, progress: @Sendable (String) -> Void
     ) async throws -> URL {
         let hash = try Self.lockHash(lockfile)
@@ -91,7 +91,7 @@ public actor EnvironmentManager {
         try fm.createSymbolicLink(at: link, withDestinationURL: destination)
     }
 
-    public static func uvBinary() -> URL? {
+    static func uvBinary() -> URL? {
         var candidates = [
             "\(NSHomeDirectory())/.local/bin/uv",
             "/opt/homebrew/bin/uv",

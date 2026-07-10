@@ -5,8 +5,9 @@ import Testing
 
 @Test func keychainMigratesLegacyHostPortAccountToSchemeQualifiedAccount() throws {
     let store = KeychainStore()
-    let legacyAccount = "127.0.0.1:39999"
-    let newAccount = "http://127.0.0.1:39999"
+    let port = Int.random(in: 40000..<65000)
+    let legacyAccount = "127.0.0.1:\(port)"
+    let newAccount = "http://127.0.0.1:\(port)"
     try? store.delete(account: legacyAccount)
     try? store.delete(account: newAccount)
     defer {
@@ -31,9 +32,10 @@ import Testing
 
 @Test func keychainLegacyMigrationNeverCrossesFromHttpIntoAnUnrelatedHttpsAccount() throws {
     let store = KeychainStore()
-    let legacyAccount = "127.0.0.1:39998"
-    let httpAccount = "http://127.0.0.1:39998"
-    let httpsAccount = "https://127.0.0.1:39998"
+    let port = Int.random(in: 40000..<65000)
+    let legacyAccount = "127.0.0.1:\(port)"
+    let httpAccount = "http://127.0.0.1:\(port)"
+    let httpsAccount = "https://127.0.0.1:\(port)"
     try? store.delete(account: legacyAccount)
     try? store.delete(account: httpAccount)
     try? store.delete(account: httpsAccount)

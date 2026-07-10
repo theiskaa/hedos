@@ -301,23 +301,23 @@ public actor ChatStore {
         }
     }
 
-    public func resetWriteCounter() throws {
+    func resetWriteCounter() throws {
         try open().resetWriteCounter()
     }
 
-    public func rowsWritten() throws -> Int {
+    func rowsWritten() throws -> Int {
         try open().rowsWritten(to: ["sessions", "turns"])
     }
 
-    public func enableStatementLogging() throws {
+    func enableStatementLogging() throws {
         try open().statementLoggingEnabled = true
     }
 
-    public func resetStatementLog() throws {
+    func resetStatementLog() throws {
         try open().resetStatementLog()
     }
 
-    public func statementLog() throws -> [String] {
+    func statementLog() throws -> [String] {
         try open().statementLog
     }
 
@@ -604,7 +604,7 @@ public actor ChatStore {
     }
 
     private static func now() -> Date {
-        Date(timeIntervalSince1970: (Date().timeIntervalSince1970 * 1000).rounded() / 1000)
+        Date.millisecondRounded()
     }
 
     private static let migrations: [String] = [

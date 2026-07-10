@@ -31,7 +31,7 @@ public enum ShelfReport {
         var text = "\(first.adapterID) (\(first.tier.rawValue))"
         let alternatives = explanation.bids.dropFirst().map(\.adapterID)
         if !alternatives.isEmpty {
-            text += " · alternatives: \(alternatives.joined(separator: ", "))"
+            text += " · alternatives: \(alternatives.map(\.rawValue).joined(separator: ", "))"
         }
         return text
     }

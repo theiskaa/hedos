@@ -75,7 +75,7 @@ struct FakeImageAdapter: RuntimeAdapter, JobRunning {
     var stepDelay: Duration = .milliseconds(30)
     var cleanup: CleanupFlag? = nil
 
-    var id: String { "fake:image" }
+    var id: RuntimeID { "fake:image" }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && capability == .image
@@ -124,7 +124,7 @@ struct FakeImageAdapter: RuntimeAdapter, JobRunning {
 }
 
 struct StreamOnlyAdapter: RuntimeAdapter {
-    var id: String { "fake:stream-only" }
+    var id: RuntimeID { "fake:stream-only" }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         capability == .image

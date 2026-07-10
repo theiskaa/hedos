@@ -1,28 +1,28 @@
 import Foundation
 
-public struct WhisperCppAdapter: RuntimeAdapter {
-    public var id: String { "whisper-cpp" }
+struct WhisperCppAdapter: RuntimeAdapter {
+    var id: RuntimeID { .whisperCpp }
 
     private let governor: MemoryGovernor
     private let engine: WhisperEngine
 
-    public init(governor: MemoryGovernor = .shared, engine: WhisperEngine = .shared) {
+    init(governor: MemoryGovernor = .shared, engine: WhisperEngine = .shared) {
         self.governor = governor
         self.engine = engine
     }
 
-    public func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         capability == .transcribe && record.runtime.id == id
     }
 
-    public func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
         guard identified.format == .gguf || identified.format == .ggmlBin,
             identified.capabilities.contains(.transcribe)
         else { return nil }
-        return RuntimeBid(tier: .managed, preference: 10)
+        return RuntimeBid(tier: .managed, preference: BidPreference.whisperCpp)
     }
 
-    public func invoke(
+    func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in

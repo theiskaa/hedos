@@ -55,7 +55,11 @@ private final class BudgetPayloadBox: @unchecked Sendable {
 private struct BudgetCapturingAdapter: RuntimeAdapter {
     let box: BudgetPayloadBox
 
-    var id: String { "ollama" }
+    var id: RuntimeID { "ollama" }
+
+    func effectiveContextWindow(for record: ModelRecord, requested: Int?) -> Int? {
+        requested ?? record.contextLength
+    }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         capability == .chat
