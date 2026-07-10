@@ -9,8 +9,7 @@ public actor MlxSwiftEngine {
     private var loadedPath: String?
     private var loadedModelID: String?
     private var container: ModelContainer?
-    private var generationSlotHeld = false
-    private var generationSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    private let generationSlot = GenerationSlot()
 
     public struct GenerationParams: Sendable {
         public var temperature: Float
@@ -35,18 +34,20 @@ public actor MlxSwiftEngine {
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async {
         await governor.beginGeneration(modelID)
-        await acquireGenerationSlot()
         do {
             let producer = GPUProducer.generation(modelID: modelID)
             try await acquireGateWithModelLoaded(
                 producer: producer, path: path, modelID: modelID, modelName: modelName,
                 footprintMB: footprintMB, governor: governor, continuation: continuation)
+            await generationSlot.acquire()
             do {
                 try await generate(messages: messages, params: params, continuation: continuation)
                 MLX.Stream().synchronize()
+                await generationSlot.release()
                 await governor.gate.release(producer)
             } catch {
                 MLX.Stream().synchronize()
+                await generationSlot.release()
                 await governor.gate.release(producer)
                 throw error
             }
@@ -54,24 +55,7 @@ public actor MlxSwiftEngine {
         } catch {
             continuation.finish(throwing: error)
         }
-        releaseGenerationSlot()
         await governor.endGeneration(modelID)
-    }
-
-    private func acquireGenerationSlot() async {
-        if !generationSlotHeld {
-            generationSlotHeld = true
-            return
-        }
-        await withCheckedContinuation { generationSlotWaiters.append($0) }
-    }
-
-    private func releaseGenerationSlot() {
-        if generationSlotWaiters.isEmpty {
-            generationSlotHeld = false
-        } else {
-            generationSlotWaiters.removeFirst().resume()
-        }
     }
 
     private func acquireGateWithModelLoaded(

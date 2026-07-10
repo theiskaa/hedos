@@ -32,8 +32,7 @@ public actor WhisperEngine {
     private let backend: any WhisperBackend
     private var loadedPath: String?
     private var loadedModelID: String?
-    private var transcriptionSlotHeld = false
-    private var transcriptionSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    private let transcriptionSlot = GenerationSlot()
 
     public init(backend: any WhisperBackend) {
         self.backend = backend
@@ -49,16 +48,18 @@ public actor WhisperEngine {
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async {
         await governor.beginGeneration(modelID)
-        await acquireTranscriptionSlot()
         do {
             let producer = GPUProducer.generation(modelID: modelID)
             try await acquireGateWithModelLoaded(
                 producer: producer, path: path, modelID: modelID, modelName: modelName,
                 footprintMB: footprintMB, governor: governor, continuation: continuation)
+            await transcriptionSlot.acquire()
             do {
                 try await transcribe(samples: samples, continuation: continuation)
+                await transcriptionSlot.release()
                 await governor.gate.release(producer)
             } catch {
+                await transcriptionSlot.release()
                 await governor.gate.release(producer)
                 throw error
             }
@@ -66,24 +67,7 @@ public actor WhisperEngine {
         } catch {
             continuation.finish(throwing: error)
         }
-        releaseTranscriptionSlot()
         await governor.endGeneration(modelID)
-    }
-
-    private func acquireTranscriptionSlot() async {
-        if !transcriptionSlotHeld {
-            transcriptionSlotHeld = true
-            return
-        }
-        await withCheckedContinuation { transcriptionSlotWaiters.append($0) }
-    }
-
-    private func releaseTranscriptionSlot() {
-        if transcriptionSlotWaiters.isEmpty {
-            transcriptionSlotHeld = false
-        } else {
-            transcriptionSlotWaiters.removeFirst().resume()
-        }
     }
 
     private func acquireGateWithModelLoaded(
