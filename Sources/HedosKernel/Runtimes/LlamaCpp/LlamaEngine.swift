@@ -232,6 +232,7 @@ public actor LlamaEngine {
         }
         var contextParams = llama_context_default_params()
         contextParams.n_ctx = UInt32(contextTokens)
+        contextParams.n_batch = UInt32(contextTokens)
         guard let created = llama_init_from_model(loaded, contextParams) else {
             llama_model_free(loaded)
             throw KernelError.runtimeFailed("could not create llama context")

@@ -457,12 +457,19 @@ public actor Kernel {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
         }
-        guard let window = ContextBudget.effectiveWindow(for: record) else { return nil }
+        guard
+            let window = ContextBudget.effectiveWindow(
+                for: record,
+                requestedContextLength: ContextBudget.storedContextLength(of: record))
+        else { return nil }
         guard let transcript = try await chats.session(id: sessionID) else {
             throw KernelError.runtimeFailed("no chat session with id \(sessionID)")
         }
+        let fallbackPrompt = try? await chatSettings().defaultSystemPrompt
+        let systemPrompt = record.systemPrompt ?? (fallbackPrompt ?? nil)
         let messages = ChatFlow.messages(from: transcript.turns)
-        let characters = messages.reduce(0) { $0 + $1.content.count }
+        let characters =
+            messages.reduce(0) { $0 + $1.content.count } + (systemPrompt?.count ?? 0)
         let fits: Bool =
             switch ContextBudget.assess(
                 promptCharacters: characters, window: window, requestedMaxTokens: nil)
@@ -601,18 +608,22 @@ public actor Kernel {
             record: record, capability: capability, payload: payload,
             fallbackPrompt: fallback ?? nil)
         if capability == .chat || capability == .complete,
-            let window = ContextBudget.effectiveWindow(for: record),
-            case .object(var object) = configured
+            case .object(var object) = configured,
+            let window = ContextBudget.effectiveWindow(
+                for: record, requestedContextLength: object["context_length"]?.intValue)
         {
+            let requestedMaxTokens = object["max_tokens"]?.intValue
             let verdict = ContextBudget.assess(
                 promptCharacters: ContextBudget.promptCharacters(of: configured),
                 window: window,
-                requestedMaxTokens: object["max_tokens"]?.intValue)
+                requestedMaxTokens: requestedMaxTokens)
             switch verdict {
             case .exceeds:
                 throw KernelError.contextExceeded(model: record.displayName)
             case .fits(let clampedMaxTokens):
-                if let clampedMaxTokens {
+                if let clampedMaxTokens,
+                    requestedMaxTokens != nil || clampedMaxTokens < 4096
+                {
                     object["max_tokens"] = .int(clampedMaxTokens)
                     configured = .object(object)
                 }

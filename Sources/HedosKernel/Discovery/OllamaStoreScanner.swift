@@ -81,7 +81,9 @@ public struct OllamaStoreScanner: StoreScanner {
                         let object = try? JSONSerialization.jsonObject(with: blob)
                             as? [String: Any]
                     {
-                        contextLengthHint = object["num_ctx"] as? Int
+                        contextLengthHint = (object["num_ctx"] as? Int).flatMap {
+                            $0 > 0 ? $0 : nil
+                        }
                         stopTokensHint = object["stop"] as? [String]
                     } else {
                         result.issues.append("ollama: unreadable params blob for \(name)")

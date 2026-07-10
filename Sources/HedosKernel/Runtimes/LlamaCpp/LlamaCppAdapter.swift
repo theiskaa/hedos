@@ -10,7 +10,7 @@ public struct LlamaCppAdapter: RuntimeAdapter {
     }
 
     static func effectiveContextTokens(record: ModelRecord, requested: Int?) -> Int {
-        let base = record.contextLength ?? 4096
+        let base = record.contextLength.flatMap { $0 > 0 ? $0 : nil } ?? 4096
         let cappedDefault = min(base, 32768)
         let lower = min(512, base)
         return min(max(requested ?? cappedDefault, lower), base)

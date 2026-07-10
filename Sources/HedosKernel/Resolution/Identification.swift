@@ -326,7 +326,9 @@ public enum Identification {
             } else if key.hasSuffix(".context_length"),
                 let value = readGGUFInteger(reader, type: valueType)
             {
-                contextLengths[key] = value
+                if value > 0 {
+                    contextLengths[key] = value
+                }
             } else {
                 guard skipGGUFValue(reader, type: valueType) else { break walk }
             }

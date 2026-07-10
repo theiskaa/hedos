@@ -73,9 +73,9 @@ enum ModalityHints {
         else { return nil }
         let architectures = (json["architectures"] as? [String]) ?? []
         let contextLength =
-            (json["max_position_embeddings"] as? Int)
+            ((json["max_position_embeddings"] as? Int)
             ?? (json["n_positions"] as? Int)
-            ?? (json["max_seq_len"] as? Int)
+            ?? (json["max_seq_len"] as? Int)).flatMap { $0 > 0 ? $0 : nil }
 
         for arch in architectures {
             if let rule = architectureRules.first(where: { $0.matches(arch) }) {

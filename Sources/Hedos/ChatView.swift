@@ -563,6 +563,8 @@ final class ChatViewModel {
             if let assessment, !assessment.fits {
                 notice =
                     "This conversation is longer than \(displayName) can hold — older turns will not fit. Start a new chat or pick a larger model."
+            } else {
+                notice = nil
             }
             onSessionsChanged?()
         }
@@ -1121,7 +1123,9 @@ struct ChatView: View {
 
     private var contextNotice: String? {
         guard let record = library.records.first(where: { $0.id == model.boundModelID }),
-            let window = ContextBudget.effectiveWindow(for: record)
+            let window = ContextBudget.effectiveWindow(
+                for: record,
+                requestedContextLength: ContextBudget.storedContextLength(of: record))
         else { return nil }
         let estimated = ContextBudget.estimatedTokens(
             characters: model.transcriptCharacterCount)

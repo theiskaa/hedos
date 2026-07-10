@@ -43,7 +43,7 @@ public struct ProfileRegistry: Sendable {
         else { return nil }
         guard let runtime = record.runtime.id, contextHonoringRuntimes.contains(runtime)
         else { return nil }
-        guard let window = record.contextLength else {
+        guard let window = record.contextLength, window > 0 else {
             return ParamSpec(
                 key: "context_length", type: .int, range: [.int(512), .int(131072)])
         }
