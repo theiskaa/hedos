@@ -36,6 +36,24 @@ import Testing
     #expect(record.state == .ready)
 }
 
+@Test func scopedRescanWithNoChangesWritesNothing() async throws {
+    let home = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: home) }
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: home.appendingPathComponent(".ollama/models"),
+        tags: [.init(model: "gemma4", tag: "latest", modelBytes: 64)])
+    let habitat = ModelHabitat(home: home, environment: ["HF_HOME": "", "HF_HUB_CACHE": ""])
+    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore(), habitat: habitat)
+    _ = try await kernel.discover()
+    let baseline = await kernel.registry.saveCount
+
+    await kernel.scopedRescan([.ollama])
+
+    #expect(await kernel.registry.saveCount == baseline)
+}
+
 @Test func registerEndpointCreatesReadyUserPinnedRecord() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

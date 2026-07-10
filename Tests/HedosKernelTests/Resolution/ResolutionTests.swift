@@ -161,6 +161,28 @@ private func ggufRecord(at dir: URL, name: String = "tiny") throws -> ModelRecor
     #expect(resolved.state == .unresolved)
 }
 
+@Test func resolveAllScopedToKindsLeavesOtherKindsUntouched() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let gguf = try ggufRecord(at: dir)
+    let ollama = ModelRecord(
+        name: "gemma4:latest", modality: .text, capabilities: [.chat],
+        source: ModelSource(kind: .ollama, path: "/fake", repo: "gemma4:latest"))
+    try await registry.register(gguf)
+    try await registry.register(ollama)
+
+    try await ResolutionEngine(adapters: [LlamaCppAdapter(), OllamaAdapter()])
+        .resolveAll(in: registry, kinds: [.file])
+
+    let resolvedGGUF = try #require(try await registry.get(id: gguf.id))
+    #expect(resolvedGGUF.state == .ready)
+    #expect(resolvedGGUF.runtime.id == "llama-cpp")
+    let untouchedOllama = try #require(try await registry.get(id: ollama.id))
+    #expect(untouchedOllama.runtime.id == nil)
+    #expect(untouchedOllama.state != .ready)
+}
+
 @Test func userResolutionSurvivesReResolution() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

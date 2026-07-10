@@ -41,15 +41,21 @@ public struct ResolutionExplanation: Sendable {
 public actor ResolutionEngine {
     private let adapters: [any RuntimeAdapter]
     private let profiles: ProfileRegistry
+    private let identificationCache: IdentificationCache?
 
-    public init(adapters: [any RuntimeAdapter], profiles: ProfileRegistry = .builtin) {
+    public init(
+        adapters: [any RuntimeAdapter], profiles: ProfileRegistry = .builtin,
+        identificationCache: IdentificationCache? = nil
+    ) {
         self.adapters = adapters
         self.profiles = profiles
+        self.identificationCache = identificationCache
     }
 
-    public func resolveAll(in registry: Registry) async throws {
+    public func resolveAll(in registry: Registry, kinds: Set<SourceKind>? = nil) async throws {
         var changed: [ModelRecord] = []
         for record in try await registry.list() {
+            if let kinds, !kinds.contains(record.source.kind) { continue }
             if let updated = resolvedUpdate(for: record) {
                 changed.append(updated)
             }
@@ -67,7 +73,7 @@ public actor ResolutionEngine {
         guard record.runtime.resolved != .user else { return nil }
         guard record.state != .missing else { return nil }
 
-        let identified = Identification.identify(record)
+        let identified = identificationCache?.identify(record) ?? Identification.identify(record)
         let bids = collectBids(record, identified)
 
         var updated = record

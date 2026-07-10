@@ -58,6 +58,8 @@ public actor Kernel {
     private var lastSummary: DiscoverySummary?
     private var shelfSubscribers: [UUID: AsyncStream<DiscoverySummary>.Continuation] = [:]
     private let duplicateThreshold: Int64
+    private let identificationCache = IdentificationCache()
+    private var loadedManifests: [RuntimeManifest] = []
 
     public init(
         directory: URL,
@@ -148,6 +150,7 @@ public actor Kernel {
             }
         }
         adapters = baseAdapters + manifestAdapters
+        loadedManifests = manifests
         return issues
     }
 
@@ -210,13 +213,14 @@ public actor Kernel {
         await startWatching(debounce: watcherDebounce)
     }
 
-    private func scopedRescan(_ kinds: Set<SourceKind>) async {
+    func scopedRescan(_ kinds: Set<SourceKind>) async {
         guard lastSummary != nil else {
             if let full = try? await discover() {
                 emitShelfUpdate(full)
             }
             return
         }
+        let manifestsBefore = loadedManifests
         let manifestIssues = await reloadUserRuntimes()
         let models = await settings.models()
         let scanners = habitat.scanners(kinds: kinds, models: models)
@@ -226,9 +230,13 @@ public actor Kernel {
                 scanners: scanners, duplicateThreshold: duplicateThreshold
             ).discover(into: registry)
         else { return }
-        try? await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
-
         let affected = Set(scanners.flatMap(\.kinds))
+        let resolutionScope: Set<SourceKind>? =
+            loadedManifests == manifestsBefore ? affected : nil
+        try? await ResolutionEngine(
+            adapters: adapters, identificationCache: identificationCache
+        ).resolveAll(in: registry, kinds: resolutionScope)
+
         let duplicates = await recomputeDuplicates()
 
         guard var summary = lastSummary else { return }
