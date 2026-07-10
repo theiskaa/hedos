@@ -302,12 +302,11 @@ public enum Identification {
     }
 
     static func ggufFacts(at url: URL) -> GGUFFacts? {
-        guard let handle = FileHandle(forReadingAtPath: url.path) else { return nil }
-        defer { try? handle.close() }
-        guard let magic = try? handle.read(upToCount: 4), magic == Data("GGUF".utf8),
-            let version: UInt32 = readLittleEndian(handle), version >= 2,
-            let _: UInt64 = readLittleEndian(handle),
-            let keyValueCount: UInt64 = readLittleEndian(handle)
+        guard let reader = GGUFHeaderReader(path: url.path) else { return nil }
+        guard let magic = reader.readBytes(4), magic.elementsEqual(Array("GGUF".utf8)),
+            let version: UInt32 = readLittleEndian(reader), version >= 2,
+            let _: UInt64 = readLittleEndian(reader),
+            let keyValueCount: UInt64 = readLittleEndian(reader)
         else { return nil }
 
         var architecture: String?
@@ -315,21 +314,21 @@ public enum Identification {
         var hasChatTemplate = false
 
         walk: for _ in 0..<min(keyValueCount, 512) {
-            guard let key = readGGUFString(handle),
-                let valueType: UInt32 = readLittleEndian(handle)
+            guard let key = readGGUFString(reader),
+                let valueType: UInt32 = readLittleEndian(reader)
             else { break walk }
             if key == "general.architecture" {
-                guard valueType == 8, let value = readGGUFString(handle) else { break walk }
+                guard valueType == 8, let value = readGGUFString(reader) else { break walk }
                 architecture = value
             } else if key == "tokenizer.chat_template" {
                 hasChatTemplate = true
-                guard skipGGUFValue(handle, type: valueType) else { break walk }
+                guard skipGGUFValue(reader, type: valueType) else { break walk }
             } else if key.hasSuffix(".context_length"),
-                let value = readGGUFInteger(handle, type: valueType)
+                let value = readGGUFInteger(reader, type: valueType)
             {
                 contextLengths[key] = value
             } else {
-                guard skipGGUFValue(handle, type: valueType) else { break walk }
+                guard skipGGUFValue(reader, type: valueType) else { break walk }
             }
         }
 
@@ -345,48 +344,102 @@ public enum Identification {
             hasChatTemplate: hasChatTemplate)
     }
 
-    private static func readGGUFInteger(_ handle: FileHandle, type: UInt32) -> Int? {
+    private final class GGUFHeaderReader {
+        private let handle: FileHandle
+        private var buffer: [UInt8] = []
+        private var cursor = 0
+
+        init?(path: String) {
+            guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+            self.handle = handle
+        }
+
+        deinit {
+            try? handle.close()
+        }
+
+        func readBytes(_ count: Int) -> ArraySlice<UInt8>? {
+            guard count >= 0, fill(count) else { return nil }
+            defer { cursor += count }
+            return buffer[cursor..<cursor + count]
+        }
+
+        func skip(_ count: UInt64) -> Bool {
+            let available = UInt64(buffer.count - cursor)
+            if count <= available {
+                cursor += Int(count)
+                return true
+            }
+            let beyond = count - available
+            buffer.removeAll(keepingCapacity: true)
+            cursor = 0
+            guard let current = try? handle.offset() else { return false }
+            let (target, overflow) = current.addingReportingOverflow(beyond)
+            guard !overflow else { return false }
+            return (try? handle.seek(toOffset: target)) != nil
+        }
+
+        private func fill(_ count: Int) -> Bool {
+            while buffer.count - cursor < count {
+                guard let more = try? handle.read(upToCount: max(1 << 20, count)),
+                    !more.isEmpty
+                else { return false }
+                if cursor > 0 {
+                    buffer.removeFirst(cursor)
+                    cursor = 0
+                }
+                buffer.append(contentsOf: more)
+            }
+            return true
+        }
+    }
+
+    private static func readGGUFInteger(_ reader: GGUFHeaderReader, type: UInt32) -> Int? {
         switch type {
-        case 4: (readLittleEndian(handle) as UInt32?).map { Int($0) }
-        case 5: (readLittleEndian(handle) as Int32?).map { Int($0) }
-        case 10: (readLittleEndian(handle) as UInt64?).map { Int(clamping: $0) }
-        case 11: (readLittleEndian(handle) as Int64?).map { Int(clamping: $0) }
+        case 4: (readLittleEndian(reader) as UInt32?).map { Int($0) }
+        case 5: (readLittleEndian(reader) as Int32?).map { Int($0) }
+        case 10: (readLittleEndian(reader) as UInt64?).map { Int(clamping: $0) }
+        case 11: (readLittleEndian(reader) as Int64?).map { Int(clamping: $0) }
         default: nil
         }
     }
 
-    private static func readLittleEndian<T: FixedWidthInteger>(_ handle: FileHandle) -> T? {
+    private static func readLittleEndian<T: FixedWidthInteger>(
+        _ reader: GGUFHeaderReader
+    ) -> T? {
         let size = MemoryLayout<T>.size
-        guard let data = try? handle.read(upToCount: size), data.count == size else { return nil }
-        return T(littleEndian: data.withUnsafeBytes { $0.loadUnaligned(as: T.self) })
+        guard let bytes = reader.readBytes(size) else { return nil }
+        var value: T = 0
+        withUnsafeMutableBytes(of: &value) { $0.copyBytes(from: bytes) }
+        return T(littleEndian: value)
     }
 
-    private static func readGGUFString(_ handle: FileHandle) -> String? {
-        guard let length: UInt64 = readLittleEndian(handle), length <= 1 << 16,
-            let data = try? handle.read(upToCount: Int(length)), data.count == Int(length)
+    private static func readGGUFString(_ reader: GGUFHeaderReader) -> String? {
+        guard let length: UInt64 = readLittleEndian(reader), length <= 1 << 16,
+            let bytes = reader.readBytes(Int(length))
         else { return nil }
-        return String(data: data, encoding: .utf8)
+        return String(decoding: bytes, as: UTF8.self)
     }
 
-    private static func skipGGUFValue(_ handle: FileHandle, type: UInt32) -> Bool {
+    private static func skipGGUFValue(_ reader: GGUFHeaderReader, type: UInt32) -> Bool {
         if let width = ggufScalarWidth(type: type) {
-            return skipBytes(handle, width)
+            return reader.skip(width)
         }
         switch type {
         case 8:
-            guard let length: UInt64 = readLittleEndian(handle) else { return false }
-            return skipBytes(handle, length)
+            guard let length: UInt64 = readLittleEndian(reader) else { return false }
+            return reader.skip(length)
         case 9:
-            guard let elementType: UInt32 = readLittleEndian(handle),
-                let count: UInt64 = readLittleEndian(handle)
+            guard let elementType: UInt32 = readLittleEndian(reader),
+                let count: UInt64 = readLittleEndian(reader)
             else { return false }
             if let width = ggufScalarWidth(type: elementType) {
                 let (total, overflow) = count.multipliedReportingOverflow(by: width)
-                return !overflow && skipBytes(handle, total)
+                return !overflow && reader.skip(total)
             }
             guard elementType == 8, count <= 1 << 24 else { return false }
             for _ in 0..<count {
-                guard let length: UInt64 = readLittleEndian(handle), skipBytes(handle, length)
+                guard let length: UInt64 = readLittleEndian(reader), reader.skip(length)
                 else { return false }
             }
             return true
@@ -403,13 +456,6 @@ public enum Identification {
         case 10, 11, 12: 8
         default: nil
         }
-    }
-
-    private static func skipBytes(_ handle: FileHandle, _ count: UInt64) -> Bool {
-        guard let offset = try? handle.offset() else { return false }
-        let (target, overflow) = offset.addingReportingOverflow(count)
-        guard !overflow else { return false }
-        return (try? handle.seek(toOffset: target)) != nil
     }
 
     static func safetensorsHeaderMetadataFormat(at url: URL) -> String? {
