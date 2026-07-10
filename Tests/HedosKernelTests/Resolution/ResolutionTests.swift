@@ -161,6 +161,85 @@ private func ggufRecord(at dir: URL, name: String = "tiny") throws -> ModelRecor
     #expect(resolved.state == .unresolved)
 }
 
+@Test func ollamaEmbedRecordSurvivesResolveWithoutChatRegression() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = dir.appendingPathComponent("ollama")
+    try DiscoveryFixtures.makeOllamaStore(
+        at: store,
+        tags: [
+            .init(model: "nomic-embed-text", tag: "latest", modelBytes: 512, ggufArchitecture: "nomic-bert")
+        ])
+    let registry = Registry(directory: dir.appendingPathComponent("appsupport"))
+    _ = try await DiscoveryService(
+        scanners: [OllamaStoreScanner(root: store)], duplicateThreshold: 1024
+    ).discover(into: registry)
+
+    try await ResolutionEngine(adapters: [LlamaCppAdapter(), OllamaAdapter()])
+        .resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.list().first)
+    #expect(resolved.capabilities == [.embed])
+    #expect(resolved.modality == .embedding)
+    #expect(resolved.runtime.id == "ollama")
+    #expect(resolved.state == .ready)
+}
+
+@Test func mlxSafetensorsWhisperKeepsTranscribeAndLandsRecipeNeeded() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let bundle = dir.appendingPathComponent("whisper-large-v3-mlx")
+    try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+    try Data(DiscoveryFixtures.mlxWhisperConfig.utf8)
+        .write(to: bundle.appendingPathComponent("config.json"))
+    try DiscoveryFixtures.data(bytes: 256).write(
+        to: bundle.appendingPathComponent("weights.safetensors"))
+
+    let record = ModelRecord(
+        name: "whisper-large-v3-mlx", modality: .unknown, capabilities: [],
+        source: ModelSource(kind: .folder, path: bundle.path))
+    let identified = Identification.identify(record)
+    #expect(identified.format == .mlxSafetensors)
+    #expect(identified.modality == .audio)
+    #expect(identified.capabilities == [.transcribe])
+
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    try await registry.register(record)
+    try await ResolutionEngine(
+        adapters: [
+            LlamaCppAdapter(), WhisperCppAdapter(), MlxSwiftAdapter(), OllamaAdapter(),
+            MlxAudioAdapter(),
+        ]
+    ).resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.get(id: record.id))
+    #expect(resolved.capabilities == [.transcribe])
+    #expect(resolved.modality == .audio)
+    #expect(resolved.runtime.tier == .recipeNeeded)
+    #expect(resolved.runtime.id == nil)
+    #expect(resolved.state == .unresolved)
+}
+
+@Test func sentenceTransformersLayoutIdentifiesAsEmbed() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let bundle = dir.appendingPathComponent("all-MiniLM-L6-v2")
+    try FileManager.default.createDirectory(
+        at: bundle.appendingPathComponent("1_Pooling"), withIntermediateDirectories: true)
+    try Data(#"{"architectures": ["SomeEncoderModel"]}"#.utf8)
+        .write(to: bundle.appendingPathComponent("config.json"))
+    try DiscoveryFixtures.data(bytes: 128).write(
+        to: bundle.appendingPathComponent("model.safetensors"))
+
+    let record = ModelRecord(
+        name: "all-MiniLM-L6-v2", modality: .unknown, capabilities: [],
+        source: ModelSource(kind: .folder, path: bundle.path))
+    let identified = Identification.identify(record)
+    #expect(identified.modality == .embedding)
+    #expect(identified.capabilities == [.embed])
+    #expect(identified.execution == .stream)
+}
+
 @Test func resolveCopiesGGUFContextLengthOntoRecord() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

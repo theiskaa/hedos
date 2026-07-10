@@ -20,6 +20,12 @@ private func writeJSON(_ json: String, in dir: URL, name: String) throws -> URL 
         (#"{"architectures": ["Qwen3ForCausalLM"]}"#, .text, [.chat, .complete]),
         (#"{"architectures": ["GPT2LMHeadModel"]}"#, .text, [.chat, .complete]),
         (DiscoveryFixtures.kokoroConfig, .speech, [.speak]),
+        (DiscoveryFixtures.barkConfig, .speech, [.speak]),
+        (DiscoveryFixtures.parlerTTSConfig, .speech, [.speak]),
+        (DiscoveryFixtures.nomicEmbedConfig, .embedding, [.embed]),
+        (#"{"architectures": ["XLMRobertaModel"]}"#, .embedding, [.embed]),
+        (DiscoveryFixtures.qwen2VLConfig, .text, [.chat, .complete, .see]),
+        (DiscoveryFixtures.mlxWhisperConfig, .audio, [.transcribe]),
     ]
     for (index, expected) in cases.enumerated() {
         let url = try writeJSON(expected.json, in: dir, name: "config-\(index).json")
@@ -31,6 +37,16 @@ private func writeJSON(_ json: String, in dir: URL, name: String) throws -> URL 
     let unmatched = try writeJSON(
         #"{"architectures": ["SomeVisionModel"]}"#, in: dir, name: "config-unmatched.json")
     #expect(ModalityHints.fromConfigJSON(at: unmatched) == nil)
+
+    let visionConfigWithoutVLArchitecture = try writeJSON(
+        #"{"architectures": ["SomeVisionModel"], "vision_config": {}}"#,
+        in: dir, name: "config-vision-no-arch.json")
+    #expect(ModalityHints.fromConfigJSON(at: visionConfigWithoutVLArchitecture) == nil)
+
+    let vlArchitectureWithoutVisionConfig = try writeJSON(
+        #"{"architectures": ["LlavaForConditionalGeneration"]}"#,
+        in: dir, name: "config-arch-no-vision.json")
+    #expect(ModalityHints.fromConfigJSON(at: vlArchitectureWithoutVisionConfig) == nil)
 }
 
 @Test func configJSONCarriesMaxPositionEmbeddings() throws {

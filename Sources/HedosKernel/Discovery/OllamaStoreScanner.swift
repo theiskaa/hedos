@@ -66,6 +66,11 @@ public struct OllamaStoreScanner: StoreScanner {
                     .first { $0.mediaType.hasSuffix(".model") }
                     .map(blobPath)
                 let templateLayer = manifest.layers.first { $0.mediaType.hasSuffix(".template") }
+                let hasProjector = manifest.layers.contains {
+                    $0.mediaType.hasSuffix(".projector")
+                }
+                let profile = Identification.ollamaProfile(
+                    hasProjector: hasProjector, blobPath: weightBlob)
 
                 var contextLengthHint: Int?
                 var stopTokensHint: [String]?
@@ -87,9 +92,9 @@ public struct OllamaStoreScanner: StoreScanner {
                     DiscoveredModel(
                         name: name,
                         source: ModelSource(kind: .ollama, path: url.path, repo: name),
-                        modalityHint: .text,
-                        capabilitiesHint: [.chat, .complete],
-                        executionHint: .stream,
+                        modalityHint: profile.modality,
+                        capabilitiesHint: profile.capabilities,
+                        executionHint: profile.execution,
                         footprintBytes: footprint,
                         primaryWeightPath: weightBlob,
                         contextLengthHint: contextLengthHint,

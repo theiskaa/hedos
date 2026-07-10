@@ -21,6 +21,9 @@ public struct OllamaAdapter: RuntimeAdapter {
         guard capability == .chat || capability == .complete || capability == .embed else {
             return false
         }
+        if capability != .embed, !record.capabilities.contains(.chat) {
+            return false
+        }
         if let runtimeID = record.runtime.id { return runtimeID == id }
         return record.source.kind == .ollama
     }

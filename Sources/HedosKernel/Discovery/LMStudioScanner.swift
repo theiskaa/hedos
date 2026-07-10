@@ -36,6 +36,7 @@ public struct LMStudioScanner: StoreScanner {
             }
             for case let url as URL in enumerator {
                 guard url.pathExtension.lowercased() == "gguf",
+                    !Identification.isMmprojName(url.lastPathComponent),
                     (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
                 else { continue }
                 let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)

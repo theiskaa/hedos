@@ -71,6 +71,32 @@ private func ollamaRecord(name: String = "qwen3.5:9b") -> ModelRecord {
     #expect(!adapter.canServe(Fixtures.flux(), .embed))
 }
 
+@Test func embedOnlyOllamaRecordRefusesChatInvoke() async throws {
+    var embedRecord = ollamaRecord(name: "nomic-embed-text:latest")
+    embedRecord.capabilities = [.embed]
+    embedRecord.modality = .embedding
+
+    let adapter = OllamaAdapter()
+    #expect(!adapter.canServe(embedRecord, .chat))
+    #expect(!adapter.canServe(embedRecord, .complete))
+    #expect(adapter.canServe(embedRecord, .embed))
+
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir, adapters: [adapter], secrets: InMemorySecretStore())
+    embedRecord.state = .ready
+    try await kernel.registry.register(embedRecord)
+
+    do {
+        _ = try await kernel.chat(
+            embedRecord.id, messages: [ChatMessage(role: .user, content: "hi")])
+        Issue.record("an embed-only record must refuse a chat invoke")
+    } catch let KernelError.capabilityUnsupported(model, capability) {
+        #expect(model == embedRecord.name)
+        #expect(capability == .chat)
+    }
+}
+
 @Test func adapterBuildsCorrectChatBody() throws {
     let payload: JSONValue = .object([
         "messages": .array([

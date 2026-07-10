@@ -99,6 +99,38 @@ import Testing
     #expect(result.issues == ["ollama: unreadable params blob for qwen3.5:9b"])
 }
 
+@Test func ollamaScannerTagsEmbeddingModelsWithEmbed() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: root,
+        tags: [
+            .init(model: "nomic-embed-text", tag: "latest", modelBytes: 512, ggufArchitecture: "nomic-bert")
+        ])
+
+    let result = await OllamaStoreScanner(root: root).scan()
+    let model = try #require(result.discovered.first)
+    #expect(model.modalityHint == .embedding)
+    #expect(model.capabilitiesHint == [.embed])
+}
+
+@Test func ollamaScannerTagsProjectorManifestsWithSee() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    try DiscoveryFixtures.makeOllamaStore(
+        at: root,
+        tags: [
+            .init(
+                model: "llava", tag: "13b", modelBytes: 512, ggufArchitecture: "llama",
+                hasProjectorLayer: true)
+        ])
+
+    let result = await OllamaStoreScanner(root: root).scan()
+    let model = try #require(result.discovered.first)
+    #expect(model.modalityHint == .text)
+    #expect(model.capabilitiesHint == [.chat, .complete, .see])
+}
+
 @Test func unreadableOllamaRootReportsFailedKind() async throws {
     let root = try Fixtures.tempDirectory()
     defer {
@@ -152,6 +184,26 @@ import Testing
 
     let result = await HFCacheScanner(roots: [], userRoots: [gone]).scan()
     #expect(result.failedKinds == [.huggingfaceCache])
+}
+
+@Test func hfScannerTagsSentenceTransformersLayoutAsEmbed() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "sentence-transformers", repo: "all-MiniLM-L6-v2",
+            files: [
+                ("model.safetensors", 512),
+                ("config_sentence_transformers.json", 32),
+                ("tokenizer.json", 32),
+            ],
+            configJSON: #"{"architectures": ["SomeEncoderModel"]}"#))
+
+    let result = await HFCacheScanner(root: hub).scan()
+    let model = try #require(result.discovered.first)
+    #expect(model.modalityHint == .embedding)
+    #expect(model.capabilitiesHint == [.embed])
 }
 
 @Test func hfScannerCarriesContextLengthHint() async throws {

@@ -56,11 +56,14 @@ public enum Identification {
                 params: endpointParams)
         }
         if record.source.kind == .ollama {
+            let profile = ollamaProfile(
+                hasProjector: manifestHasProjectorLayer(at: record.source.path),
+                blobPath: record.primaryWeightPath)
             return IdentifiedModel(
                 format: .ollamaStore,
-                modality: .text,
-                capabilities: [.chat, .complete],
-                execution: .stream)
+                modality: profile.modality,
+                capabilities: profile.capabilities,
+                execution: profile.execution)
         }
 
         let base = URL(fileURLWithPath: (record.source.path as NSString).expandingTildeInPath)
@@ -75,6 +78,13 @@ public enum Identification {
         }
 
         if base.pathExtension.lowercased() == "gguf" || hasGGUFMagic(at: base) {
+            if isMmprojName(base.lastPathComponent) {
+                return IdentifiedModel(
+                    format: .gguf,
+                    modality: clipProfile.modality,
+                    capabilities: clipProfile.capabilities,
+                    execution: clipProfile.execution)
+            }
             let facts = ggufFacts(at: base)
             if let architecture = facts?.architecture,
                 let profile = ggufArchitectureProfiles[architecture]
@@ -87,10 +97,13 @@ public enum Identification {
                     contextLength: facts?.contextLength,
                     hasChatTemplate: facts?.hasChatTemplate)
             }
+            let capabilities: [Capability] =
+                hasMmprojCompanion(besides: base)
+                ? [.chat, .complete, .see] : [.chat, .complete]
             return IdentifiedModel(
                 format: .gguf,
                 modality: .text,
-                capabilities: [.chat, .complete],
+                capabilities: capabilities,
                 execution: .stream,
                 contextLength: facts?.contextLength,
                 hasChatTemplate: facts?.hasChatTemplate)
@@ -126,6 +139,16 @@ public enum Identification {
         let safetensorsFormat = safetensorsFormat(in: container, configURL: configURL)
 
         if let safetensorsFormat {
+            if hint?.modality == nil || hint?.modality == .text,
+                hasSentenceTransformersLayout(in: container)
+            {
+                return IdentifiedModel(
+                    format: safetensorsFormat,
+                    modality: .embedding,
+                    capabilities: [.embed],
+                    execution: .stream,
+                    contextLength: hint?.contextLength)
+            }
             return IdentifiedModel(
                 format: safetensorsFormat,
                 modality: hint?.modality,
@@ -193,8 +216,86 @@ public enum Identification {
         "whisper": GGUFArchitectureProfile(
             modality: .audio,
             capabilities: [.transcribe],
-            execution: .stream)
+            execution: .stream),
+        "qwen2vl": GGUFArchitectureProfile(
+            modality: .text,
+            capabilities: [.chat, .complete, .see],
+            execution: .stream),
+        "mllama": GGUFArchitectureProfile(
+            modality: .text,
+            capabilities: [.chat, .complete, .see],
+            execution: .stream),
+        "clip": GGUFArchitectureProfile(
+            modality: .vision,
+            capabilities: [],
+            execution: .sync),
+        "bert": GGUFArchitectureProfile(
+            modality: .embedding,
+            capabilities: [.embed],
+            execution: .stream),
+        "nomic-bert": GGUFArchitectureProfile(
+            modality: .embedding,
+            capabilities: [.embed],
+            execution: .stream),
     ]
+
+    static let ollamaChatProfile = GGUFArchitectureProfile(
+        modality: .text, capabilities: [.chat, .complete], execution: .stream)
+
+    static let ollamaVisionProfile = GGUFArchitectureProfile(
+        modality: .text, capabilities: [.chat, .complete, .see], execution: .stream)
+
+    static func ollamaProfile(hasProjector: Bool, blobPath: String?) -> GGUFArchitectureProfile {
+        if hasProjector { return ollamaVisionProfile }
+        if let blobPath,
+            let architecture = ggufGeneralArchitecture(
+                at: URL(fileURLWithPath: (blobPath as NSString).expandingTildeInPath)),
+            let profile = ggufArchitectureProfiles[architecture]
+        {
+            return profile
+        }
+        return ollamaChatProfile
+    }
+
+    static func manifestHasProjectorLayer(at path: String) -> Bool {
+        guard
+            let data = FileManager.default.contents(
+                atPath: (path as NSString).expandingTildeInPath),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let layers = object["layers"] as? [[String: Any]]
+        else { return false }
+        return layers.contains { ($0["mediaType"] as? String)?.hasSuffix(".projector") == true }
+    }
+
+    static let clipProfile = GGUFArchitectureProfile(
+        modality: .vision, capabilities: [], execution: .sync)
+
+    static func isMmprojName(_ name: String) -> Bool {
+        name.lowercased().contains("mmproj")
+    }
+
+    static let sentenceTransformersMarkers: Set<String> = [
+        "config_sentence_transformers.json", "1_Pooling",
+    ]
+
+    static func hasSentenceTransformersLayout(in container: URL) -> Bool {
+        let names =
+            (try? FileManager.default.contentsOfDirectory(atPath: container.path)) ?? []
+        return names.contains { sentenceTransformersMarkers.contains($0) }
+    }
+
+    static func hasMmprojCompanion(besides base: URL) -> Bool {
+        let directory = base.deletingLastPathComponent()
+        let entries =
+            (try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
+            ?? []
+        return entries.contains { entry in
+            entry.pathExtension.lowercased() == "gguf"
+                && isMmprojName(entry.lastPathComponent)
+                && entry.lastPathComponent != base.lastPathComponent
+        }
+    }
 
     static func ggufGeneralArchitecture(at url: URL) -> String? {
         ggufFacts(at: url)?.architecture

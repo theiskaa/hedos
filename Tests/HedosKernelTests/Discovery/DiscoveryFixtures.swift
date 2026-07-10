@@ -18,6 +18,8 @@ enum DiscoveryFixtures {
         var paramsJSON: String? = nil
         var paramsBlobMissing = false
         var hasTemplateLayer = false
+        var ggufArchitecture: String? = nil
+        var hasProjectorLayer = false
     }
 
     static func makeOllamaStore(at root: URL, tags: [OllamaTag]) throws {
@@ -37,8 +39,10 @@ enum DiscoveryFixtures {
             }
 
             let digest = String(format: "%064d", index)
-            try data(bytes: tag.modelBytes, fill: UInt8(0x10 + index))
-                .write(to: blobs.appendingPathComponent("sha256-\(digest)"))
+            let modelBlob =
+                tag.ggufArchitecture.map { ggufData(architecture: $0) }
+                ?? data(bytes: tag.modelBytes, fill: UInt8(0x10 + index))
+            try modelBlob.write(to: blobs.appendingPathComponent("sha256-\(digest)"))
 
             var layers: [[String: Any]] = [
                 [
@@ -47,6 +51,16 @@ enum DiscoveryFixtures {
                     "digest": "sha256:\(digest)",
                 ]
             ]
+            if tag.hasProjectorLayer {
+                let projectorDigest = String(format: "%064d", 700 + index)
+                let blob = data(bytes: 128, fill: 0x2A)
+                layers.append([
+                    "mediaType": "application/vnd.ollama.image.projector",
+                    "size": blob.count,
+                    "digest": "sha256:\(projectorDigest)",
+                ])
+                try blob.write(to: blobs.appendingPathComponent("sha256-\(projectorDigest)"))
+            }
             if tag.extraBytes > 0 || tag.paramsJSON != nil {
                 let paramsDigest = String(format: "%064d", 900 + index)
                 let blob = Data((tag.paramsJSON ?? "{}").utf8)
@@ -139,6 +153,16 @@ enum DiscoveryFixtures {
         #"{"istftnet": {}, "plbert": {}, "style_dim": 128, "n_mels": 80, "n_token": 178}"#
     static let causalLMConfig =
         #"{"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}"#
+    static let qwen2VLConfig =
+        #"{"architectures": ["Qwen2VLForConditionalGeneration"], "vision_config": {"depth": 32}}"#
+    static let nomicEmbedConfig =
+        #"{"architectures": ["NomicBertModel"], "model_type": "nomic_bert"}"#
+    static let barkConfig =
+        #"{"architectures": ["BarkModel"], "model_type": "bark"}"#
+    static let parlerTTSConfig =
+        #"{"architectures": ["ParlerTTSForConditionalGeneration"], "model_type": "parler_tts"}"#
+    static let mlxWhisperConfig =
+        #"{"architectures": ["WhisperForConditionalGeneration"], "quantization": {"bits": 4}}"#
     static let fluxModelIndex = #"{"_class_name": "FluxPipeline"}"#
     static let sdxlModelIndex = #"{"_class_name": "StableDiffusionXLPipeline"}"#
     static let cogVideoModelIndex = #"{"_class_name": "CogVideoXPipeline"}"#
@@ -152,6 +176,27 @@ enum DiscoveryFixtures {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data(bytes: bytes, fill: fill).write(to: url)
+    }
+
+    @discardableResult
+    static func makeGGUF(architecture: String, at dir: URL, name: String) throws -> URL {
+        var builder = GGUFFixtureBuilder(keyValueCount: 3)
+        builder.addUInt32(key: "general.alignment", value: 32)
+        builder.addStringArray(key: "general.tags", values: ["fixture"])
+        builder.addString(key: "general.architecture", value: architecture)
+        let url = dir.appendingPathComponent(name)
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true)
+        try builder.write(to: url)
+        return url
+    }
+
+    static func ggufData(architecture: String) -> Data {
+        var builder = GGUFFixtureBuilder(keyValueCount: 1)
+        builder.addString(key: "general.architecture", value: architecture)
+        var payload = builder.data
+        payload.append(data(bytes: 64))
+        return payload
     }
 }
 

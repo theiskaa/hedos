@@ -3,57 +3,8 @@ import Testing
 
 @testable import HedosKernel
 
-private struct GGUFHeaderBuilder {
-    var data = Data("GGUF".utf8)
-
-    init(keyValueCount: Int) {
-        append(UInt32(3))
-        append(UInt64(0))
-        append(UInt64(keyValueCount))
-    }
-
-    mutating func append<T: FixedWidthInteger>(_ value: T) {
-        var little = value.littleEndian
-        withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
-    }
-
-    mutating func appendString(_ string: String) {
-        append(UInt64(string.utf8.count))
-        data.append(Data(string.utf8))
-    }
-
-    mutating func addString(key: String, value: String) {
-        appendString(key)
-        append(UInt32(8))
-        appendString(value)
-    }
-
-    mutating func addUInt32(key: String, value: UInt32) {
-        appendString(key)
-        append(UInt32(4))
-        append(value)
-    }
-
-    mutating func addStringArray(key: String, values: [String]) {
-        appendString(key)
-        append(UInt32(9))
-        append(UInt32(8))
-        append(UInt64(values.count))
-        for value in values {
-            appendString(value)
-        }
-    }
-}
-
 private func writeGGUF(architecture: String, at dir: URL, name: String) throws -> URL {
-    var builder = GGUFHeaderBuilder(keyValueCount: 3)
-    builder.addUInt32(key: "general.alignment", value: 32)
-    builder.addStringArray(key: "general.tags", values: ["speech", "asr"])
-    builder.addString(key: "general.architecture", value: architecture)
-    builder.data.append(DiscoveryFixtures.data(bytes: 64))
-    let url = dir.appendingPathComponent(name)
-    try builder.data.write(to: url)
-    return url
+    try DiscoveryFixtures.makeGGUF(architecture: architecture, at: dir, name: name)
 }
 
 private func record(at url: URL, name: String) -> ModelRecord {

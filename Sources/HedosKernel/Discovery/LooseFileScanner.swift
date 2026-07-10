@@ -61,7 +61,9 @@ public struct LooseFileScanner: StoreScanner {
                 } else {
                     sweep(entry, depth: depth + 1, into: &result)
                 }
-            } else if entry.pathExtension.lowercased() == "gguf" {
+            } else if entry.pathExtension.lowercased() == "gguf",
+                !Identification.isMmprojName(entry.lastPathComponent)
+            {
                 let hint = ModalityHints.gguf
                 result.discovered.append(
                     DiscoveredModel(

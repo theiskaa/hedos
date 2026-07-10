@@ -104,6 +104,15 @@ public struct HFCacheScanner: StoreScanner {
             } else {
                 diagnostics.append("no config.json or model_index.json in snapshot")
             }
+            if hint.modality == nil || hint.modality == .text,
+                fileNames.contains(where: {
+                    Identification.sentenceTransformersMarkers.contains($0)
+                })
+            {
+                var embedding = ModalityHints.embeddingHint
+                embedding.contextLength = hint.contextLength
+                hint = embedding
+            }
             if hint.modality == .text,
                 !fileNames.contains(where: { $0.hasPrefix("tokenizer") || $0 == "vocab.json" })
             {

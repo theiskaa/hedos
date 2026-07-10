@@ -27,11 +27,26 @@ enum ModalityHints {
     static let speechHint = Hint(modality: .speech, capabilities: [.speak], execution: .stream)
     static let audioHint = Hint(modality: .audio, capabilities: [.transcribe], execution: .stream)
     static let textHint = Hint(modality: .text, capabilities: [.chat, .complete], execution: .stream)
+    static let embeddingHint = Hint(
+        modality: .embedding, capabilities: [.embed], execution: .stream)
+    static let visionChatHint = Hint(
+        modality: .text, capabilities: [.chat, .complete, .see], execution: .stream)
 
     static let architectureRules: [ArchitectureRule] = [
-        ArchitectureRule(contains: ["Kokoro", "StyleTTS"], suffixes: [], hint: speechHint),
+        ArchitectureRule(
+            contains: ["Kokoro", "StyleTTS", "Bark", "ParlerTTS", "Vits", "Xtts"],
+            suffixes: [], hint: speechHint),
         ArchitectureRule(contains: ["Whisper"], suffixes: [], hint: audioHint),
+        ArchitectureRule(
+            contains: [
+                "BertModel", "NomicBertModel", "ModernBertModel", "XLMRobertaModel", "MPNetModel",
+            ],
+            suffixes: [], hint: embeddingHint),
         ArchitectureRule(contains: ["LMHead"], suffixes: ["ForCausalLM"], hint: textHint),
+    ]
+
+    static let visionLanguageArchitectures = [
+        "Llava", "Qwen2VL", "Idefics", "PaliGemma", "Mllama",
     ]
 
     static let configKeyRules: [ConfigKeyRule] = [
@@ -68,6 +83,17 @@ enum ModalityHints {
                 hint.contextLength = contextLength
                 return hint
             }
+        }
+
+        if json["vision_config"] != nil,
+            architectures.contains(where: { arch in
+                arch.hasSuffix("ForConditionalGeneration")
+                    || visionLanguageArchitectures.contains(where: arch.contains)
+            })
+        {
+            var hint = visionChatHint
+            hint.contextLength = contextLength
+            return hint
         }
 
         let keys = Set(json.keys)
