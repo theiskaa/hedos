@@ -2,6 +2,16 @@ import AppKit
 import HedosKernel
 import SwiftUI
 
+private struct TranscriptTailKey: Equatable {
+    var count: Int
+    var lastID: String?
+
+    init(_ transcript: [ChatViewModel.Entry]) {
+        count = transcript.count
+        lastID = transcript.last?.id
+    }
+}
+
 @Observable
 @MainActor
 final class ChatViewModel {
@@ -150,10 +160,13 @@ final class ChatViewModel {
             return (history.first?.seq ?? turn.seq, entry)
         }
         transcript = placed.sorted { $0.root < $1.root }.map(\.entry)
+        recountTranscriptCharacters()
     }
 
-    var transcriptCharacterCount: Int {
-        transcript.reduce(0) { $0 + $1.text.count }
+    private(set) var transcriptCharacterCount = 0
+
+    private func recountTranscriptCharacters() {
+        transcriptCharacterCount = transcript.reduce(0) { $0 + $1.text.count }
     }
 
     var isWorking: Bool {
@@ -310,6 +323,7 @@ final class ChatViewModel {
         guard !text.isEmpty, !isStreaming, boundModelID != nil else { return }
         draft = ""
         transcript.append(Entry(role: .user, text: text))
+        transcriptCharacterCount += text.count
         stream { kernel, sessionID in
             try await kernel.sendChat(sessionID: sessionID, text: text)
         }
@@ -559,6 +573,7 @@ final class ChatViewModel {
         guard let index = transcript.firstIndex(where: { $0.id == entry.id }) else { return }
         transcript.removeSubrange(index...)
         transcript.append(Entry(role: .user, text: trimmed))
+        recountTranscriptCharacters()
         stream { kernel, sessionID in
             try await kernel.editChatTurn(sessionID: sessionID, turnID: entry.id, text: trimmed)
         }
@@ -568,6 +583,7 @@ final class ChatViewModel {
         guard !isStreaming, entry.role == .assistant, entry.persisted else { return }
         guard let index = transcript.firstIndex(where: { $0.id == entry.id }) else { return }
         transcript.removeSubrange(index...)
+        recountTranscriptCharacters()
         stream { kernel, sessionID in
             try await kernel.regenerateChatTurn(sessionID: sessionID, turnID: entry.id)
         }
@@ -725,6 +741,7 @@ final class ChatViewModel {
                     switch chunk {
                     case .text(let delta):
                         reveal.append(delta)
+                        transcriptCharacterCount += delta.count
                         lastDeltaAt = clock.now
                         if streamStatus != nil {
                             streamStatus = nil
@@ -1143,7 +1160,7 @@ struct ChatView: View {
                     proxy.scrollTo("tail", anchor: .bottom)
                 }
             }
-            .onChange(of: model.transcript) { old, new in
+            .onChange(of: TranscriptTailKey(model.transcript)) { old, new in
                 if new.count > old.count {
                     followsStream = true
                     settleAtTail(proxy)
