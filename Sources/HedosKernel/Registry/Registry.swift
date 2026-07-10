@@ -9,6 +9,7 @@ public actor Registry {
 
     private var models: [String: ModelRecord] = [:]
     private var loaded = false
+    private(set) var saveCount = 0
 
     public init(directory: URL) {
         self.directory = directory
@@ -22,8 +23,19 @@ public actor Registry {
 
     public func register(_ record: ModelRecord) throws {
         try loadIfNeeded()
+        guard models[record.id] != record else { return }
         models[record.id] = record
         try save()
+    }
+
+    public func register(contentsOf records: [ModelRecord]) throws {
+        try loadIfNeeded()
+        var changed = false
+        for record in records where models[record.id] != record {
+            models[record.id] = record
+            changed = true
+        }
+        if changed { try save() }
     }
 
     @discardableResult
@@ -90,6 +102,7 @@ public actor Registry {
     }
 
     private func save() throws {
+        saveCount += 1
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()

@@ -101,6 +101,19 @@ private func makeCompositeMachine() throws -> (root: URL, scanners: [any StoreSc
     #expect(missing.state == .missing)
 }
 
+@Test func discoveryPassWritesStoreOnce() async throws {
+    let (root, scanners) = try makeCompositeMachine()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let registry = Registry(directory: root.appendingPathComponent("appsupport"))
+    let service = DiscoveryService(scanners: scanners, duplicateThreshold: 1024)
+
+    _ = try await service.discover(into: registry)
+    #expect(await registry.saveCount == 1)
+
+    _ = try await service.discover(into: registry)
+    #expect(await registry.saveCount == 1)
+}
+
 @Test func failedScanKindSkipsMissingSweep() async throws {
     let (root, scanners) = try makeCompositeMachine()
     let ollama = root.appendingPathComponent("ollama")

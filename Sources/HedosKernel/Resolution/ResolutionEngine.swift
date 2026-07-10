@@ -48,14 +48,24 @@ public actor ResolutionEngine {
     }
 
     public func resolveAll(in registry: Registry) async throws {
+        var changed: [ModelRecord] = []
         for record in try await registry.list() {
-            try await resolve(record, in: registry)
+            if let updated = resolvedUpdate(for: record) {
+                changed.append(updated)
+            }
         }
+        try await registry.register(contentsOf: changed)
     }
 
     public func resolve(_ record: ModelRecord, in registry: Registry) async throws {
-        guard record.runtime.resolved != .user else { return }
-        guard record.state != .missing else { return }
+        if let updated = resolvedUpdate(for: record) {
+            try await registry.register(updated)
+        }
+    }
+
+    private func resolvedUpdate(for record: ModelRecord) -> ModelRecord? {
+        guard record.runtime.resolved != .user else { return nil }
+        guard record.state != .missing else { return nil }
 
         let identified = Identification.identify(record)
         let bids = collectBids(record, identified)
@@ -97,9 +107,7 @@ public actor ResolutionEngine {
         }
         updated = profiles.populated(updated)
 
-        if updated != record {
-            try await registry.register(updated)
-        }
+        return updated != record ? updated : nil
     }
 
     public func explain(_ record: ModelRecord) -> ResolutionExplanation {

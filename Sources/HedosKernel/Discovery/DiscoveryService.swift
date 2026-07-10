@@ -88,6 +88,7 @@ public actor DiscoveryService {
         let existingByID = Dictionary(
             existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var seenIDs = Set<String>()
+        var toRegister: [ModelRecord] = []
 
         for model in discovered {
             let id = ModelRecord.stableID(for: model.source)
@@ -102,7 +103,7 @@ public actor DiscoveryService {
                 if !model.capabilitiesHint.isEmpty { record.capabilities = model.capabilitiesHint }
                 record.execution = model.executionHint
                 if record.state == .missing { record.state = .unresolved }
-                try await registry.register(record)
+                toRegister.append(record)
             } else {
                 var record = ModelRecord(
                     name: model.name,
@@ -113,7 +114,7 @@ public actor DiscoveryService {
                     footprintMB: Int(model.footprintBytes / (1 << 20)),
                     state: .unresolved)
                 record.primaryWeightPath = model.primaryWeightPath
-                try await registry.register(record)
+                toRegister.append(record)
             }
         }
 
@@ -124,8 +125,9 @@ public actor DiscoveryService {
         {
             var stale = record
             stale.state = .missing
-            try await registry.register(stale)
+            toRegister.append(stale)
         }
+        try await registry.register(contentsOf: toRegister)
 
         var perKind: [SourceKind: DiscoverySummary.KindStat] = [:]
         for model in discovered {

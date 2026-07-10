@@ -34,6 +34,46 @@ import Testing
     #expect(listed[0].footprintMB == 5400)
 }
 
+@Test func registeringUnchangedRecordDoesNotSave() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let record = Fixtures.flux()
+
+    try await registry.register(record)
+    let afterFirst = await registry.saveCount
+    try await registry.register(record)
+    try await registry.register(record)
+
+    #expect(afterFirst == 1)
+    #expect(await registry.saveCount == 1)
+}
+
+@Test func batchRegisterSavesOnce() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+
+    try await registry.register(contentsOf: [Fixtures.flux(), Fixtures.gguf()])
+
+    #expect(await registry.saveCount == 1)
+    #expect(try await registry.list().count == 2)
+    #expect(try await Registry(directory: dir).list().count == 2)
+}
+
+@Test func batchRegisterWithNoChangesDoesNotSave() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    let records = [Fixtures.flux(), Fixtures.gguf()]
+
+    try await registry.register(contentsOf: records)
+    try await registry.register(contentsOf: records)
+    try await registry.register(contentsOf: [])
+
+    #expect(await registry.saveCount == 1)
+}
+
 @Test func unregisterPersists() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
