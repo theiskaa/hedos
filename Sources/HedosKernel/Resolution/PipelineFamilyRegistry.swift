@@ -49,8 +49,15 @@ public struct PipelineRefinement: Sendable, Hashable {
         }
         guard !nameSignals.isEmpty else { return true }
         guard let repoHint else { return false }
-        let lowered = repoHint.lowercased()
-        return nameSignals.contains { lowered.contains($0) }
+        let tokens = Self.nameTokens(of: repoHint)
+        return nameSignals.contains { tokens.contains($0) }
+    }
+
+    static func nameTokens(of repoHint: String) -> Set<String> {
+        Set(
+            repoHint.lowercased()
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .map(String.init))
     }
 }
 

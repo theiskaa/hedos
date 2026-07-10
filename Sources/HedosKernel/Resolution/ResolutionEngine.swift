@@ -115,12 +115,8 @@ public actor ResolutionEngine {
                 updated.execution = backed.manifest.execution
             }
         }
-        updated.params.removeAll { $0.key == "context_length" }
-        updated = profiles.populated(updated)
-        if !updated.params.contains(where: { $0.key == "context_length" }),
-            let contextSpec = ProfileRegistry.contextLengthSpec(for: updated)
-        {
-            updated.params.append(contextSpec)
+        if identified.params.isEmpty {
+            updated = profiles.refreshed(updated)
         }
 
         return updated != record ? updated : nil

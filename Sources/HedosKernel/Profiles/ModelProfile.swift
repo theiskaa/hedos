@@ -53,8 +53,7 @@ public struct ProfileRegistry: Sendable {
             range: [.int(min(512, window)), .int(window)])
     }
 
-    public func populated(_ record: ModelRecord) -> ModelRecord {
-        guard record.params.isEmpty else { return record }
+    public func refreshed(_ record: ModelRecord) -> ModelRecord {
         let schema = schema(for: record)
         guard !schema.isEmpty else { return record }
         var updated = record

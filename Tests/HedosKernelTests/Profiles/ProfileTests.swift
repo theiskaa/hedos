@@ -92,7 +92,7 @@ private func speechRecord() -> ModelRecord {
 @Test func profilesPopulateTextSchema() {
     var record = Fixtures.gguf()
     record.runtime = RuntimeRef(id: "fake:llm", resolved: .auto, tier: .native)
-    let populated = ProfileRegistry.builtin.populated(record)
+    let populated = ProfileRegistry.builtin.refreshed(record)
     let keys = populated.params.map(\.key)
     #expect(keys.contains("temperature"))
     #expect(keys.contains("top_p"))
@@ -171,7 +171,7 @@ private func speechRecord() -> ModelRecord {
 @Test func profilesAddThinkingToggleWhereRuntimeSupportsIt() {
     var record = Fixtures.gguf()
     record.runtime = RuntimeRef(id: "ollama", resolved: .auto, tier: .native)
-    let populated = ProfileRegistry.builtin.populated(record)
+    let populated = ProfileRegistry.builtin.refreshed(record)
     let thinking = populated.params.first { $0.key == "thinking" }
     #expect(thinking?.type == .bool)
 }
@@ -179,7 +179,7 @@ private func speechRecord() -> ModelRecord {
 @Test func profilesPopulateSpeechSchema() {
     var record = speechRecord()
     record.params = []
-    let populated = ProfileRegistry.builtin.populated(record)
+    let populated = ProfileRegistry.builtin.refreshed(record)
     let keys = populated.params.map(\.key)
     #expect(keys == ["voice", "speed"])
     let speed = populated.params.first { $0.key == "speed" }
@@ -189,9 +189,71 @@ private func speechRecord() -> ModelRecord {
 
 @Test func profilesLeaveExistingImageSchemaUntouched() {
     let record = Fixtures.flux()
-    let populated = ProfileRegistry.builtin.populated(record)
-    #expect(populated == record)
-    #expect(populated.params.map(\.key) == ["steps", "guidance", "size", "seed"])
+    let refreshed = ProfileRegistry.builtin.refreshed(record)
+    #expect(refreshed == record)
+    #expect(refreshed.params.map(\.key) == ["steps", "guidance", "size", "seed"])
+}
+
+private struct AnyBidAdapter: RuntimeAdapter {
+    let adapterID: String
+
+    var id: String { adapterID }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+        false
+    }
+
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        RuntimeBid(tier: .native, preference: 5)
+    }
+
+    func invoke(
+        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+
+@Test func runtimeOverrideRefreshesProfileSchema() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(
+        directory: dir,
+        adapters: [AnyBidAdapter(adapterID: "ollama"), AnyBidAdapter(adapterID: "fake:llm")],
+        secrets: InMemorySecretStore())
+    var record = Fixtures.gguf()
+    record.params = [
+        ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)])
+    ]
+    try await kernel.registry.register(record)
+
+    try await kernel.overrideRuntime(record.id, to: "ollama")
+    let pinned = try #require(try await kernel.registry.get(id: record.id))
+    #expect(pinned.params.map(\.key).contains("thinking"))
+
+    try await kernel.overrideRuntime(record.id, to: "fake:llm")
+    let away = try #require(try await kernel.registry.get(id: record.id))
+    #expect(!away.params.map(\.key).contains("thinking"))
+    #expect(away.params.map(\.key).contains("temperature"))
+}
+
+@Test func builtinSchemaFixReachesStoredRecords() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    var record = Fixtures.gguf()
+    record.params = [
+        ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)])
+    ]
+    record.paramValues["temperature"] = .double(0.5)
+    try await registry.register(record)
+
+    try await ResolutionEngine(adapters: [BiddingChatAdapter()]).resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.get(id: record.id))
+    #expect(resolved.params.map(\.key).contains("top_p"))
+    #expect(resolved.params.map(\.key).contains("max_tokens"))
+    #expect(resolved.paramValues["temperature"] == .double(0.5))
 }
 
 @Test func resolutionPopulatesSchemaWhenIdentificationDidNot() async throws {

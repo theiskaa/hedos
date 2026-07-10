@@ -565,6 +565,9 @@ public actor Kernel {
             tier: chosen.bid.tier,
             alternatives: bids.map(\.id).filter { $0 != runtimeID },
             confirmedAt: Date())
+        if identified.params.isEmpty {
+            record = ProfileRegistry.builtin.refreshed(record)
+        }
         try await registry.register(record)
     }
 

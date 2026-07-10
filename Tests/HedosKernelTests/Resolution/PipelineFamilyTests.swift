@@ -73,6 +73,33 @@ private func param(_ params: [ParamSpec], _ key: String) -> ParamSpec? {
     #expect(guidance.defaultValue == .double(7.0))
 }
 
+@Test func substringNameSignalDoesNotClampUnrelatedRepo() throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    let record = try hfDiffusersRecord(
+        hub: hub, repo: "lcmix-photon-xl",
+        modelIndex: DiscoveryFixtures.sdxlModelIndex,
+        scheduler: DiscoveryFixtures.turboSchedulerConfig)
+
+    let steps = try #require(param(Identification.identify(record).params, "steps"))
+    #expect(steps.defaultValue == .int(30))
+    #expect(steps.range == [.int(1), .int(75)])
+
+    let turbojet = try hfDiffusersRecord(
+        hub: hub, repo: "turbojet-vision-xl",
+        modelIndex: DiscoveryFixtures.sdxlModelIndex,
+        scheduler: DiscoveryFixtures.turboSchedulerConfig)
+    let turbojetSteps = try #require(param(Identification.identify(turbojet).params, "steps"))
+    #expect(turbojetSteps.range == [.int(1), .int(75)])
+
+    let stillTurbo = try hfDiffusersRecord(
+        hub: hub, repo: "SDXL-Lightning",
+        modelIndex: DiscoveryFixtures.sdxlModelIndex,
+        scheduler: DiscoveryFixtures.turboSchedulerConfig)
+    let lightningSteps = try #require(param(Identification.identify(stillTurbo).params, "steps"))
+    #expect(lightningSteps.range == [.int(1), .int(8)])
+}
+
 @Test func baseSDXLLeadingSchedulerKeepsDefaultSchema() throws {
     let hub = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: hub) }
