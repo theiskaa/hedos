@@ -19,7 +19,12 @@ enum GovernedOneShot {
             await governor.endGeneration(record.id)
             throw error
         }
-        await governor.gate.acquire(producer)
+        do {
+            try await governor.gate.acquire(producer)
+        } catch {
+            await governor.endGeneration(record.id)
+            throw error
+        }
         do {
             let result = try await body()
             await governor.gate.release(producer)

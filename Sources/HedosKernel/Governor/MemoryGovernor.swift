@@ -84,7 +84,7 @@ public actor MemoryGovernor {
         footprintMB: Int?,
         onWait: (@Sendable (String) async -> Void)? = nil
     ) async throws -> RAMVerdict {
-        guard isHeavy(footprintMB) else {
+        guard isHeavy(footprintMB) || evictionPolicy == .budgeted else {
             let verdict = verdict(admitting: footprintMB, for: modelID)
             await reserve(modelID: modelID, name: name, footprintMB: footprintMB)
             return verdict
@@ -102,6 +102,16 @@ public actor MemoryGovernor {
 
         await previous?.value
 
+        try await settleConflicts(admitting: modelID, footprintMB: footprintMB, onWait: onWait)
+        let verdict = verdict(admitting: footprintMB, for: modelID)
+        await reserve(modelID: modelID, name: name, footprintMB: footprintMB)
+        return verdict
+    }
+
+    private func settleConflicts(
+        admitting modelID: String, footprintMB: Int?,
+        onWait: (@Sendable (String) async -> Void)?
+    ) async throws {
         while let conflict = evictionConflict(admitting: modelID, footprintMB: footprintMB) {
             if await leases.count(conflict.modelID) > 0 {
                 await onWait?("Waiting for \(conflict.name) to finish")
@@ -110,9 +120,19 @@ public actor MemoryGovernor {
             try Task.checkCancellation()
             await residency.unloadNow(conflict.modelID)
         }
-        let verdict = verdict(admitting: footprintMB, for: modelID)
-        await reserve(modelID: modelID, name: name, footprintMB: footprintMB)
-        return verdict
+    }
+
+    private func readmit(modelID: String, name: String, footprintMB: Int) async {
+        let previous = admissionTail
+        let barrier = AdmissionBarrier()
+        admissionTail = Task {
+            await previous?.value
+            await barrier.wait()
+        }
+        defer { Task { await barrier.open() } }
+        await previous?.value
+        try? await settleConflicts(
+            admitting: modelID, footprintMB: footprintMB, onWait: nil)
     }
 
     public func markLoaded(
@@ -155,8 +175,9 @@ public actor MemoryGovernor {
         }
     }
 
-    public func markUnloaded(_ modelID: String) {
+    public func markUnloaded(_ modelID: String) async {
         residents.removeValue(forKey: modelID)
+        await residency.deregister(modelID)
     }
 
     public func beginGeneration(_ modelID: String) async {
@@ -173,8 +194,13 @@ public actor MemoryGovernor {
 
     public func observeFootprint(_ modelID: String, footprintMB: Int) {
         guard var resident = residents[modelID] else { return }
+        let previous = resident.footprintMB
         resident.footprintMB = footprintMB
         residents[modelID] = resident
+        if previous < heavyThresholdMB, footprintMB >= heavyThresholdMB {
+            let name = resident.name
+            Task { await self.readmit(modelID: modelID, name: name, footprintMB: footprintMB) }
+        }
     }
 
     public func verdict(admitting footprintMB: Int?, for modelID: String? = nil) -> RAMVerdict {
@@ -213,7 +239,7 @@ public actor MemoryGovernor {
     }
 
     public func wouldWait(admitting modelID: String, footprintMB: Int?) async -> Bool {
-        guard isHeavy(footprintMB) else { return false }
+        guard isHeavy(footprintMB) || evictionPolicy == .budgeted else { return false }
         guard let conflict = evictionConflict(admitting: modelID, footprintMB: footprintMB)
         else { return false }
         return await leases.count(conflict.modelID) > 0
@@ -239,10 +265,7 @@ public actor MemoryGovernor {
             let others = residents.values.filter { $0.modelID != modelID }
             let occupied = others.reduce(0) { $0 + $1.footprintMB }
             guard occupied + incoming > budget else { return nil }
-            return
-                others
-                .filter { $0.footprintMB >= heavyThresholdMB }
-                .min { ($0.loadedAt, $0.modelID) < ($1.loadedAt, $1.modelID) }
+            return others.min { ($0.loadedAt, $0.modelID) < ($1.loadedAt, $1.modelID) }
         }
     }
 }

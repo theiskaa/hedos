@@ -82,7 +82,7 @@ private actor ChoreographyEngine {
         while true {
             try await ensureLoadedGoverned(
                 modelID: modelID, name: name, footprintMB: footprintMB, onWait: onWait)
-            await governor.gate.acquire(producer)
+            try? await governor.gate.acquire(producer)
             if loadedModelID == modelID { return }
             await governor.gate.release(producer)
         }
@@ -98,7 +98,7 @@ private actor ChoreographyEngine {
         try await governor.admit(
             modelID: modelID, name: name, footprintMB: footprintMB, onWait: onWait)
         let load = GPUProducer.load(modelID: modelID)
-        await governor.gate.acquire(load)
+        try? await governor.gate.acquire(load)
         if let previous = loadedModelID {
             loadedModelID = nil
             await governor.markUnloaded(previous)

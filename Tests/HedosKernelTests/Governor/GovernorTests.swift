@@ -420,6 +420,135 @@ private func settleScheduledWork(_ times: Int = 50) async {
     #expect(await governor.isResident("b"))
 }
 
+@Test func footprintPromotionEvictsCoResidentHeavy() async throws {
+    let governor = testGovernor()
+    let bUnloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "B", name: "heavy-b", footprintMB: 2048) {
+        bUnloaded.mark()
+    }
+    _ = try await governor.admit(modelID: "A", name: "under-a", footprintMB: 512)
+    await governor.markLoaded(modelID: "A", name: "under-a", footprintMB: 512) {}
+    #expect(await governor.isResident("B"))
+    #expect(await governor.isResident("A"))
+
+    await governor.observeFootprint("A", footprintMB: 2048)
+    try await waitUntil { bUnloaded.wasInvoked }
+    #expect(await governor.isResident("B") == false)
+}
+
+@Test func budgetedEvictionEvictsSmallestOldestToMakeRoom() async throws {
+    let governor = testGovernor(totalMemoryMB: 65536)
+    await governor.apply(
+        policy: ResidencyPolicy(keepWarm: .fiveMinutes, eviction: .budgeted, ramBudgetMB: 3000))
+    for id in ["s1", "s2", "s3"] {
+        _ = try await governor.admit(modelID: id, name: id, footprintMB: 500)
+        await governor.markLoaded(modelID: id, name: id, footprintMB: 500) {}
+    }
+    _ = try await governor.admit(modelID: "heavy", name: "heavy", footprintMB: 2000)
+    await governor.markLoaded(modelID: "heavy", name: "heavy", footprintMB: 2000) {}
+
+    #expect(await governor.isResident("s1") == false)
+    #expect(await governor.isResident("s2"))
+    #expect(await governor.isResident("s3"))
+    #expect(await governor.isResident("heavy"))
+    let occupied = await governor.resident().reduce(0) { $0 + $1.footprintMB }
+    #expect(occupied <= 3000)
+}
+
+@Test func tighteningWarmWindowReschedulesLiveIdleTimer() async throws {
+    let clock = TestClock()
+    let governor = testGovernor(defaultWarmWindow: .seconds(3600), clock: clock)
+    let unloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "tts", name: "kokoro", footprintMB: 350) {
+        unloaded.mark()
+    }
+    await governor.beginGeneration("tts")
+    await governor.endGeneration("tts")
+    await settleScheduledWork()
+
+    await governor.setWarmWindow(.milliseconds(50), for: "tts")
+    await settleScheduledWork()
+    clock.advance(by: .milliseconds(60))
+    try await waitUntil { await governor.isResident("tts") == false }
+    #expect(unloaded.wasInvoked)
+}
+
+@Test func lengtheningWarmWindowDoesNotFireAtOldDeadline() async throws {
+    let clock = TestClock()
+    let governor = testGovernor(defaultWarmWindow: .milliseconds(50), clock: clock)
+    let unloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "tts", name: "kokoro", footprintMB: 350) {
+        unloaded.mark()
+    }
+    await governor.beginGeneration("tts")
+    await governor.endGeneration("tts")
+    await settleScheduledWork()
+
+    await governor.setWarmWindow(.seconds(3600), for: "tts")
+    await settleScheduledWork()
+    clock.advance(by: .milliseconds(200))
+    await settleScheduledWork()
+    #expect(unloaded.wasInvoked == false)
+    #expect(await governor.isResident("tts"))
+}
+
+@Test func inPlaceSwapDeregistersSoNoStaleTimerFires() async throws {
+    let clock = TestClock()
+    let governor = testGovernor(defaultWarmWindow: .milliseconds(50), clock: clock)
+    let unloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "m", name: "m", footprintMB: 500) {
+        unloaded.mark()
+    }
+    await governor.beginGeneration("m")
+    await governor.endGeneration("m")
+    await settleScheduledWork()
+
+    await governor.markUnloaded("m")
+    clock.advance(by: .milliseconds(200))
+    await settleScheduledWork()
+    #expect(unloaded.wasInvoked == false)
+    #expect(await governor.isResident("m") == false)
+}
+
+@Test func gateAcquireThrowsWhenCancelledWhileQueued() async throws {
+    let gate = GPUGate()
+    try await gate.acquire(.load(modelID: "a"))
+
+    let threw = CleanupFlag()
+    let queued = Task {
+        do {
+            try await gate.acquire(.load(modelID: "b"))
+            await gate.release(.load(modelID: "b"))
+        } catch {
+            threw.mark()
+        }
+    }
+    try await Task.sleep(for: .milliseconds(30))
+    queued.cancel()
+    _ = await queued.value
+    #expect(threw.wasInvoked)
+
+    await gate.release(.load(modelID: "a"))
+    try await gate.acquire(.load(modelID: "c"))
+    await gate.release(.load(modelID: "c"))
+}
+
+@Test func lateGenerationAfterQuitSuspensionNeverReArmsUnload() async throws {
+    let clock = TestClock()
+    let governor = testGovernor(defaultWarmWindow: .milliseconds(50), clock: clock)
+    let unloaded = CleanupFlag()
+    await governor.markLoaded(modelID: "llm", name: "llm", footprintMB: 6000) {
+        unloaded.mark()
+    }
+    await governor.suspendForQuit()
+    await governor.beginGeneration("llm")
+    await governor.endGeneration("llm")
+    await settleScheduledWork()
+    clock.advance(by: .milliseconds(200))
+    await settleScheduledWork()
+    #expect(unloaded.wasInvoked == false)
+}
+
 @Test func quitTeardownSkipsUnloadsEntirely() async throws {
     let clock = TestClock()
     let governor = testGovernor(defaultWarmWindow: .milliseconds(50), clock: clock)

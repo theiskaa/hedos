@@ -14,8 +14,9 @@ public enum GPUProducer: Hashable, Sendable {
 
 public actor GPUGate {
     private struct Waiter {
+        let id: UUID
         let producer: GPUProducer
-        let continuation: CheckedContinuation<Void, Never>
+        let continuation: CheckedContinuation<Bool, Never>
     }
 
     private var holder: GPUProducer?
@@ -24,15 +25,42 @@ public actor GPUGate {
 
     public init() {}
 
-    public func acquire(_ producer: GPUProducer) async {
+    public func acquire(_ producer: GPUProducer) async throws {
+        try Task.checkCancellation()
         if waiters.isEmpty, admits(producer) {
             holder = producer
             holders += 1
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(Waiter(producer: producer, continuation: continuation))
+        let id = UUID()
+        let granted = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiters.append(Waiter(id: id, producer: producer, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
         }
+        if !granted {
+            throw CancellationError()
+        }
+    }
+
+    private func acquireUncancellable(_ producer: GPUProducer) async {
+        if waiters.isEmpty, admits(producer) {
+            holder = producer
+            holders += 1
+            return
+        }
+        let id = UUID()
+        _ = await withCheckedContinuation { continuation in
+            waiters.append(Waiter(id: id, producer: producer, continuation: continuation))
+        }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
     }
 
     public func release(_ producer: GPUProducer) {
@@ -50,7 +78,7 @@ public actor GPUGate {
     public func withAccess<T: Sendable>(
         _ producer: GPUProducer, _ body: @Sendable () async throws -> T
     ) async rethrows -> T {
-        await acquire(producer)
+        await acquireUncancellable(producer)
         defer { release(producer) }
         return try await body()
     }
@@ -65,7 +93,7 @@ public actor GPUGate {
             waiters.removeFirst()
             holder = next.producer
             holders += 1
-            next.continuation.resume()
+            next.continuation.resume(returning: true)
         }
     }
 }

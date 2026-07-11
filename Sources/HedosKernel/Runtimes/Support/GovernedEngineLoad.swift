@@ -23,7 +23,7 @@ enum GovernedEngineLoad {
                 isLoaded: isLoaded, previousModelID: previousModelID,
                 unloadPrevious: unloadPrevious, load: load, evict: evict,
                 observedFootprintMB: observedFootprintMB)
-            await governor.gate.acquire(producer)
+            try await governor.gate.acquire(producer)
             if await isLoaded() { return }
             await governor.gate.release(producer)
         }
@@ -53,7 +53,12 @@ enum GovernedEngineLoad {
             status(tightStatus)
         }
         let loadProducer = GPUProducer.load(modelID: modelID)
-        await governor.gate.acquire(loadProducer)
+        do {
+            try await governor.gate.acquire(loadProducer)
+        } catch {
+            await governor.markUnloaded(modelID)
+            throw error
+        }
         do {
             if let previous = await previousModelID() {
                 await unloadPrevious()
