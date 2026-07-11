@@ -61,7 +61,7 @@ public struct ProfileRegistry: Sendable {
         return updated
     }
 
-    static let thinkingRuntimes: Set<RuntimeID> = [.ollama]
+    static let thinkingRuntimes: Set<RuntimeID> = [.ollama, .mlxLm]
 
     static let temperatureSpec = ParamSpec(
         key: "temperature", type: .float, range: [.double(0), .double(2)])

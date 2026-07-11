@@ -28,7 +28,7 @@ struct AppleFoundationAdapter: RuntimeAdapter {
     }
 
     static func delta(previous: String, current: String) -> String {
-        guard current.hasPrefix(previous) else { return current }
+        guard current.hasPrefix(previous) else { return "" }
         return String(current.dropFirst(previous.count))
     }
 
@@ -85,7 +85,6 @@ struct AppleFoundationAdapter: RuntimeAdapter {
                     }
 
                     let started = ContinuousClock.now
-                    var ttftMs: Int?
                     var previous = ""
                     var promptTokens: Int?
                     var completionTokens: Int?
@@ -98,10 +97,6 @@ struct AppleFoundationAdapter: RuntimeAdapter {
                             let delta = Self.delta(previous: previous, current: current)
                             previous = current
                             guard !delta.isEmpty else { continue }
-                            if ttftMs == nil {
-                                ttftMs = Int(
-                                    (ContinuousClock.now - started) / .milliseconds(1))
-                            }
                             continuation.yield(.text(delta))
                         case .toolCalled(let call, _):
                             continuation.yield(.status("tool: " + call.name))
@@ -117,7 +112,7 @@ struct AppleFoundationAdapter: RuntimeAdapter {
                                 promptTokens: promptTokens,
                                 completionTokens: completionTokens,
                                 durationMs: durationMs,
-                                ttftMs: ttftMs)))
+                                tokenCountsEstimated: true)))
                     await Self.markReachable(recordID, registry: registry)
                     continuation.finish()
                 } catch where Task.isCancelled {

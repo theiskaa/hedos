@@ -82,7 +82,9 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             let error = networkConsentError
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
-        return runtime.stream(record, op: capability, payload: payload)
+        let stream = runtime.stream(record, op: capability, payload: payload)
+        guard capability == .chat || capability == .complete else { return stream }
+        return ThinkSplitter.separating(stream)
     }
 
     func run(

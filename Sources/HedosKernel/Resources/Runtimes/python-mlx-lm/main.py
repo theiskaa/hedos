@@ -125,6 +125,86 @@ class StopScanner:
         return emit
 
 
+class ThinkSplitter:
+    PAIRS = [("<think>", "</think>"), ("<|START_THINKING|>", "<|END_THINKING|>")]
+
+    def __init__(self):
+        self.mode = "text"
+        self.close = None
+        self.buffer = ""
+        self.open_tags = [open_tag for open_tag, _ in self.PAIRS]
+
+    def feed(self, chunk):
+        self.buffer += chunk
+        out = []
+        while True:
+            if self.mode == "text":
+                earliest = None
+                for open_tag, close_tag in self.PAIRS:
+                    index = self.buffer.find(open_tag)
+                    if index != -1 and (earliest is None or index < earliest[0]):
+                        earliest = (index, open_tag, close_tag)
+                if earliest is None:
+                    emit = self._emittable(self.open_tags)
+                    if emit:
+                        out.append(("text", emit))
+                        self.buffer = self.buffer[len(emit):]
+                    break
+                index, open_tag, close_tag = earliest
+                before = self.buffer[:index]
+                if before:
+                    out.append(("text", before))
+                self.buffer = self.buffer[index + len(open_tag):]
+                self.mode = "thinking"
+                self.close = close_tag
+            else:
+                index = self.buffer.find(self.close)
+                if index == -1:
+                    emit = self._emittable([self.close])
+                    if emit:
+                        out.append(("thinking", emit))
+                        self.buffer = self.buffer[len(emit):]
+                    break
+                before = self.buffer[:index]
+                if before:
+                    out.append(("thinking", before))
+                self.buffer = self.buffer[index + len(self.close):]
+                self.mode = "text"
+                self.close = None
+        return out
+
+    def flush(self):
+        if not self.buffer:
+            return []
+        kind = "thinking" if self.mode == "thinking" else "text"
+        out = [(kind, self.buffer)]
+        self.buffer = ""
+        return out
+
+    def _emittable(self, tags):
+        longest = max((len(tag) for tag in tags), default=1)
+        max_hold = min(longest - 1, len(self.buffer))
+        for length in range(max_hold, 0, -1):
+            suffix = self.buffer[-length:]
+            if any(tag.startswith(suffix) for tag in tags):
+                return self.buffer[:len(self.buffer) - length]
+        return self.buffer
+
+
+NO_TEMPLATE_NOTICE = "this model has no chat template — using a generic format"
+
+
+def render_chatml(messages):
+    prompt = ""
+    for message in messages:
+        prompt += "<|im_start|>%s\n%s<|im_end|>\n" % (
+            message.get("role", ""),
+            message.get("content", ""),
+        )
+    prompt += "<|im_start|>assistant\n"
+    return prompt
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -158,10 +238,24 @@ def main():
         shutdown_requested = False
         last = None
         try:
+            no_template = False
             if op == "chat":
-                prompt = tokenizer.apply_chat_template(
-                    request.get("messages", []), add_generation_prompt=True
-                )
+                if getattr(tokenizer, "chat_template", None):
+                    template_kwargs = {"add_generation_prompt": True}
+                    if request.get("thinking") is False:
+                        template_kwargs["enable_thinking"] = False
+                    try:
+                        prompt = tokenizer.apply_chat_template(
+                            request.get("messages", []), **template_kwargs
+                        )
+                    except TypeError:
+                        template_kwargs.pop("enable_thinking", None)
+                        prompt = tokenizer.apply_chat_template(
+                            request.get("messages", []), **template_kwargs
+                        )
+                else:
+                    no_template = True
+                    prompt = render_chatml(request.get("messages", []))
             else:
                 prompt = request.get("prompt", "")
             max_tokens = int(request.get("max_tokens", 4096))
@@ -176,21 +270,38 @@ def main():
                 generate_kwargs["logits_processors"] = make_logits_processors(
                     repetition_penalty=float(request["repeat_penalty"])
                 )
+            if no_template:
+                send_json({"event": "status", "message": NO_TEMPLATE_NOTICE})
             send_json({"event": "begin"})
+            splitter = ThinkSplitter()
             stopped = False
+
+            def emit_text(text):
+                if not text:
+                    return False
+                if not scanner.active:
+                    send_json({"event": "text", "text": text})
+                    return False
+                emit = scanner.feed(text)
+                if emit:
+                    send_json({"event": "text", "text": emit})
+                return scanner.stopped
+
+            def emit_raw(text):
+                for kind, value in splitter.feed(text):
+                    if kind == "thinking":
+                        send_json({"event": "thinking", "text": value})
+                    elif emit_text(value):
+                        return True
+                return False
+
             for response in stream_generate(
                 model, tokenizer, prompt, **generate_kwargs
             ):
                 last = response
-                if scanner.active:
-                    emit = scanner.feed(response.text)
-                    if emit:
-                        send_json({"event": "text", "text": emit})
-                    if scanner.stopped:
-                        stopped = True
-                        break
-                else:
-                    send_json({"event": "text", "text": response.text})
+                if emit_raw(response.text):
+                    stopped = True
+                    break
                 inner = pending_op()
                 if inner in ("cancel", "shutdown"):
                     cancelled = True
@@ -201,10 +312,16 @@ def main():
                 if shutdown_requested:
                     break
                 continue
-            if scanner.active and not stopped:
-                tail = scanner.flush()
-                if tail:
-                    send_json({"event": "text", "text": tail})
+            if not stopped:
+                for kind, value in splitter.flush():
+                    if kind == "thinking":
+                        send_json({"event": "thinking", "text": value})
+                    else:
+                        emit_text(value)
+                if scanner.active:
+                    tail = scanner.flush()
+                    if tail:
+                        send_json({"event": "text", "text": tail})
             send_json(
                 {
                     "event": "done",
@@ -217,4 +334,5 @@ def main():
             send_json({"event": "error", "message": str(error)})
 
 
-main()
+if __name__ == "__main__":
+    main()

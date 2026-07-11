@@ -60,14 +60,18 @@ struct MlxSwiftAdapter: RuntimeAdapter {
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
         AsyncThrowingStream { continuation in
-            guard case .object(let object) = payload,
-                case .array(let rawMessages)? = object["messages"]
-            else {
+            guard case .object(let object) = payload else {
                 continuation.finish(
-                    throwing: KernelError.runtimeFailed("chat payload must carry messages"))
+                    throwing: KernelError.payloadInvalid("chat payload must be an object"))
                 return
             }
-            let messages = rawMessages.compactMap(ChatMessage.fromPayload)
+            let messages: [ChatMessage]
+            do {
+                messages = try ChatMessage.parseAll(from: object)
+            } catch {
+                continuation.finish(throwing: error)
+                return
+            }
             let directory = SidecarModelPaths.resolve(record).snapshot
             let governor = governor
             let engine = engine

@@ -7,6 +7,7 @@ actor MlxSwiftEngine {
     static let shared = MlxSwiftEngine()
 
     private var loadedPath: String?
+    private var pendingLoadMs: Int?
     private var loadedModelID: String?
     private var container: ModelContainer?
     private let generationSlot = GenerationSlot()
@@ -85,7 +86,11 @@ actor MlxSwiftEngine {
             isLoaded: { await self.hasLoaded(path: path) },
             previousModelID: { await self.loadedModelID },
             unloadPrevious: { await self.unload() },
-            load: { try await self.load(path: path, modelID: modelID) },
+            load: {
+                let start = ContinuousClock.now
+                try await self.load(path: path, modelID: modelID)
+                await self.stampLoad(since: start)
+            },
             evict: { [weak self] in await self?.unloadIfLoaded(path: path) },
             observedFootprintMB: { Footprint.directoryMB(path: path) })
     }
@@ -106,6 +111,8 @@ actor MlxSwiftEngine {
         guard !messages.isEmpty else {
             throw KernelError.runtimeFailed("chat produced no messages")
         }
+        let loadMs = pendingLoadMs
+        pendingLoadMs = nil
 
         var parameterBuilder = GenerateParameters(
             maxTokens: params.maxTokens,
@@ -163,6 +170,7 @@ actor MlxSwiftEngine {
                 input = try await context.processor.prepare(
                     input: UserInput(chat: chat, tools: libraryTools))
             } else {
+                continuation.yield(.status(ChatMLPrompt.noTemplateNotice))
                 let rendered = Self.renderChatML(messages)
                 input = try await context.processor.prepare(input: UserInput(prompt: .text(rendered)))
             }
@@ -215,8 +223,13 @@ actor MlxSwiftEngine {
                     completionTokens: completionTokenCount,
                     durationMs: Int(elapsed.components.seconds) * 1000
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000),
+                    loadMs: loadMs,
                     finishReason: sawToolCall
                         ? "tool_calls" : (stoppedByMatch ? "stop" : nil))))
+    }
+
+    private func stampLoad(since start: ContinuousClock.Instant) {
+        pendingLoadMs = Int((ContinuousClock.now - start) / .milliseconds(1))
     }
 
     private func load(path: String, modelID: String) async throws {
@@ -272,12 +285,7 @@ actor MlxSwiftEngine {
     }
 
     static func renderChatML(_ messages: [ChatMessage]) -> String {
-        var rendered = ""
-        for message in messages {
-            rendered += "<|im_start|>\(message.role.rawValue)\n\(message.content)<|im_end|>\n"
-        }
-        rendered += "<|im_start|>assistant\n"
-        return rendered
+        ChatMLPrompt.render(messages)
     }
 
 }

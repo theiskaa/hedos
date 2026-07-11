@@ -22,20 +22,27 @@ struct SystemFoundationBackend: AppleFoundationBackend {
         }
     }
 
-    static func split(_ messages: [ChatMessage]) -> (
+    static func split(_ messages: [ChatMessage]) throws -> (
         instructions: String?, history: [ChatMessage], prompt: String
     ) {
-        var remaining = messages
         var instructions: [String] = []
-        while let first = remaining.first, first.role == .system {
-            instructions.append(first.content)
-            remaining.removeFirst()
+        var conversation: [ChatMessage] = []
+        for message in messages {
+            if message.role == .system {
+                instructions.append(message.content)
+            } else {
+                conversation.append(message)
+            }
         }
-        let prompt = remaining.last?.content ?? ""
-        let history = remaining.isEmpty ? [] : Array(remaining.dropLast())
+        guard let lastUser = conversation.lastIndex(where: { $0.role == .user }) else {
+            throw KernelError.payloadInvalid(
+                "Apple Intelligence needs a user message to answer")
+        }
+        let prompt = conversation[lastUser].content
+        conversation.remove(at: lastUser)
         return (
             instructions.isEmpty ? nil : instructions.joined(separator: "\n\n"),
-            history,
+            conversation,
             prompt
         )
     }
@@ -57,7 +64,7 @@ struct SystemFoundationBackend: AppleFoundationBackend {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let parts = Self.split(messages)
+                    let parts = try Self.split(messages)
                     let bridged: [any FoundationModels.Tool] =
                         resultProvider.map { provider in
                             tools.compactMap {

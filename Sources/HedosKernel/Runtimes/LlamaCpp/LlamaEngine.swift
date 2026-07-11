@@ -12,6 +12,7 @@ actor LlamaEngine {
     private var loadedPath: String?
     private var loadedModelID: String?
     private var loadedContextTokens: Int?
+    private var pendingLoadMs: Int?
     private var model: OpaquePointer?
     private var context: OpaquePointer?
     private let generationSlot = GenerationSlot()
@@ -109,7 +110,11 @@ actor LlamaEngine {
             isLoaded: { await self.hasLoaded(path: path, contextTokens: contextTokens) },
             previousModelID: { await self.loadedModelID },
             unloadPrevious: { await self.unload() },
-            load: { try await self.load(path: path, modelID: modelID, contextTokens: contextTokens) },
+            load: {
+                let start = ContinuousClock.now
+                try await self.load(path: path, modelID: modelID, contextTokens: contextTokens)
+                await self.stampLoad(since: start)
+            },
             evict: { [weak self] in await self?.unloadIfLoaded(path: path) },
             observedFootprintMB: { Footprint.weightsMB(path: path) })
     }
@@ -129,11 +134,17 @@ actor LlamaEngine {
         guard let model, let context else {
             throw KernelError.runtimeFailed("llama model not loaded")
         }
+        let loadMs = pendingLoadMs
+        pendingLoadMs = nil
         let vocab = llama_model_get_vocab(model)
-        let prompt = renderPrompt(
+        let rendered = renderPrompt(
             model: model,
             messages: Self.messagesWithToolBlock(
                 messages.map(\.inlinedToolTranscript), tools: params.tools))
+        if rendered.fellBack {
+            continuation.yield(.status(ChatMLPrompt.noTemplateNotice))
+        }
+        let prompt = rendered.prompt
         var tokens = tokenize(vocab: vocab, text: prompt)
         guard !tokens.isEmpty else {
             throw KernelError.runtimeFailed("prompt produced no tokens")
@@ -207,6 +218,7 @@ actor LlamaEngine {
         var emittedToolCall = false
         var stopMatcher = StopMatcher(params.stop)
         var stoppedByMatch = false
+        var splitter = ThinkSplitter()
 
         func emitText(_ text: String) {
             guard !text.isEmpty else { return }
@@ -217,6 +229,15 @@ actor LlamaEngine {
             let safe = stopMatcher.feed(text)
             if !safe.isEmpty { continuation.yield(.text(safe)) }
             if stopMatcher.stopped { stoppedByMatch = true }
+        }
+
+        func emitRaw(_ text: String) {
+            for piece in splitter.feed(text) {
+                switch piece {
+                case .text(let value): emitText(value)
+                case .thinking(let value): continuation.yield(.thinking(value))
+                }
+            }
         }
 
         while generated < maxTokens {
@@ -234,13 +255,13 @@ actor LlamaEngine {
                 if !piece.isEmpty {
                     if scanningForCalls {
                         let scanned = scanner.feed(piece)
-                        if !scanned.text.isEmpty { emitText(scanned.text) }
+                        if !scanned.text.isEmpty { emitRaw(scanned.text) }
                         if let call = scanned.call {
                             continuation.yield(.toolCall(call))
                             emittedToolCall = true
                         }
                     } else {
-                        emitText(piece)
+                        emitRaw(piece)
                     }
                 }
             }
@@ -263,7 +284,13 @@ actor LlamaEngine {
                     emittedToolCall = true
                 }
             }
-            emitText(remainder)
+            emitRaw(remainder)
+            for piece in splitter.flush() {
+                switch piece {
+                case .text(let value): emitText(value)
+                case .thinking(let value): continuation.yield(.thinking(value))
+                }
+            }
             if stopMatcher.isActive, !stoppedByMatch {
                 let tail = stopMatcher.flush()
                 if !tail.isEmpty { continuation.yield(.text(tail)) }
@@ -286,7 +313,12 @@ actor LlamaEngine {
                     completionTokens: generated,
                     durationMs: Int(elapsed.components.seconds) * 1000
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000),
+                    loadMs: loadMs,
                     finishReason: finishReason)))
+    }
+
+    private func stampLoad(since start: ContinuousClock.Instant) {
+        pendingLoadMs = Int((ContinuousClock.now - start) / .milliseconds(1))
     }
 
     static func messagesWithToolBlock(
@@ -357,12 +389,14 @@ actor LlamaEngine {
         loadedContextTokens = nil
     }
 
-    private func renderPrompt(model: OpaquePointer, messages: [ChatMessage]) -> String {
+    private func renderPrompt(
+        model: OpaquePointer, messages: [ChatMessage]
+    ) -> (prompt: String, fellBack: Bool) {
         let template = llama_model_chat_template(model, nil).map { String(cString: $0) }
         if let template, let rendered = Self.applyTemplate(template, messages: messages) {
-            return rendered
+            return (rendered, false)
         }
-        return Self.chatMLPrompt(messages: messages)
+        return (ChatMLPrompt.render(messages), true)
     }
 
     static func applyTemplate(_ template: String, messages: [ChatMessage]) -> String? {
@@ -395,12 +429,7 @@ actor LlamaEngine {
     }
 
     static func chatMLPrompt(messages: [ChatMessage]) -> String {
-        var prompt = ""
-        for message in messages {
-            prompt += "<|im_start|>\(message.role.rawValue)\n\(message.content)<|im_end|>\n"
-        }
-        prompt += "<|im_start|>assistant\n"
-        return prompt
+        ChatMLPrompt.render(messages)
     }
 
     private func tokenize(vocab: OpaquePointer?, text: String) -> [llama_token] {

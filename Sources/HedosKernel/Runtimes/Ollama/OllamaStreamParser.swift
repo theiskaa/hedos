@@ -30,12 +30,12 @@ enum OllamaStreamParser {
         }
     }
 
-    static func parse(line: String) -> CapabilityChunk? {
+    static func parse(line: String) -> [CapabilityChunk] {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty,
             let object = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))
                 as? [String: Any]
-        else { return nil }
+        else { return [] }
 
         if (object["done"] as? Bool) == true {
             var stats = GenerationStats()
@@ -44,17 +44,21 @@ enum OllamaStreamParser {
             if let nanoseconds = object["total_duration"] as? Int {
                 stats.durationMs = nanoseconds / 1_000_000
             }
+            if let nanoseconds = object["load_duration"] as? Int {
+                stats.loadMs = nanoseconds / 1_000_000
+            }
             stats.finishReason = object["done_reason"] as? String
-            return .done(stats)
+            return [.done(stats)]
         }
+        var chunks: [CapabilityChunk] = []
         if let message = object["message"] as? [String: Any] {
-            if let content = message["content"] as? String, !content.isEmpty {
-                return .text(content)
-            }
             if let thinking = message["thinking"] as? String, !thinking.isEmpty {
-                return .thinking(thinking)
+                chunks.append(.thinking(thinking))
+            }
+            if let content = message["content"] as? String, !content.isEmpty {
+                chunks.append(.text(content))
             }
         }
-        return nil
+        return chunks
     }
 }

@@ -46,7 +46,9 @@ struct MlxLmAdapter: RuntimeAdapter {
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        runtime.stream(record, op: capability, payload: payload)
+        let stream = runtime.stream(record, op: capability, payload: payload)
+        guard capability == .chat || capability == .complete else { return stream }
+        return ThinkSplitter.separating(stream)
     }
 
     var runtime: PythonSidecarRuntime {

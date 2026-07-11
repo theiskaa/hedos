@@ -125,14 +125,15 @@ struct OllamaAdapter: RuntimeAdapter {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        var detail = ""
-                        for try await line in bytes.lines {
-                            if let message = OllamaStreamParser.errorMessage(line: line) {
-                                detail = ": \(message)"
-                            }
-                            break
+                        var collected = Data()
+                        for try await byte in bytes {
+                            collected.append(byte)
+                            if collected.count >= 65536 { break }
                         }
-                        throw KernelError.runtimeFailed("ollama returned HTTP \(code)\(detail)")
+                        if let message = Self.errorMessage(fromBody: collected) {
+                            throw KernelError.runtimeFailed("ollama: \(message)")
+                        }
+                        throw KernelError.runtimeFailed("ollama returned HTTP \(code)")
                     }
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
@@ -142,9 +143,12 @@ struct OllamaAdapter: RuntimeAdapter {
                         for call in OllamaStreamParser.toolCalls(line: line) {
                             continuation.yield(.toolCall(call))
                         }
-                        guard let chunk = OllamaStreamParser.parse(line: line) else { continue }
-                        continuation.yield(chunk)
-                        if case .done = chunk { break }
+                        var reachedDone = false
+                        for chunk in OllamaStreamParser.parse(line: line) {
+                            continuation.yield(chunk)
+                            if case .done = chunk { reachedDone = true }
+                        }
+                        if reachedDone { break }
                     }
                     continuation.finish()
                 } catch is CancellationError {
@@ -225,8 +229,19 @@ struct OllamaAdapter: RuntimeAdapter {
     ]
 
     static func requestBody(model: String, payload: JSONValue) throws -> Data {
-        guard case .object(let object) = payload, let messages = object["messages"] else {
-            throw KernelError.runtimeFailed("chat payload must carry a messages array")
+        guard case .object(let object) = payload else {
+            throw KernelError.payloadInvalid("chat payload must be an object")
+        }
+        let messages: JSONValue
+        if let existing = object["messages"] {
+            messages = existing
+        } else if case .string(let prompt)? = object["prompt"] {
+            messages = .array([
+                .object(["role": .string("user"), "content": .string(prompt)])
+            ])
+        } else {
+            throw KernelError.payloadInvalid(
+                "chat payload must carry a messages array or a prompt")
         }
         var body: [String: JSONValue] = [
             "model": .string(model),
@@ -343,5 +358,15 @@ struct OllamaAdapter: RuntimeAdapter {
             return "ollama: \(errorPayload.error)"
         }
         return "ollama embed returned HTTP \(statusCode)"
+    }
+
+    static func errorMessage(fromBody data: Data) -> String? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") {
+            if let message = OllamaStreamParser.errorMessage(line: String(line)) {
+                return message
+            }
+        }
+        return OllamaStreamParser.errorMessage(line: text)
     }
 }

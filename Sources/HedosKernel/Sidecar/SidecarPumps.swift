@@ -64,6 +64,10 @@ extension SidecarSupervisor {
                     continuation.yield(.status("generating"))
                 case "text":
                     continuation.yield(.text(value.objectValue?["text"]?.stringValue ?? ""))
+                case "thinking":
+                    continuation.yield(.thinking(value.objectValue?["text"]?.stringValue ?? ""))
+                case "status":
+                    continuation.yield(.status(value.objectValue?["message"]?.stringValue ?? ""))
                 case "done":
                     let seconds = value.objectValue?["seconds"]?.doubleValue
                     continuation.yield(
