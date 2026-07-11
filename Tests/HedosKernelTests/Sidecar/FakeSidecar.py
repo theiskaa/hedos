@@ -63,7 +63,27 @@ while True:
             send_json({"event": "begin"})
             send(2, b"\x00" * 64)
             sys.exit(7)
+        voice = request.get("voice", "")
+        speed = request.get("speed")
         send_json({"event": "begin"})
+        send_json({"event": "status", "message": f"voice={voice} speed={speed}"})
+        if mode == "slow-speak":
+            cancelled = False
+            for i in range(20):
+                send(2, bytes([i % 256]) * 640)
+                time.sleep(0.05)
+                if select.select([0], [], [], 0)[0]:
+                    inner = read_frame()
+                    if inner is None:
+                        sys.exit(0)
+                    if json.loads(inner[1]).get("op") == "cancel":
+                        cancelled = True
+                        break
+            if cancelled:
+                send_json({"event": "cancelled"})
+                continue
+            send_json({"event": "done", "seconds": 1.0})
+            continue
         for i in range(3):
             send(2, bytes([i]) * 640)
         send_json({"event": "done", "seconds": 0.12})
@@ -73,9 +93,24 @@ while True:
         if os.path.isfile(pcm_path):
             count = os.path.getsize(pcm_path) // 4
             os.remove(pcm_path)
+        language = request.get("language")
+        translate = request.get("translate", False)
         send_json({"event": "begin"})
-        send_json({"event": "text", "text": f"heard {count} samples"})
-        send_json({"event": "text", "text": " and understood"})
+        send_json(
+            {"event": "text", "text": f"heard {count} samples", "t0_ms": 0, "t1_ms": 100}
+        )
+        send_json(
+            {"event": "text", "text": " and understood", "t0_ms": 100, "t1_ms": 250}
+        )
+        if language or translate:
+            send_json(
+                {
+                    "event": "text",
+                    "text": f" lang={language} translate={translate}",
+                    "t0_ms": 250,
+                    "t1_ms": 300,
+                }
+            )
         send_json({"event": "done", "seconds": count / 16000.0})
     if op == "chat":
         messages = request.get("messages", [])
@@ -122,6 +157,14 @@ while True:
         if request.get("prompt") == "abort":
             send_json({"event": "begin"})
             send_json({"event": "cancelled"})
+            continue
+        if request.get("prompt") == "deaf":
+            send_json({"event": "begin"})
+            send_json({"event": "step", "n": 1, "total": 2})
+            time.sleep(5)
+            send_json({"event": "image", "format": "png", "index": 0, "count": 1})
+            send(2, b"\x89PNG")
+            send_json({"event": "done", "seconds": 5.0})
             continue
         steps = int(request.get("steps", 4))
         send_json({"event": "begin"})
