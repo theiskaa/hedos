@@ -236,3 +236,24 @@ struct ImageBubble: View {
                 : "Generated image" + (caption.map { ", \($0)" } ?? ""))
     }
 }
+
+struct ToolActionLine: View {
+    let summary: String
+
+    var body: some View {
+        HStack(spacing: Design.Space.chipX) {
+            Image(systemName: "wrench.and.screwdriver")
+                .font(Design.micro)
+            Text(summary)
+                .font(Design.micro)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, Design.Space.m)
+        .padding(.vertical, Design.Space.s)
+        .overlay(
+            RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
+    }
+}

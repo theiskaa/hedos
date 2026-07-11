@@ -83,6 +83,7 @@ final class ChatViewModel {
     var isTranscribing = false
     var isVisible = true
     var notice: String?
+    var place: String?
     var canStartOllama = false
     var boundModelID: String?
     var defaultModelID: String?
@@ -136,7 +137,11 @@ final class ChatViewModel {
             return candidate
         }
 
-        let active = stored.turns.filter { $0.supersededBy == nil && $0.role != .system }
+        place = stored.session.place
+        let active = stored.turns.filter {
+            $0.supersededBy == nil && $0.role != .system
+                && !($0.role == .assistant && $0.content.isEmpty && $0.toolCallsJSON != nil)
+        }
         let placed = active.enumerated().map { index, turn -> (root: Int, entry: Entry) in
             var chain: [ChatTurn] = []
             var cursor = predecessor(of: turn)
@@ -788,6 +793,19 @@ final class ChatViewModel {
                         }
                     case .status(let message):
                         streamStatus = message
+                    case .toolCall(let call):
+                        settle()
+                        if let last = transcript.last, last.role == .assistant,
+                            last.text.isEmpty, last.thinking.isEmpty
+                        {
+                            transcript.removeLast()
+                        }
+                        transcript.append(
+                            Entry(role: .tool, text: Harness.actionSummary(call)))
+                        transcript.append(Entry(role: .assistant, text: ""))
+                        reveal.reset()
+                        liveBalancedText = ""
+                        streamStatus = "running \(call.name)"
                     case .done(let stats):
                         if !transcript.isEmpty {
                             transcript[transcript.count - 1].stats = stats
@@ -826,6 +844,30 @@ final class ChatViewModel {
             }
             onSessionsChanged?()
             autoSpeakIfWanted()
+        }
+    }
+
+    func setPlace(_ path: String) {
+        Task {
+            do {
+                try await kernel.setChatPlace(sessionID: sessionID, path: path)
+                await load()
+            } catch {
+                notice = error.localizedDescription
+            }
+        }
+    }
+
+    func placeFiles() async -> [String] {
+        guard let place else { return [] }
+        return await Task.detached { PlaceFiles.list(place: place) }.value
+    }
+
+    func clearPlace() {
+        Task {
+            try? await kernel.setChatPlace(sessionID: sessionID, path: nil)
+            place = nil
+            await load()
         }
     }
 
@@ -1020,6 +1062,7 @@ struct ChatView: View {
             onStop: { model.stop() },
             slash: SlashSetup(
                 kernel: kernel, capability: model.intent.capability, commands: slashCommands),
+            mentions: MentionSetup(files: { await model.placeFiles() }),
             dictation: DictationSetup(
                 kernel: kernel,
                 records: { [weak library] in library?.records ?? [] }),
@@ -1065,8 +1108,66 @@ struct ChatView: View {
         intentControl(
             .speak, glyph: "speaker.wave.2", label: "Speak this text",
             available: !model.voiceModels(in: library.records).isEmpty)
+        placeControl
         paramsControl
         voiceLoopControl
+    }
+
+    @ViewBuilder
+    private var placeControl: some View {
+        if model.intent == .text {
+            if let place = model.place {
+                HStack(spacing: Design.Space.xs) {
+                    Image(systemName: "folder")
+                        .font(Design.micro)
+                    Text(URL(fileURLWithPath: place).lastPathComponent)
+                        .font(Design.micro)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Button {
+                        model.clearPlace()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(Design.micro)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Stop reading this folder")
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, Design.Space.chipX)
+                .padding(.vertical, Design.Space.s)
+                .background(Design.inkWash, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                .help(
+                    "The model can list, read, and search inside \(place). "
+                        + "It cannot touch anything outside it, and it cannot write or run anything."
+                )
+            } else {
+                CircleControl(
+                    glyph: "folder",
+                    label: "Let the model read a folder"
+                ) {
+                    pickPlace()
+                }
+            }
+        }
+    }
+
+    private func pickPlace() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Let the Model Read This Folder"
+        panel.message =
+            "The model will be able to list, read, and search files inside this folder "
+            + "for this conversation. It cannot see anything outside it, and it cannot "
+            + "write, delete, or run anything."
+        if panel.runModal() == .OK, let url = panel.url {
+            model.setPlace(url.path)
+        }
     }
 
     @ViewBuilder
@@ -1230,6 +1331,14 @@ struct ChatView: View {
         }
     }
 
+    static func toolActionSummary(_ text: String) -> String {
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        guard firstLine.hasPrefix("["),
+            let dash = firstLine.range(of: " — data from the user's disk")
+        else { return firstLine }
+        return String(firstLine[firstLine.index(after: firstLine.startIndex)..<dash.lowerBound])
+    }
+
     private struct ScrollAnchorState: Equatable {
         var container: CGSize = .zero
         var contentHeight: CGFloat = 0
@@ -1249,7 +1358,10 @@ struct ChatView: View {
 
     @ViewBuilder
     private func turn(_ entry: ChatViewModel.Entry) -> some View {
-        if entry.role == .user {
+        if entry.role == .tool {
+            ToolActionLine(summary: Self.toolActionSummary(entry.text))
+                .padding(.bottom, Design.Space.s)
+        } else if entry.role == .user {
             VStack(alignment: .trailing, spacing: 4) {
                 if editingEntryID == entry.id {
                     editField(entry)
@@ -1290,7 +1402,7 @@ struct ChatView: View {
                                 Button("Regenerate") { model.regenerate(entry) }
                             }
                         }
-                } else if model.isStreaming && entry.thinking.isEmpty
+                } else if model.isStreaming && !entry.persisted && entry.thinking.isEmpty
                     && entry.id == model.transcript.last?.id
                 {
                     ShimmerText(
@@ -1534,7 +1646,7 @@ struct ChatView: View {
     @ViewBuilder
     private func thinkingBlock(_ entry: ChatViewModel.Entry) -> some View {
         let streaming =
-            entry.text.isEmpty && model.isStreaming
+            entry.text.isEmpty && model.isStreaming && !entry.persisted
             && entry.id == model.transcript.last?.id
         return DisclosureGroup(
             isExpanded: Binding(
