@@ -126,6 +126,9 @@ final class ShellModel {
         mode = Self.surfaced(mode)
         await refreshSessions()
         watchResidency()
+        await kernel.setChatConsentAsk { request in
+            await ConsentCoordinator.shared.ask(request)
+        }
         Task { await kernel.startGatewayIfEnabled() }
         await library.rescan()
         await kernel.startWatching()
@@ -400,6 +403,11 @@ struct ShellView: View {
             }
         }
         .task { await shell.start() }
+        .sheet(item: Bindable(ConsentCoordinator.shared).pending) { pending in
+            ConsentSheet(pending: pending) { decision in
+                ConsentCoordinator.shared.decide(pending, decision)
+            }
+        }
     }
 
     @ViewBuilder
