@@ -3,6 +3,7 @@ import Foundation
 public enum CapabilityChunk: Sendable, Hashable {
     case text(String)
     case thinking(String)
+    case segment(String, startMs: Int, endMs: Int)
     case audio(AudioFrame)
     case vector([Double])
     case toolCall(ToolCall)

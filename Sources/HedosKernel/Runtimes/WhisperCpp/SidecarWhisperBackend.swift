@@ -29,11 +29,14 @@ actor SidecarWhisperBackend: WhisperBackend {
         spec = nil
     }
 
-    nonisolated func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error> {
+    nonisolated func transcribe(samples: [Float], options: TranscriptionOptions)
+        -> AsyncThrowingStream<TranscriptionSegment, Error>
+    {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    try await self.run(samples: samples, continuation: continuation)
+                    try await self.run(
+                        samples: samples, options: options, continuation: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -45,7 +48,8 @@ actor SidecarWhisperBackend: WhisperBackend {
 
     private func run(
         samples: [Float],
-        continuation: AsyncThrowingStream<String, Error>.Continuation
+        options: TranscriptionOptions,
+        continuation: AsyncThrowingStream<TranscriptionSegment, Error>.Continuation
     ) async throws {
         guard let spec else {
             throw KernelError.runtimeFailed("the whisper sidecar is not loaded")
@@ -54,16 +58,27 @@ actor SidecarWhisperBackend: WhisperBackend {
         let pcmURL = workdir.appendingPathComponent("transcribe-\(UUID().uuidString).f32")
         try samples.withUnsafeBytes { Data($0) }.write(to: pcmURL)
         defer { try? FileManager.default.removeItem(at: pcmURL) }
-        let stream = await supervisor.request(
-            spec,
-            .object([
-                "op": .string("transcribe"),
-                "pcm": .string(pcmURL.path),
-                "sample_rate": .int(WhisperEngine.expectedSampleRate),
-            ]))
+        var control: [String: JSONValue] = [
+            "op": .string("transcribe"),
+            "pcm": .string(pcmURL.path),
+            "sample_rate": .int(WhisperEngine.expectedSampleRate),
+        ]
+        if let language = options.language, !language.isEmpty {
+            control["language"] = .string(language)
+        }
+        if options.translate {
+            control["translate"] = .bool(true)
+        }
+        let stream = await supervisor.request(spec, .object(control))
         for try await chunk in stream {
-            if case .text(let delta) = chunk {
-                continuation.yield(delta)
+            switch chunk {
+            case .segment(let text, let startMs, let endMs):
+                continuation.yield(
+                    TranscriptionSegment(text: text, startMs: startMs, endMs: endMs))
+            case .text(let delta):
+                continuation.yield(TranscriptionSegment(text: delta))
+            default:
+                break
             }
         }
     }
@@ -79,11 +94,17 @@ actor SidecarWhisperBackend: WhisperBackend {
             runtimeID: runtimeID,
             lockfile: bundle.appendingPathComponent("requirements.lock"),
             progress: { _ in })
+        return try makeSpec(
+            path: path, bundle: bundle, envDir: envDir, runtimeID: runtimeID,
+            workdirRoot: Registry.defaultDirectory())
+    }
 
-        let fm = FileManager.default
-        let workdir = Registry.defaultDirectory()
-            .appendingPathComponent("workdirs/python-whisper-cpp", isDirectory: true)
-        try fm.createDirectory(at: workdir, withIntermediateDirectories: true)
+    static func makeSpec(
+        path: String, bundle: URL, envDir: URL, runtimeID: String, workdirRoot: URL
+    ) throws -> SidecarSpec {
+        let workdir = workdirRoot.appendingPathComponent(
+            "workdirs/python-whisper-cpp", isDirectory: true)
+        try FileManager.default.createDirectory(at: workdir, withIntermediateDirectories: true)
         let modelRoot = URL(fileURLWithPath: path).deletingLastPathComponent()
 
         return SidecarSpec(
@@ -96,6 +117,8 @@ actor SidecarWhisperBackend: WhisperBackend {
                     "--workdir", workdir.path,
                 ]),
             workingDirectory: workdir,
-            readyTimeout: .seconds(600))
+            readyTimeout: .seconds(600),
+            cooperativeCancel: true,
+            cancelGraceTimeout: .seconds(30))
     }
 }

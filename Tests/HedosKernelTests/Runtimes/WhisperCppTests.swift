@@ -3,19 +3,32 @@ import Testing
 
 @testable import HedosKernel
 
+private actor OptionsRecorder {
+    private(set) var last: TranscriptionOptions?
+    func record(_ options: TranscriptionOptions) { last = options }
+}
+
 private struct FakeWhisperBackend: WhisperBackend {
     let deltas: [String]
+    var recorder: OptionsRecorder? = nil
 
     func load(path: String) async throws {}
 
     func unload() async {}
 
-    func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            for delta in deltas {
-                continuation.yield(delta)
+    func transcribe(samples: [Float], options: TranscriptionOptions)
+        -> AsyncThrowingStream<TranscriptionSegment, Error>
+    {
+        let deltas = deltas
+        let recorder = recorder
+        return AsyncThrowingStream { continuation in
+            Task {
+                await recorder?.record(options)
+                for delta in deltas {
+                    continuation.yield(TranscriptionSegment(text: delta))
+                }
+                continuation.finish()
             }
-            continuation.finish()
         }
     }
 }
@@ -36,12 +49,14 @@ private struct StallOnFirstCallBackend: WhisperBackend {
 
     func unload() async {}
 
-    func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error> {
+    func transcribe(samples: [Float], options: TranscriptionOptions)
+        -> AsyncThrowingStream<TranscriptionSegment, Error>
+    {
         AsyncThrowingStream { continuation in
             let counter = counter
             let task = Task {
                 let call = await counter.next()
-                continuation.yield("first")
+                continuation.yield(TranscriptionSegment(text: "first"))
                 if call == 1 {
                     do {
                         try await Task.sleep(for: .seconds(300))
@@ -50,7 +65,7 @@ private struct StallOnFirstCallBackend: WhisperBackend {
                         return
                     }
                 }
-                continuation.yield("second")
+                continuation.yield(TranscriptionSegment(text: "second"))
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -143,9 +158,29 @@ private func wavData(
     #expect(texts == ["hello", " world"])
     #expect(finished)
     let done = try #require(stats)
-    #expect(done.completionTokens == 2)
+    #expect(done.completionTokens == nil)
     #expect(done.durationMs != nil)
     #expect(await governor.isResident(record.id))
+}
+
+@Test func adapterDecodesLanguageAndTranslateFromPayload() async throws {
+    let governor = MemoryGovernor(totalMemoryMB: 1 << 20)
+    let recorder = OptionsRecorder()
+    let engine = WhisperEngine(
+        backend: FakeWhisperBackend(deltas: ["ok"], recorder: recorder))
+    let adapter = WhisperCppAdapter(governor: governor, engine: engine)
+    let record = whisperRecord()
+
+    var payload = pcmPayload()
+    guard case .object(var fields) = payload else { return }
+    fields["language"] = .string("es")
+    fields["translate"] = .bool(true)
+    payload = .object(fields)
+
+    for try await _ in adapter.invoke(record, .transcribe, payload: payload) {}
+    let options = try #require(await recorder.last)
+    #expect(options.language == "es")
+    #expect(options.translate == true)
 }
 
 @Test func cancelMidStreamReleasesEngineForNextRun() async throws {
@@ -263,8 +298,10 @@ private func wavData(
 
     try await backend.load(path: "/tmp/ggml-tiny.bin")
     var collected = ""
-    for try await delta in backend.transcribe(samples: [Float](repeating: 0.25, count: 320)) {
-        collected += delta
+    for try await segment in backend.transcribe(
+        samples: [Float](repeating: 0.25, count: 320), options: TranscriptionOptions())
+    {
+        collected += segment.text
     }
     #expect(collected == "heard 320 samples and understood")
 
@@ -274,6 +311,79 @@ private func wavData(
 
     await backend.unload()
     #expect(await supervisor.isRunning("fake-whisper-\("/tmp/ggml-tiny.bin".hashValue)") == false)
+}
+
+private func fakeWhisperBackend(workdir: URL, supervisor: SidecarSupervisor)
+    -> SidecarWhisperBackend
+{
+    let script = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sidecar/FakeSidecar.py")
+    return SidecarWhisperBackend(supervisor: supervisor) { path in
+        SidecarSpec(
+            runtimeID: "fake-whisper-\(path.hashValue)",
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["python3", script.path, "normal"],
+            workingDirectory: workdir,
+            readyTimeout: .seconds(15))
+    }
+}
+
+@Test func sidecarBackendForwardsLanguageAndTranslate() async throws {
+    let workdir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: workdir) }
+    let supervisor = SidecarSupervisor()
+    let backend = fakeWhisperBackend(workdir: workdir, supervisor: supervisor)
+    try await backend.load(path: "/tmp/ggml-tiny.bin")
+
+    var collected = ""
+    for try await segment in backend.transcribe(
+        samples: [Float](repeating: 0.25, count: 320),
+        options: TranscriptionOptions(language: "fr", translate: true))
+    {
+        collected += segment.text
+    }
+    #expect(collected.contains("lang=fr"))
+    #expect(collected.contains("translate=True"))
+    await supervisor.shutdownAll()
+}
+
+@Test func segmentTimestampsSurviveTheFrameProtocol() async throws {
+    let workdir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: workdir) }
+    let supervisor = SidecarSupervisor()
+    let backend = fakeWhisperBackend(workdir: workdir, supervisor: supervisor)
+    try await backend.load(path: "/tmp/ggml-tiny.bin")
+
+    var segments: [TranscriptionSegment] = []
+    for try await segment in backend.transcribe(
+        samples: [Float](repeating: 0.25, count: 320), options: TranscriptionOptions())
+    {
+        segments.append(segment)
+    }
+    #expect(segments.count == 2)
+    #expect(segments.allSatisfy { $0.startMs != nil && $0.endMs != nil })
+    #expect(segments[0].startMs == 0)
+    #expect(segments[0].endMs == 100)
+    #expect(segments[1].startMs == 100)
+    #expect(segments[1].endMs == 250)
+    for segment in segments {
+        #expect(segment.startMs! <= segment.endMs!)
+    }
+    await supervisor.shutdownAll()
+}
+
+@Test func whisperSpecDeclaresCooperativeCancelWithLongGrace() throws {
+    let bundle = try #require(RuntimeBundle.directory(named: "python-whisper-cpp"))
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let spec = try SidecarWhisperBackend.makeSpec(
+        path: "/tmp/ggml-tiny.bin", bundle: bundle,
+        envDir: dir.appendingPathComponent("env"), runtimeID: "python:whisper-cpp",
+        workdirRoot: dir)
+    #expect(spec.cooperativeCancel == true)
+    #expect(spec.cancelGraceTimeout == .seconds(30))
 }
 
 @Test func ggmlBinIdentifiesDiscoversAndBidsAsWhisper() async throws {

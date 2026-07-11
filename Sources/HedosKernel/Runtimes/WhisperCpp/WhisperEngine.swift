@@ -3,7 +3,8 @@ import Foundation
 public protocol WhisperBackend: Sendable {
     func load(path: String) async throws
     func unload() async
-    func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error>
+    func transcribe(samples: [Float], options: TranscriptionOptions)
+        -> AsyncThrowingStream<TranscriptionSegment, Error>
 }
 
 public struct MissingWhisperBackend: WhisperBackend {
@@ -17,7 +18,9 @@ public struct MissingWhisperBackend: WhisperBackend {
 
     public func unload() async {}
 
-    public func transcribe(samples: [Float]) -> AsyncThrowingStream<String, Error> {
+    public func transcribe(samples: [Float], options: TranscriptionOptions)
+        -> AsyncThrowingStream<TranscriptionSegment, Error>
+    {
         AsyncThrowingStream { continuation in
             continuation.finish(throwing: KernelError.runtimeUnavailable(hint: Self.hint))
         }
@@ -45,6 +48,7 @@ public actor WhisperEngine {
         footprintMB: Int?,
         governor: MemoryGovernor,
         samples: [Float],
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async {
         await governor.beginGeneration(modelID)
@@ -55,7 +59,8 @@ public actor WhisperEngine {
                 footprintMB: footprintMB, governor: governor, continuation: continuation)
             await transcriptionSlot.acquire()
             do {
-                try await transcribe(samples: samples, continuation: continuation)
+                try await transcribe(
+                    samples: samples, options: options, continuation: continuation)
                 await transcriptionSlot.release()
                 await governor.gate.release(producer)
             } catch {
@@ -100,21 +105,23 @@ public actor WhisperEngine {
 
     private func transcribe(
         samples: [Float],
+        options: TranscriptionOptions,
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
         let clock = ContinuousClock()
         let started = clock.now
-        var segments = 0
-        for try await delta in backend.transcribe(samples: samples) {
+        for try await segment in backend.transcribe(samples: samples, options: options) {
             if Task.isCancelled { break }
-            continuation.yield(.text(delta))
-            segments += 1
+            if let startMs = segment.startMs, let endMs = segment.endMs {
+                continuation.yield(.segment(segment.text, startMs: startMs, endMs: endMs))
+            } else {
+                continuation.yield(.text(segment.text))
+            }
         }
         let elapsed = clock.now - started
         continuation.yield(
             .done(
                 GenerationStats(
-                    completionTokens: segments,
                     durationMs: Int(elapsed.components.seconds) * 1000
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
     }

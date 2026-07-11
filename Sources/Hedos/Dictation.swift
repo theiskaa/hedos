@@ -169,8 +169,11 @@ final class DictationController {
                         "sampleRate": .int(WhisperEngine.expectedSampleRate),
                     ]))
                 for try await chunk in stream {
-                    if case .text(let delta) = chunk {
+                    switch chunk {
+                    case .text(let delta), .segment(let delta, _, _):
                         append(delta)
+                    default:
+                        break
                     }
                 }
             } catch is CancellationError {

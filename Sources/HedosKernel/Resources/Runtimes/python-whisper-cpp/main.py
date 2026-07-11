@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import select
 import struct
 import sys
 
@@ -35,6 +36,19 @@ def read_frame():
     if body is None:
         return None
     return body[0], body[1:]
+
+
+def pending_op():
+    if not select.select([0], [], [], 0)[0]:
+        return None
+    frame = read_frame()
+    if frame is None:
+        return "shutdown"
+    _, payload = frame
+    try:
+        return json.loads(payload).get("op")
+    except ValueError:
+        return None
 
 
 def main():
@@ -84,13 +98,37 @@ def main():
                 params = {}
                 if language:
                     params["language"] = language
+                if request.get("translate"):
+                    params["translate"] = True
+
+                cancel_state = {"cancelled": False, "shutdown": False}
+
+                def on_segment(segment):
+                    if cancel_state["cancelled"]:
+                        return
+                    send_json(
+                        {
+                            "event": "text",
+                            "text": segment.text,
+                            "t0_ms": segment.t0 * 10,
+                            "t1_ms": segment.t1 * 10,
+                        }
+                    )
+                    op = pending_op()
+                    if op in ("cancel", "shutdown"):
+                        cancel_state["cancelled"] = True
+                        cancel_state["shutdown"] = op == "shutdown"
+
                 segments = model.transcribe(
                     samples,
-                    new_segment_callback=lambda segment: send_json(
-                        {"event": "text", "text": segment.text}
-                    ),
+                    new_segment_callback=on_segment,
                     **params,
                 )
+                if cancel_state["cancelled"]:
+                    send_json({"event": "cancelled"})
+                    if cancel_state["shutdown"]:
+                        break
+                    continue
                 send_json({"event": "done", "seconds": seconds})
             except Exception as error:
                 send_json({"event": "error", "message": str(error)})

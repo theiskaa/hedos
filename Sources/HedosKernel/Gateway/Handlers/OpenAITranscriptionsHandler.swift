@@ -46,7 +46,12 @@ struct OpenAITranscriptionsHandler: GatewayHandling {
         let stream = try await port.invoke(record.id, .transcribe, payload: payload)
         var transcript = ""
         for try await chunk in stream {
-            if case .text(let value) = chunk { transcript += value }
+            switch chunk {
+            case .text(let value), .segment(let value, _, _):
+                transcript += value
+            default:
+                break
+            }
         }
 
         if responseFormat == "text" {

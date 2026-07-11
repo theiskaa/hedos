@@ -56,7 +56,7 @@ struct OpenAICompletionsHandler: GatewayHandling {
                                 finishReason: nil)))
                 case .done(let stats):
                     finalStats = stats
-                case .thinking, .audio, .status, .vector, .toolCall:
+                case .thinking, .audio, .status, .vector, .toolCall, .segment:
                     break
                 }
             }
@@ -87,7 +87,7 @@ struct OpenAICompletionsHandler: GatewayHandling {
                     text += value
                 case .done(let stats):
                     finalStats = stats
-                case .thinking, .audio, .status, .vector, .toolCall:
+                case .thinking, .audio, .status, .vector, .toolCall, .segment:
                     break
                 }
             }

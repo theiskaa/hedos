@@ -22,6 +22,19 @@ struct WhisperCppAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .managed, preference: BidPreference.whisperCpp)
     }
 
+    static func options(from payload: JSONValue) -> TranscriptionOptions {
+        guard case .object(let fields) = payload else { return TranscriptionOptions() }
+        var language: String?
+        if case .string(let value)? = fields["language"], !value.isEmpty {
+            language = value
+        }
+        var translate = false
+        if case .bool(let value)? = fields["translate"] {
+            translate = value
+        }
+        return TranscriptionOptions(language: language, translate: translate)
+    }
+
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
@@ -38,6 +51,7 @@ struct WhisperCppAdapter: RuntimeAdapter {
                     guard !samples.isEmpty else {
                         throw KernelError.runtimeFailed("transcribe payload carries no audio")
                     }
+                    let options = Self.options(from: payload)
                     await engine.run(
                         path: expanded,
                         modelID: record.id,
@@ -45,6 +59,7 @@ struct WhisperCppAdapter: RuntimeAdapter {
                         footprintMB: record.footprintMB,
                         governor: governor,
                         samples: samples,
+                        options: options,
                         continuation: continuation)
                 } catch {
                     continuation.finish(throwing: error)

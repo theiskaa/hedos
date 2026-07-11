@@ -37,7 +37,7 @@ struct OllamaEmbedHandler: GatewayHandling {
                     vectors.append(vector)
                 case .done(let stats):
                     finalStats = stats
-                case .text, .thinking, .audio, .status, .toolCall:
+                case .text, .thinking, .audio, .status, .toolCall, .segment:
                     break
                 }
             }

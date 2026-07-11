@@ -42,7 +42,7 @@ struct OllamaGenerateHandler: GatewayHandling {
                         OllamaWire.line(OllamaWire.generateDelta(model: model, response: text)))
                 case .done(let stats):
                     finalStats = stats
-                case .thinking, .audio, .status, .vector, .toolCall:
+                case .thinking, .audio, .status, .vector, .toolCall, .segment:
                     break
                 }
             }
@@ -58,7 +58,7 @@ struct OllamaGenerateHandler: GatewayHandling {
                     response += text
                 case .done(let stats):
                     finalStats = stats
-                case .thinking, .audio, .status, .vector, .toolCall:
+                case .thinking, .audio, .status, .vector, .toolCall, .segment:
                     break
                 }
             }

@@ -46,7 +46,7 @@ struct OllamaChatHandler: GatewayHandling {
                                     OllamaWire.delta(model: servedModel, toolCall: call)))
                         case .done(let stats):
                             finalStats = stats
-                        case .audio, .status, .vector:
+                        case .audio, .status, .vector, .segment:
                             break
                         }
                     }
@@ -79,7 +79,7 @@ struct OllamaChatHandler: GatewayHandling {
                     toolCalls.append(call)
                 case .done(let stats):
                     finalStats = stats
-                case .thinking, .audio, .status, .vector:
+                case .thinking, .audio, .status, .vector, .segment:
                     break
                 }
             }

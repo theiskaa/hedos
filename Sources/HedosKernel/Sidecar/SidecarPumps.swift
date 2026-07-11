@@ -63,7 +63,14 @@ extension SidecarSupervisor {
                 case "begin":
                     continuation.yield(.status("generating"))
                 case "text":
-                    continuation.yield(.text(value.objectValue?["text"]?.stringValue ?? ""))
+                    let text = value.objectValue?["text"]?.stringValue ?? ""
+                    if let startMs = value.objectValue?["t0_ms"]?.intValue,
+                        let endMs = value.objectValue?["t1_ms"]?.intValue
+                    {
+                        continuation.yield(.segment(text, startMs: startMs, endMs: endMs))
+                    } else {
+                        continuation.yield(.text(text))
+                    }
                 case "thinking":
                     continuation.yield(.thinking(value.objectValue?["text"]?.stringValue ?? ""))
                 case "status":

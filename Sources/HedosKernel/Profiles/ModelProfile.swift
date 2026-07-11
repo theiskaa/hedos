@@ -129,6 +129,13 @@ public struct ProfileRegistry: Sendable {
             ],
             matches: { record in record.capabilities.contains(.speak) }),
         ModelProfile(
+            id: "transcription",
+            schema: [
+                ParamSpec(key: "language", type: .string),
+                ParamSpec(key: "translate", type: .bool),
+            ],
+            matches: { record in record.capabilities.contains(.transcribe) }),
+        ModelProfile(
             id: "togglable-thinking",
             schema: [ParamSpec(key: "thinking", type: .bool)],
             matches: { record in
