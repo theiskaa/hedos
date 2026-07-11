@@ -6,6 +6,7 @@ public protocol RuntimeAdapter: Sendable {
         -> AsyncThrowingStream<CapabilityChunk, Error>
     func effectiveContextWindow(for record: ModelRecord, requested: Int?) -> Int?
     func supportsTools(_ record: ModelRecord) -> Bool
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String>
 }
 
 extension RuntimeAdapter {
@@ -15,5 +16,9 @@ extension RuntimeAdapter {
 
     public func supportsTools(_ record: ModelRecord) -> Bool {
         false
+    }
+
+    public func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        []
     }
 }

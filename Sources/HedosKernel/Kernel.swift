@@ -687,6 +687,18 @@ public actor Kernel {
         return adapter.supportsTools(record)
     }
 
+    public func honoredParams(
+        modelID: String, capability: Capability
+    ) async throws -> Set<String> {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
+            throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
+        }
+        return adapter.honoredParamKeys(record, capability)
+    }
+
     public func chat(
         _ modelID: String, messages: [ChatMessage], tools: [ToolSpec]
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
