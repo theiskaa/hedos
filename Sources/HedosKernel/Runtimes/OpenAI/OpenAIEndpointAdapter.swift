@@ -57,6 +57,14 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
         self.maxLineBytes = maxLineBytes
     }
 
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        guard capability == .chat || capability == .complete else { return [] }
+        return [
+            "temperature", "top_p", "max_tokens", "stop", "seed", "frequency_penalty",
+            "presence_penalty", "response_format",
+        ]
+    }
+
     static func normalizedBase(_ raw: String) -> String {
         var base = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if !base.contains("://") {
@@ -222,7 +230,10 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
         try? await registry.setStateIfPresent(id: id, to: .ready)
     }
 
-    static let optionKeys = ["temperature", "top_p", "max_tokens"]
+    static let optionKeys = [
+        "temperature", "top_p", "max_tokens", "stop", "seed", "frequency_penalty",
+        "presence_penalty", "response_format",
+    ]
 
     static func requestBody(model: String, payload: JSONValue) throws -> Data {
         guard case .object(let object) = payload else {

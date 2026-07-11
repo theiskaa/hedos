@@ -40,9 +40,19 @@ struct SystemFoundationBackend: AppleFoundationBackend {
         )
     }
 
+    static func samplingMode(
+        temperature: Double?, topP: Double?, topK: Int?, seed: UInt64?
+    ) -> GenerationOptions.SamplingMode? {
+        if let temperature, temperature <= 0 { return .greedy }
+        if let topK { return .random(top: topK, seed: seed) }
+        if let topP { return .random(probabilityThreshold: topP, seed: seed) }
+        return nil
+    }
+
     func stream(
-        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
-        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
+        messages: [ChatMessage], temperature: Double?, topP: Double?, topK: Int?,
+        seed: UInt64?, maxTokens: Int?, tools: [ToolSpec],
+        resultProvider: BuiltinToolResultProvider?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -63,7 +73,9 @@ struct SystemFoundationBackend: AppleFoundationBackend {
                         instructions: parts.instructions, history: parts.history,
                         tools: bridged)
                     let options = GenerationOptions(
-                        sampling: nil, temperature: temperature, maximumResponseTokens: maxTokens)
+                        sampling: Self.samplingMode(
+                            temperature: temperature, topP: topP, topK: topK, seed: seed),
+                        temperature: temperature, maximumResponseTokens: maxTokens)
                     var finalText = ""
                     for try await snapshot in session.streamResponse(
                         to: parts.prompt, options: options)

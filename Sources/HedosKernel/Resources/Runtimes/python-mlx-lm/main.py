@@ -64,7 +64,65 @@ def sampler_kwargs(request):
         kwargs["temp"] = float(request["temperature"])
     if "top_p" in request:
         kwargs["top_p"] = float(request["top_p"])
+    if "min_p" in request:
+        kwargs["min_p"] = float(request["min_p"])
+    if "top_k" in request:
+        kwargs["top_k"] = int(request["top_k"])
     return kwargs
+
+
+def stop_strings(request):
+    stops = request.get("stop")
+    if stops is None:
+        return []
+    if isinstance(stops, str):
+        return [stops]
+    return [s for s in stops if isinstance(s, str) and s]
+
+
+class StopScanner:
+    def __init__(self, stops):
+        self.stops = [s for s in stops if s]
+        self.buffer = ""
+        self.stopped = False
+
+    @property
+    def active(self):
+        return bool(self.stops)
+
+    def feed(self, chunk):
+        if not self.stops or self.stopped:
+            return "" if self.stopped else chunk
+        self.buffer += chunk
+        earliest = None
+        for stop in self.stops:
+            index = self.buffer.find(stop)
+            if index != -1 and (earliest is None or index < earliest):
+                earliest = index
+        if earliest is not None:
+            emit = self.buffer[:earliest]
+            self.buffer = ""
+            self.stopped = True
+            return emit
+        longest = max((len(s) for s in self.stops), default=1) - 1
+        cap = min(longest, len(self.buffer))
+        hold = 0
+        for length in range(cap, 0, -1):
+            suffix = self.buffer[-length:]
+            if any(s.startswith(suffix) for s in self.stops):
+                hold = length
+                break
+        cut = len(self.buffer) - hold
+        emit = self.buffer[:cut]
+        self.buffer = self.buffer[cut:]
+        return emit
+
+    def flush(self):
+        if self.stopped:
+            return ""
+        emit = self.buffer
+        self.buffer = ""
+        return emit
 
 
 def main():
@@ -75,8 +133,9 @@ def main():
 
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+    import mlx.core as mx
     from mlx_lm import load, stream_generate
-    from mlx_lm.sample_utils import make_sampler
+    from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
     model, tokenizer = load(args.model)
     send_json({"event": "ready"})
@@ -106,14 +165,32 @@ def main():
             else:
                 prompt = request.get("prompt", "")
             max_tokens = int(request.get("max_tokens", 4096))
+            if request.get("seed") is not None:
+                mx.random.seed(int(request["seed"]))
+            scanner = StopScanner(stop_strings(request))
+            generate_kwargs = {
+                "max_tokens": max_tokens,
+                "sampler": make_sampler(**sampler_kwargs(request)),
+            }
+            if "repeat_penalty" in request:
+                generate_kwargs["logits_processors"] = make_logits_processors(
+                    repetition_penalty=float(request["repeat_penalty"])
+                )
             send_json({"event": "begin"})
+            stopped = False
             for response in stream_generate(
-                model, tokenizer, prompt,
-                max_tokens=max_tokens,
-                sampler=make_sampler(**sampler_kwargs(request)),
+                model, tokenizer, prompt, **generate_kwargs
             ):
-                send_json({"event": "text", "text": response.text})
                 last = response
+                if scanner.active:
+                    emit = scanner.feed(response.text)
+                    if emit:
+                        send_json({"event": "text", "text": emit})
+                    if scanner.stopped:
+                        stopped = True
+                        break
+                else:
+                    send_json({"event": "text", "text": response.text})
                 inner = pending_op()
                 if inner in ("cancel", "shutdown"):
                     cancelled = True
@@ -124,6 +201,10 @@ def main():
                 if shutdown_requested:
                     break
                 continue
+            if scanner.active and not stopped:
+                tail = scanner.flush()
+                if tail:
+                    send_json({"event": "text", "text": tail})
             send_json(
                 {
                     "event": "done",

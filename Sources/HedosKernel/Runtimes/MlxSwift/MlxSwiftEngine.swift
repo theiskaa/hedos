@@ -14,11 +14,18 @@ actor MlxSwiftEngine {
     struct GenerationParams: Sendable {
         var temperature: Float
         var topP: Float?
+        var repeatPenalty: Float?
+        var stop: [String]
         var maxTokens: Int
 
-        init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
+        init(
+            temperature: Float = 0.7, topP: Float? = nil, repeatPenalty: Float? = nil,
+            stop: [String] = [], maxTokens: Int = 2048
+        ) {
             self.temperature = temperature
             self.topP = topP
+            self.repeatPenalty = repeatPenalty
+            self.stop = stop
             self.maxTokens = maxTokens
         }
     }
@@ -100,10 +107,14 @@ actor MlxSwiftEngine {
             throw KernelError.runtimeFailed("chat produced no messages")
         }
 
-        let generateParameters = GenerateParameters(
+        var parameterBuilder = GenerateParameters(
             maxTokens: params.maxTokens,
             temperature: params.temperature,
             topP: params.topP ?? 1.0)
+        if let repeatPenalty = params.repeatPenalty {
+            parameterBuilder.repetitionPenalty = repeatPenalty
+        }
+        let generateParameters = parameterBuilder
 
         let clock = ContinuousClock()
         let started = clock.now
@@ -111,6 +122,19 @@ actor MlxSwiftEngine {
         var promptTokenCount = 0
         var completionTokenCount = 0
         var sawToolCall = false
+        var stopMatcher = StopMatcher(params.stop)
+        var stoppedByMatch = false
+
+        func emitText(_ text: String) {
+            guard !text.isEmpty else { return }
+            guard stopMatcher.isActive else {
+                continuation.yield(.text(text))
+                return
+            }
+            let safe = stopMatcher.feed(text)
+            if !safe.isEmpty { continuation.yield(.text(safe)) }
+            if stopMatcher.stopped { stoppedByMatch = true }
+        }
 
         let stream = try await container.perform { context -> AsyncStream<Generation> in
             let input: LMInput
@@ -146,13 +170,15 @@ actor MlxSwiftEngine {
                 input: input, parameters: generateParameters, context: context)
         }
 
-        for await generation in stream {
+        consume: for await generation in stream {
             try Task.checkCancellation()
             switch generation {
             case .chunk(let text):
                 for piece in splitter.feed(text) {
                     switch piece {
-                    case .text(let value): continuation.yield(.text(value))
+                    case .text(let value):
+                        emitText(value)
+                        if stoppedByMatch { break consume }
                     case .thinking(let value): continuation.yield(.thinking(value))
                     }
                 }
@@ -168,10 +194,16 @@ actor MlxSwiftEngine {
                             arguments: Self.kernelJSON(call.function.arguments))))
             }
         }
-        for piece in splitter.flush() {
-            switch piece {
-            case .text(let value): continuation.yield(.text(value))
-            case .thinking(let value): continuation.yield(.thinking(value))
+        if !stoppedByMatch {
+            for piece in splitter.flush() {
+                switch piece {
+                case .text(let value): emitText(value)
+                case .thinking(let value): continuation.yield(.thinking(value))
+                }
+            }
+            if stopMatcher.isActive, !stoppedByMatch {
+                let tail = stopMatcher.flush()
+                if !tail.isEmpty { continuation.yield(.text(tail)) }
             }
         }
 
@@ -183,7 +215,8 @@ actor MlxSwiftEngine {
                     completionTokens: completionTokenCount,
                     durationMs: Int(elapsed.components.seconds) * 1000
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000),
-                    finishReason: sawToolCall ? "tool_calls" : nil)))
+                    finishReason: sawToolCall
+                        ? "tool_calls" : (stoppedByMatch ? "stop" : nil))))
     }
 
     private func load(path: String, modelID: String) async throws {

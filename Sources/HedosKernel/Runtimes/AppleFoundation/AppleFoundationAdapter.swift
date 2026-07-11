@@ -22,6 +22,11 @@ struct AppleFoundationAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .native, preference: BidPreference.appleFoundation)
     }
 
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        guard capability == .chat || capability == .complete else { return [] }
+        return ["temperature", "max_tokens", "top_p", "top_k", "seed"]
+    }
+
     static func delta(previous: String, current: String) -> String {
         guard current.hasPrefix(previous) else { return current }
         return String(current.dropFirst(previous.count))
@@ -61,10 +66,22 @@ struct AppleFoundationAdapter: RuntimeAdapter {
                 do {
                     let messages = try Self.messages(from: payload, capability: capability)
                     var temperature: Double?
+                    var topP: Double?
+                    var topK: Int?
+                    var seed: UInt64?
                     var maxTokens: Int?
                     if case .object(let object) = payload {
                         temperature = object["temperature"]?.doubleValue
+                        topP = object["top_p"]?.doubleValue
+                        topK = object["top_k"]?.intValue
+                        if let seedValue = object["seed"]?.intValue {
+                            seed = UInt64(truncatingIfNeeded: seedValue)
+                        }
                         maxTokens = object["max_tokens"]?.intValue
+                    }
+                    if topP != nil, topK != nil {
+                        throw KernelError.payloadInvalid(
+                            "Apple Intelligence honors either top_p or top_k, not both")
                     }
 
                     let started = ContinuousClock.now
@@ -73,7 +90,8 @@ struct AppleFoundationAdapter: RuntimeAdapter {
                     var promptTokens: Int?
                     var completionTokens: Int?
                     let stream = backend.stream(
-                        messages: messages, temperature: temperature, maxTokens: maxTokens)
+                        messages: messages, temperature: temperature, topP: topP, topK: topK,
+                        seed: seed, maxTokens: maxTokens, tools: [], resultProvider: nil)
                     for try await event in stream {
                         switch event {
                         case .snapshot(let current):

@@ -19,6 +19,10 @@ struct MlxSwiftAdapter: RuntimeAdapter {
         if let topP = object["top_p"]?.doubleValue {
             params.topP = Float(topP)
         }
+        if let repeatPenalty = object["repeat_penalty"]?.doubleValue {
+            params.repeatPenalty = Float(repeatPenalty)
+        }
+        params.stop = StopMatcher.strings(from: object["stop"])
         if let maxTokens = object["max_tokens"]?.intValue, maxTokens > 0 {
             params.maxTokens = maxTokens
         }
@@ -45,6 +49,11 @@ struct MlxSwiftAdapter: RuntimeAdapter {
 
     func supportsTools(_ record: ModelRecord) -> Bool {
         record.hasChatTemplate ?? false
+    }
+
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        guard capability == .chat || capability == .complete else { return [] }
+        return ["temperature", "top_p", "max_tokens", "repeat_penalty", "stop"]
     }
 
     func invoke(

@@ -25,6 +25,15 @@ struct OllamaAdapter: RuntimeAdapter {
         true
     }
 
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        guard capability == .chat || capability == .complete else { return [] }
+        return [
+            "temperature", "top_p", "top_k", "min_p", "max_tokens", "context_length",
+            "stop", "seed", "repeat_penalty", "frequency_penalty", "presence_penalty",
+            "response_format",
+        ]
+    }
+
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         guard capability == .chat || capability == .complete || capability == .embed else {
             return false
@@ -204,8 +213,15 @@ struct OllamaAdapter: RuntimeAdapter {
     static let optionKeys: [(payload: String, option: String)] = [
         ("temperature", "temperature"),
         ("top_p", "top_p"),
+        ("top_k", "top_k"),
+        ("min_p", "min_p"),
         ("max_tokens", "num_predict"),
         ("context_length", "num_ctx"),
+        ("stop", "stop"),
+        ("seed", "seed"),
+        ("repeat_penalty", "repeat_penalty"),
+        ("frequency_penalty", "frequency_penalty"),
+        ("presence_penalty", "presence_penalty"),
     ]
 
     static func requestBody(model: String, payload: JSONValue) throws -> Data {
@@ -233,6 +249,18 @@ struct OllamaAdapter: RuntimeAdapter {
             }
         }
         if !options.isEmpty { body["options"] = .object(options) }
+        if case .object(let responseFormat)? = object["response_format"],
+            let type = responseFormat["type"]?.stringValue
+        {
+            if type == "json_object" {
+                body["format"] = .string("json")
+            } else if type == "json_schema",
+                case .object(let wrapper)? = responseFormat["json_schema"],
+                let schema = wrapper["schema"]
+            {
+                body["format"] = schema
+            }
+        }
         if let thinking = object["thinking"], thinking != .null {
             body["think"] = thinking
         } else if carriesToolContent(object) {

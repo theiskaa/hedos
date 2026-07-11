@@ -18,8 +18,9 @@ typealias BuiltinToolResultProvider = @Sendable (ToolCall) async -> String
 protocol AppleFoundationBackend: Sendable {
     func availability() -> BuiltinAvailability
     func stream(
-        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
-        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
+        messages: [ChatMessage], temperature: Double?, topP: Double?, topK: Int?,
+        seed: UInt64?, maxTokens: Int?, tools: [ToolSpec],
+        resultProvider: BuiltinToolResultProvider?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error>
 }
 
@@ -28,7 +29,7 @@ extension AppleFoundationBackend {
         messages: [ChatMessage], temperature: Double?, maxTokens: Int?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         stream(
-            messages: messages, temperature: temperature, maxTokens: maxTokens,
-            tools: [], resultProvider: nil)
+            messages: messages, temperature: temperature, topP: nil, topK: nil, seed: nil,
+            maxTokens: maxTokens, tools: [], resultProvider: nil)
     }
 }

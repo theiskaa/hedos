@@ -19,15 +19,36 @@ actor LlamaEngine {
     struct GenerationParams: Sendable {
         var temperature: Float
         var topP: Float?
+        var topK: Int32?
+        var minP: Float?
+        var repeatPenalty: Float?
+        var frequencyPenalty: Float?
+        var presencePenalty: Float?
+        var penaltyLastN: Int32
+        var stop: [String]
+        var seed: UInt32?
+        var jsonGrammar: String?
         var maxTokens: Int
         var tools: [ToolSpec]
 
         init(
-            temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048,
+            temperature: Float = 0.7, topP: Float? = nil, topK: Int32? = nil,
+            minP: Float? = nil, repeatPenalty: Float? = nil, frequencyPenalty: Float? = nil,
+            presencePenalty: Float? = nil, penaltyLastN: Int32 = 64, stop: [String] = [],
+            seed: UInt32? = nil, jsonGrammar: String? = nil, maxTokens: Int = 2048,
             tools: [ToolSpec] = []
         ) {
             self.temperature = temperature
             self.topP = topP
+            self.topK = topK
+            self.minP = minP
+            self.repeatPenalty = repeatPenalty
+            self.frequencyPenalty = frequencyPenalty
+            self.presencePenalty = presencePenalty
+            self.penaltyLastN = penaltyLastN
+            self.stop = stop
+            self.seed = seed
+            self.jsonGrammar = jsonGrammar
             self.maxTokens = maxTokens
             self.tools = tools
         }
@@ -144,16 +165,36 @@ actor LlamaEngine {
                     llama_sampler_chain_add(sampler, grammarSampler)
                 }
             }
+        } else if params.tools.isEmpty, let grammar = params.jsonGrammar {
+            if let grammarSampler = llama_sampler_init_grammar(vocab, grammar, "root") {
+                llama_sampler_chain_add(sampler, grammarSampler)
+            }
+        }
+        if params.repeatPenalty != nil || params.frequencyPenalty != nil
+            || params.presencePenalty != nil
+        {
+            llama_sampler_chain_add(
+                sampler,
+                llama_sampler_init_penalties(
+                    params.penaltyLastN, params.repeatPenalty ?? 1.0,
+                    params.frequencyPenalty ?? 0.0, params.presencePenalty ?? 0.0))
         }
         if params.temperature <= 0 {
             llama_sampler_chain_add(sampler, llama_sampler_init_greedy())
         } else {
+            if let topK = params.topK {
+                llama_sampler_chain_add(sampler, llama_sampler_init_top_k(topK))
+            }
             if let topP = params.topP, topP < 1 {
                 llama_sampler_chain_add(sampler, llama_sampler_init_top_p(topP, 1))
             }
+            if let minP = params.minP {
+                llama_sampler_chain_add(sampler, llama_sampler_init_min_p(minP, 1))
+            }
             llama_sampler_chain_add(sampler, llama_sampler_init_temp(params.temperature))
             llama_sampler_chain_add(
-                sampler, llama_sampler_init_dist(UInt32.random(in: 0..<UInt32.max)))
+                sampler,
+                llama_sampler_init_dist(params.seed ?? UInt32.random(in: 0..<UInt32.max)))
         }
         defer { llama_sampler_free(sampler) }
 
@@ -164,6 +205,19 @@ actor LlamaEngine {
         var scanner = ToolCallScanner()
         let scanningForCalls = !params.tools.isEmpty
         var emittedToolCall = false
+        var stopMatcher = StopMatcher(params.stop)
+        var stoppedByMatch = false
+
+        func emitText(_ text: String) {
+            guard !text.isEmpty else { return }
+            guard stopMatcher.isActive else {
+                continuation.yield(.text(text))
+                return
+            }
+            let safe = stopMatcher.feed(text)
+            if !safe.isEmpty { continuation.yield(.text(safe)) }
+            if stopMatcher.stopped { stoppedByMatch = true }
+        }
 
         while generated < maxTokens {
             await Task.yield()
@@ -180,20 +234,18 @@ actor LlamaEngine {
                 if !piece.isEmpty {
                     if scanningForCalls {
                         let scanned = scanner.feed(piece)
-                        if !scanned.text.isEmpty {
-                            continuation.yield(.text(scanned.text))
-                        }
+                        if !scanned.text.isEmpty { emitText(scanned.text) }
                         if let call = scanned.call {
                             continuation.yield(.toolCall(call))
                             emittedToolCall = true
                         }
                     } else {
-                        continuation.yield(.text(piece))
+                        emitText(piece)
                     }
                 }
             }
             generated += 1
-            if emittedToolCall { break }
+            if emittedToolCall || stoppedByMatch { break }
 
             batch = llama_batch_get_one(&token, 1)
             guard llama_decode(context, batch) == 0 else {
@@ -201,22 +253,28 @@ actor LlamaEngine {
             }
         }
 
-        var remainder = assembler.flush()
-        if scanningForCalls {
-            let scanned = scanner.feed(remainder)
-            remainder = scanned.text + scanner.flush()
-            if let call = scanned.call {
-                continuation.yield(.toolCall(call))
-                emittedToolCall = true
+        if !stoppedByMatch {
+            var remainder = assembler.flush()
+            if scanningForCalls {
+                let scanned = scanner.feed(remainder)
+                remainder = scanned.text + scanner.flush()
+                if let call = scanned.call {
+                    continuation.yield(.toolCall(call))
+                    emittedToolCall = true
+                }
             }
-        }
-        if !remainder.isEmpty {
-            continuation.yield(.text(remainder))
+            emitText(remainder)
+            if stopMatcher.isActive, !stoppedByMatch {
+                let tail = stopMatcher.flush()
+                if !tail.isEmpty { continuation.yield(.text(tail)) }
+            }
         }
 
         var finishReason: String?
         if emittedToolCall {
             finishReason = "tool_calls"
+        } else if stoppedByMatch {
+            finishReason = "stop"
         } else if generated >= maxTokens {
             finishReason = "length"
         }

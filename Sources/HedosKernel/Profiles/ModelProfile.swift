@@ -63,17 +63,62 @@ public struct ProfileRegistry: Sendable {
 
     static let thinkingRuntimes: Set<RuntimeID> = [.ollama]
 
+    static let temperatureSpec = ParamSpec(
+        key: "temperature", type: .float, range: [.double(0), .double(2)])
+    static let topPSpec = ParamSpec(key: "top_p", type: .float, range: [.double(0), .double(1)])
+    static let topKSpec = ParamSpec(key: "top_k", type: .int, range: [.int(0), .int(100)])
+    static let minPSpec = ParamSpec(key: "min_p", type: .float, range: [.double(0), .double(1)])
+    static let maxTokensSpec = ParamSpec(
+        key: "max_tokens", type: .int, range: [.int(1), .int(32768)])
+    static let repeatPenaltySpec = ParamSpec(
+        key: "repeat_penalty", type: .float, range: [.double(0.5), .double(2)])
+    static let frequencyPenaltySpec = ParamSpec(
+        key: "frequency_penalty", type: .float, range: [.double(-2), .double(2)])
+    static let presencePenaltySpec = ParamSpec(
+        key: "presence_penalty", type: .float, range: [.double(-2), .double(2)])
+    static let seedSpec = ParamSpec(key: "seed", type: .int)
+    static let stopSpec = ParamSpec(key: "stop", type: .string)
+
+    static func runtimeExtras(
+        id: String, runtime: RuntimeID, _ schema: [ParamSpec]
+    ) -> ModelProfile {
+        ModelProfile(
+            id: id, schema: schema,
+            matches: { record in
+                (record.capabilities.contains(.chat) || record.capabilities.contains(.complete))
+                    && record.runtime.id == runtime
+            })
+    }
+
     public static let builtin = ProfileRegistry(profiles: [
         ModelProfile(
             id: "text-generation",
-            schema: [
-                ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
-                ParamSpec(key: "top_p", type: .float, range: [.double(0), .double(1)]),
-                ParamSpec(key: "max_tokens", type: .int, range: [.int(1), .int(32768)]),
-            ],
+            schema: [temperatureSpec, topPSpec, maxTokensSpec],
             matches: { record in
                 record.capabilities.contains(.chat) || record.capabilities.contains(.complete)
             }),
+        runtimeExtras(
+            id: "sampling-llama-cpp", runtime: .llamaCpp,
+            [
+                topKSpec, minPSpec, repeatPenaltySpec, frequencyPenaltySpec,
+                presencePenaltySpec, seedSpec, stopSpec,
+            ]),
+        runtimeExtras(
+            id: "sampling-mlx-swift", runtime: .mlxSwift, [repeatPenaltySpec, stopSpec]),
+        runtimeExtras(
+            id: "sampling-mlx-lm", runtime: .mlxLm,
+            [topKSpec, minPSpec, repeatPenaltySpec, seedSpec, stopSpec]),
+        runtimeExtras(
+            id: "sampling-ollama", runtime: .ollama,
+            [
+                topKSpec, minPSpec, seedSpec, repeatPenaltySpec, frequencyPenaltySpec,
+                presencePenaltySpec, stopSpec,
+            ]),
+        runtimeExtras(
+            id: "sampling-endpoint", runtime: .openAIEndpoint,
+            [stopSpec, seedSpec, frequencyPenaltySpec, presencePenaltySpec]),
+        runtimeExtras(
+            id: "sampling-apple", runtime: .appleFoundation, [topKSpec, seedSpec]),
         ModelProfile(
             id: "speech-synthesis",
             schema: [

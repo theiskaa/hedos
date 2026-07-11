@@ -170,13 +170,20 @@ public enum Identification {
 
     static let builtinParams: [ParamSpec] = [
         ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
+        ParamSpec(key: "top_p", type: .float, range: [.double(0), .double(1)]),
+        ParamSpec(key: "top_k", type: .int, range: [.int(0), .int(100)]),
         ParamSpec(key: "max_tokens", type: .int, range: [.int(1), .int(4096)]),
+        ParamSpec(key: "seed", type: .int),
     ]
 
     static let endpointParams: [ParamSpec] = [
         ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)]),
         ParamSpec(key: "top_p", type: .float, range: [.double(0), .double(1)]),
         ParamSpec(key: "max_tokens", type: .int, range: [.int(1), .int(32768)]),
+        ParamSpec(key: "stop", type: .string),
+        ParamSpec(key: "seed", type: .int),
+        ParamSpec(key: "frequency_penalty", type: .float, range: [.double(-2), .double(2)]),
+        ParamSpec(key: "presence_penalty", type: .float, range: [.double(-2), .double(2)]),
     ]
 
     static func diffusersPipelineClass(at url: URL) -> String? {

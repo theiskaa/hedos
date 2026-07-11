@@ -30,6 +30,26 @@ struct LlamaCppAdapter: RuntimeAdapter {
         if let topP = object["top_p"]?.doubleValue {
             params.topP = Float(topP)
         }
+        if let topK = object["top_k"]?.intValue {
+            params.topK = Int32(topK)
+        }
+        if let minP = object["min_p"]?.doubleValue {
+            params.minP = Float(minP)
+        }
+        if let repeatPenalty = object["repeat_penalty"]?.doubleValue {
+            params.repeatPenalty = Float(repeatPenalty)
+        }
+        if let frequencyPenalty = object["frequency_penalty"]?.doubleValue {
+            params.frequencyPenalty = Float(frequencyPenalty)
+        }
+        if let presencePenalty = object["presence_penalty"]?.doubleValue {
+            params.presencePenalty = Float(presencePenalty)
+        }
+        if let seed = object["seed"]?.intValue {
+            params.seed = UInt32(truncatingIfNeeded: seed)
+        }
+        params.stop = StopMatcher.strings(from: object["stop"])
+        params.jsonGrammar = JSONGrammar.forResponseFormat(object["response_format"])
         if let maxTokens = object["max_tokens"]?.intValue, maxTokens > 0 {
             params.maxTokens = maxTokens
         }
@@ -52,6 +72,15 @@ struct LlamaCppAdapter: RuntimeAdapter {
 
     func supportsTools(_ record: ModelRecord) -> Bool {
         true
+    }
+
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        guard capability == .chat || capability == .complete else { return [] }
+        return [
+            "temperature", "top_p", "top_k", "min_p", "max_tokens", "context_length",
+            "repeat_penalty", "frequency_penalty", "presence_penalty", "seed", "stop",
+            "response_format",
+        ]
     }
 
     func invoke(

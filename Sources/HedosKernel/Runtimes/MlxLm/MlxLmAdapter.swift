@@ -35,6 +35,14 @@ struct MlxLmAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .managed, preference: BidPreference.mlxLm)
     }
 
+    func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
+        guard capability == .chat || capability == .complete else { return [] }
+        return [
+            "temperature", "top_p", "top_k", "min_p", "max_tokens", "repeat_penalty",
+            "seed", "stop",
+        ]
+    }
+
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
