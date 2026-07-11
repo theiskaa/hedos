@@ -100,7 +100,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     defer { try? FileManager.default.removeItem(at: dir) }
     let session = try await store.createSession(modelID: "model-a")
     var passes: [[CapabilityChunk]] = []
-    for index in 0..<ChatFlow.maxToolCallsPerSend {
+    for index in 0..<ChatFlow.maxToolCallsReadOnly {
         passes.append([.toolCall(timeCall(id: "call-\(index)")), .done(nil)])
     }
     passes.append([.text("Final answer."), .done(nil)])
@@ -110,8 +110,8 @@ private func timeCall(id: String = "call-1") -> ToolCall {
 
     for try await _ in try await flow.send(sessionID: session.id, text: "loop forever") {}
 
-    #expect(executed.calls.count == ChatFlow.maxToolCallsPerSend)
-    #expect(streams.toolsSeen.count == ChatFlow.maxToolCallsPerSend + 1)
+    #expect(executed.calls.count == ChatFlow.maxToolCallsReadOnly)
+    #expect(streams.toolsSeen.count == ChatFlow.maxToolCallsReadOnly + 1)
     #expect(streams.toolsSeen.last?.isEmpty == true)
 
     let turns = try #require(try await store.session(id: session.id)).turns
@@ -184,7 +184,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
         stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in HarnessTools.specs() },
-        execute: { _, call in await Harness.execute(call, place: place) })
+        execute: { sessionID, call in await Harness.execute(call, place: place, context: HarnessActContext(sessionID: sessionID, ask: alwaysDeclineConsent, state: HarnessActState())) })
 
     for try await _ in try await flow.send(sessionID: session.id, text: "read passwd") {}
 
@@ -225,7 +225,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     defer { try? FileManager.default.removeItem(at: dir) }
     let session = try await store.createSession(modelID: "model-a")
     var passes: [[CapabilityChunk]] = []
-    for index in 0..<(ChatFlow.maxToolCallsPerSend - 1) {
+    for index in 0..<(ChatFlow.maxToolCallsReadOnly - 1) {
         passes.append([.toolCall(timeCall(id: "call-\(index)")), .done(nil)])
     }
     passes.append([
@@ -241,7 +241,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
 
     for try await _ in try await flow.send(sessionID: session.id, text: "go") {}
 
-    #expect(executed.calls.count == ChatFlow.maxToolCallsPerSend)
+    #expect(executed.calls.count == ChatFlow.maxToolCallsReadOnly)
     let turns = try #require(try await store.session(id: session.id)).turns
     let advertised = turns.flatMap(\.toolCalls).map(\.id)
     let answered = turns.filter { $0.role == .tool }.compactMap(\.toolCallID)
@@ -267,7 +267,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
         stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in HarnessTools.specs() },
-        execute: { _, call in await Harness.execute(call, place: place) })
+        execute: { sessionID, call in await Harness.execute(call, place: place, context: HarnessActContext(sessionID: sessionID, ask: alwaysDeclineConsent, state: HarnessActState())) })
 
     for try await _ in try await flow.send(
         sessionID: session.id, text: "what does @README.md say?") {}
@@ -281,6 +281,80 @@ private func timeCall(id: String = "call-1") -> ToolCall {
 
     let history = streams.historiesSeen[0]
     #expect(history.contains { $0.role == .tool && $0.content.contains("Zephyrwing docs") })
+}
+
+@Test func actEnabledConversationRaisesTheToolCallCap() async throws {
+    let (store, dir) = try loopStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    var passes: [[CapabilityChunk]] = []
+    for index in 0..<ChatFlow.maxToolCallsActing {
+        passes.append([.toolCall(timeCall(id: "call-\(index)")), .done(nil)])
+    }
+    passes.append([.text("Done."), .done(nil)])
+    let streams = ScriptedStreams(passes: passes)
+    let executed = ExecutedCalls()
+    let flow = loopFlow(
+        store: store, streams: streams, executed: executed,
+        tools: HarnessTools.specs() + HarnessActTools.specs())
+
+    for try await _ in try await flow.send(sessionID: session.id, text: "keep going") {}
+
+    #expect(executed.calls.count == ChatFlow.maxToolCallsActing)
+    #expect(ChatFlow.maxToolCallsActing > ChatFlow.maxToolCallsReadOnly)
+}
+
+@Test func theLoopYieldsAVisibleStepCount() async throws {
+    let (store, dir) = try loopStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let streams = ScriptedStreams(passes: [
+        [.toolCall(timeCall()), .done(nil)],
+        [.text("noon"), .done(nil)],
+    ])
+    let flow = loopFlow(store: store, streams: streams, executed: ExecutedCalls())
+
+    var statuses: [String] = []
+    for try await chunk in try await flow.send(sessionID: session.id, text: "time?") {
+        if case .status(let text) = chunk { statuses.append(text) }
+    }
+    #expect(statuses.contains { $0.contains("step 1 of \(ChatFlow.maxToolCallsReadOnly)") })
+}
+
+@Test func consentIsAwaitedInsideTheLoopWithoutDeadlockingCancellation() async throws {
+    let (store, dir) = try loopStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let placeDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: placeDir) }
+    let place = PlaceBoundary.canonical(placeDir.path)
+    let session = try await store.createSession(modelID: "model-a")
+    let write = ToolCall(
+        id: "call-w", name: "write_file",
+        arguments: .object(["path": .string("note.txt"), "content": .string("hi\n")]))
+    let streams = ScriptedStreams(passes: [
+        [.toolCall(write), .done(nil)],
+        [.text("Wrote it."), .done(nil)],
+    ])
+    let state = HarnessActState()
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, messages, offered, _ in streams.next(messages, offered) },
+        shelf: { [] },
+        toolbox: { _ in HarnessTools.specs() + HarnessActTools.specs() },
+        execute: { sessionID, call in
+            await Harness.execute(
+                call, place: place,
+                context: HarnessActContext(
+                    sessionID: sessionID,
+                    ask: { _ in .approved(dontAskAgain: false) },
+                    state: state))
+        })
+
+    for try await _ in try await flow.send(sessionID: session.id, text: "write note") {}
+
+    #expect((try? String(contentsOfFile: place + "/note.txt")) == "hi\n")
+    let turns = try #require(try await store.session(id: session.id)).turns
+    #expect(turns.last?.content == "Wrote it.")
 }
 
 @Test func mentionScanRulesResolveStripAndCap() throws {
@@ -319,7 +393,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
         stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in HarnessTools.specs() },
-        execute: { _, call in await Harness.execute(call, place: place) })
+        execute: { sessionID, call in await Harness.execute(call, place: place, context: HarnessActContext(sessionID: sessionID, ask: alwaysDeclineConsent, state: HarnessActState())) })
 
     for try await _ in try await flow.send(
         sessionID: session.id, text: "read @gone.txt now") {}

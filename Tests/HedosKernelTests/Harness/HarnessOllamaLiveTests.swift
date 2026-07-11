@@ -57,7 +57,7 @@ private func qwenRecord() -> ModelRecord {
         },
         shelf: { [record] },
         toolbox: { _ in HarnessTools.specs() },
-        execute: { _, call in await Harness.execute(call, place: place) })
+        execute: { sessionID, call in await Harness.execute(call, place: place, context: HarnessActContext(sessionID: sessionID, ask: alwaysDeclineConsent, state: HarnessActState())) })
 
     func grounded(_ turns: [ChatTurn]) -> Bool {
         guard turns.contains(where: { $0.role == .tool }),
@@ -122,7 +122,7 @@ private func qwenRecord() -> ModelRecord {
         },
         shelf: { [record] },
         toolbox: { _ in HarnessTools.specs() },
-        execute: { _, call in await Harness.execute(call, place: place) })
+        execute: { sessionID, call in await Harness.execute(call, place: place, context: HarnessActContext(sessionID: sessionID, ask: alwaysDeclineConsent, state: HarnessActState())) })
 
     func grounded(_ turns: [ChatTurn]) -> Bool {
         guard turns.contains(where: { $0.role == .tool && $0.content.contains("Zephyrwing") }),

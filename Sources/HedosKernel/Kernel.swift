@@ -69,6 +69,14 @@ public actor Kernel {
     public let artifactStore: ArtifactStore
     public let chats: ChatStore
     private let chatSessionGate = ChatSessionGate()
+    public nonisolated let harnessActState = HarnessActState()
+    private var chatConsentAsk: ConsentAsk = alwaysDeclineConsent
+
+    public func setChatConsentAsk(_ ask: ConsentAsk?) {
+        chatConsentAsk = ask ?? alwaysDeclineConsent
+    }
+
+    func currentConsentAsk() -> ConsentAsk { chatConsentAsk }
     public let promptStore: PromptStore
     public let pipelineStore: PipelineStore
     public nonisolated let runtimeCatalog: RuntimeCatalog
@@ -606,7 +614,10 @@ public actor Kernel {
                 guard let place = transcript?.session.place else {
                     return "This conversation has no folder."
                 }
-                return await Harness.execute(call, place: place)
+                let context = HarnessActContext(
+                    sessionID: sessionID, ask: await self.currentConsentAsk(),
+                    state: self.harnessActState)
+                return await Harness.execute(call, place: place, context: context)
             },
             gate: chatSessionGate)
     }

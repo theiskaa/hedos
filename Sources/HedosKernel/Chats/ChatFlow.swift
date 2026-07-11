@@ -12,7 +12,8 @@ struct ChatFlow: Sendable {
     static let persistCadence: Duration = .milliseconds(250)
     static let interruptedMarker = "\n\n[reply interrupted — may be incomplete]"
     static let mergeBoundary = "\n\n---\n\n"
-    static let maxToolCallsPerSend = 8
+    static let maxToolCallsReadOnly = 8
+    static let maxToolCallsActing = 16
     static let maxMentionReadsPerSend = 4
     static let toolResultContextBudgetBytes = 16_384
 
@@ -177,6 +178,9 @@ struct ChatFlow: Sendable {
                 var retiring = retiring
                 var currentUpstream = upstream
                 var offeredTools = tools
+                let toolCallCap =
+                    Harness.offersActTools(tools)
+                    ? Self.maxToolCallsActing : Self.maxToolCallsReadOnly
                 var executedCalls = 0
                 var turn: ChatTurn?
                 var content = ""
@@ -273,21 +277,25 @@ struct ChatFlow: Sendable {
                         ]
                         for call in calls {
                             var result: String
-                            if executedCalls >= Self.maxToolCallsPerSend {
+                            if executedCalls >= toolCallCap {
                                 result =
                                     "[skipped: the tool-call limit of "
-                                    + "\(Self.maxToolCallsPerSend) calls for this message "
+                                    + "\(toolCallCap) calls for this message "
                                     + "was reached — answer with what you have]"
                             } else {
                                 try Task.checkCancellation()
+                                continuation.yield(
+                                    .status(
+                                        "step \(executedCalls + 1) of \(toolCallCap): "
+                                        + Harness.actionSummary(call)))
                                 result = await execute(sessionID, call)
                                 try Task.checkCancellation()
                                 result = Self.truncatedToolResult(result)
                                 executedCalls += 1
-                                if executedCalls >= Self.maxToolCallsPerSend {
+                                if executedCalls >= toolCallCap {
                                     result +=
                                         "\n\n[tool-call limit reached: "
-                                        + "\(Self.maxToolCallsPerSend) calls for this message — "
+                                        + "\(toolCallCap) calls for this message — "
                                         + "answer with what you have]"
                                 }
                             }
@@ -308,7 +316,7 @@ struct ChatFlow: Sendable {
                             continuation.yield(.status("tool: \(Harness.actionSummary(call))"))
                         }
                         history.append(contentsOf: projections)
-                        if executedCalls >= Self.maxToolCallsPerSend {
+                        if executedCalls >= toolCallCap {
                             offeredTools = []
                         }
                         turn = nil
