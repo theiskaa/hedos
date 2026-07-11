@@ -1681,18 +1681,24 @@ struct ChatView: View {
 
     private func statsLine(_ stats: GenerationStats) -> some View {
         var parts: [String] = []
+        if let load = stats.loadMs, load > 0 {
+            parts.append(String(format: "load %.1fs", Double(load) / 1000))
+        }
         if let ttft = stats.ttftMs {
             parts.append(String(format: "ttft %.1fs", Double(ttft) / 1000))
         }
         if let tokens = stats.completionTokens {
+            let tilde = stats.tokenCountsEstimated ? "~" : ""
             let generationMs = (stats.durationMs ?? 0) - (stats.ttftMs ?? 0)
             if generationMs > 0 {
                 parts.append(
-                    String(format: "%.0f tok/s", Double(tokens) / Double(generationMs) * 1000))
+                    String(
+                        format: "\(tilde)%.0f tok/s", Double(tokens) / Double(generationMs) * 1000))
             } else if let ms = stats.durationMs, ms > 0 {
-                parts.append(String(format: "%.0f tok/s", Double(tokens) / Double(ms) * 1000))
+                parts.append(
+                    String(format: "\(tilde)%.0f tok/s", Double(tokens) / Double(ms) * 1000))
             }
-            parts.append("\(tokens) tok")
+            parts.append("\(tilde)\(tokens) tok")
         }
         return Text(parts.joined(separator: " · "))
             .font(Design.micro)
