@@ -244,10 +244,11 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(sawDone)
 }
 
-@Test func deltaTreatsNonPrefixSnapshotAsRestart() {
-    #expect(AppleFoundationAdapter.delta(previous: "abc", current: "xy") == "xy")
+@Test func deltaEmitsOnlyPrefixExtensionsAndNeverRestreams() {
     #expect(AppleFoundationAdapter.delta(previous: "ab", current: "abcd") == "cd")
     #expect(AppleFoundationAdapter.delta(previous: "same", current: "same") == "")
+    #expect(AppleFoundationAdapter.delta(previous: "abc", current: "xy") == "")
+    #expect(AppleFoundationAdapter.delta(previous: "abcdef", current: "abc") == "")
 }
 
 @Test func overflowMapsToContextExceeded() async throws {
@@ -285,7 +286,8 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(stats?.promptTokens == 12)
     #expect(stats?.completionTokens == 34)
     #expect(stats?.durationMs != nil)
-    #expect(stats?.ttftMs != nil)
+    #expect(stats?.ttftMs == nil)
+    #expect(stats?.tokenCountsEstimated == true)
 }
 
 @Test func adapterForwardsTemperatureAndMaxTokensAndOmitsWhenUnset() async throws {
@@ -513,24 +515,54 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(stats?.completionTokens == 2)
 }
 
-@Test func splitSeparatesInstructionsHistoryAndPrompt() {
-    let full = SystemFoundationBackend.split([
+@Test func splitSeparatesInstructionsHistoryAndPrompt() throws {
+    let full = try SystemFoundationBackend.split([
         ChatMessage(role: .system, content: "be brief"),
         ChatMessage(role: .user, content: "one"),
         ChatMessage(role: .assistant, content: "two"),
         ChatMessage(role: .user, content: "three"),
     ])
     #expect(full.instructions == "be brief")
-    #expect(full.history == [
-        ChatMessage(role: .user, content: "one"),
-        ChatMessage(role: .assistant, content: "two"),
-    ])
+    #expect(
+        full.history == [
+            ChatMessage(role: .user, content: "one"),
+            ChatMessage(role: .assistant, content: "two"),
+        ])
     #expect(full.prompt == "three")
 
-    let bare = SystemFoundationBackend.split([ChatMessage(role: .user, content: "solo")])
+    let bare = try SystemFoundationBackend.split([ChatMessage(role: .user, content: "solo")])
     #expect(bare.instructions == nil)
     #expect(bare.history.isEmpty)
     #expect(bare.prompt == "solo")
+}
+
+@Test func splitFoldsMidListSystemTurnsIntoInstructionsInOrder() throws {
+    let parts = try SystemFoundationBackend.split([
+        ChatMessage(role: .system, content: "first"),
+        ChatMessage(role: .user, content: "hi"),
+        ChatMessage(role: .system, content: "second"),
+        ChatMessage(role: .user, content: "now"),
+    ])
+    #expect(parts.instructions == "first\n\nsecond")
+    #expect(parts.history == [ChatMessage(role: .user, content: "hi")])
+    #expect(parts.prompt == "now")
+}
+
+@Test func splitKeepsATrailingAssistantTurnInHistoryNotThePrompt() throws {
+    let parts = try SystemFoundationBackend.split([
+        ChatMessage(role: .user, content: "question"),
+        ChatMessage(role: .assistant, content: "answer"),
+    ])
+    #expect(parts.prompt == "question")
+    #expect(parts.history == [ChatMessage(role: .assistant, content: "answer")])
+}
+
+@Test func splitThrowsWhenNoUserMessageIsPresent() {
+    #expect(throws: KernelError.self) {
+        _ = try SystemFoundationBackend.split([
+            ChatMessage(role: .system, content: "only instructions")
+        ])
+    }
 }
 
 @Test func headlineCountsTheBuiltinModelWithoutDistortingBytes() async throws {

@@ -5,18 +5,23 @@ import Testing
 
 
 @Test func parserTranslatesDeltaLines() {
-    let chunk = OllamaStreamParser.parse(
+    let chunks = OllamaStreamParser.parse(
         line: #"{"model":"qwen3.5:9b","message":{"role":"assistant","content":"Hel"},"done":false}"#)
-    #expect(chunk == .text("Hel"))
+    #expect(chunks == [.text("Hel")])
+}
+
+@Test func parserYieldsThinkingBeforeContentOnACombinedLine() {
+    let chunks = OllamaStreamParser.parse(
+        line: #"{"message":{"role":"assistant","content":"answer","thinking":"reasoning"},"done":false}"#)
+    #expect(chunks == [.thinking("reasoning"), .text("answer")])
 }
 
 @Test func parserTranslatesFinalLineWithStats() {
     let line = #"""
     {"model":"qwen3.5:9b","done":true,"total_duration":2500000000,"prompt_eval_count":26,"eval_count":298}
     """#
-    let chunk = OllamaStreamParser.parse(line: line)
-    guard case .done(let stats) = chunk else {
-        Issue.record("expected .done, got \(String(describing: chunk))")
+    guard case .done(let stats) = OllamaStreamParser.parse(line: line).first else {
+        Issue.record("expected .done")
         return
     }
     #expect(stats?.promptTokens == 26)
@@ -28,27 +33,28 @@ import Testing
     let thinkingLine = #"""
     {"model":"qwen3.5:9b","created_at":"2026-07-05T19:18:15.612869Z","message":{"role":"assistant","content":"","thinking":"Thinking"},"done":false}
     """#
-    #expect(OllamaStreamParser.parse(line: thinkingLine) == .thinking("Thinking"))
+    #expect(OllamaStreamParser.parse(line: thinkingLine) == [.thinking("Thinking")])
 
     let realDone = #"""
     {"model":"qwen3.5:9b","created_at":"2026-07-05T19:19:34.991772Z","done":true,"done_reason":"stop","total_duration":39306562500,"load_duration":141121625,"prompt_eval_count":18,"prompt_eval_duration":44281000,"eval_count":1796,"eval_duration":39113772000}
     """#
-    guard case .done(let stats) = OllamaStreamParser.parse(line: realDone) else {
+    guard case .done(let stats) = OllamaStreamParser.parse(line: realDone).first else {
         Issue.record("expected .done")
         return
     }
     #expect(stats?.promptTokens == 18)
     #expect(stats?.completionTokens == 1796)
     #expect(stats?.durationMs == 39306)
+    #expect(stats?.loadMs == 141)
 }
 
 @Test func parserIgnoresBlankEmptyAndMalformedLines() {
-    #expect(OllamaStreamParser.parse(line: "") == nil)
-    #expect(OllamaStreamParser.parse(line: "   ") == nil)
-    #expect(OllamaStreamParser.parse(line: "{broken json") == nil)
+    #expect(OllamaStreamParser.parse(line: "").isEmpty)
+    #expect(OllamaStreamParser.parse(line: "   ").isEmpty)
+    #expect(OllamaStreamParser.parse(line: "{broken json").isEmpty)
     #expect(
         OllamaStreamParser.parse(
-            line: #"{"message":{"role":"assistant","content":""},"done":false}"#) == nil)
+            line: #"{"message":{"role":"assistant","content":""},"done":false}"#).isEmpty)
 }
 
 
@@ -140,6 +146,26 @@ private func ollamaRecord(name: String = "qwen3.5:9b") -> ModelRecord {
     #expect(throws: KernelError.self) {
         _ = try OllamaAdapter.requestBody(model: "m", payload: .object([:]))
     }
+}
+
+@Test func chatErrorBodyParsingSurfacesDaemonMessage() {
+    let single = Data(#"{"error":"model requires more system memory than is available"}"#.utf8)
+    #expect(
+        OllamaAdapter.errorMessage(fromBody: single)
+            == "model requires more system memory than is available")
+    let ndjson = Data("{\"model\":\"x\"}\n{\"error\":\"boom\"}\n".utf8)
+    #expect(OllamaAdapter.errorMessage(fromBody: ndjson) == "boom")
+    #expect(OllamaAdapter.errorMessage(fromBody: Data("plain text".utf8)) == nil)
+}
+
+@Test func adapterWrapsBarePromptIntoUserMessage() throws {
+    let data = try OllamaAdapter.requestBody(
+        model: "m", payload: .object(["prompt": .string("just a prompt")]))
+    let body = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let messages = body["messages"] as! [[String: Any]]
+    #expect(messages.count == 1)
+    #expect(messages[0]["role"] as? String == "user")
+    #expect(messages[0]["content"] as? String == "just a prompt")
 }
 
 @Test func adapterBuildsCorrectEmbedBody() throws {
@@ -338,7 +364,7 @@ private struct FakeAdapter: RuntimeAdapter {
             == "model requires more system memory")
     #expect(OllamaStreamParser.errorMessage(line: #"{"message":{"content":"hi"}}"#) == nil)
     #expect(OllamaStreamParser.errorMessage(line: "") == nil)
-    #expect(OllamaStreamParser.parse(line: #"{"error":"boom"}"#) == nil)
+    #expect(OllamaStreamParser.parse(line: #"{"error":"boom"}"#).isEmpty)
 }
 
 @Test func chatRequestBodyCarriesToolsAndOllamaShapedToolMessages() throws {
@@ -390,5 +416,5 @@ private struct FakeAdapter: RuntimeAdapter {
     #expect(calls[0].name == "get_time")
     #expect(calls[0].arguments == .object(["zone": .string("UTC")]))
     #expect(!calls[0].id.isEmpty)
-    #expect(OllamaStreamParser.parse(line: line) == nil)
+    #expect(OllamaStreamParser.parse(line: line).isEmpty)
 }

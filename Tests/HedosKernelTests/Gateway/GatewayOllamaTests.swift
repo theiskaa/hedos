@@ -111,7 +111,7 @@ private func ndjsonObjects(_ data: Data) throws -> [[String: Any]] {
             "POST", stack.url("/api/chat"), token: stack.token, body: body))
     let chunks = String(data: data, encoding: .utf8)!
         .split(separator: "\n")
-        .compactMap { OllamaStreamParser.parse(line: String($0)) }
+        .flatMap { OllamaStreamParser.parse(line: String($0)) }
     #expect(chunks.contains(.text("alpha")))
     #expect(chunks.contains(.thinking("beta")))
     if case .done(let stats) = chunks.last {

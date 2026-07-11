@@ -141,6 +141,43 @@ private actor FakeSweepKernel: ShelfSweepKernel {
     }
 }
 
+@Test func shelfSweepReportsParityFromChatGeneration() async throws {
+    let separated = sweepRecord(name: "sep", capabilities: [.chat, .complete])
+    let leaky = sweepRecord(name: "leaky", capabilities: [.chat])
+    let kernel = FakeSweepKernel(
+        records: [separated, leaky],
+        chatOutcomes: [
+            separated.id: .init(chunks: [
+                .thinking("reasoning"),
+                .status(ChatMLPrompt.noTemplateNotice),
+                .text("hi there"),
+                .done(GenerationStats()),
+            ]),
+            leaky.id: .init(chunks: [
+                .text("<think>oops</think> hi"),
+                .done(GenerationStats()),
+            ]),
+        ],
+        invokeOutcomes: [
+            separated.id: .init(chunks: [.text("4"), .done(GenerationStats())])
+        ])
+    let results = await ShelfSweep.run(kernel)
+
+    let sep = results.first { $0.model == separated.displayName }
+    #expect(sep?.parity?.thinkingSeparated == true)
+    #expect(sep?.parity?.templateNoticeFired == true)
+    #expect(sep?.parity?.promptCompleteOK == true)
+    #expect(sep?.parity?.statsReported == true)
+
+    let leakyResult = results.first { $0.model == leaky.displayName }
+    #expect(leakyResult?.parity?.thinkingSeparated == false)
+    #expect(leakyResult?.parity?.templateNoticeFired == false)
+
+    let rendered = SweepReport.render(results)
+    #expect(rendered.contains("think:ok"))
+    #expect(rendered.contains("think:no"))
+}
+
 @Test func shelfSweepClassifiesPassFailAndSkip() async throws {
     let chatOk = sweepRecord(name: "chat-ok", capabilities: [.chat])
     let chatFail = sweepRecord(name: "chat-fail", capabilities: [.chat])
