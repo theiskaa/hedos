@@ -6,7 +6,8 @@ extension Identification {
             let lengthData = try? handle.read(upToCount: 8), lengthData.count == 8
         else { return nil }
         defer { try? handle.close() }
-        let length = lengthData.withUnsafeBytes { $0.load(as: UInt64.self) }
+        let length = UInt64(
+            littleEndian: lengthData.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) })
         guard length > 0, length < 100_000_000,
             let headerData = try? handle.read(upToCount: Int(length)),
             let header = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any],

@@ -103,6 +103,10 @@ final class ShelfWatcher: @unchecked Sendable {
         }
     }
 
+    deinit {
+        stop()
+    }
+
     func stop() {
         queue.sync {
             for item in pending.values {

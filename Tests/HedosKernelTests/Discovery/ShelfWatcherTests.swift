@@ -153,6 +153,30 @@ private actor EmissionCounter {
     }
 }
 
+@Test func watcherDeinitStopsCleanlyWhenDroppedWithoutStop() async throws {
+    let home = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: home) }
+    let root = home.appendingPathComponent("Models")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    do {
+        let watcher = ShelfWatcher(roots: [(.file, root)], debounce: .milliseconds(100))
+        watcher.start()
+    }
+
+    for index in 0..<5 {
+        try Data("x".utf8).write(to: root.appendingPathComponent("churn-\(index).bin"))
+    }
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(Bool(true))
+
+    let watcher = ShelfWatcher(roots: [(.file, root)], debounce: .milliseconds(100))
+    watcher.start()
+    watcher.stop()
+    watcher.stop()
+    #expect(Bool(true))
+}
+
 @Test func watcherPicksUpHabitatRootCreatedLater() async throws {
     let home = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: home) }
