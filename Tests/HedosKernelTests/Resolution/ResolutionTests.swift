@@ -353,3 +353,62 @@ private func ggufRecord(at dir: URL, name: String = "tiny") throws -> ModelRecor
     #expect(prompt.contains("<|im_start|>system\nbe brief<|im_end|>"))
     #expect(prompt.contains("<|im_start|>user\nhi<|im_end|>"))
 }
+
+@Test func equalPreferenceTieBreaksOnAdapterID() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let record = try ggufRecord(at: dir)
+    try await registry.register(record)
+
+    let engine = ResolutionEngine(adapters: [
+        EqualBidAdapter(adapterID: "zeta-runner"),
+        EqualBidAdapter(adapterID: "alpha-runner"),
+    ])
+    try await engine.resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.get(id: record.id))
+    #expect(resolved.runtime.id == "alpha-runner")
+    #expect(resolved.runtime.alternatives == ["zeta-runner"])
+
+    try await engine.resolveAll(in: registry)
+    let again = try #require(try await registry.get(id: record.id))
+    #expect(again == resolved)
+}
+
+@Test func concurrentDemotionIsNotRevertedByResolve() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let record = try ggufRecord(at: dir)
+    try await registry.register(record)
+
+    let engine = ResolutionEngine(adapters: [LlamaCppAdapter()])
+    try await engine.resolve(record, in: registry)
+    let staleSnapshot = try #require(try await registry.get(id: record.id))
+    #expect(staleSnapshot.state == .ready)
+
+    try await registry.setStateIfPresent(id: record.id, to: .missing)
+    try await engine.resolve(staleSnapshot, in: registry)
+
+    let after = try #require(try await registry.get(id: record.id))
+    #expect(after.state == .missing)
+}
+
+private struct EqualBidAdapter: RuntimeAdapter {
+    let adapterID: String
+
+    var id: RuntimeID { RuntimeID(rawValue: adapterID) }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool { false }
+
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        RuntimeBid(tier: .native, preference: 50)
+    }
+
+    func invoke(
+        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}

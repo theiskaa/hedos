@@ -92,3 +92,24 @@ private func probeFixtures(in dir: URL) throws -> (gguf: ModelRecord, flux: Mode
         bids: [])
     #expect(ShelfReport.line(identifyOnly).contains("not runnable"))
 }
+
+@Test func downloadingRecordProbesAsStillDownloading() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let ggufPath = dir.appendingPathComponent("tiny.gguf")
+    var payload = Data("GGUF".utf8)
+    payload.append(DiscoveryFixtures.data(bytes: 64))
+    try payload.write(to: ggufPath)
+    var record = ModelRecord(
+        name: "tiny", modality: .text, capabilities: [.chat, .complete],
+        source: ModelSource(kind: .file, path: ggufPath.path), execution: .stream)
+    record.downloading = true
+
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    try await registry.register(record)
+    let engine = ResolutionEngine(adapters: [LlamaCppAdapter()])
+    let report = ShelfReport.render(try await engine.explainAll(in: registry))
+
+    #expect(report.contains("still downloading"))
+    #expect(!report.contains("llama-cpp"))
+}

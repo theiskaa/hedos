@@ -59,6 +59,29 @@ public actor Registry {
         return true
     }
 
+    @discardableResult
+    func update(
+        ids: [String], _ transform: @Sendable (ModelRecord) -> ModelRecord?
+    ) throws -> [ModelRecord] {
+        try loadIfNeeded()
+        var changed: [ModelRecord] = []
+        for id in ids {
+            guard let current = models[id], let next = transform(current), next != current
+            else { continue }
+            models[id] = next
+            changed.append(next)
+        }
+        if !changed.isEmpty { try save() }
+        return changed
+    }
+
+    @discardableResult
+    func update(
+        id: String, _ transform: @Sendable (ModelRecord) -> ModelRecord?
+    ) throws -> ModelRecord? {
+        try update(ids: [id], transform).first
+    }
+
     public func list() throws -> [ModelRecord] {
         try loadIfNeeded()
         return models.values.sorted {

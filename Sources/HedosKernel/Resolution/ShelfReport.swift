@@ -22,6 +22,7 @@ public enum ShelfReport {
     static func outcome(_ explanation: ResolutionExplanation) -> String {
         let record = explanation.record
         if record.state == .missing { return "missing" }
+        if record.downloading { return "still downloading" }
         if record.runtime.resolved == .user, let id = record.runtime.id {
             return "\(id) (\(record.runtime.tier.rawValue), user-pinned)"
         }
