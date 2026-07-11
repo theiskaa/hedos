@@ -206,7 +206,9 @@ struct GatewaySection: View {
     }
 
     private var clientRows: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let auditCounts = Dictionary(grouping: model.gatewayAuditEntries, by: \.client)
+            .mapValues(\.count)
+        return VStack(alignment: .leading, spacing: 0) {
             if !model.gatewayClients.isEmpty {
                 HStack(spacing: Design.Space.m) {
                     Text("CLIENT")
@@ -223,7 +225,7 @@ struct GatewaySection: View {
                 .padding(.vertical, Design.Space.s)
             }
             ForEach(model.gatewayClients) { client in
-                clientLedgerRow(client)
+                clientLedgerRow(client, recent: auditCounts[client.id] ?? 0)
             }
             if model.gatewayClients.isEmpty {
                 Text("Every request needs a token, loopback included. Create one per tool.")
@@ -243,21 +245,27 @@ struct GatewaySection: View {
         .background(highlightBackground("gateway.clients"))
     }
 
-    private func clientLedgerRow(_ client: GatewayClient) -> some View {
-        let recent = model.gatewayAuditEntries.filter { $0.client == client.id }.count
-        return HStack(spacing: Design.Space.m) {
-            HStack(spacing: Design.Space.s) {
-                if client.lastUsedAt != nil {
-                    AccentDot(size: 7)
-                } else {
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(Design.inkFaint)
-                        .frame(width: 7, height: 7)
+    private func clientLedgerRow(_ client: GatewayClient, recent: Int) -> some View {
+        HStack(spacing: Design.Space.m) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: Design.Space.s) {
+                    if client.lastUsedAt != nil {
+                        AccentDot(size: 7)
+                    } else {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Design.inkFaint)
+                            .frame(width: 7, height: 7)
+                    }
+                    Text(client.name)
+                        .font(Design.body.weight(.medium))
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
                 }
-                Text(client.name)
-                    .font(Design.body.weight(.medium))
-                    .foregroundStyle(Design.ink)
+                Text(scopeSummary(client.scopes))
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Text("\(recent)")
