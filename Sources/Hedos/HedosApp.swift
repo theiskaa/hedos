@@ -53,6 +53,14 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task {
+            if let kernel = QuickAskController.shared.shell?.kernel {
+                await kernel.refreshBuiltinAvailability()
+            }
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         Task {
             await SettingsModel.active?.flush()

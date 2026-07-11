@@ -628,9 +628,32 @@ struct ModelDetailSheet: View {
             .foregroundStyle(Design.inkSoft)
             .lineSpacing(Design.bodyLineSpacing)
             .fixedSize(horizontal: false, vertical: true)
+            if let note = configuredSiblingNote(group) {
+                Text(note)
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkSoft)
+                    .lineSpacing(Design.bodyLineSpacing)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.vertical, Design.Space.m)
         .accessibilityIdentifier("duplicate-insight")
+    }
+
+    private func configuredSiblingNote(_ group: DuplicateGroup) -> String? {
+        guard !Self.hasUserConfig(record) else { return nil }
+        let siblings = shell.library.records.filter { candidate in
+            candidate.id != record.id
+                && (candidate.primaryWeightPath.map(group.paths.contains) ?? false)
+        }
+        let configured = siblings.filter(Self.hasUserConfig)
+        guard configured.count == 1, let one = configured.first else { return nil }
+        return "A configured copy exists: \(one.displayName). Its settings stay with that copy."
+    }
+
+    private static func hasUserConfig(_ record: ModelRecord) -> Bool {
+        !record.paramValues.isEmpty || record.systemPrompt?.isEmpty == false
+            || record.alias?.isEmpty == false
     }
 
     private func specRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
