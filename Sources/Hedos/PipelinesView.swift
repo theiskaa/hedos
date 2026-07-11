@@ -575,9 +575,12 @@ final class PipelineRunModel {
                     markImage(id)
                 case .status(_, let message):
                     status = message.capitalized + "…"
+                case .vector(let values):
+                    status = nil
+                    appendResponse("embedding · \(values.count) dimensions")
                 case .failed(let message):
                     notice = message
-                case .stageStarted, .completed:
+                case .stageStarted, .completed, .cancelled:
                     break
                 }
             }

@@ -60,6 +60,8 @@ public struct PipelineExecutor: Sendable {
                                     sink(.audio(frame))
                                 case .artifact(let id):
                                     sink(.artifact(id: id))
+                                case .vector(let values):
+                                    sink(.vector(values))
                                 case .text, .audioPCM, .image:
                                     break
                                 }
@@ -74,6 +76,10 @@ public struct PipelineExecutor: Sendable {
             try Task.checkCancellation()
             continuation.yield(.completed)
         } catch is CancellationError {
+            for channel in channels {
+                channel.feed.finish()
+            }
+            continuation.yield(.cancelled)
         } catch {
             for channel in channels {
                 channel.feed.finish()

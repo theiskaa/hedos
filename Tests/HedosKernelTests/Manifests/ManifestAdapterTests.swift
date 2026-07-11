@@ -122,6 +122,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path) {prompt}")
     let adapter = ManifestCommandAdapter(
         manifest: manifest, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let payload: JSONValue = .object([
         "messages": .array([
@@ -157,6 +158,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
         command: "\(try realPythonPath()) \(script.path) {outputs}", execution: .job)
     let adapter = ManifestCommandAdapter(
         manifest: manifest, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
     var results: [(Data, String)] = []
@@ -186,6 +188,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
     let adapter = ManifestCommandAdapter(
         manifest: manifest, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
     do {
@@ -214,6 +217,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
     let adapter = ManifestCommandAdapter(
         manifest: manifest, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
     var text = ""
@@ -232,6 +236,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let manifest = invokeManifest(command: "echo hi", network: true)
     let adapter = ManifestCommandAdapter(
         manifest: manifest, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
     do {
@@ -445,4 +450,40 @@ private final class CapFlag: @unchecked Sendable {
     let allowed = try run(profile: "generic-net-on.sb")
     #expect(allowed.contains("SANDBOX-ALIVE"))
     #expect(!allowed.contains("NETWORK-DENIED"))
+}
+
+@Test func jobOutputListingFailureSurfacesInsteadOfSilentZeroOutputs() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let record = try xyzRecord(in: dir)
+    let script = dir.appendingPathComponent("seal_outputs.py")
+    try Data(
+        """
+        import os, sys
+        os.chmod(sys.argv[1], 0)
+        """.utf8
+    ).write(to: script)
+
+    let manifest = invokeManifest(
+        command: "\(try realPythonPath()) \(script.path) {outputs}", execution: .job)
+    let workdirRoot = dir.appendingPathComponent("workdirs")
+    defer {
+        let outputs = workdirRoot
+            .appendingPathComponent(ManifestSupport.slug(manifest.id))
+            .appendingPathComponent("outputs")
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: outputs.path)
+    }
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144), workdirRoot: workdirRoot)
+
+    do {
+        for try await _ in adapter.run(
+            pinned(record, to: manifest.id), .chat, payload: .object([:]))
+        {}
+        Issue.record("an unreadable outputs directory must surface as an error")
+    } catch {
+        #expect(!(error is CancellationError))
+    }
 }

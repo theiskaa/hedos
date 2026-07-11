@@ -162,11 +162,15 @@ public enum PipelineRunnerFactory {
     ) -> PipelineStageRunner {
         PipelineStageRunner(
             index: index, capability: .embed, input: .text, output: .vector
-        ) { upstream, _, sink in
+        ) { upstream, downstream, sink in
             let text = await aggregatedText(upstream)
             sink(.status(index: index, "embedding"))
             let payload = payload(["input": .string(text)], merging: params)
-            for try await _ in try await backend.invoke(modelID, .embed, payload: payload) {}
+            for try await chunk in try await backend.invoke(modelID, .embed, payload: payload) {
+                if case .vector(let values) = chunk {
+                    downstream(.vector(values))
+                }
+            }
         }
     }
 }

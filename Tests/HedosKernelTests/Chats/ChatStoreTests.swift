@@ -356,3 +356,38 @@ private func makeStore(in directory: URL) -> ChatStore {
         try await store.renameSession(id: session.id, title: "still there?")
     }
 }
+
+@Test func shadowModeReportsDegradedPersistenceUntilTheQueueFlushes() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let blocked = dir.appendingPathComponent("store")
+    try Data().write(to: blocked)
+    let store = ChatStore(databaseURL: blocked.appendingPathComponent("chats.sqlite"))
+
+    #expect(await !store.persistenceDegraded())
+    _ = try await store.createSession(title: "shadowed")
+    #expect(await store.persistenceDegraded())
+
+    try FileManager.default.removeItem(at: blocked)
+    try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: true)
+    _ = try await store.sessions()
+    #expect(await !store.persistenceDegraded())
+}
+
+@Test func importRecountsTurnCountFromTheArchiveTurns() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite"))
+    let session = try await store.createSession(title: "imported")
+    _ = try await store.appendTurn(TurnDraft(role: .user, content: "one"), to: session.id)
+    _ = try await store.appendTurn(TurnDraft(role: .assistant, content: "two"), to: session.id)
+    let transcript = try #require(try await store.session(id: session.id))
+    var mangled = transcript.session
+    mangled.turnCount = 99
+    let doctored = ChatTranscript(session: mangled, turns: transcript.turns)
+
+    let imported = try await store.importTranscript(doctored)
+    #expect(imported.turnCount == 2)
+    let reloaded = try #require(try await store.session(id: session.id))
+    #expect(reloaded.session.turnCount == 2)
+}

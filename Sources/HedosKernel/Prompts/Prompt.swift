@@ -30,10 +30,7 @@ public struct Prompt: Codable, Hashable, Sendable, Identifiable {
 
     public init(from decoder: any Decoder) throws {
         let now = Date()
-        guard let container = try? decoder.container(keyedBy: CodingKeys.self) else {
-            self.init(id: "", title: "", body: "", createdAt: now, updatedAt: now)
-            return
-        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
         let id = container.lenient(String.self, .id) ?? ""
         let title = container.lenient(String.self, .title) ?? ""
         let body = container.lenient(String.self, .body) ?? ""
@@ -74,11 +71,24 @@ public enum PromptPlaceholders {
     }
 
     public static func resolve(_ body: String, with values: [String: String]) -> String {
-        var resolved = body
-        for name in names(in: body) {
-            guard let value = values[name] else { continue }
-            resolved = resolved.replacingOccurrences(of: "{\(name)}", with: value)
+        var resolved = ""
+        var remainder = Substring(body)
+        while let open = remainder.firstIndex(of: "{") {
+            resolved += remainder[..<open]
+            let afterOpen = remainder.index(after: open)
+            guard let close = remainder[afterOpen...].firstIndex(of: "}") else {
+                resolved += remainder[open...]
+                return resolved
+            }
+            let name = String(remainder[afterOpen..<close])
+            if let value = values[name] {
+                resolved += value
+            } else {
+                resolved += remainder[open...close]
+            }
+            remainder = remainder[remainder.index(after: close)...]
         }
+        resolved += remainder
         return resolved
     }
 }

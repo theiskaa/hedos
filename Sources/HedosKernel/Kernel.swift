@@ -193,7 +193,8 @@ public actor Kernel {
             if manifest.vm != nil {
                 manifestAdapters.append(
                     VMCommandAdapter(
-                        manifest: manifest, host: vmHost, workdirRoot: workdirRoot))
+                        manifest: manifest, host: vmHost, governor: governor,
+                        workdirRoot: workdirRoot))
             } else if manifest.serve != nil {
                 manifestAdapters.append(
                     ManifestSidecarAdapter(
@@ -203,7 +204,7 @@ public actor Kernel {
                 manifestAdapters.append(
                     ManifestCommandAdapter(
                         manifest: manifest, approvedNetwork: approvedNetwork,
-                        workdirRoot: workdirRoot))
+                        governor: governor, workdirRoot: workdirRoot))
             }
         }
         adapters = baseAdapters + manifestAdapters
@@ -571,7 +572,10 @@ public actor Kernel {
     }
 
     public func startOllama() async throws {
-        let adapter = adapters.compactMap { $0 as? OllamaAdapter }.first ?? OllamaAdapter()
+        guard let adapter = adapters.compactMap({ $0 as? OllamaAdapter }).first else {
+            throw KernelError.runtimeUnavailable(
+                hint: "Ollama isn't available in this configuration.")
+        }
         try await adapter.startDaemon()
     }
 

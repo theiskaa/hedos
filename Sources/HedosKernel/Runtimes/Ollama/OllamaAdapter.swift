@@ -112,10 +112,20 @@ struct OllamaAdapter: RuntimeAdapter {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                         let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        throw KernelError.runtimeFailed("ollama returned HTTP \(code)")
+                        var detail = ""
+                        for try await line in bytes.lines {
+                            if let message = OllamaStreamParser.errorMessage(line: line) {
+                                detail = ": \(message)"
+                            }
+                            break
+                        }
+                        throw KernelError.runtimeFailed("ollama returned HTTP \(code)\(detail)")
                     }
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
+                        if let message = OllamaStreamParser.errorMessage(line: line) {
+                            throw KernelError.runtimeFailed("ollama: \(message)")
+                        }
                         guard let chunk = OllamaStreamParser.parse(line: line) else { continue }
                         continuation.yield(chunk)
                         if case .done = chunk { break }

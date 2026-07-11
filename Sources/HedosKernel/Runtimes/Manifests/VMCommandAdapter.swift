@@ -5,14 +5,18 @@ struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     let host: any VMHost
     let workdirRoot: URL
 
+    private let governor: MemoryGovernor
+
     var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
     init(
         manifest: RuntimeManifest, host: any VMHost,
+        governor: MemoryGovernor = .shared,
         workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
     ) {
         self.manifest = manifest
         self.host = host
+        self.governor = governor
         self.workdirRoot = workdirRoot
     }
 
@@ -39,13 +43,18 @@ struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                             runtimeID: adapter.id, expected: .job)
                     }
                     continuation.yield(.status("Running \(adapter.id) in its own machine…"))
-                    let output = try await adapter.execute(record, payload: payload) {
-                        continuation.yield(.status($0))
+                    let output = try await GovernedOneShot.run(
+                        governor: adapter.governor, record: record,
+                        producer: GPUProducer.generation(modelID: record.id),
+                        status: { continuation.yield(.status($0)) }
+                    ) {
+                        try await adapter.execute(record, payload: payload) {
+                            continuation.yield(.status($0))
+                        }
                     }
-                    let files =
-                        (try? FileManager.default.contentsOfDirectory(
-                            at: output.outputs, includingPropertiesForKeys: nil,
-                            options: [.skipsHiddenFiles])) ?? []
+                    let files = try FileManager.default.contentsOfDirectory(
+                        at: output.outputs, includingPropertiesForKeys: nil,
+                        options: [.skipsHiddenFiles])
                     var spokeAudio = false
                     for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
                     where file.pathExtension.lowercased() == "wav" {
@@ -85,14 +94,19 @@ struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                             runtimeID: adapter.id, expected: .stream)
                     }
                     continuation.yield(.status("Running \(adapter.id) in its own machine…"))
-                    let result = try await adapter.execute(record, payload: payload) {
-                        continuation.yield(.status($0))
+                    let result = try await GovernedOneShot.run(
+                        governor: adapter.governor, record: record,
+                        producer: GPUProducer.job(modelID: record.id),
+                        status: { continuation.yield(.status($0)) }
+                    ) {
+                        try await adapter.execute(record, payload: payload) {
+                            continuation.yield(.status($0))
+                        }
                     }
                     continuation.yield(.started)
-                    let files =
-                        (try? FileManager.default.contentsOfDirectory(
-                            at: result.outputs, includingPropertiesForKeys: nil,
-                            options: [.skipsHiddenFiles])) ?? []
+                    let files = try FileManager.default.contentsOfDirectory(
+                        at: result.outputs, includingPropertiesForKeys: nil,
+                        options: [.skipsHiddenFiles])
                     for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
                     {
                         let data = try Data(contentsOf: file)

@@ -116,6 +116,9 @@ final class ChatViewModel {
             apply(stored)
         }
         defaultModelID = await kernel.settings.defaultChatModelID()
+        if await kernel.chats.persistenceDegraded() {
+            notice = "This conversation isn't being saved right now."
+        }
     }
 
     private func apply(_ stored: ChatTranscript) {
@@ -697,10 +700,16 @@ final class ChatViewModel {
         if liveBalanceThrottle.shouldRefresh() {
             refreshLiveBalance()
         }
-        let quiet = ContinuousClock().now - lastDeltaAt > .milliseconds(150)
+        let idle = ContinuousClock().now - lastDeltaAt
+        let quiet = idle > .milliseconds(150)
         let cursor = isStreaming && quiet && reveal.backlog == 0 && reveal.revealedCount > 0
         if showsStreamCursor != cursor {
             showsStreamCursor = cursor
+        }
+        if streamStatus == nil, reveal.revealedCount == 0, idle > .seconds(8),
+            transcript.last?.thinking.isEmpty != false
+        {
+            streamStatus = "Still waiting on the model — it may be loading"
         }
     }
 
@@ -800,6 +809,7 @@ final class ChatViewModel {
                 dropEmptyAssistantTail()
             } catch is CancellationError {
                 settle()
+                dropEmptyAssistantTail()
             } catch {
                 settle()
                 notice = error.localizedDescription
@@ -1280,7 +1290,9 @@ struct ChatView: View {
                                 Button("Regenerate") { model.regenerate(entry) }
                             }
                         }
-                } else if model.isStreaming && entry.thinking.isEmpty {
+                } else if model.isStreaming && entry.thinking.isEmpty
+                    && entry.id == model.transcript.last?.id
+                {
                     ShimmerText(
                         text: (model.streamStatus ?? "Streaming…").uppercased(),
                         font: Design.micro)
@@ -1521,7 +1533,9 @@ struct ChatView: View {
 
     @ViewBuilder
     private func thinkingBlock(_ entry: ChatViewModel.Entry) -> some View {
-        let streaming = entry.text.isEmpty && model.isStreaming
+        let streaming =
+            entry.text.isEmpty && model.isStreaming
+            && entry.id == model.transcript.last?.id
         return DisclosureGroup(
             isExpanded: Binding(
                 get: { expandedThinking.contains(entry.id) },

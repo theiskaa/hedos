@@ -44,14 +44,11 @@ struct ChatFlow: Sendable {
         else { throw ChatStoreError.turnNotFound(turnID) }
         let replacement = try await chats.appendTurn(
             TurnDraft(role: .user, content: text), to: sessionID)
-        for turn in active[index...] {
-            var retired = turn
-            retired.supersededBy = replacement.id
-            _ = try await chats.updateTurn(retired)
-        }
         var history = Self.messages(from: Array(active[..<index]))
         history.append(ChatMessage(role: .user, content: text))
-        return try await run(session: transcript.session, history: history)
+        return try await run(
+            session: transcript.session, history: history,
+            retiring: Array(active[index...]), userRetirementID: replacement.id)
     }
 
     func regenerate(
@@ -95,7 +92,8 @@ struct ChatFlow: Sendable {
     }
 
     private func run(
-        session: ChatSession, history: [ChatMessage], retiring: [ChatTurn] = []
+        session: ChatSession, history: [ChatMessage], retiring: [ChatTurn] = [],
+        userRetirementID: String? = nil
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let modelID = session.modelID else {
             throw KernelError.noBoundModel
@@ -110,41 +108,47 @@ struct ChatFlow: Sendable {
                 var thinking = ""
                 var stats: GenerationStats?
                 var ttftMs: Int?
+                var persistFailure: Error?
                 let clock = ContinuousClock()
                 let started = clock.now
                 var lastPersist = started
 
                 func persist() async {
                     guard !content.isEmpty || !thinking.isEmpty || stats != nil else { return }
+                    persistFailure = nil
                     let tags = thinking.isEmpty ? [] : [SessionTag.thinking]
                     var mergedStats = stats
                     if mergedStats != nil, mergedStats?.ttftMs == nil {
                         mergedStats?.ttftMs = ttftMs
                     }
-                    if var updated = turn {
-                        updated.content = content
-                        updated.thinking = thinking.isEmpty ? nil : thinking
-                        updated.statsJSON = mergedStats?.turnStatsJSON
-                        turn =
-                            (try? await chats.updateTurn(updated, mergingCapabilityTags: tags))
-                            ?? updated
-                    } else {
-                        turn = try? await chats.appendTurn(
-                            TurnDraft(
-                                role: .assistant,
-                                content: content,
-                                thinking: thinking.isEmpty ? nil : thinking,
-                                modelID: modelID,
-                                stats: mergedStats),
-                            to: sessionID,
-                            mergingCapabilityTags: tags)
-                        if let replacement = turn {
+                    do {
+                        if var updated = turn {
+                            updated.content = content
+                            updated.thinking = thinking.isEmpty ? nil : thinking
+                            updated.statsJSON = mergedStats?.turnStatsJSON
+                            turn = try await chats.updateTurn(
+                                updated, mergingCapabilityTags: tags)
+                        } else {
+                            let appended = try await chats.appendTurn(
+                                TurnDraft(
+                                    role: .assistant,
+                                    content: content,
+                                    thinking: thinking.isEmpty ? nil : thinking,
+                                    modelID: modelID,
+                                    stats: mergedStats),
+                                to: sessionID,
+                                mergingCapabilityTags: tags)
+                            turn = appended
                             for retired in retiring where retired.supersededBy == nil {
                                 var superseded = retired
-                                superseded.supersededBy = replacement.id
-                                _ = try? await chats.updateTurn(superseded)
+                                superseded.supersededBy =
+                                    retired.role == .user
+                                    ? userRetirementID ?? appended.id : appended.id
+                                _ = try await chats.updateTurn(superseded)
                             }
                         }
+                    } catch {
+                        persistFailure = error
                     }
                 }
 
@@ -173,7 +177,11 @@ struct ChatFlow: Sendable {
                         }
                     }
                     await persist()
-                    continuation.finish()
+                    if let persistFailure {
+                        continuation.finish(throwing: persistFailure)
+                    } else {
+                        continuation.finish()
+                    }
                 } catch {
                     await persist()
                     continuation.finish(throwing: error)

@@ -275,3 +275,43 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     #expect(Launcher.defaultChatModel(in: shelf, preferring: preferred.id)?.id == preferred.id)
     #expect(Launcher.defaultChatModel(in: shelf, preferring: "missing")?.id == first.id)
 }
+
+@Test func persistFailureDuringStreamSurfacesAsAThrownStreamError() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite"))
+    let session = try await store.createSession(title: "doomed", modelID: "m1")
+    let (gate, gateContinuation) = AsyncStream.makeStream(of: Void.self)
+
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, _ in
+            AsyncThrowingStream { continuation in
+                let task = Task {
+                    var opened = gate.makeAsyncIterator()
+                    _ = await opened.next()
+                    continuation.yield(.text("hello"))
+                    continuation.yield(.done(nil))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        },
+        shelf: { [] })
+
+    let stream = try await flow.send(sessionID: session.id, text: "hi")
+    try await store.deleteSession(id: session.id)
+    gateContinuation.yield(())
+    gateContinuation.finish()
+
+    var text = ""
+    do {
+        for try await chunk in stream {
+            if case .text(let delta) = chunk { text += delta }
+        }
+        Issue.record("a failed persist must surface as a stream error")
+    } catch let error as ChatStoreError {
+        #expect(error == .sessionNotFound(session.id))
+    }
+    #expect(text == "hello")
+}

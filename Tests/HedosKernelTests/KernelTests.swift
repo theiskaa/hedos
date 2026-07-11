@@ -137,7 +137,9 @@ private func smallWindowRecord() -> ModelRecord {
         at: home.appendingPathComponent(".ollama/models"),
         tags: [.init(model: "gemma4", tag: "latest", modelBytes: 64)])
     let habitat = ModelHabitat(home: home, environment: ["HF_HOME": "", "HF_HUB_CACHE": ""])
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore(), habitat: habitat)
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore(), habitat: habitat)
     _ = try await kernel.discover()
     let baseline = await kernel.registry.saveCount
 
@@ -149,7 +151,9 @@ private func smallWindowRecord() -> ModelRecord {
 @Test func registerEndpointCreatesReadyUserPinnedRecord() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
 
     let record = try await kernel.registerEndpoint(
         baseURL: "127.0.0.1:11434/v1", model: "gemma4:latest")
@@ -176,7 +180,8 @@ private func smallWindowRecord() -> ModelRecord {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let secrets = InMemorySecretStore()
-    let kernel = Kernel(directory: dir, secrets: secrets)
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144), secrets: secrets)
     try secrets.set("sk-live", account: "http://127.0.0.1:9999")
 
     let first = try await kernel.registerEndpoint(
@@ -194,7 +199,9 @@ private func smallWindowRecord() -> ModelRecord {
 @Test func endpointRecordsSurviveDiscoverUntouched() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
     let record = try await kernel.registerEndpoint(
         baseURL: "http://127.0.0.1:9999", model: "alpha")
 
@@ -209,4 +216,16 @@ private func smallWindowRecord() -> ModelRecord {
     #expect(explanation.winner == "generic:openai-server")
     let line = ShelfReport.render([explanation])
     #expect(line.contains("user-pinned"))
+}
+
+@Test func startOllamaWithoutARegisteredAdapterThrows() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(
+        directory: dir, adapters: [], governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
+
+    await #expect(throws: KernelError.self) {
+        try await kernel.startOllama()
+    }
 }

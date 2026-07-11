@@ -47,9 +47,45 @@ private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
     let retiredUser = try #require(turns.first { $0.id == user.id })
     let retiredAssistant = try #require(turns.first { $0.id == assistant.id })
     #expect(retiredUser.supersededBy == active[0].id)
-    #expect(retiredAssistant.supersededBy == active[0].id)
+    #expect(retiredAssistant.supersededBy == active[1].id)
     #expect(retiredUser.content == "original question")
     #expect(retiredAssistant.content == "original answer")
+}
+
+@Test func editUserTurnKeepsTheOldChainWhenTheStreamFails() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite"))
+    let (session, user, assistant) = try await seededSession(store)
+
+    let failing = ChatFlow(
+        chats: store,
+        stream: { _, _ in
+            AsyncThrowingStream { continuation in
+                continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "down"))
+            }
+        },
+        shelf: { [] })
+    await #expect(throws: KernelError.self) {
+        for try await _ in try await failing.editUserTurn(
+            sessionID: session.id, turnID: user.id, text: "revised question") {}
+    }
+
+    let turns = try #require(try await store.session(id: session.id)).turns
+    let originalUser = try #require(turns.first { $0.id == user.id })
+    let originalAssistant = try #require(turns.first { $0.id == assistant.id })
+    #expect(originalUser.supersededBy == nil)
+    #expect(originalAssistant.supersededBy == nil)
+
+    let flow = textFlow(store, reply: "revised answer")
+    for try await _ in try await flow.editUserTurn(
+        sessionID: session.id, turnID: user.id, text: "revised question again") {}
+
+    let after = try #require(try await store.session(id: session.id)).turns
+    let active = after.filter { $0.supersededBy == nil }
+    #expect(active.map(\.role) == [.user, .assistant])
+    #expect(active[0].content == "revised question again")
+    #expect(active[1].content == "revised answer")
 }
 
 @Test func regenerateRetiresAssistantTurnOnlyOnceReplacementLands() async throws {

@@ -1,6 +1,16 @@
 import Foundation
 
 enum OllamaStreamParser {
+    static func errorMessage(line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+            let object = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))
+                as? [String: Any],
+            let message = object["error"] as? String, !message.isEmpty
+        else { return nil }
+        return message
+    }
+
     static func parse(line: String) -> CapabilityChunk? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty,

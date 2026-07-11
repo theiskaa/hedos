@@ -39,6 +39,7 @@ final class FakePipelineBackend: PipelineBackend, @unchecked Sendable {
     var jobArtifacts: [String] = ["artifact-1"]
     var jobFailure: String?
     var chatHang = false
+    var embedVectors: [[Double]] = [[0.25, -0.5], [0.75]]
 
     func record(_ call: Call) {
         lock.lock()
@@ -68,6 +69,15 @@ final class FakePipelineBackend: PipelineBackend, @unchecked Sendable {
                 }
             }
             return textStream(chatDeltas)
+        case .embed:
+            let vectors = embedVectors
+            return AsyncThrowingStream { continuation in
+                for vector in vectors {
+                    continuation.yield(.vector(vector))
+                }
+                continuation.yield(.done(nil))
+                continuation.finish()
+            }
         default: return textStream([])
         }
     }
@@ -234,4 +244,43 @@ private func collect(_ stream: AsyncStream<PipelineEvent>) async -> [PipelineEve
     _ = await consume.value
     try await Task.sleep(for: .milliseconds(200))
     #expect(backend.cancelledJobs == ["job-fake"])
+}
+
+@Test func embedTailForwardsVectorsToTheSink() async throws {
+    let backend = FakePipelineBackend()
+    let runner = PipelineRunnerFactory.embed(
+        index: 0, modelID: "bge", params: [:], backend: backend)
+    let events = await collect(PipelineExecutor(stages: [runner]).run(input: .text("embed me")))
+
+    let vectors = events.compactMap { event -> [Double]? in
+        if case .vector(let values) = event { return values }
+        return nil
+    }
+    #expect(vectors == [[0.25, -0.5], [0.75]])
+    #expect(
+        events.contains {
+            if case .completed = $0 { return true }
+            return false
+        })
+}
+
+@Test func stageCancellationYieldsACancelledTerminalEvent() async throws {
+    let cancellingRunner = PipelineStageRunner(
+        index: 0, capability: .chat, input: .text, output: .text
+    ) { _, _, _ in
+        throw CancellationError()
+    }
+    let events = await collect(
+        PipelineExecutor(stages: [cancellingRunner]).run(input: .text("x")))
+
+    #expect(
+        events.contains {
+            if case .cancelled = $0 { return true }
+            return false
+        })
+    #expect(
+        !events.contains {
+            if case .failed = $0 { return true }
+            return false
+        })
 }

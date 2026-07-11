@@ -28,7 +28,16 @@ public enum ShelfSweep {
         transcribeFixture: URL? = transcribeFixtureURL(),
         perModelTimeout: Duration = .seconds(120)
     ) async -> [SweepResult] {
-        guard let records = try? await kernel.shelf() else { return [] }
+        let records: [ModelRecord]
+        do {
+            records = try await kernel.shelf()
+        } catch {
+            return [
+                SweepResult(
+                    model: "shelf", capability: nil, status: .fail, durationMs: 0,
+                    reason: "registry unreadable: \(error.localizedDescription)")
+            ]
+        }
         var results: [SweepResult] = []
         for record in records {
             results.append(

@@ -36,7 +36,10 @@ public actor GPUGate {
     }
 
     public func release(_ producer: GPUProducer) {
-        guard holder == producer, holders > 0 else { return }
+        guard holder == producer, holders > 0 else {
+            assertionFailure("unbalanced GPUGate release by \(producer)")
+            return
+        }
         holders -= 1
         if holders == 0 {
             holder = nil

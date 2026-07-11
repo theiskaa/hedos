@@ -134,6 +134,10 @@ private func endpointRecord(port: Int, model: String = "fake-chat-1") -> ModelRe
     var threw = false
     do {
         for try await _ in adapter.invoke(record, .chat, payload: payload) {}
+    } catch let KernelError.runtimeUnavailable(hint) {
+        threw = true
+        #expect(!hint.contains("127.0.0.1"))
+        #expect(!hint.contains("http"))
     } catch {
         threw = true
     }

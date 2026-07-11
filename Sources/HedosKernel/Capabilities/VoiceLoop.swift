@@ -269,6 +269,7 @@ public actor VoiceLoop {
     }
 
     public func start() -> AsyncStream<Event> {
+        stop()
         let (stream, continuation) = AsyncStream.makeStream(of: Event.self)
         self.continuation = continuation
         running = true
@@ -345,10 +346,12 @@ public actor VoiceLoop {
                     continuation?.yield(.turnCompleted)
                 }
                 continuation?.yield(.listening)
+            case .cancelled:
+                continuation?.yield(.listening)
             case .failed(let message):
                 continuation?.yield(.failed(message))
                 continuation?.yield(.listening)
-            case .stageStarted, .status, .artifact:
+            case .stageStarted, .status, .artifact, .vector:
                 break
             }
         }

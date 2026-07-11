@@ -149,3 +149,28 @@ import Testing
     #expect(PromptComposer.clearingToken(from: "keep this /model") == "keep this ")
     #expect(PromptComposer.clearingToken(from: "/model") == "")
 }
+
+@Test func substitutedValuesAreNeverReSubstituted() {
+    let prompt = Prompt(title: "Inject", body: "{a} and {b}")
+    let resolved = prompt.resolvedBody(["a": "{b}", "b": "safe"])
+    #expect(resolved == "{b} and safe")
+}
+
+@Test func unclosedPlaceholderSurvivesResolution() {
+    let resolved = PromptPlaceholders.resolve("prefix {open", with: ["open": "x"])
+    #expect(resolved == "prefix {open")
+}
+
+@Test func fullyCorruptPromptFileIsQuarantinedNotLoadedEmpty() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let file = dir.appendingPathComponent("broken.json")
+    try Data("[1, 2, 3]".utf8).write(to: file)
+
+    let store = PromptStore(directory: dir)
+    #expect(await store.list().isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: file.path))
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+    #expect(leftovers.contains { $0.contains(".corrupt-") })
+}

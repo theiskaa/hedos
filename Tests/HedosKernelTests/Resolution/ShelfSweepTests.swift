@@ -43,13 +43,17 @@ private actor FakeSweepKernel: ShelfSweepKernel {
     private(set) var submitCallCount = 0
     private(set) var cancelledJobIDs: [String] = []
 
+    private let shelfError: KernelError?
+
     init(
         records: [ModelRecord],
+        shelfError: KernelError? = nil,
         chatOutcomes: [String: StreamOutcome] = [:],
         invokeOutcomes: [String: StreamOutcome] = [:],
         jobOutcomes: [String: JobOutcome] = [:]
     ) {
         self.records = records
+        self.shelfError = shelfError
         self.chatOutcomes = chatOutcomes
         self.invokeOutcomes = invokeOutcomes
         self.jobOutcomes = jobOutcomes
@@ -57,6 +61,7 @@ private actor FakeSweepKernel: ShelfSweepKernel {
 
     func shelf() async throws -> [ModelRecord] {
         shelfCallCount += 1
+        if let shelfError { throw shelfError }
         return records
     }
 
@@ -343,4 +348,16 @@ private actor FakeSweepKernel: ShelfSweepKernel {
     #expect(included.status == .pass)
     #expect(included.capability == .image)
     #expect(await kernel.submitCallCount == 1)
+}
+
+@Test func unreadableShelfReportsAFailureRowInsteadOfACleanSweep() async {
+    let kernel = FakeSweepKernel(
+        records: [], shelfError: KernelError.runtimeFailed("models.json unreadable"))
+
+    let results = await ShelfSweep.run(kernel, transcribeFixture: nil)
+
+    #expect(results.count == 1)
+    #expect(results[0].model == "shelf")
+    #expect(results[0].status == .fail)
+    #expect(results[0].reason?.contains("registry unreadable") == true)
 }

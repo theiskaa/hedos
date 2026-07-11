@@ -31,6 +31,7 @@ public actor ChatStore {
     private var queuedWrites: [ChatWrite] = []
     private var shadowSessions: [String: ChatSession] = [:]
     private var shadowTurns: [String: ChatTurn] = [:]
+    private var degraded = false
 
     public init(databaseURL: URL) {
         self.databaseURL = databaseURL
@@ -244,8 +245,10 @@ public actor ChatStore {
 
     public func importTranscript(_ transcript: ChatTranscript) throws -> ChatSession {
         let database = try open()
+        var session = transcript.session
+        session.turnCount = transcript.turns.count
         try database.transaction {
-            try apply(.insertSession(transcript.session), to: database)
+            try apply(.insertSession(session), to: database)
             try database.run(
                 "DELETE FROM turns WHERE session_id = ?", [.text(transcript.session.id)])
             for turn in transcript.turns {
@@ -273,7 +276,7 @@ public actor ChatStore {
                     ])
             }
         }
-        return transcript.session
+        return session
     }
 
     public func searchChats(query: String, limit: Int = 50) throws -> [SearchHit] {
@@ -367,10 +370,15 @@ public actor ChatStore {
             mergingCapabilityTags: [capabilityTag])
     }
 
+    public func persistenceDegraded() -> Bool {
+        degraded
+    }
+
     private func writableDatabase() throws -> ChatDatabase? {
         do {
             return try open()
         } catch ChatStoreError.databaseUnavailable {
+            degraded = true
             return nil
         }
     }
@@ -416,6 +424,7 @@ public actor ChatStore {
         }
         shadowSessions = [:]
         shadowTurns = [:]
+        degraded = false
     }
 
     private func apply(_ write: ChatWrite, to database: ChatDatabase) throws {

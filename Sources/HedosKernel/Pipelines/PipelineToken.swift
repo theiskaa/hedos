@@ -6,6 +6,7 @@ public enum PipelineToken: Sendable, Hashable {
     case audioFrame(AudioFrame)
     case image(Data)
     case artifact(String)
+    case vector([Double])
 }
 
 public enum PipelineEvent: Sendable {
@@ -15,7 +16,9 @@ public enum PipelineEvent: Sendable {
     case transcript(index: Int, String)
     case audio(AudioFrame)
     case artifact(id: String)
+    case vector([Double])
     case completed
+    case cancelled
     case failed(String)
 }
 

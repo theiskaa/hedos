@@ -222,3 +222,27 @@ private let quiet = [Float](repeating: 0.0, count: 4)
     #expect(await spoken.sentences.count == 2)
     #expect(await log.completions() == 1)
 }
+
+@Test func secondStartFinishesTheFirstEventStream() async throws {
+    let backends = VoiceLoopBackends(
+        transcribe: { _ in textStream(["hi"]) },
+        chat: { _ in textStream(["hello"]) },
+        speak: { _ in textStream([]) })
+    let loop = VoiceLoop(backends: backends, vadConfig: tinyVAD)
+
+    let first = await loop.start()
+    let firstEnded = CleanupFlag()
+    let collector = Task {
+        for await _ in first {}
+        firstEnded.mark()
+    }
+
+    let second = await loop.start()
+    _ = await collector.value
+    #expect(firstEnded.wasInvoked)
+
+    var iterator = second.makeAsyncIterator()
+    let event = await iterator.next()
+    if case .listening = event {} else { Issue.record("expected .listening, got \(String(describing: event))") }
+    await loop.stop()
+}

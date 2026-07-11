@@ -53,7 +53,9 @@ private let darkManifest = """
 @Test func discoverLoadsRuntimesDAndResolvesDarkRecord() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
     try writeUserManifest(darkManifest, kernelDir: dir, name: "dark-runner")
     let record = try darkRecord(in: dir)
     try await kernel.registry.register(record)
@@ -72,7 +74,9 @@ private let darkManifest = """
 @Test func discoverSurfacesManifestIssuesInSummary() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
     try writeUserManifest("this is not toml at all", kernelDir: dir, name: "broken")
 
     let summary = try await kernel.discover()
@@ -135,7 +139,9 @@ private let darkManifest = """
 @Test func approveNetworkRuntimeFlipsRecordToReady() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
     let networkManifest = darkManifest
         .replacingOccurrences(of: "id = \"dark-runner\"", with: "id = \"net-runner\"")
         .replacingOccurrences(
@@ -161,7 +167,9 @@ private let darkManifest = """
 @Test func editingManifestAfterApprovalReTriggersNetworkConsent() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
     let networkManifest = darkManifest
         .replacingOccurrences(of: "id = \"dark-runner\"", with: "id = \"net-runner\"")
         .replacingOccurrences(
@@ -283,7 +291,9 @@ private let darkManifest = """
 @Test func kernelInvokeDispatchesToManifestCommandAdapterEndToEnd() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let kernel = Kernel(directory: dir, secrets: InMemorySecretStore())
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
     try FileManager.default.createDirectory(
         at: dir.appendingPathComponent("dark-model"), withIntermediateDirectories: true)
     let script = dir.appendingPathComponent("dark-model/fake_e2e.py")

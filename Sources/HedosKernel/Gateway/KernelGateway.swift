@@ -3,7 +3,7 @@ import Foundation
 extension Kernel: GatewayPort {
     public func artifactData(id: String) async throws -> Data? {
         guard let url = try await artifactStore.url(id: id) else { return nil }
-        return try Data(contentsOf: url)
+        return try await Task.detached { try Data(contentsOf: url) }.value
     }
 
     public func job(id: String) async throws -> Job? {

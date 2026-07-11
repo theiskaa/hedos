@@ -103,7 +103,7 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
                     continuation.finish(
                         throwing: KernelError.runtimeUnavailable(
                             hint:
-                                "Too many requests are already in flight to \(base). Retry shortly."
+                                "Too many requests are already in flight to the configured server. Retry shortly."
                         ))
                     return
                 }
@@ -183,7 +183,7 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
                     await Self.markUnreachable(recordID, registry: registry)
                     continuation.finish(
                         throwing: KernelError.runtimeUnavailable(
-                            hint: "The server at \(base) isn't reachable."))
+                            hint: "The configured server isn't reachable."))
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -279,7 +279,7 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
             || error.code == .networkConnectionLost
         {
             throw KernelError.runtimeUnavailable(
-                hint: "The server at \(base) isn't reachable.")
+                hint: "The configured server isn't reachable.")
         }
     }
 }

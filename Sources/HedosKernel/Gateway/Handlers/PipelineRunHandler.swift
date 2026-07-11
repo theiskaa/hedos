@@ -36,6 +36,8 @@ struct PipelineRunHandler: GatewayHandling {
             try await renderAudio(stream, responder: responder)
         case .image:
             try await renderImage(stream, port: port, responder: responder)
+        case .vector:
+            try await renderVectors(stream, responder: responder)
         default:
             try await renderText(stream, model: pipeline.id, responder: responder)
         }
@@ -219,6 +221,49 @@ struct PipelineRunHandler: GatewayHandling {
             body: OpenAIWire.serialize([
                 "created": Int(Date().timeIntervalSince1970),
                 "data": [["b64_json": data.base64EncodedString()]],
+            ]))
+    }
+
+    private func renderVectors(
+        _ stream: AsyncStream<PipelineEvent>, responder: GatewayResponder
+    ) async throws {
+        typealias Collected = (vectors: [[Double]], failure: String?)
+        let collected: Collected = try await withThrowingTaskGroup(of: Collected.self) { group in
+            group.addTask {
+                var vectors: [[Double]] = []
+                var failure: String?
+                for await event in stream {
+                    switch event {
+                    case .vector(let values):
+                        vectors.append(values)
+                    case .failed(let message):
+                        failure = message
+                    default:
+                        break
+                    }
+                }
+                return (vectors, failure)
+            }
+            group.addTask {
+                try await Task.sleep(for: runTimeout)
+                throw GatewayError(.timeout, timeoutMessage())
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+        if let failure = collected.failure { throw GatewayError(.serverError, failure) }
+        guard !collected.vectors.isEmpty else {
+            throw GatewayError(.serverError, "the pipeline produced no embeddings")
+        }
+        let data = collected.vectors.enumerated().map { index, vector -> [String: Any] in
+            ["object": "embedding", "embedding": vector, "index": index]
+        }
+        try await responder.respond(
+            status: 200,
+            body: OpenAIWire.serialize([
+                "object": "list",
+                "data": data,
             ]))
     }
 }

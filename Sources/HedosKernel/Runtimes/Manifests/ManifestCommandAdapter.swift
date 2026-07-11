@@ -6,14 +6,18 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     let approvedNetwork: Bool
     let workdirRoot: URL
 
+    private let governor: MemoryGovernor
+
     var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
     init(
         manifest: RuntimeManifest, approvedNetwork: Bool,
+        governor: MemoryGovernor = .shared,
         workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
     ) {
         self.manifest = manifest
         self.approvedNetwork = approvedNetwork
+        self.governor = governor
         self.workdirRoot = workdirRoot
     }
 
@@ -44,8 +48,14 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                             runtimeID: adapter.id, expected: .job)
                     }
                     continuation.yield(.status("Running \(adapter.id)…"))
-                    let output = try await adapter.runCommand(record, payload: payload) {
-                        continuation.yield(.status($0))
+                    let output = try await GovernedOneShot.run(
+                        governor: adapter.governor, record: record,
+                        producer: GPUProducer.generation(modelID: record.id),
+                        status: { continuation.yield(.status($0)) }
+                    ) {
+                        try await adapter.runCommand(record, payload: payload) {
+                            continuation.yield(.status($0))
+                        }
                     }
                     for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
                         continuation.yield(.text(String(line) + "\n"))
@@ -72,8 +82,14 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                             runtimeID: adapter.id, expected: .stream)
                     }
                     continuation.yield(.status("Running \(adapter.id)…"))
-                    let outputs = try await adapter.runJob(record, payload: payload) {
-                        continuation.yield(.status($0))
+                    let outputs = try await GovernedOneShot.run(
+                        governor: adapter.governor, record: record,
+                        producer: GPUProducer.job(modelID: record.id),
+                        status: { continuation.yield(.status($0)) }
+                    ) {
+                        try await adapter.runJob(record, payload: payload) {
+                            continuation.yield(.status($0))
+                        }
                     }
                     continuation.yield(.started)
                     for file in outputs {
@@ -103,9 +119,8 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> [URL] {
         let (_, outputs) = try await execute(record, payload: payload, progress: progress)
-        let files =
-            (try? FileManager.default.contentsOfDirectory(
-                at: outputs, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        let files = try FileManager.default.contentsOfDirectory(
+            at: outputs, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         return files.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 

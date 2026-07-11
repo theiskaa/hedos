@@ -89,3 +89,18 @@ private func fileRecord(at url: URL) -> ModelRecord {
     #expect(cache.hitCount == 0)
     #expect(first == second)
 }
+
+@Test func explainServesIdentificationFromTheCache() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("model.gguf")
+    try writeGGUF(architecture: "llama", to: url)
+    let cache = IdentificationCache()
+    let record = fileRecord(at: url)
+    let engine = ResolutionEngine(adapters: [LlamaCppAdapter()], identificationCache: cache)
+
+    _ = await engine.explain(record)
+    #expect(cache.hitCount == 0)
+    _ = await engine.explain(record)
+    #expect(cache.hitCount == 1)
+}

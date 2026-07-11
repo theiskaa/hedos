@@ -307,3 +307,12 @@ private struct FakeAdapter: RuntimeAdapter {
     for try await chunk in stream { received.append(chunk) }
     #expect(received == [.vector([0.1, 0.2, 0.3]), .done(nil)])
 }
+
+@Test func streamParserSurfacesDaemonErrorLines() {
+    #expect(
+        OllamaStreamParser.errorMessage(line: #"{"error":"model requires more system memory"}"#)
+            == "model requires more system memory")
+    #expect(OllamaStreamParser.errorMessage(line: #"{"message":{"content":"hi"}}"#) == nil)
+    #expect(OllamaStreamParser.errorMessage(line: "") == nil)
+    #expect(OllamaStreamParser.parse(line: #"{"error":"boom"}"#) == nil)
+}

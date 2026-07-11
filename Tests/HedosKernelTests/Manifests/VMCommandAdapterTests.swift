@@ -78,7 +78,9 @@ private func speakRecord() -> ModelRecord {
 
 @Test func adapterBidsOnDetectMatch() throws {
     let manifest = try vmManifest()
-    let adapter = VMCommandAdapter(manifest: manifest, host: FakeVMHost())
+    let adapter = VMCommandAdapter(
+        manifest: manifest, host: FakeVMHost(),
+        governor: MemoryGovernor(totalMemoryMB: 262_144))
     let record = Fixtures.gguf()
     let bid = adapter.bid(record, Identification.identify(record))
     #expect(bid?.tier == .managed)
@@ -92,7 +94,8 @@ private func speakRecord() -> ModelRecord {
 @Test func adapterProvisionsOnceThenRunsWithGuestPaths() async throws {
     let host = FakeVMHost()
     let manifest = try vmManifest()
-    let adapter = VMCommandAdapter(manifest: manifest, host: host)
+    let adapter = VMCommandAdapter(
+        manifest: manifest, host: host, governor: MemoryGovernor(totalMemoryMB: 262_144))
     let record = speakRecord()
     let payload = JSONValue.object(["prompt": .string("say hello")])
 
@@ -124,7 +127,9 @@ private func speakRecord() -> ModelRecord {
     await host.configure(
         envReady: true,
         runResult: VMRunResult(exitCode: 3, stdout: "", stderr: "Traceback\nValueError: boom"))
-    let adapter = VMCommandAdapter(manifest: try vmManifest(), host: host)
+    let adapter = VMCommandAdapter(
+        manifest: try vmManifest(), host: host,
+        governor: MemoryGovernor(totalMemoryMB: 262_144))
     do {
         for try await _ in adapter.invoke(
             speakRecord(), .speak, payload: .object(["prompt": .string("x")])) {}
@@ -152,7 +157,8 @@ private func speakRecord() -> ModelRecord {
         """
     let manifest = try RuntimeManifest.load(
         table: try TOMLLite.parse(toml), directory: Fixtures.tempDirectory())
-    let adapter = VMCommandAdapter(manifest: manifest, host: host)
+    let adapter = VMCommandAdapter(
+        manifest: manifest, host: host, governor: MemoryGovernor(totalMemoryMB: 262_144))
     var record = Fixtures.gguf()
     record.runtime.id = "vm-image-test"
 

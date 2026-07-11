@@ -128,7 +128,7 @@ public actor ResolutionEngine {
     }
 
     public func explain(_ record: ModelRecord) -> ResolutionExplanation {
-        let identified = Identification.identify(record)
+        let identified = identificationCache?.identify(record) ?? Identification.identify(record)
         let bids = collectBids(record, identified).map {
             AdapterBidReport(adapterID: $0.id, tier: $0.bid.tier, preference: $0.bid.preference)
         }
