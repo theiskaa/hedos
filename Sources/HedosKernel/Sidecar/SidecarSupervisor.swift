@@ -9,7 +9,6 @@ public actor SidecarSupervisor {
         var decoder = FrameCodec.Decoder()
         var buffered: [Frame] = []
         var waiter: CheckedContinuation<Frame?, Never>?
-        var waiterGeneration = 0
         var eof = false
         var sampleRate = SidecarSpec.defaultSampleRate
         var stderrTail = ""
@@ -17,17 +16,23 @@ public actor SidecarSupervisor {
         var jobSession: UUID?
         var jobOpSent = false
         var pending: [CheckedContinuation<Void, Never>] = []
+        var lastFrameAt = ContinuousClock().now
+        let writeQueue: DispatchQueue
 
         init(process: Process, stdin: Pipe) {
             self.process = process
             self.stdin = stdin
+            self.writeQueue = DispatchQueue(label: "hedos.sidecar.stdin")
         }
     }
 
     var sidecars: [String: Sidecar] = [:]
     private var cancelWatchdogs: [String: (session: UUID, task: Task<Void, Never>)] = [:]
+    private var frameWatchdogs: [String: (session: UUID, task: Task<Void, Never>)] = [:]
 
-    public init() {}
+    public init() {
+        signal(SIGPIPE, SIG_IGN)
+    }
 
     public func isRunning(_ id: String) -> Bool {
         sidecars[id]?.process.isRunning ?? false
@@ -99,7 +104,7 @@ public actor SidecarSupervisor {
         try process.run()
         sidecars[id] = sidecar
 
-        guard let ready = await nextFrame(id, timeout: spec.readyTimeout),
+        guard let ready = await nextReadyFrame(id, timeout: spec.readyTimeout),
             case .control(let value) = ready,
             value.objectValue?["event"]?.stringValue == "ready"
         else {
@@ -155,6 +160,7 @@ public actor SidecarSupervisor {
         try Task.checkCancellation()
         try send(id, control)
         markJobOpSent(id, session: session)
+        armFrameWatchdog(id, session: session, timeout: spec.frameTimeout)
         try await pump(spec, into: continuation)
     }
 
@@ -230,6 +236,7 @@ public actor SidecarSupervisor {
         try Task.checkCancellation()
         try send(id, control)
         markJobOpSent(id, session: session)
+        armFrameWatchdog(id, session: session, timeout: spec.frameTimeout)
         try await pumpJob(spec, into: continuation)
     }
 
@@ -254,7 +261,7 @@ public actor SidecarSupervisor {
         while let sidecar = sidecars[id], sidecar.busy {
             await withCheckedContinuation { sidecar.pending.append($0) }
         }
-        guard let sidecar = sidecars[id] else { return }
+        guard !Task.isCancelled, let sidecar = sidecars[id] else { return }
         sidecar.busy = true
         sidecar.jobSession = session
         sidecar.jobOpSent = false
@@ -267,6 +274,7 @@ public actor SidecarSupervisor {
 
     private func releaseExclusive(_ id: String, session: UUID) {
         guard let sidecar = sidecars[id], sidecar.jobSession == session else { return }
+        clearFrameWatchdog(id)
         sidecar.jobSession = nil
         sidecar.jobOpSent = false
         sidecar.busy = false
@@ -286,6 +294,7 @@ public actor SidecarSupervisor {
         do {
             let frames = try sidecar.decoder.append(data)
             for frame in frames {
+                sidecar.lastFrameAt = ContinuousClock().now
                 if let waiter = sidecar.waiter {
                     sidecar.waiter = nil
                     waiter.resume(returning: frame)
@@ -308,34 +317,60 @@ public actor SidecarSupervisor {
         resumePending(sidecar)
     }
 
-    func nextFrame(_ id: String, timeout: Duration) async -> Frame? {
+    func nextFrame(_ id: String) async -> Frame? {
         guard let sidecar = sidecars[id] else { return nil }
         if !sidecar.buffered.isEmpty {
             return sidecar.buffered.removeFirst()
         }
         if sidecar.eof { return nil }
-
-        sidecar.waiterGeneration += 1
-        let generation = sidecar.waiterGeneration
-        let timeoutTask = Task {
-            try? await Task.sleep(for: timeout)
-            guard !Task.isCancelled else { return }
-            await self.timeoutWaiter(id, generation: generation)
-        }
-        let frame = await withCheckedContinuation { continuation in
+        return await withCheckedContinuation { continuation in
             sidecar.waiter = continuation
         }
+    }
+
+    private func nextReadyFrame(_ id: String, timeout: Duration) async -> Frame? {
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            if Task.isCancelled { return }
+            await self?.expireWaiter(id)
+        }
+        let frame = await nextFrame(id)
         timeoutTask.cancel()
         return frame
     }
 
-    private func timeoutWaiter(_ id: String, generation: Int) {
-        guard let sidecar = sidecars[id],
-            sidecar.waiterGeneration == generation,
-            let waiter = sidecar.waiter
-        else { return }
+    private func expireWaiter(_ id: String) {
+        guard let sidecar = sidecars[id], let waiter = sidecar.waiter else { return }
         sidecar.waiter = nil
         waiter.resume(returning: nil)
+    }
+
+    private func armFrameWatchdog(_ id: String, session: UUID, timeout: Duration) {
+        frameWatchdogs[id]?.task.cancel()
+        frameWatchdogs[id] = (
+            session,
+            Task { [weak self] in
+                await self?.runFrameWatchdog(id, session: session, timeout: timeout)
+            }
+        )
+    }
+
+    private func runFrameWatchdog(_ id: String, session: UUID, timeout: Duration) async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: timeout)
+            if Task.isCancelled { return }
+            guard let sidecar = sidecars[id], sidecar.busy, sidecar.jobSession == session
+            else { return }
+            if ContinuousClock().now - sidecar.lastFrameAt >= timeout, let waiter = sidecar.waiter {
+                sidecar.waiter = nil
+                waiter.resume(returning: nil)
+            }
+        }
+    }
+
+    private func clearFrameWatchdog(_ id: String) {
+        frameWatchdogs[id]?.task.cancel()
+        frameWatchdogs[id] = nil
     }
 
     private func appendStderr(_ text: String, for id: String) {
@@ -352,12 +387,20 @@ public actor SidecarSupervisor {
             throw KernelError.sidecarDied(runtimeID: id, detail: "is not running")
         }
         let data = try FrameCodec.encode(.control(control))
-        try sidecar.stdin.fileHandleForWriting.write(contentsOf: data)
+        let handle = sidecar.stdin.fileHandleForWriting
+        sidecar.writeQueue.async { [weak self] in
+            do {
+                try handle.write(contentsOf: data)
+            } catch {
+                Task { await self?.kill(id) }
+            }
+        }
     }
 
     public func shutdown(_ id: String) async {
         guard let sidecar = sidecars[id] else { return }
         clearWatchdog(id)
+        clearFrameWatchdog(id)
         if sidecar.process.isRunning {
             try? send(id, .object(["op": .string("shutdown")]))
             for _ in 0..<30 where sidecar.process.isRunning {
@@ -381,8 +424,9 @@ public actor SidecarSupervisor {
         }
     }
 
-    private func kill(_ id: String) {
+    func kill(_ id: String) {
         clearWatchdog(id)
+        clearFrameWatchdog(id)
         if let sidecar = sidecars[id] {
             if sidecar.process.isRunning { sidecar.process.terminate() }
             if let waiter = sidecar.waiter {

@@ -39,12 +39,17 @@ def read_frame():
 
 
 mode = sys.argv[1] if len(sys.argv) > 1 else "normal"
+op_log_path = os.environ.get("HEDOS_OP_LOG")
 
 if mode == "never-ready":
     time.sleep(60)
     sys.exit(0)
 
 send_json({"event": "ready", "sample_rate": 16000})
+
+if mode == "stall-stdin":
+    time.sleep(3600)
+    sys.exit(0)
 
 while True:
     frame = read_frame()
@@ -53,10 +58,17 @@ while True:
     _, payload = frame
     request = json.loads(payload)
     op = request.get("op")
+    if op_log_path and op not in ("cancel", "shutdown", "ping"):
+        with open(op_log_path, "a") as handle:
+            handle.write(op + "\n")
     if op == "shutdown":
         break
     if op == "ping":
         send_json({"event": "pong"})
+        continue
+    if mode == "hang-after-begin" and op in ("chat", "speak", "transcribe", "image"):
+        send_json({"event": "begin"})
+        time.sleep(3600)
         continue
     if op == "speak":
         if mode == "crash-mid-request":

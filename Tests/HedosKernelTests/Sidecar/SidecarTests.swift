@@ -358,6 +358,129 @@ private func fakeSidecarSpec(
     await supervisor.shutdownAll()
 }
 
+private func fakeSidecarScriptPath() -> String {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .appendingPathComponent("FakeSidecar.py").path
+}
+
+@Test func frameTimeoutKillsHangingSidecarAndSuccessorStartsClean() async throws {
+    let spec = SidecarSpec(
+        runtimeID: "fake-hang-\(UUID().uuidString)",
+        executable: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["python3", fakeSidecarScriptPath(), "hang-after-begin"],
+        readyTimeout: .seconds(15), frameTimeout: .milliseconds(300))
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    await #expect(throws: KernelError.self) {
+        for try await _ in await supervisor.request(spec, chatControl("hi")) {}
+    }
+    var dead = false
+    for _ in 0..<40 {
+        try await Task.sleep(for: .milliseconds(50))
+        if await !supervisor.isRunning(spec.runtimeID) { dead = true; break }
+    }
+    #expect(dead)
+
+    let goodSpec = SidecarSpec(
+        runtimeID: spec.runtimeID,
+        executable: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["python3", fakeSidecarScriptPath(), "normal"],
+        readyTimeout: .seconds(15), frameTimeout: .seconds(600))
+    try await supervisor.ensureRunning(goodSpec)
+    var text = ""
+    for try await chunk in await supervisor.request(goodSpec, chatControl("pong")) {
+        if case .text(let delta) = chunk { text += delta }
+    }
+    #expect(text.contains("pong"))
+    await supervisor.shutdownAll()
+}
+
+@Test func slowButProgressingStreamCompletesWithoutFalseTimeout() async throws {
+    let spec = SidecarSpec(
+        runtimeID: "fake-slow-\(UUID().uuidString)",
+        executable: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["python3", fakeSidecarScriptPath(), "normal"],
+        readyTimeout: .seconds(15), frameTimeout: .milliseconds(400))
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    var tokens = 0
+    for try await chunk in await supervisor.request(spec, chatControl("slow")) {
+        if case .text = chunk { tokens += 1 }
+    }
+    #expect(tokens == 20)
+    await supervisor.shutdownAll()
+}
+
+@Test func cancelledQueuedRequestNeverSendsItsOp() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let opLog = dir.appendingPathComponent("ops.log")
+    let spec = SidecarSpec(
+        runtimeID: "fake-oplog-\(UUID().uuidString)",
+        executable: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["python3", fakeSidecarScriptPath(), "normal"],
+        environment: ["HEDOS_OP_LOG": opLog.path],
+        readyTimeout: .seconds(15), cooperativeCancel: true)
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let aTask = Task {
+        for try await _ in await supervisor.request(spec, chatControl("slow")) {}
+    }
+    for _ in 0..<100 {
+        try await Task.sleep(for: .milliseconds(10))
+        if let log = try? String(contentsOf: opLog), log.contains("chat") { break }
+    }
+
+    let bStream = await supervisor.request(spec, chatControl("again"))
+    let bTask = Task { for try await _ in bStream {} }
+    try await Task.sleep(for: .milliseconds(20))
+    bTask.cancel()
+
+    _ = await aTask.result
+    _ = await bTask.result
+
+    for try await _ in await supervisor.request(spec, chatControl("again")) {}
+
+    let log = (try? String(contentsOf: opLog)) ?? ""
+    let chatOps = log.split(separator: "\n").filter { $0 == "chat" }.count
+    #expect(chatOps == 2)
+    await supervisor.shutdownAll()
+}
+
+@Test func stallingSidecarDoesNotHeadOfLineBlockOtherSidecars() async throws {
+    let supervisor = SidecarSupervisor()
+    let stallSpec = SidecarSpec(
+        runtimeID: "fake-stall-\(UUID().uuidString)",
+        executable: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["python3", fakeSidecarScriptPath(), "stall-stdin"],
+        readyTimeout: .seconds(15))
+    let liveSpec = SidecarSpec(
+        runtimeID: "fake-live-\(UUID().uuidString)",
+        executable: URL(fileURLWithPath: "/usr/bin/env"),
+        arguments: ["python3", fakeSidecarScriptPath(), "normal"],
+        readyTimeout: .seconds(15))
+    try await supervisor.ensureRunning(stallSpec)
+    try await supervisor.ensureRunning(liveSpec)
+
+    let bigText = String(repeating: "x", count: 4_000_000)
+    let stallTask = Task {
+        for try await _ in await supervisor.request(stallSpec, chatControl(bigText)) {}
+    }
+
+    var text = ""
+    for try await chunk in await supervisor.request(liveSpec, chatControl("ping")) {
+        if case .text(let delta) = chunk { text += delta }
+    }
+    #expect(text.contains("ping"))
+
+    stallTask.cancel()
+    await supervisor.terminateAll()
+}
+
 private func chatControl(_ content: String) -> JSONValue {
     .object([
         "op": .string("chat"),
