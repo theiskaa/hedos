@@ -1058,6 +1058,10 @@ struct ModelConfigureSection: View {
         let spec = record.params.first { $0.key == key }
         let normalized = value == spec?.defaultValue ? nil : value
         pending[key] = normalized
+        scheduleFlush()
+    }
+
+    private func scheduleFlush() {
         flush?.cancel()
         let shell = shell
         let id = record.id
@@ -1069,7 +1073,13 @@ struct ModelConfigureSection: View {
                 try? await shell.kernel.setParamValue(id, key: key, to: value)
             }
             await shell.library.refreshShelf()
-            pending = pending.filter { !batch.keys.contains($0.key) }
+            pending = pending.filter { entry in
+                guard let flushed = batch[entry.key] else { return true }
+                return flushed != entry.value
+            }
+            if !pending.isEmpty {
+                scheduleFlush()
+            }
         }
     }
 
