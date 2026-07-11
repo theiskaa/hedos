@@ -62,7 +62,8 @@ struct MlxAudioAdapter: RuntimeAdapter {
                 let bundle = try SidecarBundle.require("python-mlx-audio", runtimeID: .mlxAudio)
                 return try SidecarBundle.spec(
                     runtimeID: .mlxAudio, record: record, bundle: bundle, envDir: envDir,
-                    workdirRoot: workdirRoot, workdirName: "python-mlx-audio")
+                    workdirRoot: workdirRoot, workdirName: "python-mlx-audio",
+                    cooperativeCancel: true)
             })
     }
 }

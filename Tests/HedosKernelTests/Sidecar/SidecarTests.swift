@@ -489,6 +489,64 @@ private func chatControl(_ content: String) -> JSONValue {
     await supervisor.shutdownAll()
 }
 
+@Test func jobCancelWithoutAckKillsAfterGrace() async throws {
+    let spec = fakeSidecarSpec(grace: .milliseconds(400))
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let consumer = Task {
+        let stream = await supervisor.jobRequest(
+            spec, .object(["op": .string("image"), "prompt": .string("deaf")]))
+        for try await event in stream {
+            if case .started = event { break }
+        }
+    }
+    _ = await consumer.result
+
+    var dead = false
+    for _ in 0..<40 {
+        try await Task.sleep(for: .milliseconds(50))
+        if await !supervisor.isRunning(spec.runtimeID) {
+            dead = true
+            break
+        }
+    }
+    #expect(dead)
+    await supervisor.shutdownAll()
+}
+
+@Test func jobCancelWithAckKeepsSidecarWarm() async throws {
+    let spec = fakeSidecarSpec(grace: .seconds(10))
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    let consumer = Task {
+        let stream = await supervisor.jobRequest(
+            spec, .object(["op": .string("image"), "steps": .int(50)]))
+        for try await event in stream {
+            if case .progress = event { break }
+        }
+    }
+    _ = await consumer.result
+
+    var settled = false
+    for _ in 0..<20 {
+        try await Task.sleep(for: .milliseconds(50))
+        settled = await supervisor.isRunning(spec.runtimeID)
+        if !settled { break }
+    }
+    #expect(settled)
+
+    var sawResult = false
+    let second = await supervisor.jobRequest(
+        spec, .object(["op": .string("image"), "steps": .int(2)]))
+    for try await event in second {
+        if case .result = event { sawResult = true }
+    }
+    #expect(sawResult)
+    await supervisor.shutdownAll()
+}
+
 @Test func defaultSpecStillKillsOnCancel() async throws {
     let spec = fakeSidecarSpec()
     let supervisor = SidecarSupervisor()

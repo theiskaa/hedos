@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import select
 import struct
 import sys
 
@@ -35,6 +36,19 @@ def read_frame():
     if body is None:
         return None
     return body[0], body[1:]
+
+
+def pending_op():
+    if not select.select([0], [], [], 0)[0]:
+        return None
+    frame = read_frame()
+    if frame is None:
+        return "shutdown"
+    _, payload = frame
+    try:
+        return json.loads(payload).get("op")
+    except ValueError:
+        return None
 
 
 def setup_espeak():
@@ -76,6 +90,19 @@ def patch_sinegen():
     istftnet.SineGen.__call__ = aligned_call
 
 
+KOKORO_LANGUAGES = {
+    "a": "American English",
+    "b": "British English",
+    "e": "Spanish",
+    "f": "French",
+    "h": "Hindi",
+    "i": "Italian",
+    "j": "Japanese",
+    "p": "Brazilian Portuguese",
+    "z": "Mandarin Chinese",
+}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -101,7 +128,15 @@ def main():
     ) if os.path.isdir(voices_dir) else []
 
     model = load_model(link)
-    pipeline = KokoroPipeline(lang_code="a", model=model, repo_id=link)
+    pipelines = {}
+
+    def pipeline_for(code):
+        if code not in pipelines:
+            pipelines[code] = KokoroPipeline(lang_code=code, model=model, repo_id=link)
+        return pipelines[code]
+
+    pipeline_for("a")
+
     send_json({
         "event": "ready",
         "sample_rate": 24000,
@@ -131,14 +166,36 @@ def main():
             if not os.path.exists(voice_path):
                 send_json({"event": "error", "message": f"voice {voice} not found"})
                 continue
+            code = voice[0] if voice and voice[0] in KOKORO_LANGUAGES else "a"
+            try:
+                pipeline = pipeline_for(code)
+            except Exception as error:
+                language = KOKORO_LANGUAGES.get(code, code)
+                send_json({
+                    "event": "error",
+                    "message": f"cannot synthesize {language}: {error}",
+                })
+                continue
             try:
                 send_json({"event": "begin"})
                 total = 0
                 speed = float(request.get("speed", 1.0))
+                cancelled = False
+                shutdown_requested = False
                 for result in pipeline(text, voice=voice_path, speed=speed):
                     audio = np.asarray(result.audio, dtype=np.float32).reshape(-1)
                     total += audio.shape[0]
                     send(2, audio.tobytes())
+                    op = pending_op()
+                    if op in ("cancel", "shutdown"):
+                        cancelled = True
+                        shutdown_requested = op == "shutdown"
+                        break
+                if cancelled:
+                    send_json({"event": "cancelled"})
+                    if shutdown_requested:
+                        break
+                    continue
                 send_json({"event": "done", "seconds": total / 24000})
             except Exception as error:
                 send_json({"event": "error", "message": str(error)})

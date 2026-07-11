@@ -136,9 +136,9 @@ public actor SidecarSupervisor {
                                 spec.runtimeID, session: session,
                                 grace: spec.cancelGraceTimeout)
                         }
-                        return
+                    } else {
+                        Task { await self.kill(spec.runtimeID) }
                     }
-                    Task { await self.kill(spec.runtimeID) }
                 }
                 task.cancel()
             }
@@ -207,11 +207,15 @@ public actor SidecarSupervisor {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+                await self.settleStream(spec.runtimeID, session: session)
             }
             continuation.onTermination = { termination in
                 guard case .cancelled = termination else { return }
                 task.cancel()
-                Task { await self.cancelJob(spec.runtimeID, session: session) }
+                Task {
+                    await self.cancelJob(
+                        spec.runtimeID, session: session, grace: spec.cancelGraceTimeout)
+                }
             }
         }
     }
@@ -229,13 +233,21 @@ public actor SidecarSupervisor {
         try await pumpJob(spec, into: continuation)
     }
 
-    private func cancelJob(_ id: String, session: UUID) {
+    private func cancelJob(_ id: String, session: UUID, grace: Duration) {
         guard let sidecar = sidecars[id],
             sidecar.busy,
             sidecar.jobSession == session,
             sidecar.jobOpSent
         else { return }
         try? send(id, .object(["op": .string("cancel")]))
+        cancelWatchdogs[id]?.task.cancel()
+        cancelWatchdogs[id] = (
+            session,
+            Task {
+                try? await Task.sleep(for: grace)
+                await self.expireCancelWatchdog(id, session: session)
+            }
+        )
     }
 
     private func acquireExclusive(_ id: String, session: UUID) async {
