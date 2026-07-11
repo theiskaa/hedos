@@ -10,6 +10,7 @@ public protocol GatewayPort: Sendable {
     func jobEvents(id: String) async -> AsyncStream<JobEvent>
     func cancel(jobID: String) async
     func voices(for modelID: String) async throws -> [String]
+    func supportsTools(modelID: String) async throws -> Bool
     func artifactData(id: String) async throws -> Data?
     func admissionState(modelID: String, footprintMB: Int?, kind: GatewayWorkKind) async
         -> GatewayAdmissionState

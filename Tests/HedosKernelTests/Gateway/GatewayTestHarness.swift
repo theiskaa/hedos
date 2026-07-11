@@ -37,9 +37,14 @@ struct FakeGatewayPort: GatewayPort {
     var pipelinesList: [Pipeline] = []
     var pipelineEventScript: [PipelineEvent] = []
     var pipelineHangs = false
+    var toolCapableModels: Set<String> = []
     var recorder = InvokeRecorder()
 
     func shelf() async throws -> [ModelRecord] { records }
+
+    func supportsTools(modelID: String) async throws -> Bool {
+        toolCapableModels.contains(modelID)
+    }
 
     func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue

@@ -1,17 +1,20 @@
 import Foundation
 
 struct OpenAIChatHandler: GatewayHandling {
-    var surface: GatewaySurface { .openAI }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
     ) async throws -> GatewayOutcome {
-        let chatRequest = try OpenAIWire.decodeChatRequest(request.decodedJSON())
-        let shelf = try await port.shelf()
-        let record = try GatewayModelResolver.resolve(chatRequest.model, shelf: shelf)
-        try identity.require(modelID: record.id, capability: .chat)
-        try await GatewayBackpressure.require(port, record: record, kind: .stream)
+        var chatRequest = try OpenAIWire.decodeChatRequest(request.decodedJSON())
+        if chatRequest.toolChoice == .string("none") {
+            chatRequest.tools = []
+        }
+        let record = try await GatewayModelResolver.resolveAuthorized(
+            chatRequest.model, capability: .chat, kind: .stream, port: port, identity: identity)
+        if !chatRequest.tools.isEmpty, try await !port.supportsTools(modelID: record.id) {
+            throw GatewayError(
+                .badRequest, "\(chatRequest.model) does not support tool calling")
+        }
 
         let stream = try await port.invoke(
             record.id, .chat, payload: OpenAIWire.chatPayload(chatRequest))
@@ -23,6 +26,7 @@ struct OpenAIChatHandler: GatewayHandling {
             let body = try await responder.beginStream(contentType: "text/event-stream")
             var first = true
             var finalStats: GenerationStats?
+            var toolCallCount = 0
             for try await chunk in stream {
                 switch chunk {
                 case .text(let text):
@@ -39,15 +43,25 @@ struct OpenAIChatHandler: GatewayHandling {
                                 id: completionID, created: created, model: servedModel,
                                 reasoning: thought, role: first)))
                     first = false
+                case .toolCall(let call):
+                    try await body.write(
+                        OpenAIWire.sseFrame(
+                            OpenAIWire.chunkFrame(
+                                id: completionID, created: created, model: servedModel,
+                                toolCall: call, toolCallIndex: toolCallCount, role: first)))
+                    first = false
+                    toolCallCount += 1
                 case .done(let stats):
                     finalStats = stats
                 case .audio, .status, .vector:
                     break
                 }
             }
+            let finishReason =
+                toolCallCount > 0 ? "tool_calls" : finalStats?.finishReason ?? "stop"
             var finalFrame = OpenAIWire.chunkFrame(
                 id: completionID, created: created, model: servedModel,
-                finishReason: "stop")
+                finishReason: finishReason)
             finalFrame["usage"] = OpenAIWire.usage(finalStats)
             try await body.write(OpenAIWire.sseFrame(finalFrame))
             try await body.write(OpenAIWire.sseDone)
@@ -55,10 +69,13 @@ struct OpenAIChatHandler: GatewayHandling {
         } else {
             var content = ""
             var finalStats: GenerationStats?
+            var toolCalls: [ToolCall] = []
             for try await chunk in stream {
                 switch chunk {
                 case .text(let text):
                     content += text
+                case .toolCall(let call):
+                    toolCalls.append(call)
                 case .done(let stats):
                     finalStats = stats
                 case .thinking, .audio, .status, .vector:
@@ -67,10 +84,10 @@ struct OpenAIChatHandler: GatewayHandling {
             }
             try await responder.respond(
                 status: 200,
-                body: OpenAIWire.serialize(
+                body: WireJSON.serialize(
                     OpenAIWire.completion(
                         id: completionID, created: created, model: servedModel,
-                        content: content, stats: finalStats)))
+                        content: content, stats: finalStats, toolCalls: toolCalls)))
         }
         return .ok(model: record.id, capability: .chat)
     }

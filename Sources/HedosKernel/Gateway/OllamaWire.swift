@@ -13,6 +13,7 @@ enum OllamaWire {
         var messages: [ChatMessage]
         var stream: Bool
         var options: [String: JSONValue]
+        var tools: [ToolSpec] = []
     }
 
     static func decodeChatRequest(_ body: [String: Any]) throws -> ChatRequest {
@@ -27,7 +28,19 @@ enum OllamaWire {
             guard let role = ChatMessage.Role(rawValue: rawRole) else {
                 throw GatewayError(.badRequest, "unsupported message role \(rawRole)")
             }
-            guard let content = raw["content"] as? String else {
+            let toolCalls = try decodeToolCalls(raw["tool_calls"])
+            let content = raw["content"] as? String
+            if role == .tool {
+                return ChatMessage(
+                    role: .tool, content: content ?? "",
+                    toolCallID: raw["tool_call_id"] as? String,
+                    toolName: raw["tool_name"] as? String)
+            }
+            if role == .assistant, !toolCalls.isEmpty {
+                return ChatMessage(
+                    role: .assistant, content: content ?? "", toolCalls: toolCalls)
+            }
+            guard let content else {
                 throw GatewayError(.badRequest, "message content must be a string")
             }
             return ChatMessage(role: role, content: content)
@@ -45,23 +58,45 @@ enum OllamaWire {
         if let think = body["think"] as? Bool {
             options["thinking"] = .bool(think)
         }
+        let tools = try ToolWireDecoding.specs(from: body["tools"]) {
+            GatewayError(.badRequest, $0)
+        }
         return ChatRequest(
             model: model,
             messages: messages,
             stream: body["stream"] as? Bool ?? true,
-            options: options)
+            options: options,
+            tools: tools)
+    }
+
+    private static func decodeToolCalls(_ raw: Any?) throws -> [ToolCall] {
+        guard let raw else { return [] }
+        guard let entries = raw as? [[String: Any]] else {
+            throw GatewayError(.badRequest, "tool_calls must be an array")
+        }
+        return try entries.map { entry in
+            guard let function = entry["function"] as? [String: Any],
+                let name = function["name"] as? String, !name.isEmpty
+            else {
+                throw GatewayError(.badRequest, "each tool call must carry function.name")
+            }
+            let rawArguments = function["arguments"] as? [String: Any] ?? [:]
+            guard let arguments = JSONValue.fromAny(rawArguments) else {
+                throw GatewayError(.badRequest, "tool call arguments must be a JSON object")
+            }
+            let id = entry["id"] as? String
+            return id.map { ToolCall(id: $0, name: name, arguments: arguments) }
+                ?? ToolCall(name: name, arguments: arguments)
+        }
     }
 
     static func chatPayload(_ request: ChatRequest) -> JSONValue {
         var payload: [String: JSONValue] = [
-            "messages": .array(
-                request.messages.map {
-                    .object([
-                        "role": .string($0.role.rawValue),
-                        "content": .string($0.content),
-                    ])
-                })
+            "messages": .array(request.messages.map(\.payloadValue))
         ]
+        if !request.tools.isEmpty {
+            payload["tools"] = .array(request.tools.map(\.payloadValue))
+        }
         for (key, value) in request.options {
             payload[key] = value
         }
@@ -73,16 +108,27 @@ enum OllamaWire {
     }
 
     static func line(_ object: [String: Any]) -> Data {
-        var data = (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+        var data = WireJSON.serialize(object)
         data.append(contentsOf: [0x0A])
         return data
     }
 
-    static func delta(model: String, content: String? = nil, thinking: String? = nil)
-        -> [String: Any]
-    {
+    static func delta(
+        model: String, content: String? = nil, thinking: String? = nil,
+        toolCall: ToolCall? = nil
+    ) -> [String: Any] {
         var message: [String: Any] = ["role": "assistant", "content": content ?? ""]
         if let thinking { message["thinking"] = thinking }
+        if let toolCall {
+            message["tool_calls"] = [
+                [
+                    "function": [
+                        "name": toolCall.name,
+                        "arguments": toolCall.arguments.anyValue,
+                    ]
+                ]
+            ]
+        }
         return [
             "model": model,
             "created_at": timestamp(),
@@ -91,15 +137,30 @@ enum OllamaWire {
         ]
     }
 
-    static func final(model: String, content: String = "", stats: GenerationStats?)
-        -> [String: Any]
-    {
+    static func final(
+        model: String, content: String = "", stats: GenerationStats?,
+        toolCalls: [ToolCall] = []
+    ) -> [String: Any] {
+        var message: [String: Any] = ["role": "assistant", "content": content]
+        if !toolCalls.isEmpty {
+            message["tool_calls"] = toolCalls.map { call in
+                [
+                    "function": [
+                        "name": call.name,
+                        "arguments": call.arguments.anyValue,
+                    ]
+                ] as [String: Any]
+            }
+        }
+        let doneReason =
+            !toolCalls.isEmpty || stats?.finishReason == "tool_calls"
+            ? "stop" : stats?.finishReason ?? "stop"
         var object: [String: Any] = [
             "model": model,
             "created_at": timestamp(),
-            "message": ["role": "assistant", "content": content],
+            "message": message,
             "done": true,
-            "done_reason": "stop",
+            "done_reason": doneReason,
         ]
         if let durationMs = stats?.durationMs {
             object["total_duration"] = durationMs * 1_000_000

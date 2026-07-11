@@ -32,11 +32,11 @@ extension Kernel: GatewayPort {
         switch kind {
         case .stream:
             if await governor.wouldWait(admitting: modelID, footprintMB: footprintMB) {
-                return .saturated(retryAfterSeconds: 1)
+                return .saturated(retryAfterSeconds: GatewayDefaults.saturatedRetryAfterSeconds)
             }
         case .job:
-            if await scheduler.queueDepth() >= 4 {
-                return .saturated(retryAfterSeconds: 5)
+            if await scheduler.queueDepth() >= GatewayDefaults.inferenceQueueDepthCap {
+                return .saturated(retryAfterSeconds: GatewayDefaults.queuedRetryAfterSeconds)
             }
         }
         return .ready
