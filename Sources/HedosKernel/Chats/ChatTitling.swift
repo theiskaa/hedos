@@ -23,28 +23,36 @@ struct ChatTitling: Sendable {
             try await chats.renameSession(id: sessionID, title: title)
             return title
         }
-        let title =
-            await generatedTitle(
-                user: firstUser.content,
-                assistant: reply.content,
-                boundModelID: transcript.session.modelID)
-            ?? ChatSession.title(from: firstUser.content)
+        if let generated = await generatedTitle(
+            user: firstUser.content,
+            assistant: reply.content,
+            boundModelID: transcript.session.modelID)
+        {
+            try await chats.renameSession(
+                id: sessionID, title: generated.title, titledBy: generated.modelID)
+            return generated.title
+        }
+        let title = ChatSession.title(from: firstUser.content)
         try await chats.renameSession(id: sessionID, title: title)
         return title
     }
 
+    static let titlingInstruction =
+        "Reply with only a short title, six words at most, naming the topic of this "
+        + "conversation. No quotes, no trailing punctuation."
+
     private func generatedTitle(
         user: String, assistant: String, boundModelID: String?
-    ) async -> String? {
+    ) async -> (title: String, modelID: String)? {
         guard let modelID = await titlingModelID(bound: boundModelID) else { return nil }
-        let prompt = """
-            Reply with only a short title, six words at most, naming the topic of this \
-            conversation. No quotes, no trailing punctuation.
-
-            User: \(user.prefix(600))
-            Assistant: \(assistant.prefix(600))
-            """
-        guard let upstream = try? await stream(modelID, [ChatMessage(role: .user, content: prompt)])
+        let excerpt = "User: \(user.prefix(600))\nAssistant: \(assistant.prefix(600))"
+        guard
+            let upstream = try? await stream(
+                modelID,
+                [
+                    ChatMessage(role: .system, content: Self.titlingInstruction),
+                    ChatMessage(role: .user, content: excerpt),
+                ])
         else { return nil }
         var text = ""
         do {
@@ -57,7 +65,8 @@ struct ChatTitling: Sendable {
         } catch {
             return nil
         }
-        return Self.sanitizedTitle(text)
+        guard let title = Self.sanitizedTitle(text) else { return nil }
+        return (title, modelID)
     }
 
     private func titlingModelID(bound: String?) async -> String? {

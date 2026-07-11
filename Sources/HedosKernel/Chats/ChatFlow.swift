@@ -2,13 +2,16 @@ import Foundation
 
 struct ChatFlow: Sendable {
     let chats: ChatStore
-    let stream: @Sendable (String, [ChatMessage], [ToolSpec]) async throws
+    let stream: @Sendable (String, [ChatMessage], [ToolSpec], String?) async throws
         -> AsyncThrowingStream<CapabilityChunk, Error>
     let shelf: @Sendable () async throws -> [ModelRecord]
     var toolbox: @Sendable (ChatSession) async -> [ToolSpec] = { _ in [] }
     var execute: @Sendable (String, ToolCall) async -> String = { _, _ in "" }
+    var gate = ChatSessionGate()
 
     static let persistCadence: Duration = .milliseconds(250)
+    static let interruptedMarker = "\n\n[reply interrupted — may be incomplete]"
+    static let mergeBoundary = "\n\n---\n\n"
     static let maxToolCallsPerSend = 8
     static let maxMentionReadsPerSend = 4
     static let toolResultContextBudgetBytes = 16_384
@@ -16,6 +19,18 @@ struct ChatFlow: Sendable {
     func send(sessionID: String, text: String) async throws -> AsyncThrowingStream<
         CapabilityChunk, Error
     > {
+        try gate.begin(sessionID)
+        do {
+            return try await sendLocked(sessionID: sessionID, text: text)
+        } catch {
+            gate.end(sessionID)
+            throw error
+        }
+    }
+
+    private func sendLocked(sessionID: String, text: String) async throws
+        -> AsyncThrowingStream<CapabilityChunk, Error>
+    {
         guard let transcript = try await chats.session(id: sessionID) else {
             throw ChatStoreError.sessionNotFound(sessionID)
         }
@@ -77,46 +92,68 @@ struct ChatFlow: Sendable {
     func continueSession(sessionID: String) async throws -> AsyncThrowingStream<
         CapabilityChunk, Error
     > {
-        guard let transcript = try await chats.session(id: sessionID) else {
-            throw ChatStoreError.sessionNotFound(sessionID)
+        try gate.begin(sessionID)
+        do {
+            guard let transcript = try await chats.session(id: sessionID) else {
+                throw ChatStoreError.sessionNotFound(sessionID)
+            }
+            let history = Self.messages(from: transcript.turns)
+            guard history.last?.role == .user else {
+                throw KernelError.runtimeFailed(
+                    "Nothing to continue: the conversation already ends with a reply.")
+            }
+            return try await run(session: transcript.session, history: history)
+        } catch {
+            gate.end(sessionID)
+            throw error
         }
-        return try await run(
-            session: transcript.session, history: Self.messages(from: transcript.turns))
     }
 
     func editUserTurn(
         sessionID: String, turnID: String, text: String
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
-        guard let transcript = try await chats.session(id: sessionID) else {
-            throw ChatStoreError.sessionNotFound(sessionID)
+        try gate.begin(sessionID)
+        do {
+            guard let transcript = try await chats.session(id: sessionID) else {
+                throw ChatStoreError.sessionNotFound(sessionID)
+            }
+            let active = transcript.turns.filter { $0.supersededBy == nil }
+            guard let index = active.firstIndex(where: { $0.id == turnID }),
+                active[index].role == .user
+            else { throw ChatStoreError.turnNotFound(turnID) }
+            let replacement = try await chats.appendTurn(
+                TurnDraft(role: .user, content: text), to: sessionID)
+            var history = Self.messages(from: Array(active[..<index]))
+            history.append(ChatMessage(role: .user, content: text))
+            return try await run(
+                session: transcript.session, history: history,
+                retiring: Array(active[index...]), userRetirementID: replacement.id)
+        } catch {
+            gate.end(sessionID)
+            throw error
         }
-        let active = transcript.turns.filter { $0.supersededBy == nil }
-        guard let index = active.firstIndex(where: { $0.id == turnID }),
-            active[index].role == .user
-        else { throw ChatStoreError.turnNotFound(turnID) }
-        let replacement = try await chats.appendTurn(
-            TurnDraft(role: .user, content: text), to: sessionID)
-        var history = Self.messages(from: Array(active[..<index]))
-        history.append(ChatMessage(role: .user, content: text))
-        return try await run(
-            session: transcript.session, history: history,
-            retiring: Array(active[index...]), userRetirementID: replacement.id)
     }
 
     func regenerate(
         sessionID: String, turnID: String
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
-        guard let transcript = try await chats.session(id: sessionID) else {
-            throw ChatStoreError.sessionNotFound(sessionID)
+        try gate.begin(sessionID)
+        do {
+            guard let transcript = try await chats.session(id: sessionID) else {
+                throw ChatStoreError.sessionNotFound(sessionID)
+            }
+            let active = transcript.turns.filter { $0.supersededBy == nil }
+            guard let index = active.firstIndex(where: { $0.id == turnID }),
+                active[index].role == .assistant
+            else { throw ChatStoreError.turnNotFound(turnID) }
+            return try await run(
+                session: transcript.session,
+                history: Self.messages(from: Array(active[..<index])),
+                retiring: Array(active[index...]))
+        } catch {
+            gate.end(sessionID)
+            throw error
         }
-        let active = transcript.turns.filter { $0.supersededBy == nil }
-        guard let index = active.firstIndex(where: { $0.id == turnID }),
-            active[index].role == .assistant
-        else { throw ChatStoreError.turnNotFound(turnID) }
-        return try await run(
-            session: transcript.session,
-            history: Self.messages(from: Array(active[..<index])),
-            retiring: Array(active[index...]))
     }
 
     private func run(
@@ -127,11 +164,13 @@ struct ChatFlow: Sendable {
             throw KernelError.noBoundModel
         }
         let tools = await toolbox(session)
-        let upstream = try await stream(modelID, history, tools)
+        let sessionPrompt = session.systemPrompt
+        let upstream = try await stream(modelID, history, tools, sessionPrompt)
         let chats = chats
         let stream = stream
         let execute = execute
         let sessionID = session.id
+        let gate = gate
         return AsyncThrowingStream { continuation in
             let task = Task {
                 var history = history
@@ -278,7 +317,14 @@ struct ChatFlow: Sendable {
                         stats = nil
                         toolCalls = []
                         ttftMs = nil
-                        currentUpstream = try await stream(modelID, history, offeredTools)
+                        currentUpstream = try await stream(
+                            modelID, history, offeredTools, sessionPrompt)
+                    }
+                    if Task.isCancelled, stats == nil, var completed = turn,
+                        completed.role == .assistant, !completed.interrupted
+                    {
+                        completed.interrupted = true
+                        turn = (try? await chats.updateTurn(completed)) ?? completed
                     }
                     if let persistFailure {
                         continuation.finish(throwing: persistFailure)
@@ -287,6 +333,10 @@ struct ChatFlow: Sendable {
                     }
                 } catch {
                     await persist()
+                    if var completed = turn, completed.role == .assistant, !completed.interrupted {
+                        completed.interrupted = true
+                        turn = (try? await chats.updateTurn(completed)) ?? completed
+                    }
                     for call in pendingCalls {
                         _ = try? await chats.appendTurn(
                             TurnDraft(
@@ -299,6 +349,7 @@ struct ChatFlow: Sendable {
                     }
                     continuation.finish(throwing: error)
                 }
+                gate.end(sessionID)
             }
             continuation.onTermination = { _ in task.cancel() }
         }
@@ -337,13 +388,16 @@ struct ChatFlow: Sendable {
                 messages.append(
                     ChatMessage(role: role, content: turn.content, toolCalls: calls))
             } else if let role = turn.role.messageRole, !turn.content.isEmpty {
+                let content =
+                    turn.role == .assistant && turn.interrupted
+                    ? turn.content + Self.interruptedMarker : turn.content
                 if let last = messages.last, last.role == role, last.toolCalls.isEmpty,
                     last.toolCallID == nil
                 {
                     messages[messages.count - 1] = ChatMessage(
-                        role: role, content: last.content + "\n\n" + turn.content)
+                        role: role, content: last.content + Self.mergeBoundary + content)
                 } else {
-                    messages.append(ChatMessage(role: role, content: turn.content))
+                    messages.append(ChatMessage(role: role, content: content))
                 }
             }
             index += 1

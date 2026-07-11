@@ -109,7 +109,8 @@ public struct GatewayError: Error, Sendable, Hashable {
             switch kernel {
             case .modelNotFound, .artifactNotFound, .pipelineNotFound:
                 return GatewayError(.notFound, kernel.errorDescription ?? "not found")
-            case .capabilityUnsupported, .paramUnsupported, .noBoundModel, .payloadInvalid:
+            case .capabilityUnsupported, .paramUnsupported, .noBoundModel, .payloadInvalid,
+                .sessionBusy:
                 return GatewayError(
                     .badRequest, kernel.errorDescription ?? "unsupported request")
             case .contextExceeded:

@@ -15,6 +15,7 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case noBoundModel
     case sidecarDied(runtimeID: String, detail: String)
     case payloadInvalid(String)
+    case sessionBusy(String)
 
     public var errorDescription: String? {
         switch self {
@@ -48,6 +49,8 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "The \(runtimeID) sidecar \(detail)"
         case .payloadInvalid(let message):
             message
+        case .sessionBusy:
+            "This chat is already answering. Wait for the reply to finish."
         }
     }
 }
@@ -65,6 +68,7 @@ public actor Kernel {
     public let governor: MemoryGovernor
     public let artifactStore: ArtifactStore
     public let chats: ChatStore
+    private let chatSessionGate = ChatSessionGate()
     public let promptStore: PromptStore
     public let pipelineStore: PipelineStore
     public nonisolated let runtimeCatalog: RuntimeCatalog
@@ -462,7 +466,8 @@ public actor Kernel {
         try await ChatTitling(
             chats: chats,
             stream: { modelID, messages in
-                try await self.chat(modelID, messages: messages)
+                try await self.chat(
+                    modelID, messages: messages, tools: [], systemPromptOverride: "")
             },
             shelf: {
                 try await self.shelf()
@@ -541,8 +546,10 @@ public actor Kernel {
     private func chatFlow() -> ChatFlow {
         ChatFlow(
             chats: chats,
-            stream: { modelID, messages, tools in
-                try await self.chat(modelID, messages: messages, tools: tools)
+            stream: { modelID, messages, tools, sessionPrompt in
+                try await self.chat(
+                    modelID, messages: messages, tools: tools,
+                    systemPromptOverride: sessionPrompt)
             },
             shelf: {
                 try await self.shelf()
@@ -560,7 +567,8 @@ public actor Kernel {
                     return "This conversation has no folder."
                 }
                 return await Harness.execute(call, place: place)
-            })
+            },
+            gate: chatSessionGate)
     }
 
     public func setChatPlace(sessionID: String, path: String?) async throws {
@@ -638,6 +646,13 @@ public actor Kernel {
     public func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        try await invoke(modelID, capability, payload: payload, systemPromptOverride: nil)
+    }
+
+    public func invoke(
+        _ modelID: String, _ capability: Capability, payload: JSONValue,
+        systemPromptOverride: String?
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
         }
@@ -647,7 +662,7 @@ public actor Kernel {
         let fallback = capability == .chat ? await settings.chat().defaultSystemPrompt : nil
         var configured = ModelConfiguration.merged(
             record: record, capability: capability, payload: payload,
-            fallbackPrompt: fallback)
+            fallbackPrompt: fallback, sessionPrompt: systemPromptOverride)
         if capability == .chat || capability == .complete,
             case .object(var object) = configured,
             let window = ContextBudget.effectiveWindow(
@@ -680,6 +695,33 @@ public actor Kernel {
         try await chat(modelID, messages: messages, tools: [])
     }
 
+    public func createChatSession(
+        title: String = ChatSession.defaultTitle, modelID: String? = nil,
+        capabilityTags: [String] = []
+    ) async throws -> ChatSession {
+        let prompt = try await effectiveSystemPrompt(modelID: modelID)
+        return try await chats.createSession(
+            title: title, modelID: modelID, capabilityTags: capabilityTags, systemPrompt: prompt)
+    }
+
+    public func setChatSystemPrompt(sessionID: String, prompt: String?) async throws {
+        try await chats.setSystemPrompt(id: sessionID, prompt: prompt)
+    }
+
+    private func effectiveSystemPrompt(modelID: String?) async throws -> String {
+        func trimmed(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        if let modelID, let record = try await registry.get(id: modelID),
+            let recordPrompt = trimmed(record.systemPrompt)
+        {
+            return recordPrompt
+        }
+        return trimmed(await settings.chat().defaultSystemPrompt) ?? ""
+    }
+
     public func supportsTools(modelID: String) async throws -> Bool {
         guard let record = try await registry.get(id: modelID) else { return false }
         guard let adapter = adapters.first(where: { $0.canServe(record, Capability.chat) })
@@ -700,7 +742,8 @@ public actor Kernel {
     }
 
     public func chat(
-        _ modelID: String, messages: [ChatMessage], tools: [ToolSpec]
+        _ modelID: String, messages: [ChatMessage], tools: [ToolSpec],
+        systemPromptOverride: String? = nil
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         var object: [String: JSONValue] = [
             "messages": .array(messages.map(\.payloadValue))
@@ -708,7 +751,9 @@ public actor Kernel {
         if !tools.isEmpty {
             object["tools"] = .array(tools.map(\.payloadValue))
         }
-        return try await invoke(modelID, .chat, payload: .object(object))
+        return try await invoke(
+            modelID, .chat, payload: .object(object),
+            systemPromptOverride: systemPromptOverride)
     }
 
     public func submit(
