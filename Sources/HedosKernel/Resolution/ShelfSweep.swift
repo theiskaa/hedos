@@ -116,8 +116,9 @@ public enum ShelfSweep {
         }
 
         let start = Date()
+        let parity: SweepParity?
         do {
-            try await dispatch(
+            parity = try await dispatch(
                 capability, record: record, kernel: kernel, transcribeFixture: transcribeFixture)
         } catch {
             if let kernelError = error as? KernelError, isOllamaDaemonDown(record, kernelError) {
@@ -132,24 +133,24 @@ public enum ShelfSweep {
         }
         return SweepResult(
             model: record.displayName, capability: capability, status: .pass,
-            durationMs: elapsedMs(since: start))
+            durationMs: elapsedMs(since: start), parity: parity)
     }
 
+    @discardableResult
     static func dispatch(
         _ capability: Capability,
         record: ModelRecord,
         kernel: any ShelfSweepKernel,
         transcribeFixture: URL?
-    ) async throws {
+    ) async throws -> SweepParity? {
         switch capability {
         case .chat:
-            let stream = try await kernel.chat(
-                record.id, messages: [ChatMessage(role: .user, content: "Say hi in three words.")])
-            try await drain(stream)
+            return try await sweepChat(record, kernel: kernel)
         case .speak:
             let stream = try await kernel.invoke(
                 record.id, .speak, payload: .object(["text": .string("Hedos shelf sweep check.")]))
             try await drain(stream)
+            return nil
         case .transcribe:
             guard let transcribeFixture else {
                 throw KernelError.runtimeFailed("no transcribe fixture available")
@@ -157,11 +158,56 @@ public enum ShelfSweep {
             let stream = try await kernel.invoke(
                 record.id, .transcribe, payload: .object(["audio": .string(transcribeFixture.path)]))
             try await drain(stream)
+            return nil
         case .image:
             try await runImageJob(record, kernel: kernel)
+            return nil
         default:
             throw KernelError.notImplemented("sweeping \(capability.rawValue)")
         }
+    }
+
+    static func sweepChat(
+        _ record: ModelRecord, kernel: any ShelfSweepKernel
+    ) async throws -> SweepParity {
+        let stream = try await kernel.chat(
+            record.id, messages: [ChatMessage(role: .user, content: "Say hi in three words.")])
+        var thinkingSeparated = true
+        var noticeFired = false
+        var statsReported = false
+        for try await chunk in stream {
+            switch chunk {
+            case .text(let text):
+                if ThinkSplitter.hasVisibleTags(in: text) {
+                    thinkingSeparated = false
+                }
+            case .status(let status):
+                if status == ChatMLPrompt.noTemplateNotice { noticeFired = true }
+            case .done:
+                statsReported = true
+            default:
+                break
+            }
+        }
+
+        var promptCompleteOK = true
+        if record.capabilities.contains(.complete) {
+            do {
+                let completion = try await kernel.invoke(
+                    record.id, .complete, payload: .object(["prompt": .string("Two plus two is")]))
+                var produced = false
+                for try await chunk in completion {
+                    if case .text = chunk { produced = true }
+                }
+                promptCompleteOK = produced
+            } catch {
+                promptCompleteOK = false
+            }
+        }
+
+        return SweepParity(
+            thinkingSeparated: thinkingSeparated, templateNoticeFired: noticeFired,
+            promptCompleteOK: promptCompleteOK, statsReported: statsReported)
     }
 
     static func drain(_ stream: AsyncThrowingStream<CapabilityChunk, Error>) async throws {
