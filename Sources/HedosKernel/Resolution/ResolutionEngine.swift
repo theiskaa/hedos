@@ -82,25 +82,41 @@ public actor ResolutionEngine {
         let bids = collectBids(record, identified)
 
         var updated = record
-        if let winner = bids.first {
-            let previous = record.runtime
-            var alternatives = bids.dropFirst().map(\.id)
-            for declared in winner.bid.alternatives
-            where declared != winner.id && !alternatives.contains(declared) {
-                alternatives.append(declared)
-            }
-            updated.runtime = RuntimeRef(
-                id: winner.id,
-                resolved: .auto,
-                tier: winner.bid.tier,
-                alternatives: alternatives,
-                confirmedAt: previous.id == winner.id ? previous.confirmedAt : nil)
-            updated.state = .ready
-        } else {
+        applyWinner(bids, to: &updated, previous: record.runtime)
+        merge(identified: identified, into: &updated)
+        backfillFromManifest(bids, identified: identified, into: &updated)
+        if identified.params.isEmpty {
+            updated = profiles.refreshed(updated)
+        }
+
+        return updated != record ? updated : nil
+    }
+
+    private func applyWinner(
+        _ bids: [(id: RuntimeID, bid: RuntimeBid)], to updated: inout ModelRecord,
+        previous: RuntimeRef
+    ) {
+        guard let winner = bids.first else {
             updated.runtime = RuntimeRef(
                 id: nil, resolved: .unresolved, tier: .recipeNeeded, alternatives: [])
             updated.state = .unresolved
+            return
         }
+        var alternatives = bids.dropFirst().map(\.id)
+        for declared in winner.bid.alternatives
+        where declared != winner.id && !alternatives.contains(declared) {
+            alternatives.append(declared)
+        }
+        updated.runtime = RuntimeRef(
+            id: winner.id,
+            resolved: .auto,
+            tier: winner.bid.tier,
+            alternatives: alternatives,
+            confirmedAt: previous.id == winner.id ? previous.confirmedAt : nil)
+        updated.state = .ready
+    }
+
+    private func merge(identified: IdentifiedModel, into updated: inout ModelRecord) {
         if let modality = identified.modality { updated.modality = modality }
         if !identified.capabilities.isEmpty { updated.capabilities = identified.capabilities }
         if !identified.params.isEmpty { updated.params = identified.params }
@@ -109,22 +125,22 @@ public actor ResolutionEngine {
             updated.hasChatTemplate = hasChatTemplate
         }
         updated.execution = identified.execution
-        if let winner = bids.first,
-            let backed = adapters.first(where: { $0.id == winner.id }) as? any ManifestBacked
-        {
-            if identified.modality == nil, let modality = backed.manifest.modalities.first {
-                updated.modality = modality
-            }
-            if identified.capabilities.isEmpty {
-                updated.capabilities = backed.manifest.capabilities
-                updated.execution = backed.manifest.execution
-            }
-        }
-        if identified.params.isEmpty {
-            updated = profiles.refreshed(updated)
-        }
+    }
 
-        return updated != record ? updated : nil
+    private func backfillFromManifest(
+        _ bids: [(id: RuntimeID, bid: RuntimeBid)], identified: IdentifiedModel,
+        into updated: inout ModelRecord
+    ) {
+        guard let winner = bids.first,
+            let backed = adapters.first(where: { $0.id == winner.id }) as? any ManifestBacked
+        else { return }
+        if identified.modality == nil, let modality = backed.manifest.modalities.first {
+            updated.modality = modality
+        }
+        if identified.capabilities.isEmpty {
+            updated.capabilities = backed.manifest.capabilities
+            updated.execution = backed.manifest.execution
+        }
     }
 
     public func explain(_ record: ModelRecord) -> ResolutionExplanation {

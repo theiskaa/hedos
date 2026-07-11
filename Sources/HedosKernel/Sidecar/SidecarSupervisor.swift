@@ -1,40 +1,9 @@
 import Foundation
 
-public struct SidecarSpec: Sendable {
-    public var runtimeID: String
-    public var executable: URL
-    public var arguments: [String]
-    public var environment: [String: String]
-    public var workingDirectory: URL?
-    public var readyTimeout: Duration
-    public var cooperativeCancel: Bool
-    public var cancelGraceTimeout: Duration
-
-    public init(
-        runtimeID: String,
-        executable: URL,
-        arguments: [String],
-        environment: [String: String] = [:],
-        workingDirectory: URL? = nil,
-        readyTimeout: Duration = .seconds(180),
-        cooperativeCancel: Bool = false,
-        cancelGraceTimeout: Duration = .seconds(10)
-    ) {
-        self.runtimeID = runtimeID
-        self.executable = executable
-        self.arguments = arguments
-        self.environment = environment
-        self.workingDirectory = workingDirectory
-        self.readyTimeout = readyTimeout
-        self.cooperativeCancel = cooperativeCancel
-        self.cancelGraceTimeout = cancelGraceTimeout
-    }
-}
-
 public actor SidecarSupervisor {
     public static let shared = SidecarSupervisor()
 
-    private final class Sidecar {
+    final class Sidecar {
         let process: Process
         let stdin: Pipe
         var decoder = FrameCodec.Decoder()
@@ -42,7 +11,7 @@ public actor SidecarSupervisor {
         var waiter: CheckedContinuation<Frame?, Never>?
         var waiterGeneration = 0
         var eof = false
-        var sampleRate = 24000
+        var sampleRate = SidecarSpec.defaultSampleRate
         var stderrTail = ""
         var busy = false
         var jobSession: UUID?
@@ -55,7 +24,7 @@ public actor SidecarSupervisor {
         }
     }
 
-    private var sidecars: [String: Sidecar] = [:]
+    var sidecars: [String: Sidecar] = [:]
     private var cancelWatchdogs: [String: (session: UUID, task: Task<Void, Never>)] = [:]
 
     public init() {}
@@ -300,94 +269,6 @@ public actor SidecarSupervisor {
         }
     }
 
-    private func pumpJob(
-        _ spec: SidecarSpec,
-        into continuation: AsyncThrowingStream<JobRuntimeEvent, Error>.Continuation
-    ) async throws {
-        let id = spec.runtimeID
-        while let frame = await nextFrame(id, timeout: .seconds(600)) {
-            guard case .control(let value) = frame else { continue }
-            switch value.objectValue?["event"]?.stringValue {
-            case "begin":
-                continuation.yield(.started)
-            case "step":
-                let step = value.objectValue?["n"]?.intValue ?? 0
-                let total = value.objectValue?["total"]?.intValue ?? 0
-                continuation.yield(.progress(step: step, totalSteps: total))
-            case "preview":
-                if let data = await nextBinaryFrame(id) {
-                    continuation.yield(.preview(data))
-                }
-            case "image":
-                let format = value.objectValue?["format"]?.stringValue ?? "png"
-                if let data = await nextBinaryFrame(id) {
-                    continuation.yield(.result(data: data, fileExtension: format))
-                }
-            case "done":
-                return
-            case "cancelled":
-                throw CancellationError()
-            case "error":
-                throw KernelError.runtimeFailed(
-                    value.objectValue?["message"]?.stringValue ?? "sidecar error")
-            default:
-                continue
-            }
-        }
-        throw KernelError.sidecarDied(
-            runtimeID: id,
-            detail: "stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
-    }
-
-    private func nextBinaryFrame(_ id: String) async -> Data? {
-        guard let frame = await nextFrame(id, timeout: .seconds(600)),
-            case .audio(let data) = frame
-        else { return nil }
-        return data
-    }
-
-    private func pump(
-        _ spec: SidecarSpec,
-        into continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
-    ) async throws {
-        let id = spec.runtimeID
-        let sampleRate = sidecars[id]?.sampleRate ?? 24000
-
-        while let frame = await nextFrame(id, timeout: .seconds(600)) {
-            switch frame {
-            case .audio(let data):
-                continuation.yield(.audio(AudioFrame(data: data, sampleRate: sampleRate)))
-            case .control(let value):
-                switch value.objectValue?["event"]?.stringValue {
-                case "begin":
-                    continuation.yield(.status("generating"))
-                case "text":
-                    continuation.yield(.text(value.objectValue?["text"]?.stringValue ?? ""))
-                case "done":
-                    let seconds = value.objectValue?["seconds"]?.doubleValue
-                    continuation.yield(
-                        .done(
-                            GenerationStats(
-                                promptTokens: value.objectValue?["prompt_tokens"]?.intValue,
-                                completionTokens: value.objectValue?["completion_tokens"]?
-                                    .intValue,
-                                durationMs: seconds.map { Int($0 * 1000) })))
-                    return
-                case "cancelled":
-                    throw CancellationError()
-                case "error":
-                    throw KernelError.runtimeFailed(
-                        value.objectValue?["message"]?.stringValue ?? "sidecar error")
-                default:
-                    continue
-                }
-            }
-        }
-        throw KernelError.sidecarDied(
-            runtimeID: id,
-            detail: "stopped unexpectedly: \(ManifestSupport.errorSummary(stderrTail(id)))")
-    }
-
     private func ingest(_ data: Data, for id: String) {
         guard let sidecar = sidecars[id] else { return }
         do {
@@ -415,7 +296,7 @@ public actor SidecarSupervisor {
         resumePending(sidecar)
     }
 
-    private func nextFrame(_ id: String, timeout: Duration) async -> Frame? {
+    func nextFrame(_ id: String, timeout: Duration) async -> Frame? {
         guard let sidecar = sidecars[id] else { return nil }
         if !sidecar.buffered.isEmpty {
             return sidecar.buffered.removeFirst()
@@ -450,7 +331,7 @@ public actor SidecarSupervisor {
         sidecar.stderrTail = String((sidecar.stderrTail + text).suffix(2000))
     }
 
-    private func stderrTail(_ id: String) -> String {
+    func stderrTail(_ id: String) -> String {
         sidecars[id]?.stderrTail.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
@@ -499,12 +380,5 @@ public actor SidecarSupervisor {
             resumePending(sidecar)
         }
         sidecars[id] = nil
-    }
-}
-
-extension Frame {
-    fileprivate func controlField(_ key: String) -> JSONValue? {
-        guard case .control(let value) = self else { return nil }
-        return value.objectValue?[key]
     }
 }
