@@ -281,7 +281,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
 
     var descendants: [pid_t] = []
     for _ in 0..<40 {
-        descendants = ManifestCommandAdapter.descendantPIDs(of: parent.processIdentifier)
+        descendants = ProcessContainment.descendantPIDs(of: parent.processIdentifier)
         if !descendants.isEmpty { break }
         try await Task.sleep(for: .milliseconds(50))
     }
@@ -354,13 +354,13 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let parentPID = process.processIdentifier
     var descendants: [pid_t] = []
     for _ in 0..<40 {
-        descendants = ManifestCommandAdapter.descendantPIDs(of: parentPID)
+        descendants = ProcessContainment.descendantPIDs(of: parentPID)
         if descendants.contains(grandchild) { break }
         try await Task.sleep(for: .milliseconds(50))
     }
     #expect(descendants.contains(grandchild))
 
-    ManifestCommandAdapter.terminateProcessTree(process, grace: .milliseconds(200))
+    ProcessContainment.terminateProcessTree(process, grace: .milliseconds(200))
 
     var parentDead = false
     var childDead = false
