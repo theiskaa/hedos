@@ -58,7 +58,7 @@ struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                     var spokeAudio = false
                     for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
                     where file.pathExtension.lowercased() == "wav" {
-                        guard let wav = try? Data(contentsOf: file),
+                        guard let wav = try? ManifestSupport.boundedOutputData(at: file),
                             let audio = SpeechAudio.float32PCM(fromWAV: wav)
                         else { continue }
                         spokeAudio = true
@@ -109,7 +109,7 @@ struct VMCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                         options: [.skipsHiddenFiles])
                     for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
                     {
-                        let data = try Data(contentsOf: file)
+                        let data = try ManifestSupport.boundedOutputData(at: file)
                         continuation.yield(
                             .result(data: data, fileExtension: file.pathExtension))
                     }

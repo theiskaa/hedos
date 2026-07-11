@@ -227,13 +227,24 @@ actor ContainerizationVMHost: VMHost {
 }
 
 final class VMBufferWriter: Writer, @unchecked Sendable {
+    static let maxBytesPerStream = 16 * 1024 * 1024
+
     private let lock = NSLock()
     private var buffer = Data()
+    private let maxBytes: Int
+
+    init(maxBytes: Int = VMBufferWriter.maxBytesPerStream) {
+        self.maxBytes = maxBytes
+    }
 
     func write(_ data: Data) throws {
         lock.lock()
+        defer { lock.unlock() }
+        guard buffer.count + data.count <= maxBytes else {
+            throw KernelError.runtimeFailed(
+                "the contained runtime wrote more than 16 MiB of output")
+        }
         buffer.append(data)
-        lock.unlock()
     }
 
     func close() throws {}

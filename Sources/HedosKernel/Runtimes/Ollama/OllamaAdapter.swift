@@ -135,7 +135,8 @@ struct OllamaAdapter: RuntimeAdapter {
                         }
                         throw KernelError.runtimeFailed("ollama returned HTTP \(code)")
                     }
-                    for try await line in bytes.lines {
+                    let reader = CappedLineReader(bytes: bytes, source: "ollama")
+                    for try await line in reader.lines() {
                         if Task.isCancelled { break }
                         if let message = OllamaStreamParser.errorMessage(line: line) {
                             throw KernelError.runtimeFailed("ollama: \(message)")
@@ -180,7 +181,17 @@ struct OllamaAdapter: RuntimeAdapter {
                     request.httpBody = try Self.embedRequestBody(
                         model: record.name, payload: payload)
 
-                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    var buffer: [UInt8] = []
+                    for try await byte in bytes {
+                        buffer.append(byte)
+                        if buffer.count > OpenAIEndpointAdapter.defaultMaxResponseBytes {
+                            throw KernelError.runtimeFailed(
+                                "ollama sent a response larger than \(OpenAIEndpointAdapter.defaultMaxResponseBytes) bytes"
+                            )
+                        }
+                    }
+                    let data = Data(buffer)
                     if (response as? HTTPURLResponse)?.statusCode != 200 {
                         throw KernelError.runtimeFailed(
                             Self.embedErrorMessage(

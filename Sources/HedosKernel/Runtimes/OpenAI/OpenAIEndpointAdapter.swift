@@ -37,6 +37,7 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
 
     static let defaultMaxResponseBytes = 32 * 1024 * 1024
     static let defaultMaxLineBytes = 2 * 1024 * 1024
+    static let maxListModelsBytes = 1 * 1024 * 1024
 
     private let secrets: any SecretStore
     private let registry: Registry?
@@ -152,36 +153,21 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
                     }
                     await Self.markReachable(recordID, registry: registry)
                     var parser = OpenAIStreamParser()
-                    var lineBuffer: [UInt8] = []
-                    var totalBytes = 0
-                    for try await byte in bytes {
+                    let reader = CappedLineReader(
+                        bytes: bytes, source: base,
+                        maxLineBytes: maxLineBytes, maxResponseBytes: maxResponseBytes)
+                    for try await line in reader.lines() {
                         if Task.isCancelled { break }
-                        totalBytes += 1
-                        if totalBytes > maxResponseBytes {
-                            throw KernelError.runtimeFailed(
-                                "\(base) sent a response larger than \(maxResponseBytes) bytes"
-                            )
-                        }
-                        if byte == 0x0A {
-                            let line = String(decoding: lineBuffer, as: UTF8.self)
-                            lineBuffer.removeAll(keepingCapacity: true)
-                            var finished = false
-                            for chunk in parser.parse(line: line) {
-                                continuation.yield(chunk)
-                                if case .done = chunk {
-                                    finished = true
-                                }
+                        var finished = false
+                        for chunk in parser.parse(line: line) {
+                            continuation.yield(chunk)
+                            if case .done = chunk {
+                                finished = true
                             }
-                            if finished {
-                                continuation.finish()
-                                return
-                            }
-                            continue
                         }
-                        lineBuffer.append(byte)
-                        if lineBuffer.count > maxLineBytes {
-                            throw KernelError.runtimeFailed(
-                                "\(base) sent a line larger than \(maxLineBytes) bytes")
+                        if finished {
+                            continuation.finish()
+                            return
                         }
                     }
                     continuation.finish()
@@ -309,7 +295,7 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw KernelError.runtimeFailed("\(base) returned no HTTP response")
             }
@@ -320,6 +306,15 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
             guard http.statusCode == 200 else {
                 throw KernelError.runtimeFailed("\(base) returned HTTP \(http.statusCode)")
             }
+            var buffer: [UInt8] = []
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count > maxListModelsBytes {
+                    throw KernelError.runtimeFailed(
+                        "\(base) sent a model list larger than 1 MiB")
+                }
+            }
+            let data = Data(buffer)
             guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let entries = object["data"] as? [[String: Any]]
             else {

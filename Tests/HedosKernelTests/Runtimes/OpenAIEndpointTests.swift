@@ -326,7 +326,15 @@ private func endpointRecord(port: Int, model: String = "fake-chat-1") -> ModelRe
         if case .text(let delta) = chunk { secondText += delta }
     }
     #expect(secondText == "Hello from fake-chat-1")
-    #expect(gate.acquire(OpenAIEndpointAdapter.normalizedBase(record.source.path)))
+    var reacquired = false
+    for _ in 0..<200 {
+        if gate.acquire(OpenAIEndpointAdapter.normalizedBase(record.source.path)) {
+            reacquired = true
+            break
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(reacquired)
 }
 
 @Test func removingOneSchemeKeepsSiblingSchemeKey() async throws {
