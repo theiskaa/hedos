@@ -782,7 +782,7 @@ public actor Kernel {
     }
 
     public func saveSpeech(
-        modelID: String, voice: String, text: String, sampleRate: Int, pcm: Data,
+        modelID: String, voice: String, text: String, speed: Double, sampleRate: Int, pcm: Data,
         sessionID: String? = nil
     ) async throws -> Artifact {
         guard let record = try await registry.get(id: modelID) else {
@@ -800,6 +800,7 @@ public actor Kernel {
             params: .object([
                 "text": .string(text),
                 "voice": .string(voice),
+                "speed": .double(speed),
                 "peaks": .array(peaks.map { .double($0) }),
             ]),
             jobID: "voice-\(UUID().uuidString.lowercased())",

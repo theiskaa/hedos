@@ -66,7 +66,7 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     let pcm = sineWave(samples: 4800)
     let artifact = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "hello there",
-        sampleRate: 24000, pcm: pcm)
+        speed: 1.25, sampleRate: 24000, pcm: pcm)
 
     #expect(artifact.capability == .speak)
     #expect(artifact.durationMs == 200)
@@ -76,6 +76,7 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     }
     #expect(fields["text"] == .string("hello there"))
     #expect(fields["voice"] == .string("af_heart"))
+    #expect(fields["speed"] == .double(1.25))
     if case .array(let peaks)? = fields["peaks"] {
         #expect(peaks.count == 28)
     } else {
@@ -97,12 +98,12 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     let session = try await kernel.chats.createSession(modelID: record.id)
     let spoken = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "narrate this",
-        sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
     #expect(spoken.sessionID == session.id)
 
     let orphan = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "no session",
-        sampleRate: 24000, pcm: sineWave(samples: 2400))
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 2400))
     #expect(orphan.sessionID == nil)
 
     let reread = try await kernel.artifactStore.list()
@@ -133,7 +134,7 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     let session = try await kernel.chats.createSession(modelID: record.id)
     let spoken = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "narrate this",
-        sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 2400), sessionID: session.id)
     try await kernel.chats.appendGeneratedTurn(
         prompt: "narrate this", artifactID: spoken.id,
         capabilityTag: SessionTag.spoke, to: session.id)
@@ -171,7 +172,7 @@ private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRec
 
     let first = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "something spoken",
-        sampleRate: 24000, pcm: sineWave(samples: 2400))
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 2400))
     try await kernel.replaceSpokenArtifact(
         sessionID: session.id, turnID: answer.id, artifactID: first.id)
 
@@ -181,7 +182,7 @@ private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRec
 
     let second = try await kernel.saveSpeech(
         modelID: record.id, voice: "am_michael", text: "something spoken",
-        sampleRate: 24000, pcm: sineWave(samples: 4800))
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 4800))
     try await kernel.replaceSpokenArtifact(
         sessionID: session.id, turnID: answer.id, artifactID: second.id)
 
@@ -205,7 +206,7 @@ private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRec
 
     let spoken = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "spoken",
-        sampleRate: 24000, pcm: sineWave(samples: 2400))
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 2400))
     try await kernel.replaceSpokenArtifact(
         sessionID: session.id, turnID: answer.id, artifactID: spoken.id)
     try await kernel.replaceSpokenArtifact(
@@ -224,7 +225,7 @@ private func speakingKernel(in directory: URL) async throws -> (Kernel, ModelRec
     let session = try await kernel.chats.createSession(modelID: "chatty")
     let artifact = try await kernel.saveSpeech(
         modelID: record.id, voice: "af_heart", text: "x",
-        sampleRate: 24000, pcm: sineWave(samples: 2400))
+        speed: 1.0, sampleRate: 24000, pcm: sineWave(samples: 2400))
 
     await #expect(throws: (any Error).self) {
         try await kernel.replaceSpokenArtifact(

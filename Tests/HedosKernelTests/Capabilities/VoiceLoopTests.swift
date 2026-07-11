@@ -295,3 +295,123 @@ private actor PersistLog {
     if case .listening = event {} else { Issue.record("expected .listening, got \(String(describing: event))") }
     await loop.stop()
 }
+
+private actor SpeakPayloadLog {
+    private(set) var payloads: [JSONValue] = []
+    func record(_ payload: JSONValue) { payloads.append(payload) }
+    var last: JSONValue? { payloads.last }
+    var count: Int { payloads.count }
+}
+
+private final class RecordingVoiceAdapter: RuntimeAdapter, @unchecked Sendable {
+    let payloadLog: SpeakPayloadLog
+    init(payloadLog: SpeakPayloadLog) { self.payloadLog = payloadLog }
+
+    var id: RuntimeID { "rec" }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
+        record.runtime.id == id
+            && (capability == .transcribe || capability == .chat || capability == .speak)
+    }
+
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? { nil }
+
+    func invoke(_ record: ModelRecord, _ capability: Capability, payload: JSONValue)
+        -> AsyncThrowingStream<CapabilityChunk, Error>
+    {
+        let payloadLog = payloadLog
+        return AsyncThrowingStream { continuation in
+            Task {
+                switch capability {
+                case .transcribe:
+                    continuation.yield(.text("hello there"))
+                    continuation.yield(.done(nil))
+                case .chat:
+                    continuation.yield(.text("A short reply."))
+                    continuation.yield(.done(GenerationStats(completionTokens: 3, durationMs: 5)))
+                case .speak:
+                    await payloadLog.record(payload)
+                    continuation.yield(.audio(AudioFrame(data: Data([1, 2]), sampleRate: 24000)))
+                    continuation.yield(.done(nil))
+                default:
+                    break
+                }
+                continuation.finish()
+            }
+        }
+    }
+}
+
+private func voiceServiceRecord(
+    name: String, capabilities: [Capability], modality: Modality, path: String
+) -> ModelRecord {
+    var record = Fixtures.gguf(path: path)
+    record.name = name
+    record.modality = modality
+    record.capabilities = capabilities
+    record.runtime = RuntimeRef(id: "rec", resolved: .auto, tier: .native)
+    record.state = .ready
+    return record
+}
+
+private func runVoiceLoopTurn(speed: Double?) async throws -> JSONValue? {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let log = SpeakPayloadLog()
+    let kernel = Kernel(directory: dir, adapters: [RecordingVoiceAdapter(payloadLog: log)])
+
+    let transcriber = voiceServiceRecord(
+        name: "whisper", capabilities: [.transcribe], modality: .audio, path: "/tmp/rec-w.bin")
+    let chatModel = voiceServiceRecord(
+        name: "chat", capabilities: [.chat, .complete], modality: .text, path: "/tmp/rec-c.gguf")
+    let speaker = voiceServiceRecord(
+        name: "kokoro", capabilities: [.speak], modality: .speech, path: "/tmp/rec-s.gguf")
+    for record in [transcriber, chatModel, speaker] {
+        try await kernel.registry.register(record)
+    }
+
+    let session = try await kernel.createChatSession(modelID: chatModel.id)
+    let loop = await kernel.voiceLoop(
+        sessionID: session.id, transcriberID: transcriber.id, speakerID: speaker.id,
+        voice: "jf_alpha", speed: speed)
+
+    let events = await loop.start()
+    let done = CleanupFlag()
+    let collector = Task {
+        for await event in events {
+            if case .turnCompleted = event { done.mark() }
+        }
+    }
+
+    let voicedHop = [Float](repeating: 0.2, count: 480)
+    let quietHop = [Float](repeating: 0.0, count: 480)
+    var voicedBuffer: [Float] = []
+    for _ in 0..<14 { voicedBuffer += voicedHop }
+    var quietBuffer: [Float] = []
+    for _ in 0..<30 { quietBuffer += quietHop }
+    await loop.feed(voicedBuffer)
+    await loop.feed(quietBuffer)
+
+    for _ in 0..<600 {
+        if await log.count >= 1 { break }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    await loop.stop()
+    _ = await collector.value
+    _ = done.wasInvoked
+    return await log.last
+}
+
+@Test func voiceLoopSpeakPayloadCarriesSpeedWhenConfigured() async throws {
+    let payload = try await runVoiceLoopTurn(speed: 1.5)
+    let object = try #require(payload?.objectValue)
+    #expect(object["voice"] == .string("jf_alpha"))
+    #expect(object["speed"] == .double(1.5))
+}
+
+@Test func voiceLoopSpeakPayloadDefaultsSpeedToOneWhenUnset() async throws {
+    let payload = try await runVoiceLoopTurn(speed: nil)
+    let object = try #require(payload?.objectValue)
+    #expect(object["voice"] == .string("jf_alpha"))
+    #expect(object["speed"] == .double(1.0))
+}

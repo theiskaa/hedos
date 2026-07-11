@@ -372,9 +372,11 @@ public actor VoiceLoop {
 
 extension Kernel {
     public func voiceLoop(
-        sessionID: String, transcriberID: String, speakerID: String, voice: String
+        sessionID: String, transcriberID: String, speakerID: String, voice: String,
+        speed: Double? = nil
     ) -> VoiceLoop {
-        VoiceLoop(
+        let effectiveSpeed = speed ?? 1.0
+        return VoiceLoop(
             backends: VoiceLoopBackends(
                 transcribe: { samples in
                     let base64 = samples.withUnsafeBytes { Data($0) }.base64EncodedString()
@@ -394,6 +396,7 @@ extension Kernel {
                         payload: .object([
                             "text": .string(text),
                             "voice": .string(voice),
+                            "speed": .double(effectiveSpeed),
                         ]))
                 },
                 persistTurnAudio: { pcm, sampleRate, assistantText in
@@ -406,7 +409,8 @@ extension Kernel {
                     guard
                         let artifact = try? await self.saveSpeech(
                             modelID: speakerID, voice: voice, text: assistantText,
-                            sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
+                            speed: effectiveSpeed, sampleRate: sampleRate, pcm: pcm,
+                            sessionID: sessionID)
                     else { return }
                     try? await self.replaceSpokenArtifact(
                         sessionID: sessionID, turnID: target.id, artifactID: artifact.id)

@@ -56,7 +56,8 @@ import Testing
     }
     #expect(!pcm.isEmpty)
     let wav = try await kernel.saveSpeech(
-        modelID: speaker.id, voice: voice, text: line, sampleRate: sampleRate, pcm: pcm)
+        modelID: speaker.id, voice: voice, text: line, speed: 1.0, sampleRate: sampleRate,
+        pcm: pcm)
     try await kernel.chats.appendGeneratedTurn(
         prompt: line, artifactID: wav.id,
         capabilityTag: SessionTag.spoke, to: session.id)

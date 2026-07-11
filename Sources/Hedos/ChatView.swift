@@ -502,8 +502,12 @@ final class ChatViewModel {
                     "voice": .string(voice),
                 ]
                 let record = recordsProvider?().first { $0.id == modelID }
-                if record?.paramValues["speed"] == nil {
+                let effectiveSpeed: Double
+                if case .double(let saved)? = record?.paramValues["speed"] {
+                    effectiveSpeed = saved
+                } else {
                     let speed = await kernel.settings.voice().speed
+                    effectiveSpeed = speed
                     if speed != 1.0 {
                         payload["speed"] = .double(speed)
                     }
@@ -526,7 +530,8 @@ final class ChatViewModel {
                 if !pcm.isEmpty {
                     let artifact = try await kernel.saveSpeech(
                         modelID: modelID, voice: voice, text: content,
-                        sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
+                        speed: effectiveSpeed, sampleRate: sampleRate, pcm: pcm,
+                        sessionID: sessionID)
                     try await kernel.chats.appendGeneratedTurn(
                         prompt: content, artifactID: artifact.id,
                         capabilityTag: SessionTag.spoke, to: sessionID)
@@ -687,8 +692,11 @@ final class ChatViewModel {
                     transcriber.id, .transcribe,
                     payload: .object(["audio": .string(url.path)]))
                 for try await chunk in stream {
-                    if case .text(let delta) = chunk {
+                    switch chunk {
+                    case .text(let delta), .segment(let delta, _, _):
                         draft += delta
+                    default:
+                        break
                     }
                 }
                 notice = nil
@@ -933,8 +941,12 @@ final class ChatViewModel {
                     "text": .string(text),
                     "voice": .string(voice),
                 ]
-                if speaker.paramValues["speed"] == nil {
+                let effectiveSpeed: Double
+                if case .double(let saved)? = speaker.paramValues["speed"] {
+                    effectiveSpeed = saved
+                } else {
                     let speed = await kernel.settings.voice().speed
+                    effectiveSpeed = speed
                     if speed != 1.0 {
                         payload["speed"] = .double(speed)
                     }
@@ -955,7 +967,8 @@ final class ChatViewModel {
                 if !pcm.isEmpty, entry.persisted, !Task.isCancelled {
                     if let artifact = try? await kernel.saveSpeech(
                         modelID: speaker.id, voice: voice, text: text,
-                        sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
+                        speed: effectiveSpeed, sampleRate: sampleRate, pcm: pcm,
+                        sessionID: sessionID)
                     {
                         try? await kernel.replaceSpokenArtifact(
                             sessionID: sessionID, turnID: entry.id, artifactID: artifact.id)

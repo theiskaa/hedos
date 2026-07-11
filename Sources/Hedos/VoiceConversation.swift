@@ -100,11 +100,19 @@ final class VoiceConversationController {
             voice = fallback
         }
 
+        let speed: Double
+        if case .double(let saved)? = participants.speaker.paramValues["speed"] {
+            speed = saved
+        } else {
+            speed = await kernel.settings.voice().speed
+        }
+
         let loop = await kernel.voiceLoop(
             sessionID: sessionID,
             transcriberID: participants.transcriber.id,
             speakerID: participants.speaker.id,
-            voice: voice)
+            voice: voice,
+            speed: speed)
         self.loop = loop
 
         audio?.beginLive(
