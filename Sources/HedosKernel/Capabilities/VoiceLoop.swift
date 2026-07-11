@@ -171,6 +171,7 @@ public struct VoiceLoopBackends: Sendable {
         @Sendable (String) async throws -> AsyncThrowingStream<CapabilityChunk, Error>
     public var speak:
         @Sendable (String) async throws -> AsyncThrowingStream<CapabilityChunk, Error>
+    public var persistTurnAudio: (@Sendable (Data, Int, String) async -> Void)?
 
     public init(
         transcribe: @escaping @Sendable ([Float]) async throws -> AsyncThrowingStream<
@@ -181,11 +182,13 @@ public struct VoiceLoopBackends: Sendable {
         >,
         speak: @escaping @Sendable (String) async throws -> AsyncThrowingStream<
             CapabilityChunk, Error
-        >
+        >,
+        persistTurnAudio: (@Sendable (Data, Int, String) async -> Void)? = nil
     ) {
         self.transcribe = transcribe
         self.chat = chat
         self.speak = speak
+        self.persistTurnAudio = persistTurnAudio
     }
 }
 
@@ -326,6 +329,9 @@ public actor VoiceLoop {
         defer { turnTask = nil }
         continuation?.yield(.status("transcribing"))
         var reportedTurn = false
+        var pcm = Data()
+        var sampleRate = SidecarSpec.defaultSampleRate
+        var assistantText = ""
         for await event in PipelineExecutor(stages: stages()).run(input: .audio(samples)) {
             if Task.isCancelled { return }
             switch event {
@@ -338,11 +344,17 @@ public actor VoiceLoop {
                 reportedTurn = true
                 continuation?.yield(.userTurn(question))
             case .delta(_, let delta):
+                assistantText += delta
                 continuation?.yield(.assistantDelta(delta))
             case .audio(let frame):
+                if pcm.isEmpty { sampleRate = frame.sampleRate }
+                pcm.append(frame.data)
                 continuation?.yield(.speech(frame))
             case .completed:
                 if reportedTurn {
+                    if !pcm.isEmpty {
+                        await backends.persistTurnAudio?(pcm, sampleRate, assistantText)
+                    }
                     continuation?.yield(.turnCompleted)
                 }
                 continuation?.yield(.listening)
@@ -383,6 +395,21 @@ extension Kernel {
                             "text": .string(text),
                             "voice": .string(voice),
                         ]))
+                },
+                persistTurnAudio: { pcm, sampleRate, assistantText in
+                    guard let transcript = try? await self.chats.session(id: sessionID),
+                        let target = transcript.turns.last(where: {
+                            $0.supersededBy == nil && $0.role == .assistant
+                                && !$0.content.isEmpty
+                        })
+                    else { return }
+                    guard
+                        let artifact = try? await self.saveSpeech(
+                            modelID: speakerID, voice: voice, text: assistantText,
+                            sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
+                    else { return }
+                    try? await self.replaceSpokenArtifact(
+                        sessionID: sessionID, turnID: target.id, artifactID: artifact.id)
                 }))
     }
 }
