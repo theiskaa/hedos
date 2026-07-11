@@ -33,6 +33,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     @State private var slashHighlight = 0
     @State private var slashSuppressed = false
     @State private var mentionFiles: [String] = []
+    @State private var mentionIndex: Set<String> = []
     @State private var mentionSuppressed = false
     @State private var dictationController = DictationController()
 
@@ -82,7 +83,8 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                     sendWithEnter: sendWithEnter,
                     measuredHeight: $composerHeight,
                     onCommand: interceptCommand,
-                    focusToken: composerFocusToken
+                    focusToken: composerFocusToken,
+                    mentionPaths: mentionIndex
                 ) {
                     if canSend && !isWorking {
                         onSend()
@@ -161,6 +163,11 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
         .task(id: mentionActive) {
             guard mentionActive, let mentions else { return }
             mentionFiles = await mentions.files()
+            mentionIndex = Set(mentionFiles)
+        }
+        .task {
+            guard let mentions else { return }
+            mentionIndex = Set(await mentions.files())
         }
     }
 
@@ -582,6 +589,7 @@ private struct ComposerTextView: NSViewRepresentable {
     @Binding var measuredHeight: CGFloat
     var onCommand: ((Selector) -> Bool)? = nil
     var focusToken: Int = 0
+    var mentionPaths: Set<String> = []
     let onSend: () -> Void
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -595,6 +603,7 @@ private struct ComposerTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
             parent.text = view.string
+            parent.restyleMentions(view)
             parent.remeasure(view)
         }
 
@@ -657,7 +666,33 @@ private struct ComposerTextView: NSViewRepresentable {
             view.textColor = ink
             view.insertionPointColor = ink
         }
+        restyleMentions(view)
         remeasure(view)
+    }
+
+    func restyleMentions(_ view: NSTextView) {
+        guard let manager = view.layoutManager else { return }
+        let full = NSRange(location: 0, length: (view.string as NSString).length)
+        manager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: full)
+        guard !mentionPaths.isEmpty else { return }
+        let accent = NSColor(Design.heatText)
+        for range in Self.mentionRanges(in: view.string, paths: mentionPaths) {
+            manager.addTemporaryAttribute(
+                .foregroundColor, value: accent, forCharacterRange: range)
+        }
+    }
+
+    static func mentionRanges(in text: String, paths: Set<String>) -> [NSRange] {
+        guard let matcher = try? NSRegularExpression(pattern: "\\S+") else { return [] }
+        let whole = text as NSString
+        var ranges: [NSRange] = []
+        for match in matcher.matches(in: text, range: NSRange(location: 0, length: whole.length)) {
+            let token = whole.substring(with: match.range)
+            if let (core, _) = PromptComposer.mentionCore(token), paths.contains(core) {
+                ranges.append(match.range)
+            }
+        }
+        return ranges
     }
 
     func remeasure(_ view: NSTextView) {
