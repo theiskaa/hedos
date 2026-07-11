@@ -5,30 +5,38 @@ enum OpenAIWire {
         var model: String
         var messages: [ChatMessage]
         var stream: Bool
+        var includeUsage: Bool = false
         var sampling: [String: JSONValue]
         var tools: [ToolSpec] = []
         var toolChoice: JSONValue?
     }
 
-    static func decodeChatRequest(_ body: [String: Any]) throws -> ChatRequest {
+    static let honoredKeys: Set<String> = [
+        "model", "messages", "stream", "stream_options", "temperature", "top_p",
+        "max_tokens", "max_completion_tokens", "stop", "seed", "n", "frequency_penalty",
+        "presence_penalty", "response_format", "tools", "tool_choice", "user",
+    ]
+
+    static func decodeChatRequest(_ rawBody: [String: Any]) throws -> ChatRequest {
+        var body = rawBody
+        if let bias = body["logit_bias"] as? [String: Any], bias.isEmpty {
+            body.removeValue(forKey: "logit_bias")
+        }
         guard let model = body["model"] as? String, !model.isEmpty else {
             throw GatewayError(.badRequest, "model is required")
         }
         guard let rawMessages = body["messages"] as? [[String: Any]], !rawMessages.isEmpty else {
             throw GatewayError(.badRequest, "messages is required")
         }
+        try WireParamDecoding.rejectUnknownKeys(body, honored: honoredKeys, label: "parameter")
         let messages = try rawMessages.map(decodeMessage)
-        var sampling: [String: JSONValue] = [:]
-        if let temperature = body["temperature"] as? Double {
-            sampling["temperature"] = .double(temperature)
+        var sampling = try decodeSampling(body)
+        var includeUsage = false
+        if let streamOptions = body["stream_options"] as? [String: Any] {
+            includeUsage = streamOptions["include_usage"] as? Bool ?? false
         }
-        if let topP = body["top_p"] as? Double {
-            sampling["top_p"] = .double(topP)
-        }
-        if let maxTokens = body["max_tokens"] as? Int {
-            sampling["max_tokens"] = .int(maxTokens)
-        } else if let maxTokens = body["max_completion_tokens"] as? Int {
-            sampling["max_tokens"] = .int(maxTokens)
+        if let responseFormat = try decodeResponseFormat(body["response_format"]) {
+            sampling["response_format"] = responseFormat
         }
         let tools = try ToolWireDecoding.specs(from: body["tools"]) {
             GatewayError(.badRequest, $0)
@@ -44,9 +52,62 @@ enum OpenAIWire {
             model: model,
             messages: messages,
             stream: body["stream"] as? Bool ?? false,
+            includeUsage: includeUsage,
             sampling: sampling,
             tools: tools,
             toolChoice: toolChoice)
+    }
+
+    static func decodeSampling(_ body: [String: Any]) throws -> [String: JSONValue] {
+        var sampling: [String: JSONValue] = [:]
+        if let temperature = body["temperature"] as? Double {
+            sampling["temperature"] = .double(temperature)
+        }
+        if let topP = body["top_p"] as? Double {
+            sampling["top_p"] = .double(topP)
+        }
+        if let maxTokens = body["max_tokens"] as? Int {
+            sampling["max_tokens"] = .int(maxTokens)
+        } else if let maxTokens = body["max_completion_tokens"] as? Int {
+            sampling["max_tokens"] = .int(maxTokens)
+        }
+        if let stop = try WireParamDecoding.stop(body["stop"], maxCount: 4) {
+            sampling["stop"] = stop
+        }
+        if let seed = body["seed"] as? Int {
+            sampling["seed"] = .int(seed)
+        }
+        if let n = body["n"] as? Int, n != 1 {
+            throw GatewayError(
+                .badRequest, "n greater than 1 is not supported", code: "unsupported_parameter")
+        }
+        if let frequencyPenalty = body["frequency_penalty"] as? Double {
+            sampling["frequency_penalty"] = .double(frequencyPenalty)
+        }
+        if let presencePenalty = body["presence_penalty"] as? Double {
+            sampling["presence_penalty"] = .double(presencePenalty)
+        }
+        return sampling
+    }
+
+    static func decodeResponseFormat(_ raw: Any?) throws -> JSONValue? {
+        guard let raw else { return nil }
+        guard let object = raw as? [String: Any], let type = object["type"] as? String else {
+            throw GatewayError(.badRequest, "response_format must be an object with a type")
+        }
+        switch type {
+        case "text":
+            return nil
+        case "json_object", "json_schema":
+            guard let value = JSONValue.fromAny(object) else {
+                throw GatewayError(.badRequest, "response_format is malformed")
+            }
+            return value
+        default:
+            throw GatewayError(
+                .badRequest, "response_format type '\(type)' is not supported",
+                code: "unsupported_parameter")
+        }
     }
 
     private static func decodeMessage(_ raw: [String: Any]) throws -> ChatMessage {

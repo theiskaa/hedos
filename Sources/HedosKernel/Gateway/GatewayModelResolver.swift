@@ -6,14 +6,16 @@ enum GatewayModelResolver {
         port: any GatewayPort, identity: GatewayIdentity
     ) async throws -> ModelRecord {
         let shelf = try await port.shelf()
-        let record = try resolve(requested, shelf: shelf)
+        let record = try resolve(requested, shelf: shelf, scopes: identity.scopes)
         try identity.require(modelID: record.id, capability: capability)
         try await GatewayBackpressure.require(port, record: record, kind: kind)
         return record
     }
 
-    static func resolve(_ requested: String, shelf: [ModelRecord]) throws -> ModelRecord {
-        let ready = shelf.filter { $0.state == .ready }
+    static func resolve(
+        _ requested: String, shelf: [ModelRecord], scopes: GatewayScopes = .all
+    ) throws -> ModelRecord {
+        let ready = scopes.filter(shelf).filter { $0.state == .ready }
         if let exact = ready.first(where: { $0.id == requested }) { return exact }
 
         let tiers: [[ModelRecord]] = [

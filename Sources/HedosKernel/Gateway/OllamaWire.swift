@@ -4,9 +4,22 @@ enum OllamaWire {
     static let optionKeys: [(option: String, payload: String)] = [
         ("temperature", "temperature"),
         ("top_p", "top_p"),
+        ("top_k", "top_k"),
+        ("min_p", "min_p"),
         ("num_predict", "max_tokens"),
         ("num_ctx", "context_length"),
+        ("seed", "seed"),
+        ("repeat_penalty", "repeat_penalty"),
+        ("frequency_penalty", "frequency_penalty"),
+        ("presence_penalty", "presence_penalty"),
     ]
+
+    static let honoredKeys: Set<String> = [
+        "model", "messages", "stream", "think", "options", "format", "tools", "keep_alive",
+    ]
+
+    static let optionMapping: [String: String] = Dictionary(
+        uniqueKeysWithValues: optionKeys.map { ($0.option, $0.payload) })
 
     struct ChatRequest {
         var model: String
@@ -23,10 +36,15 @@ enum OllamaWire {
         guard let rawMessages = body["messages"] as? [[String: Any]], !rawMessages.isEmpty else {
             throw GatewayError(.badRequest, "messages is required")
         }
+        try WireParamDecoding.rejectUnknownKeys(body, honored: honoredKeys, label: "parameter")
         let messages = try rawMessages.map { raw -> ChatMessage in
             let rawRole = raw["role"] as? String ?? ""
             guard let role = ChatMessage.Role(rawValue: rawRole) else {
                 throw GatewayError(.badRequest, "unsupported message role \(rawRole)")
+            }
+            if let images = raw["images"] as? [Any], !images.isEmpty {
+                throw GatewayError(
+                    .badRequest, "vision is not served yet", code: "unsupported_parameter")
             }
             let toolCalls = try decodeToolCalls(raw["tool_calls"])
             let content = raw["content"] as? String
@@ -45,19 +63,7 @@ enum OllamaWire {
             }
             return ChatMessage(role: role, content: content)
         }
-        var options: [String: JSONValue] = [:]
-        if let rawOptions = body["options"] as? [String: Any] {
-            for (option, payload) in optionKeys {
-                if let int = rawOptions[option] as? Int {
-                    options[payload] = .int(int)
-                } else if let double = rawOptions[option] as? Double {
-                    options[payload] = .double(double)
-                }
-            }
-        }
-        if let think = body["think"] as? Bool {
-            options["thinking"] = .bool(think)
-        }
+        let options = try decodeOptions(from: body)
         let tools = try ToolWireDecoding.specs(from: body["tools"]) {
             GatewayError(.badRequest, $0)
         }
@@ -67,6 +73,59 @@ enum OllamaWire {
             stream: body["stream"] as? Bool ?? true,
             options: options,
             tools: tools)
+    }
+
+    static func decodeOptions(from body: [String: Any]) throws -> [String: JSONValue] {
+        var options: [String: JSONValue] = [:]
+        if let rawOptions = body["options"] as? [String: Any] {
+            for key in rawOptions.keys.sorted() {
+                if key == "stop" {
+                    if let stop = try WireParamDecoding.stop(rawOptions["stop"]) {
+                        options["stop"] = stop
+                    }
+                    continue
+                }
+                guard let payload = optionMapping[key] else {
+                    throw GatewayError(
+                        .badRequest, "the option '\(key)' is not supported",
+                        code: "unsupported_parameter")
+                }
+                if let int = rawOptions[key] as? Int {
+                    options[payload] = .int(int)
+                } else if let double = rawOptions[key] as? Double {
+                    options[payload] = .double(double)
+                } else {
+                    throw GatewayError(
+                        .badRequest, "the option '\(key)' must be a number",
+                        code: "unsupported_parameter")
+                }
+            }
+        }
+        if let think = body["think"] as? Bool {
+            options["thinking"] = .bool(think)
+        }
+        if let format = try decodeFormat(body["format"]) {
+            options["response_format"] = format
+        }
+        return options
+    }
+
+    static func decodeFormat(_ raw: Any?) throws -> JSONValue? {
+        guard let raw else { return nil }
+        if let text = raw as? String {
+            guard text == "json" else {
+                throw GatewayError(
+                    .badRequest, "format must be \"json\" or a JSON schema object")
+            }
+            return .object(["type": .string("json_object")])
+        }
+        if let object = raw as? [String: Any], let schema = JSONValue.fromAny(object) {
+            return .object([
+                "type": .string("json_schema"),
+                "json_schema": .object(["schema": schema]),
+            ])
+        }
+        throw GatewayError(.badRequest, "format must be \"json\" or a JSON schema object")
     }
 
     private static func decodeToolCalls(_ raw: Any?) throws -> [ToolCall] {
@@ -174,6 +233,35 @@ enum OllamaWire {
         return object
     }
 
+    static func generateDelta(model: String, response: String) -> [String: Any] {
+        [
+            "model": model,
+            "created_at": timestamp(),
+            "response": response,
+            "done": false,
+        ]
+    }
+
+    static func generateFinal(model: String, stats: GenerationStats?) -> [String: Any] {
+        var object: [String: Any] = [
+            "model": model,
+            "created_at": timestamp(),
+            "response": "",
+            "done": true,
+            "done_reason": stats?.finishReason ?? "stop",
+        ]
+        if let durationMs = stats?.durationMs {
+            object["total_duration"] = durationMs * 1_000_000
+        }
+        if let promptTokens = stats?.promptTokens {
+            object["prompt_eval_count"] = promptTokens
+        }
+        if let completionTokens = stats?.completionTokens {
+            object["eval_count"] = completionTokens
+        }
+        return object
+    }
+
     static func tags(_ records: [ModelRecord]) -> [String: Any] {
         let formatter = ISO8601DateFormatter()
         return [
@@ -197,13 +285,37 @@ enum OllamaWire {
             let ext = URL(fileURLWithPath: weightPath).pathExtension.lowercased()
             if !ext.isEmpty { format = ext }
         }
+        let tokens = "\(record.name) \(record.primaryWeightPath ?? "")"
         return [
             "parent_model": "",
             "format": format,
             "family": "",
             "families": [],
-            "parameter_size": "",
-            "quantization_level": "",
+            "parameter_size": parameterSize(from: tokens),
+            "quantization_level": quantizationLevel(from: tokens),
         ]
+    }
+
+    static func parameterSize(from text: String) -> String {
+        guard
+            let range = text.range(
+                of: "[0-9]+(\\.[0-9]+)?[bBmM]", options: .regularExpression)
+        else { return "" }
+        return text[range].uppercased()
+    }
+
+    static func quantizationLevel(from text: String) -> String {
+        if let range = text.range(
+            of: "[Qq][0-9]_[0-9A-Za-z_]+", options: .regularExpression)
+        {
+            return text[range].uppercased()
+        }
+        if let range = text.range(of: "[Qq][0-9]+", options: .regularExpression) {
+            return text[range].uppercased()
+        }
+        if let range = text.range(of: "[Bb]?[Ff](16|32)", options: .regularExpression) {
+            return text[range].uppercased()
+        }
+        return ""
     }
 }

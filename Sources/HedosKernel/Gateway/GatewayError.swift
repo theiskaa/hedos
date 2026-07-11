@@ -60,10 +60,31 @@ public struct GatewayError: Error, Sendable, Hashable {
             let payload: [String: Any] = ["error": message]
             return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
         case .openAI:
-            var error: [String: Any] = ["message": message, "type": kind.rawValue]
-            if let code { error["code"] = code }
+            var error: [String: Any] = ["message": message, "type": wireType]
+            if let wireCode { error["code"] = wireCode }
             let payload: [String: Any] = ["error": error]
             return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        }
+    }
+
+    var wireType: String {
+        switch kind {
+        case .badRequest, .methodNotAllowed: "invalid_request_error"
+        case .unauthorized: "authentication_error"
+        case .forbidden: "permission_error"
+        case .notFound: "not_found_error"
+        case .notSupported, .overloaded, .timeout, .serverError: "api_error"
+        }
+    }
+
+    var wireCode: String? {
+        if let code { return code }
+        switch kind {
+        case .methodNotAllowed: return "method_not_allowed"
+        case .notSupported: return "capability_unsupported"
+        case .timeout: return "timeout"
+        case .overloaded: return "overloaded"
+        case .badRequest, .unauthorized, .forbidden, .notFound, .serverError: return nil
         }
     }
 
