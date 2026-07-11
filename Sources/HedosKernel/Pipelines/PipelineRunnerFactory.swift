@@ -15,7 +15,7 @@ public enum PipelineRunnerFactory {
         return .object(object)
     }
 
-    static func firstAudioPCM(_ upstream: AsyncStream<PipelineToken>) async -> [Float] {
+    static func aggregatedAudioPCM(_ upstream: AsyncStream<PipelineToken>) async -> [Float] {
         var samples: [Float] = []
         for await token in upstream {
             if case .audioPCM(let pcm) = token {
@@ -43,7 +43,7 @@ public enum PipelineRunnerFactory {
             index: index, capability: .transcribe, input: .audio, output: .text
         ) { upstream, downstream, sink in
             sink(.status(index: index, "transcribing"))
-            let samples = await firstAudioPCM(upstream)
+            let samples = await aggregatedAudioPCM(upstream)
             let base64 = samples.withUnsafeBytes { Data($0) }.base64EncodedString()
             let payload = payload(
                 ["pcm": .string(base64), "sampleRate": .int(sampleRate)], merging: params)
