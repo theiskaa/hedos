@@ -278,6 +278,10 @@ public actor Kernel {
         await startWatching(debounce: watcherDebounce)
     }
 
+    public func refreshBuiltinAvailability() async {
+        await scopedRescan([.builtin])
+    }
+
     func scopedRescan(_ kinds: Set<SourceKind>) async {
         guard lastSummary != nil else {
             if let full = try? await discover() {
@@ -336,6 +340,19 @@ public actor Kernel {
 
     public func explainShelf() async throws -> [ResolutionExplanation] {
         try await ResolutionEngine(adapters: adapters).explainAll(in: registry)
+    }
+
+    public func duplicateSiblings(of modelID: String) async throws -> [ModelRecord] {
+        guard let record = try await registry.get(id: modelID),
+            let path = record.primaryWeightPath
+        else { return [] }
+        let groups = await recomputeDuplicates()
+        guard let group = groups.first(where: { $0.paths.contains(path) }) else { return [] }
+        let siblingPaths = Set(group.paths.filter { $0 != path })
+        return try await registry.list().filter { sibling in
+            sibling.id != modelID
+                && (sibling.primaryWeightPath.map(siblingPaths.contains) ?? false)
+        }
     }
 
     public func pendingNetworkConsent(for modelID: String) async throws -> ManifestConsentInfo? {

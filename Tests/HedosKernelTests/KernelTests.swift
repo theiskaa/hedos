@@ -229,3 +229,30 @@ private func smallWindowRecord() -> ModelRecord {
         try await kernel.startOllama()
     }
 }
+
+@Test func duplicateSiblingsFindsRecordsSharingWeights() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let fileA = dir.appendingPathComponent("a.gguf")
+    let fileB = dir.appendingPathComponent("b.gguf")
+    try DiscoveryFixtures.data(bytes: 4096, fill: 0x33).write(to: fileA)
+    try DiscoveryFixtures.data(bytes: 4096, fill: 0x33).write(to: fileB)
+
+    let kernel = Kernel(
+        directory: dir.appendingPathComponent("support"),
+        adapters: [], governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore(), duplicateThreshold: 1024)
+    var a = ModelRecord(
+        name: "a", modality: .text, capabilities: [.chat],
+        source: ModelSource(kind: .file, path: fileA.path))
+    a.primaryWeightPath = fileA.path
+    var b = ModelRecord(
+        name: "b", modality: .text, capabilities: [.chat],
+        source: ModelSource(kind: .file, path: fileB.path))
+    b.primaryWeightPath = fileB.path
+    try await kernel.registry.register(a)
+    try await kernel.registry.register(b)
+
+    #expect(try await kernel.duplicateSiblings(of: a.id).map(\.id) == [b.id])
+    #expect(try await kernel.duplicateSiblings(of: b.id).map(\.id) == [a.id])
+}
