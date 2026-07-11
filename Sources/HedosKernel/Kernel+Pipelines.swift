@@ -44,9 +44,6 @@ extension Kernel {
         case .image:
             return PipelineRunnerFactory.image(
                 index: index, modelID: stage.modelID, params: stage.params, backend: self)
-        case .embed:
-            return PipelineRunnerFactory.embed(
-                index: index, modelID: stage.modelID, params: stage.params, backend: self)
         default:
             return PipelineRunnerFactory.textToText(
                 index: index, modelID: stage.modelID, capability: stage.capability,

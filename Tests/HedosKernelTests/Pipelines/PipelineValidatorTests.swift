@@ -104,3 +104,32 @@ private func stage(_ record: ModelRecord, _ capability: Capability) -> PipelineS
     #expect(afterChat.contains(.chat))
     #expect(!afterChat.contains(.transcribe))
 }
+
+@Test func rejectsTerminalEmbedAsDeadEnd() throws {
+    let embedder = model("bge", name: "bge", capabilities: [.embed])
+    do {
+        _ = try PipelineValidator.validate([stage(embedder, .embed)], shelf: [embedder])
+        Issue.record("a terminal embed stage is a dead end")
+    } catch let error as PipelineValidationError {
+        #expect(error == .deadEndOutput(index: 0, capability: .embed))
+        #expect(
+            error.description
+                == "stage 1 ends the pipeline with vectors, which nothing can consume yet")
+    }
+
+    let chat = model("chat", name: "gemma", capabilities: [.chat])
+    do {
+        _ = try PipelineValidator.validate(
+            [stage(chat, .chat), stage(embedder, .embed)], shelf: [chat, embedder])
+        Issue.record("chat→embed still dead-ends on vectors")
+    } catch let error as PipelineValidationError {
+        #expect(error == .deadEndOutput(index: 1, capability: .embed))
+    }
+}
+
+@Test func nextCapabilitiesNeverOfferVectorOutputs() {
+    let chat = model("chat", name: "gemma", capabilities: [.chat])
+    #expect(!PipelineValidator.nextCapabilities(after: []).contains(.embed))
+    #expect(
+        !PipelineValidator.nextCapabilities(after: [stage(chat, .chat)]).contains(.embed))
+}

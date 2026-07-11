@@ -252,29 +252,23 @@ private func pipeline(
     await stack.stop()
 }
 
-@Test func pipelineRunReturnsEmbeddingsJSONForVectorTail() async throws {
+@Test func pipelineRunRejectsEmbedDeadEndWith400() async throws {
     let chat = readyModel("chat", name: "gemma", capabilities: [.chat])
     let embedder = readyModel("emb", name: "bge", capabilities: [.embed])
     let pipe = pipeline("indexer", [(chat, .chat), (embedder, .embed)])
     var port = FakeGatewayPort(records: [chat, embedder])
     port.pipelinesList = [pipe]
-    port.pipelineEventScript = [
-        .vector([0.25, -0.5]), .vector([0.75, 1.0]), .completed,
-    ]
     let stack = try await GatewayHarness.stack(
         port: port, routes: GatewayRouter.standardRoutes())
     let body = GatewayHarness.json(["pipeline": pipe.id, "input": ["text": "index this"]])
     let (data, response) = try await URLSession.shared.data(
         for: GatewayHarness.request(
             "POST", stack.url("/v1/pipelines/run"), token: stack.token, body: body))
-    #expect((response as! HTTPURLResponse).statusCode == 200)
+    #expect((response as! HTTPURLResponse).statusCode == 400)
     let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-    #expect(object["object"] as? String == "list")
-    let vectors = object["data"] as! [[String: Any]]
-    #expect(vectors.count == 2)
-    #expect(vectors[0]["object"] as? String == "embedding")
-    #expect(vectors[0]["index"] as? Int == 0)
-    #expect((vectors[0]["embedding"] as! [Double]) == [0.25, -0.5])
-    #expect((vectors[1]["embedding"] as! [Double]) == [0.75, 1.0])
+    let error = object["error"] as! [String: Any]
+    #expect(
+        (error["message"] as? String)
+            == "stage 2 ends the pipeline with vectors, which nothing can consume yet")
     await stack.stop()
 }

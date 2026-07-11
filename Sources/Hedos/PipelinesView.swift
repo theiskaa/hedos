@@ -580,7 +580,9 @@ final class PipelineRunModel {
                     appendResponse("embedding · \(values.count) dimensions")
                 case .failed(let message):
                     notice = message
-                case .stageStarted, .completed, .cancelled:
+                case .cancelled:
+                    status = "Cancelled"
+                case .stageStarted, .completed:
                     break
                 }
             }

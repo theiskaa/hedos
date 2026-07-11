@@ -50,9 +50,12 @@ public enum PipelineRunnerFactory {
             var transcript = ""
             for try await chunk in try await backend.invoke(modelID, .transcribe, payload: payload)
             {
-                if case .text(let delta) = chunk {
+                switch chunk {
+                case .text(let delta), .segment(let delta, _, _):
                     transcript += delta
                     downstream(.text(delta))
+                default:
+                    break
                 }
             }
             sink(.transcript(index: index, transcript))
@@ -153,23 +156,6 @@ public enum PipelineRunnerFactory {
             }
             for id in artifacts {
                 downstream(.artifact(id))
-            }
-        }
-    }
-
-    public static func embed(
-        index: Int, modelID: String, params: [String: JSONValue], backend: any PipelineBackend
-    ) -> PipelineStageRunner {
-        PipelineStageRunner(
-            index: index, capability: .embed, input: .text, output: .vector
-        ) { upstream, downstream, sink in
-            let text = await aggregatedText(upstream)
-            sink(.status(index: index, "embedding"))
-            let payload = payload(["input": .string(text)], merging: params)
-            for try await chunk in try await backend.invoke(modelID, .embed, payload: payload) {
-                if case .vector(let values) = chunk {
-                    downstream(.vector(values))
-                }
             }
         }
     }

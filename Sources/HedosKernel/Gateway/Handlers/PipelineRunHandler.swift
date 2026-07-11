@@ -121,6 +121,8 @@ struct PipelineRunHandler: GatewayHandling {
                     first = false
                 case .failed(let message):
                     failure = message
+                case .cancelled:
+                    failure = "the run was cancelled"
                 default:
                     break
                 }
@@ -168,6 +170,8 @@ struct PipelineRunHandler: GatewayHandling {
                     pcm.append(frame.data)
                 case .failed(let message):
                     failure = message
+                case .cancelled:
+                    failure = "the run was cancelled"
                 default:
                     break
                 }
@@ -198,6 +202,8 @@ struct PipelineRunHandler: GatewayHandling {
                     artifactID = id
                 case .failed(let message):
                     failure = message
+                case .cancelled:
+                    failure = "the run was cancelled"
                 default:
                     break
                 }

@@ -180,6 +180,25 @@ private func collect(_ stream: AsyncStream<PipelineEvent>) async -> [PipelineEve
     }
 }
 
+@Test func transcribeStagePassesLanguageParamToBackend() async throws {
+    let backend = FakePipelineBackend()
+    let runners = [
+        PipelineRunnerFactory.transcribe(
+            index: 0, modelID: "asr",
+            params: ["language": .string("de"), "translate": .bool(true)],
+            sampleRate: 16000, backend: backend)
+    ]
+    _ = await collect(PipelineExecutor(stages: runners).run(input: .audio([0.1, 0.2, 0.3])))
+
+    let transcribeCall = backend.calls.first { $0.capability == .transcribe }
+    if case .object(let payload)? = transcribeCall?.payload {
+        #expect(payload["language"] == .string("de"))
+        #expect(payload["translate"] == .bool(true))
+    } else {
+        Issue.record("transcribe should receive the language stage param")
+    }
+}
+
 @Test func textToSpeakUsesSentenceChunking() async throws {
     let backend = FakePipelineBackend()
     backend.chatDeltas = ["First sentence. ", "Second sentence. ", "Third one."]
@@ -244,24 +263,6 @@ private func collect(_ stream: AsyncStream<PipelineEvent>) async -> [PipelineEve
     _ = await consume.value
     try await Task.sleep(for: .milliseconds(200))
     #expect(backend.cancelledJobs == ["job-fake"])
-}
-
-@Test func embedTailForwardsVectorsToTheSink() async throws {
-    let backend = FakePipelineBackend()
-    let runner = PipelineRunnerFactory.embed(
-        index: 0, modelID: "bge", params: [:], backend: backend)
-    let events = await collect(PipelineExecutor(stages: [runner]).run(input: .text("embed me")))
-
-    let vectors = events.compactMap { event -> [Double]? in
-        if case .vector(let values) = event { return values }
-        return nil
-    }
-    #expect(vectors == [[0.25, -0.5], [0.75]])
-    #expect(
-        events.contains {
-            if case .completed = $0 { return true }
-            return false
-        })
 }
 
 @Test func stageCancellationYieldsACancelledTerminalEvent() async throws {

@@ -17,6 +17,7 @@ public enum PipelineValidationError: Error, Equatable, Sendable, CustomStringCon
     case modelLacksCapability(index: Int, modelID: String, capability: Capability)
     case notReady(index: Int, modelID: String)
     case incompatibleEdge(from: Int, to: Int, produced: PipelinePort, expected: PipelinePort)
+    case deadEndOutput(index: Int, capability: Capability)
 
     public var description: String {
         switch self {
@@ -33,6 +34,8 @@ public enum PipelineValidationError: Error, Equatable, Sendable, CustomStringCon
         case .incompatibleEdge(let from, let to, let produced, let expected):
             return
                 "stage \(from + 1) produces \(produced.rawValue) but stage \(to + 1) expects \(expected.rawValue)"
+        case .deadEndOutput(let index, _):
+            return "stage \(index + 1) ends the pipeline with vectors, which nothing can consume yet"
         }
     }
 }
@@ -72,17 +75,25 @@ public enum PipelineValidator {
             }
         }
 
+        if signatures.last!.output == .vector {
+            throw PipelineValidationError.deadEndOutput(
+                index: signatures.count - 1, capability: stages.last!.capability)
+        }
+
         return PipelineSignature(
             input: signatures.first!.input, output: signatures.last!.output)
     }
 
     public static func nextCapabilities(after stages: [PipelineStage]) -> [Capability] {
+        let consumable = CapabilitySignatures.composable.filter {
+            CapabilitySignatures.signature($0)?.output != .vector
+        }
         guard let last = stages.last,
             let signature = CapabilitySignatures.signature(last.capability)
         else {
-            return CapabilitySignatures.composable
+            return consumable
         }
-        return CapabilitySignatures.composable.filter {
+        return consumable.filter {
             CapabilitySignatures.signature($0)?.input == signature.output
         }
     }
