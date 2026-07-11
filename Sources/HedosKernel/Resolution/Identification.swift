@@ -125,12 +125,16 @@ public enum Identification {
                     execution: .job,
                     pipelineClass: pipelineClass)
             }
+            var params = profile.params
+            if pipelineClass == "FluxPipeline", !fluxUsesGuidance(in: container) {
+                params.removeAll { $0.key == "guidance" }
+            }
             return IdentifiedModel(
                 format: .diffusers,
                 modality: profile.modality,
                 capabilities: profile.capabilities,
                 execution: .job,
-                params: profile.params,
+                params: params,
                 pipelineClass: pipelineClass)
         }
 
@@ -191,6 +195,15 @@ public enum Identification {
             let index = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return index["_class_name"] as? String
+    }
+
+    static func fluxUsesGuidance(in container: URL) -> Bool {
+        let url = container.appendingPathComponent("transformer/config.json")
+        guard let data = try? Data(contentsOf: url),
+            let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let flag = config["guidance_embeds"] as? Bool
+        else { return false }
+        return flag
     }
 
     static func schedulerFacts(in container: URL) -> SchedulerFacts? {

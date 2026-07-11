@@ -24,7 +24,8 @@ enum SidecarBundle {
         runtimeID: RuntimeID, record: ModelRecord, bundle: URL, envDir: URL?,
         workdirRoot: URL, workdirName: String,
         extraArguments: [String] = [],
-        cooperativeCancel: Bool = false
+        cooperativeCancel: Bool = false,
+        cancelGraceTimeout: Duration = .seconds(10)
     ) throws -> SidecarSpec {
         guard let envDir else {
             throw KernelError.runtimeFailed("the \(runtimeID) environment was not prepared")
@@ -43,6 +44,7 @@ enum SidecarBundle {
             environment: ["PYTHONDONTWRITEBYTECODE": "1"],
             workingDirectory: workdir,
             readyTimeout: .seconds(600),
-            cooperativeCancel: cooperativeCancel)
+            cooperativeCancel: cooperativeCancel,
+            cancelGraceTimeout: cancelGraceTimeout)
     }
 }

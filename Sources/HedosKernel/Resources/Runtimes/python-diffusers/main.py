@@ -136,9 +136,14 @@ def load_pipeline(model_path, torch, pipeline_cls):
         )
     except Exception:
         fallback = None if variant is not None else "fp16"
-        pipe = pipeline_cls.from_pretrained(
-            model_path, torch_dtype=torch.float16, local_files_only=True, variant=fallback
-        )
+        try:
+            pipe = pipeline_cls.from_pretrained(
+                model_path, torch_dtype=torch.float16, local_files_only=True, variant=fallback
+            )
+        except Exception:
+            pipe = pipeline_cls.from_pretrained(
+                model_path, torch_dtype=torch.float32, local_files_only=True, variant=None
+            )
     pipe = pipe.to("mps")
     pipe.set_progress_bar_config(disable=True)
     return pipe
@@ -159,6 +164,7 @@ def main():
 
     pipe = load_pipeline(args.model, torch, AutoPipelineForText2Image)
     supports_callback = "callback_on_step_end" in inspect.signature(pipe.__call__).parameters
+    supports_negative = "negative_prompt" in inspect.signature(pipe.__call__).parameters
     send_json({"event": "ready"})
 
     while True:
@@ -183,6 +189,15 @@ def main():
             seed = request.get("seed")
             seed = int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little")
             width, height = (int(part) for part in size.split("x"))
+            negative_prompt = request.get("negative_prompt")
+            if negative_prompt is not None and str(negative_prompt).strip() and not supports_negative:
+                send_json(
+                    {
+                        "event": "error",
+                        "message": "this pipeline does not accept a negative prompt",
+                    }
+                )
+                continue
             emitter = StepEmitter(steps, torch, Image)
             options = {
                 "prompt": prompt,
@@ -193,6 +208,8 @@ def main():
                 "generator": torch.Generator("mps").manual_seed(seed),
                 "output_type": "pil",
             }
+            if negative_prompt is not None and str(negative_prompt).strip() and supports_negative:
+                options["negative_prompt"] = str(negative_prompt)
             if supports_callback:
                 options["callback_on_step_end"] = emitter
             send_json({"event": "begin"})

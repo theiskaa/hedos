@@ -72,7 +72,8 @@ struct DiffusersAdapter: RuntimeAdapter, JobRunning {
                 return try SidecarBundle.spec(
                     runtimeID: .diffusers, record: record, bundle: bundle, envDir: envDir,
                     workdirRoot: workdirRoot, workdirName: "python-diffusers",
-                    extraArguments: ["--name", record.name])
+                    extraArguments: ["--name", record.name],
+                    cancelGraceTimeout: .seconds(60))
             })
     }
 }

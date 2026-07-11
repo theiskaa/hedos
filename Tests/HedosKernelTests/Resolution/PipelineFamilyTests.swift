@@ -4,7 +4,8 @@ import Testing
 @testable import HedosKernel
 
 private func hfDiffusersRecord(
-    hub: URL, repo: String, modelIndex: String, scheduler: String?
+    hub: URL, repo: String, modelIndex: String, scheduler: String?,
+    transformer: String? = nil
 ) throws -> ModelRecord {
     try DiscoveryFixtures.makeHFRepo(
         at: hub,
@@ -12,7 +13,8 @@ private func hfDiffusersRecord(
             org: "acme", repo: repo,
             files: [("weights.safetensors", 64)],
             modelIndexJSON: modelIndex,
-            schedulerConfigJSON: scheduler))
+            schedulerConfigJSON: scheduler,
+            transformerConfigJSON: transformer))
     return ModelRecord(
         name: repo, modality: .unknown, capabilities: [],
         source: ModelSource(
@@ -166,13 +168,14 @@ private func param(_ params: [ParamSpec], _ key: String) -> ParamSpec? {
     #expect(resolved.modality == .video)
 }
 
-@Test func fluxProfileIsUnchangedAndResolvesToMflux() async throws {
+@Test func fluxDevProfileIsUnchangedAndResolvesToMflux() async throws {
     let hub = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: hub) }
     let record = try hfDiffusersRecord(
-        hub: hub, repo: "flux-schnell",
+        hub: hub, repo: "flux-dev",
         modelIndex: DiscoveryFixtures.fluxModelIndex,
-        scheduler: nil)
+        scheduler: nil,
+        transformer: DiscoveryFixtures.fluxDevTransformerConfig)
 
     let identified = Identification.identify(record)
     #expect(identified.params == PipelineFamilyRegistry.fluxParams)
@@ -184,6 +187,26 @@ private func param(_ params: [ParamSpec], _ key: String) -> ParamSpec? {
     #expect(resolved.runtime.id == "python:mflux")
     #expect(resolved.runtime.tier == .managed)
     #expect(resolved.runtime.alternatives == ["python:diffusers"])
+}
+
+@Test func fluxSchnellProfileDropsGuidanceAndResolvesToMflux() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    let record = try hfDiffusersRecord(
+        hub: hub, repo: "flux-schnell",
+        modelIndex: DiscoveryFixtures.fluxModelIndex,
+        scheduler: nil,
+        transformer: DiscoveryFixtures.fluxSchnellTransformerConfig)
+
+    let identified = Identification.identify(record)
+    #expect(!identified.params.contains { $0.key == "guidance" })
+
+    let registry = Registry(directory: hub.appendingPathComponent("store"))
+    try await registry.register(record)
+    try await ResolutionEngine(adapters: [MfluxAdapter()]).resolveAll(in: registry)
+    let resolved = try #require(try await registry.get(id: record.id))
+    #expect(resolved.runtime.id == "python:mflux")
+    #expect(!resolved.params.contains { $0.key == "guidance" })
 }
 
 @Test func seededFamilyTableIsInternallyConsistent() {

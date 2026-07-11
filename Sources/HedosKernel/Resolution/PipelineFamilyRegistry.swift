@@ -141,6 +141,7 @@ public struct PipelineFamilyRegistry: Sendable {
             key: "size", type: .enumeration, defaultValue: .string("512x512"),
             values: ["512x512", "576x576", "640x640", "768x768"]),
         ParamSpec(key: "seed", type: .int),
+        ParamSpec(key: "negative_prompt", type: .string),
     ]
 
     static let sdxlParams: [ParamSpec] = [
@@ -152,6 +153,7 @@ public struct PipelineFamilyRegistry: Sendable {
             key: "size", type: .enumeration, defaultValue: .string("1024x1024"),
             values: ["768x768", "1024x1024", "1152x896", "896x1152"]),
         ParamSpec(key: "seed", type: .int),
+        ParamSpec(key: "negative_prompt", type: .string),
     ]
 
     static let sd3Params: [ParamSpec] = [
@@ -163,6 +165,7 @@ public struct PipelineFamilyRegistry: Sendable {
             key: "size", type: .enumeration, defaultValue: .string("1024x1024"),
             values: ["768x768", "1024x1024", "1152x896", "896x1152"]),
         ParamSpec(key: "seed", type: .int),
+        ParamSpec(key: "negative_prompt", type: .string),
     ]
 
     static let pixartParams: [ParamSpec] = [
@@ -174,6 +177,7 @@ public struct PipelineFamilyRegistry: Sendable {
             key: "size", type: .enumeration, defaultValue: .string("1024x1024"),
             values: ["512x512", "768x768", "1024x1024"]),
         ParamSpec(key: "seed", type: .int),
+        ParamSpec(key: "negative_prompt", type: .string),
     ]
 
     static let kandinskyParams: [ParamSpec] = [
@@ -185,6 +189,7 @@ public struct PipelineFamilyRegistry: Sendable {
             key: "size", type: .enumeration, defaultValue: .string("768x768"),
             values: ["512x512", "768x768", "1024x1024"]),
         ParamSpec(key: "seed", type: .int),
+        ParamSpec(key: "negative_prompt", type: .string),
     ]
 
     static let lcmParams: [ParamSpec] = [

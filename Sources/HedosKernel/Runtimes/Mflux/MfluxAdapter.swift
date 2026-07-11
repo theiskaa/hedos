@@ -76,7 +76,8 @@ struct MfluxAdapter: RuntimeAdapter, JobRunning {
                 return try SidecarBundle.spec(
                     runtimeID: .mflux, record: record, bundle: bundle, envDir: envDir,
                     workdirRoot: workdirRoot, workdirName: "python-mflux",
-                    extraArguments: ["--name", record.name])
+                    extraArguments: ["--name", record.name],
+                    cancelGraceTimeout: .seconds(60))
             })
     }
 }

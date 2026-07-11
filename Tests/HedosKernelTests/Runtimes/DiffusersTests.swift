@@ -175,12 +175,25 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     #expect(lock.contains("--hash=sha256:"))
     #expect(!lock.lowercased().contains("nvidia"))
     #expect(!lock.lowercased().contains("xformers"))
+    let mainPy = try String(
+        contentsOf: bundle.appendingPathComponent("main.py"), encoding: .utf8)
+    #expect(mainPy.contains("negative_prompt"))
+    #expect(mainPy.contains("supports_negative"))
+    #expect(mainPy.contains("torch.float32"))
     let profile = try Data(contentsOf: bundle.appendingPathComponent("sandbox.sb"))
     let mfluxBundle = try #require(RuntimeBundle.directory(named: "python-mflux"))
     let mfluxProfile = try Data(contentsOf: mfluxBundle.appendingPathComponent("sandbox.sb"))
     #expect(profile == mfluxProfile)
     let contents = try fm.subpathsOfDirectory(atPath: bundle.path)
     #expect(!contents.contains { $0.contains("__pycache__") })
+}
+
+@Test func diffusersSpecDeclaresLongCancelGrace() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let descriptor = DiffusersAdapter.descriptor(environments: .shared, workdirRoot: dir)
+    let spec = try descriptor.makeSpec(sdxlRecord(), dir.appendingPathComponent("env"))
+    #expect(spec.cancelGraceTimeout == .seconds(60))
 }
 
 @Test func diffusersSandboxProfileLaunchesUnderSeatbeltAndDeniesNetwork() async throws {
@@ -297,6 +310,43 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     let seed = try #require(params["seed"])
     #expect(seed.type == .int)
     #expect(seed.defaultValue == nil)
+    let negative = try #require(params["negative_prompt"])
+    #expect(negative.type == .string)
+}
+
+@Test func resolvesSD1WithNegativePromptSchema() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let hubRoot = dir.appendingPathComponent("hub")
+    try DiscoveryFixtures.makeHFRepo(
+        at: hubRoot,
+        DiscoveryFixtures.HFRepo(
+            org: "runwayml", repo: "stable-diffusion-v1-5",
+            files: [("unet.safetensors", 8192)],
+            modelIndexJSON: DiscoveryFixtures.sd1ModelIndex))
+
+    let registry = Registry(directory: dir.appendingPathComponent("store"))
+    let record = ModelRecord(
+        name: "runwayml/stable-diffusion-v1-5",
+        modality: .unknown,
+        capabilities: [],
+        source: ModelSource(
+            kind: .huggingfaceCache,
+            path: hubRoot.appendingPathComponent("models--runwayml--stable-diffusion-v1-5").path,
+            repo: "runwayml/stable-diffusion-v1-5",
+            ref: "abc123def456"))
+    try await registry.register(record)
+
+    let engine = ResolutionEngine(adapters: [
+        LlamaCppAdapter(), OllamaAdapter(), MfluxAdapter(), DiffusersAdapter(),
+    ])
+    try await engine.resolveAll(in: registry)
+
+    let resolved = try #require(try await registry.get(id: record.id))
+    #expect(resolved.runtime.id == "python:diffusers")
+    let params = Dictionary(uniqueKeysWithValues: resolved.params.map { ($0.key, $0) })
+    let negative = try #require(params["negative_prompt"])
+    #expect(negative.type == .string)
 }
 
 @Test func fluxStillResolvesToMfluxWithDiffusersAsRealAlternative() async throws {

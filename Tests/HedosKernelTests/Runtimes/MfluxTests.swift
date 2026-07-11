@@ -207,6 +207,19 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     #expect(!output.contains("NETWORK-ALLOWED"))
 }
 
+@Test func mfluxSpecDeclaresLongCancelGrace() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let modelDir = dir.appendingPathComponent("model")
+    try FileManager.default.createDirectory(at: modelDir, withIntermediateDirectories: true)
+    let record = ModelRecord(
+        name: "flux-grace-probe", modality: .image, capabilities: [.image],
+        source: ModelSource(kind: .folder, path: modelDir.path))
+    let descriptor = MfluxAdapter.descriptor(environments: .shared, workdirRoot: dir)
+    let spec = try descriptor.makeSpec(record, dir.appendingPathComponent("env"))
+    #expect(spec.cancelGraceTimeout == .seconds(60))
+}
+
 @Test func resolvesHFCacheFluxPipelineToMfluxManagedWithSchema() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -214,20 +227,21 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     try DiscoveryFixtures.makeHFRepo(
         at: hubRoot,
         DiscoveryFixtures.HFRepo(
-            org: "black-forest-labs", repo: "FLUX.1-schnell",
+            org: "black-forest-labs", repo: "FLUX.1-dev",
             files: [("transformer.safetensors", 8192)],
-            modelIndexJSON: DiscoveryFixtures.fluxModelIndex))
+            modelIndexJSON: DiscoveryFixtures.fluxModelIndex,
+            transformerConfigJSON: DiscoveryFixtures.fluxDevTransformerConfig))
 
     let registry = Registry(directory: dir.appendingPathComponent("store"))
     let record = ModelRecord(
-        name: "black-forest-labs/FLUX.1-schnell",
+        name: "black-forest-labs/FLUX.1-dev",
         modality: .unknown,
         capabilities: [],
         source: ModelSource(
             kind: .huggingfaceCache,
-            path: hubRoot.appendingPathComponent("models--black-forest-labs--FLUX.1-schnell")
+            path: hubRoot.appendingPathComponent("models--black-forest-labs--FLUX.1-dev")
                 .path,
-            repo: "black-forest-labs/FLUX.1-schnell",
+            repo: "black-forest-labs/FLUX.1-dev",
             ref: "abc123def456"))
     try await registry.register(record)
 
@@ -259,6 +273,59 @@ private struct SidecarImageJobAdapter: RuntimeAdapter, JobRunning {
     let seed = try #require(params["seed"])
     #expect(seed.type == .int)
     #expect(seed.defaultValue == nil)
+    #expect(params["negative_prompt"] == nil)
+}
+
+@Test func devFluxKeepsGuidanceKnob() {
+    let dir = try! Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let container = dir.appendingPathComponent("flux-dev")
+    let transformer = container.appendingPathComponent("transformer")
+    try! FileManager.default.createDirectory(at: transformer, withIntermediateDirectories: true)
+    try! Data(DiscoveryFixtures.fluxModelIndex.utf8)
+        .write(to: container.appendingPathComponent("model_index.json"))
+    try! Data(DiscoveryFixtures.fluxDevTransformerConfig.utf8)
+        .write(to: transformer.appendingPathComponent("config.json"))
+
+    let record = ModelRecord(
+        name: "flux-dev", modality: .unknown, capabilities: [],
+        source: ModelSource(kind: .folder, path: container.path))
+    let identified = Identification.identify(record)
+    #expect(identified.pipelineClass == "FluxPipeline")
+    #expect(identified.params.contains { $0.key == "guidance" })
+}
+
+@Test func schnellFluxResolvesWithoutGuidanceKnob() {
+    let dir = try! Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let schnell = dir.appendingPathComponent("flux-schnell")
+    let schnellTransformer = schnell.appendingPathComponent("transformer")
+    try! FileManager.default.createDirectory(
+        at: schnellTransformer, withIntermediateDirectories: true)
+    try! Data(DiscoveryFixtures.fluxModelIndex.utf8)
+        .write(to: schnell.appendingPathComponent("model_index.json"))
+    try! Data(DiscoveryFixtures.fluxSchnellTransformerConfig.utf8)
+        .write(to: schnellTransformer.appendingPathComponent("config.json"))
+    let schnellRecord = ModelRecord(
+        name: "flux-schnell", modality: .unknown, capabilities: [],
+        source: ModelSource(kind: .folder, path: schnell.path))
+    let schnellIdentified = Identification.identify(schnellRecord)
+    #expect(schnellIdentified.pipelineClass == "FluxPipeline")
+    #expect(!schnellIdentified.params.contains { $0.key == "guidance" })
+    #expect(schnellIdentified.params.contains { $0.key == "steps" })
+    #expect(schnellIdentified.params.contains { $0.key == "size" })
+    #expect(schnellIdentified.params.contains { $0.key == "seed" })
+
+    let missing = dir.appendingPathComponent("flux-missing-config")
+    try! FileManager.default.createDirectory(at: missing, withIntermediateDirectories: true)
+    try! Data(DiscoveryFixtures.fluxModelIndex.utf8)
+        .write(to: missing.appendingPathComponent("model_index.json"))
+    let missingRecord = ModelRecord(
+        name: "flux-missing", modality: .unknown, capabilities: [],
+        source: ModelSource(kind: .folder, path: missing.path))
+    let missingIdentified = Identification.identify(missingRecord)
+    #expect(!missingIdentified.params.contains { $0.key == "guidance" })
 }
 
 @Test func modelIndexWithoutPipelineClassStaysRecipeNeeded() async throws {

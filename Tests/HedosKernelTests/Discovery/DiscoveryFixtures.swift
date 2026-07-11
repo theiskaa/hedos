@@ -101,6 +101,7 @@ enum DiscoveryFixtures {
         var configJSON: String?
         var modelIndexJSON: String?
         var schedulerConfigJSON: String?
+        var transformerConfigJSON: String?
         var writeRefsMain = true
         var revision = "abc123def456"
         var incompleteBlobs: [String] = []
@@ -147,6 +148,15 @@ enum DiscoveryFixtures {
             try fm.createDirectory(at: schedulerDir, withIntermediateDirectories: true)
             try fm.createSymbolicLink(
                 at: schedulerDir.appendingPathComponent("scheduler_config.json"),
+                withDestinationURL: blob)
+        }
+        if let transformerConfig = spec.transformerConfigJSON {
+            let blob = blobs.appendingPathComponent("blob-transformer")
+            try Data(transformerConfig.utf8).write(to: blob)
+            let transformerDir = snapshot.appendingPathComponent("transformer")
+            try fm.createDirectory(at: transformerDir, withIntermediateDirectories: true)
+            try fm.createSymbolicLink(
+                at: transformerDir.appendingPathComponent("config.json"),
                 withDestinationURL: blob)
         }
         for (index, name) in spec.incompleteBlobs.enumerated() {
@@ -197,6 +207,9 @@ enum DiscoveryFixtures {
     static let mlxWhisperConfig =
         #"{"architectures": ["WhisperForConditionalGeneration"], "quantization": {"bits": 4}}"#
     static let fluxModelIndex = #"{"_class_name": "FluxPipeline"}"#
+    static let fluxDevTransformerConfig = #"{"guidance_embeds": true}"#
+    static let fluxSchnellTransformerConfig = #"{"guidance_embeds": false}"#
+    static let sd1ModelIndex = #"{"_class_name": "StableDiffusionPipeline"}"#
     static let sdxlModelIndex = #"{"_class_name": "StableDiffusionXLPipeline"}"#
     static let cogVideoModelIndex = #"{"_class_name": "CogVideoXPipeline"}"#
     static let turboSchedulerConfig =
