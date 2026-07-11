@@ -19,6 +19,7 @@ struct SlashEntry: Identifiable {
     enum Kind {
         case command(SlashCommand)
         case prompt(Prompt)
+        case file(String)
     }
 
     let kind: Kind
@@ -27,6 +28,7 @@ struct SlashEntry: Identifiable {
         switch kind {
         case .command(let command): "command-\(command.id)"
         case .prompt(let prompt): "prompt-\(prompt.id)"
+        case .file(let path): "file-\(path)"
         }
     }
 
@@ -34,6 +36,7 @@ struct SlashEntry: Identifiable {
         switch kind {
         case .command(let command): command.glyph
         case .prompt: "text.quote"
+        case .file: "doc.text"
         }
     }
 
@@ -41,15 +44,19 @@ struct SlashEntry: Identifiable {
         switch kind {
         case .command(let command): "/" + command.title
         case .prompt(let prompt): prompt.title
+        case .file(let path): path
         }
     }
 
     var subtitle: String {
         switch kind {
-        case .command(let command): command.subtitle
+        case .command(let command):
+            return command.subtitle
         case .prompt(let prompt):
-            prompt.placeholderNames.isEmpty
+            return prompt.placeholderNames.isEmpty
                 ? "Prompt" : "Prompt · {\(prompt.placeholderNames.joined(separator: "} {"))}"
+        case .file:
+            return ""
         }
     }
 
@@ -57,6 +64,7 @@ struct SlashEntry: Identifiable {
         switch kind {
         case .command(let command): command.title
         case .prompt(let prompt): prompt.title
+        case .file(let path): path
         }
     }
 }

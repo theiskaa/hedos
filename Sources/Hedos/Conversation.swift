@@ -4,6 +4,10 @@ import HedosKernel
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct MentionSetup {
+    let files: () async -> [String]
+}
+
 struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     let placeholder: String
     @Binding var draft: String
@@ -15,6 +19,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     let onSend: () -> Void
     let onStop: () -> Void
     var slash: SlashSetup? = nil
+    var mentions: MentionSetup? = nil
     var dictation: DictationSetup? = nil
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let aux: () -> Aux
@@ -27,6 +32,8 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     @State private var slashPrompts: [Prompt] = []
     @State private var slashHighlight = 0
     @State private var slashSuppressed = false
+    @State private var mentionFiles: [String] = []
+    @State private var mentionSuppressed = false
     @State private var dictationController = DictationController()
 
     var body: some View {
@@ -118,9 +125,9 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             Color.clear
                 .frame(height: 1)
                 .overlay(alignment: .bottom) {
-                    if slashActive && !slashEntries.isEmpty {
+                    if menuActive && !menuEntries.isEmpty {
                         SlashMenuPanel(
-                            entries: slashEntries,
+                            entries: menuEntries,
                             highlighted: slashHighlight,
                             onAccept: acceptSlash,
                             onHighlight: { slashHighlight = $0 }
@@ -141,9 +148,19 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
                 slashSuppressed = false
             }
         }
+        .onChange(of: mentionQuery) { _, query in
+            slashHighlight = 0
+            if query == nil {
+                mentionSuppressed = false
+            }
+        }
         .task(id: slashActive) {
             guard slashActive, let slash else { return }
             slashPrompts = await slash.kernel.promptStore.list()
+        }
+        .task(id: mentionActive) {
+            guard mentionActive, let mentions else { return }
+            mentionFiles = await mentions.files()
         }
     }
 
@@ -171,11 +188,33 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
 
     private var slashQuery: String? {
         guard slash != nil, !isWorking else { return nil }
+        guard !mentionWins else { return nil }
         return PromptComposer.query(in: draft)
+    }
+
+    private var mentionQuery: String? {
+        guard mentions != nil, !isWorking, mentionWins else { return nil }
+        return PromptComposer.mentionQuery(in: draft)
+    }
+
+    private var mentionWins: Bool {
+        guard mentions != nil,
+            let mention = PromptComposer.mentionRange(in: draft)
+        else { return false }
+        guard let token = PromptComposer.tokenRange(in: draft) else { return true }
+        return mention.lowerBound > token.lowerBound
     }
 
     private var slashActive: Bool {
         slashQuery != nil && !slashSuppressed
+    }
+
+    private var mentionActive: Bool {
+        mentionQuery != nil && !mentionSuppressed
+    }
+
+    private var menuActive: Bool {
+        slashActive || mentionActive
     }
 
     private var slashEntries: [SlashEntry] {
@@ -185,6 +224,16 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             capability: slash.capability)
     }
 
+    private var mentionEntries: [SlashEntry] {
+        guard let query = mentionQuery, !mentionSuppressed else { return [] }
+        return PlaceFiles.matches(query: query, in: mentionFiles)
+            .map { SlashEntry(kind: .file($0)) }
+    }
+
+    private var menuEntries: [SlashEntry] {
+        mentionActive ? mentionEntries : slashEntries
+    }
+
     private func acceptSlash(_ entry: SlashEntry) {
         switch entry.kind {
         case .command(let command):
@@ -192,12 +241,14 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             command.perform()
         case .prompt(let prompt):
             draft = PromptComposer.inserting(prompt, into: draft)
+        case .file(let path):
+            draft = PromptComposer.acceptingMention(path, in: draft)
         }
     }
 
     private func interceptCommand(_ selector: Selector) -> Bool {
-        guard slashActive else { return false }
-        let entries = slashEntries
+        guard menuActive else { return false }
+        let entries = menuEntries
         guard !entries.isEmpty else { return false }
         switch selector {
         case #selector(NSResponder.moveUp(_:)):
@@ -210,7 +261,11 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
             acceptSlash(entries[min(slashHighlight, entries.count - 1)])
             return true
         case #selector(NSResponder.cancelOperation(_:)):
-            slashSuppressed = true
+            if mentionActive {
+                mentionSuppressed = true
+            } else {
+                slashSuppressed = true
+            }
             return true
         default:
             return false
