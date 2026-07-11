@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 
-@testable import HedosKernel
+@testable import Hedos
+import HedosKernel
 
 @Test func memoizedMarkdownReparsesOnlyWhenTextChanges() {
     var cache = MemoizedMarkdown()

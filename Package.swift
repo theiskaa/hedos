@@ -37,5 +37,8 @@ let package = Package(
             name: "HedosKernelTests",
             dependencies: ["HedosKernel"],
             exclude: ["Sidecar/FakeSidecar.py", "Runtimes/FakeSSEServer.py"]),
+        .testTarget(
+            name: "HedosTests",
+            dependencies: ["Hedos"]),
     ]
 )

@@ -1,13 +1,14 @@
 import Foundation
+import HedosKernel
 
-public struct MemoizedMarkdown: Sendable {
+struct MemoizedMarkdown: Sendable {
     private var cachedText: String?
     private var cachedBlocks: [MarkdownBlock] = []
-    public private(set) var parseCount = 0
+    private(set) var parseCount = 0
 
-    public init() {}
+    init() {}
 
-    public mutating func blocks(for text: String) -> [MarkdownBlock] {
+    mutating func blocks(for text: String) -> [MarkdownBlock] {
         if let cachedText, cachedText == text {
             return cachedBlocks
         }

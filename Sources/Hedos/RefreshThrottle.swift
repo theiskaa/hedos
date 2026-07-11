@@ -1,15 +1,15 @@
 import Foundation
 
-public struct RefreshThrottle: Sendable {
+struct RefreshThrottle: Sendable {
     private let everyTicks: Int
     private var counter: Int
 
-    public init(everyTicks: Int) {
+    init(everyTicks: Int) {
         self.everyTicks = everyTicks
         self.counter = everyTicks
     }
 
-    public mutating func shouldRefresh() -> Bool {
+    mutating func shouldRefresh() -> Bool {
         counter += 1
         if counter >= everyTicks {
             counter = 0

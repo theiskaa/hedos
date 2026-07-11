@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 
-@testable import HedosKernel
+@testable import Hedos
+import HedosKernel
 
 @Test func refreshThrottleFiresOnceAtStartThenEverySeventhTick() {
     var throttle = RefreshThrottle(everyTicks: 7)

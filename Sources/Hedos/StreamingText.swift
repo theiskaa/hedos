@@ -1,29 +1,29 @@
 import Foundation
 
-public struct PacedReveal: Sendable {
-    public private(set) var target = ""
-    public private(set) var revealedCount = 0
+struct PacedReveal: Sendable {
+    private(set) var target = ""
+    private(set) var revealedCount = 0
     private let baseChars: Int
     private let drainDivisor: Int
 
-    public init(baseChars: Int = 12, drainDivisor: Int = 24) {
+    init(baseChars: Int = 12, drainDivisor: Int = 24) {
         self.baseChars = baseChars
         self.drainDivisor = drainDivisor
     }
 
-    public var backlog: Int {
+    var backlog: Int {
         max(0, target.count - revealedCount)
     }
 
-    public var revealed: String {
+    var revealed: String {
         String(target.prefix(revealedCount))
     }
 
-    public mutating func append(_ delta: String) {
+    mutating func append(_ delta: String) {
         target += delta
     }
 
-    public mutating func tick() -> Bool {
+    mutating func tick() -> Bool {
         let pending = backlog
         guard pending > 0 else { return false }
         let step = max(baseChars, pending / drainDivisor)
@@ -31,18 +31,18 @@ public struct PacedReveal: Sendable {
         return true
     }
 
-    public mutating func finish() {
+    mutating func finish() {
         revealedCount = target.count
     }
 
-    public mutating func reset() {
+    mutating func reset() {
         target = ""
         revealedCount = 0
     }
 }
 
-public enum MarkdownBalancer {
-    public static func balanced(_ partial: String) -> String {
+enum MarkdownBalancer {
+    static func balanced(_ partial: String) -> String {
         var inFence = false
         var stack: [String] = []
         var inInlineCode = false
