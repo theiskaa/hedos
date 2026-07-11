@@ -18,7 +18,7 @@ private func seededSession(
 private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
     ChatFlow(
         chats: store,
-        stream: { _, _ in
+        stream: { _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text(reply))
                 continuation.yield(.done(GenerationStats(completionTokens: 3, durationMs: 90)))
@@ -60,7 +60,7 @@ private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
 
     let failing = ChatFlow(
         chats: store,
-        stream: { _, _ in
+        stream: { _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "down"))
             }
@@ -96,7 +96,7 @@ private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
 
     let failing = ChatFlow(
         chats: store,
-        stream: { _, _ in
+        stream: { _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "down"))
             }

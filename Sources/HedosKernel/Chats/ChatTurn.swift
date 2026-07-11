@@ -8,6 +8,11 @@ public struct TurnRole: RawRepresentable, Codable, Hashable, Sendable, Expressib
     public static let system = TurnRole(rawValue: "system")
     public static let user = TurnRole(rawValue: "user")
     public static let assistant = TurnRole(rawValue: "assistant")
+    public static let tool = TurnRole(rawValue: "tool")
+
+    public var messageRole: ChatMessage.Role? {
+        ChatMessage.Role(rawValue: rawValue)
+    }
 }
 
 public struct TurnDraft: Sendable, Hashable {
@@ -17,6 +22,9 @@ public struct TurnDraft: Sendable, Hashable {
     public var modelID: String?
     var statsJSON: String?
     public var artifactRefs: [String]
+    public var toolCallsJSON: String?
+    public var toolCallID: String?
+    public var toolName: String?
 
     public init(
         role: TurnRole,
@@ -24,7 +32,10 @@ public struct TurnDraft: Sendable, Hashable {
         thinking: String? = nil,
         modelID: String? = nil,
         statsJSON: String? = nil,
-        artifactRefs: [String] = []
+        artifactRefs: [String] = [],
+        toolCallsJSON: String? = nil,
+        toolCallID: String? = nil,
+        toolName: String? = nil
     ) {
         self.role = role
         self.content = content
@@ -32,6 +43,9 @@ public struct TurnDraft: Sendable, Hashable {
         self.modelID = modelID
         self.statsJSON = statsJSON
         self.artifactRefs = artifactRefs
+        self.toolCallsJSON = toolCallsJSON
+        self.toolCallID = toolCallID
+        self.toolName = toolName
     }
 
     public init(
@@ -40,7 +54,10 @@ public struct TurnDraft: Sendable, Hashable {
         thinking: String? = nil,
         modelID: String? = nil,
         stats: GenerationStats?,
-        artifactRefs: [String] = []
+        artifactRefs: [String] = [],
+        toolCalls: [ToolCall] = [],
+        toolCallID: String? = nil,
+        toolName: String? = nil
     ) {
         self.init(
             role: role,
@@ -48,7 +65,25 @@ public struct TurnDraft: Sendable, Hashable {
             thinking: thinking,
             modelID: modelID,
             statsJSON: stats?.turnStatsJSON,
-            artifactRefs: artifactRefs)
+            artifactRefs: artifactRefs,
+            toolCallsJSON: toolCalls.turnToolCallsJSON,
+            toolCallID: toolCallID,
+            toolName: toolName)
+    }
+}
+
+extension [ToolCall] {
+    public var turnToolCallsJSON: String? {
+        guard !isEmpty else { return nil }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    public static func fromTurnToolCallsJSON(_ json: String?) -> [ToolCall] {
+        guard let json, let data = json.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([ToolCall].self, from: data)) ?? []
     }
 }
 
@@ -78,6 +113,9 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
     public var contentHash: String
     public let createdAt: Date
     public var updatedAt: Date
+    public var toolCallsJSON: String?
+    public var toolCallID: String?
+    public var toolName: String?
 
     public init(
         id: String,
@@ -92,7 +130,10 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         supersededBy: String? = nil,
         contentHash: String,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        toolCallsJSON: String? = nil,
+        toolCallID: String? = nil,
+        toolName: String? = nil
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -107,10 +148,17 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         self.contentHash = contentHash
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.toolCallsJSON = toolCallsJSON
+        self.toolCallID = toolCallID
+        self.toolName = toolName
     }
 
     public var stats: GenerationStats? {
         GenerationStats.fromTurnStatsJSON(statsJSON)
+    }
+
+    public var toolCalls: [ToolCall] {
+        [ToolCall].fromTurnToolCallsJSON(toolCallsJSON)
     }
 
     public var isGeneratedArtifact: Bool {

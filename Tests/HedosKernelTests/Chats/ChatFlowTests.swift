@@ -8,6 +8,26 @@ private func flowStore() throws -> (store: ChatStore, dir: URL) {
     return (ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite")), dir)
 }
 
+private func cannedTitling(
+    store: ChatStore,
+    shelf: [ModelRecord] = [],
+    asked: AskedModels? = nil,
+    chunks: @escaping @Sendable (String) -> [CapabilityChunk]
+) -> ChatTitling {
+    ChatTitling(
+        chats: store,
+        stream: { modelID, _ in
+            await asked?.record(modelID)
+            return AsyncThrowingStream { continuation in
+                for chunk in chunks(modelID) {
+                    continuation.yield(chunk)
+                }
+                continuation.finish()
+            }
+        },
+        shelf: { shelf })
+}
+
 private func cannedFlow(
     store: ChatStore,
     shelf: [ModelRecord] = [],
@@ -16,7 +36,7 @@ private func cannedFlow(
 ) -> ChatFlow {
     ChatFlow(
         chats: store,
-        stream: { modelID, _ in
+        stream: { modelID, _, _ in
             await asked?.record(modelID)
             return AsyncThrowingStream { continuation in
                 for chunk in chunks(modelID) {
@@ -98,7 +118,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     let session = try await store.createSession(modelID: "model-a")
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _ in
+        stream: { _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text("partial"))
             }
@@ -129,7 +149,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     let session = try await store.createSession(modelID: "model-a")
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _ in
+        stream: { _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "daemon down"))
             }
@@ -167,7 +187,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
         TurnDraft(role: .assistant, content: "It tracks ownership.", modelID: big.id),
         to: session.id)
     let asked = AskedModels()
-    let flow = cannedFlow(store: store, shelf: [big, small], asked: asked) { _ in
+    let flow = cannedTitling(store: store, shelf: [big, small], asked: asked) { _ in
         [.text("  \"Rust Borrow Checker Explained In Depth Fully.\"\nextra line")]
     }
 
@@ -189,7 +209,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     _ = try await store.appendTurn(
         TurnDraft(role: .assistant, content: "hi", modelID: bound.id), to: session.id)
     let asked = AskedModels()
-    let flow = cannedFlow(store: store, shelf: [tiny, bound], asked: asked) { _ in
+    let flow = cannedTitling(store: store, shelf: [tiny, bound], asked: asked) { _ in
         [.text("Friendly Greeting")]
     }
 
@@ -207,7 +227,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
         to: session.id)
     _ = try await store.appendTurn(
         TurnDraft(role: .assistant, content: "sure", modelID: "model-a"), to: session.id)
-    let flow = ChatFlow(
+    let flow = ChatTitling(
         chats: store,
         stream: { _, _ in
             AsyncThrowingStream { continuation in
@@ -224,7 +244,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
 @Test func autoTitleLeavesCustomTitlesAndUnfinishedExchangesAlone() async throws {
     let (store, dir) = try flowStore()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let flow = cannedFlow(store: store) { _ in [.text("Ignored")] }
+    let flow = cannedTitling(store: store) { _ in [.text("Ignored")] }
 
     let renamed = try await store.createSession(modelID: "model-a")
     try await store.renameSession(id: renamed.id, title: "My Title")
@@ -241,11 +261,11 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
 }
 
 @Test func sanitizedTitleClipsQuotesPunctuationAndWordCount() {
-    #expect(ChatFlow.sanitizedTitle("\"A Very Long Title With Many Extra Words\"") == "A Very Long Title With Many")
-    #expect(ChatFlow.sanitizedTitle("Title: The Sequel!") == "Title: The Sequel")
-    #expect(ChatFlow.sanitizedTitle("\n\n  Plain answer  \n") == "Plain answer")
-    #expect(ChatFlow.sanitizedTitle("   ") == nil)
-    #expect(ChatFlow.sanitizedTitle("") == nil)
+    #expect(ChatTitling.sanitizedTitle("\"A Very Long Title With Many Extra Words\"") == "A Very Long Title With Many")
+    #expect(ChatTitling.sanitizedTitle("Title: The Sequel!") == "Title: The Sequel")
+    #expect(ChatTitling.sanitizedTitle("\n\n  Plain answer  \n") == "Plain answer")
+    #expect(ChatTitling.sanitizedTitle("   ") == nil)
+    #expect(ChatTitling.sanitizedTitle("") == nil)
 }
 
 @Test func rebindSessionUpdatesBindingAndPersists() async throws {
@@ -285,7 +305,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
 
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _ in
+        stream: { _, _, _ in
             AsyncThrowingStream { continuation in
                 let task = Task {
                     var opened = gate.makeAsyncIterator()

@@ -93,3 +93,44 @@ private func roles(_ messages: [ChatMessage]) -> [String] {
     #expect(messages[0].content == "hi\n\nafter")
     #expect(!messages[0].content.contains("an image prompt"))
 }
+
+@Test func assistantTurnWithToolCallsProjectsEvenWhenContentIsEmpty() {
+    let call = ToolCall(id: "call-1", name: "get_time", arguments: .object([:]))
+    var calling = turn(1, .assistant, "")
+    calling.toolCallsJSON = [call].turnToolCallsJSON
+    var result = turn(2, .tool, "12:00")
+    result.toolCallID = "call-1"
+    result.toolName = "get_time"
+    let turns = [
+        turn(0, .user, "what time is it"),
+        calling,
+        result,
+        turn(3, .assistant, "It is noon."),
+    ]
+    let messages = ChatFlow.messages(from: turns)
+    #expect(messages.count == 4)
+    #expect(messages[1].role == .assistant)
+    #expect(messages[1].toolCalls == [call])
+    #expect(messages[2].role == .tool)
+    #expect(messages[2].toolCallID == "call-1")
+    #expect(messages[2].toolName == "get_time")
+    #expect(messages[3].content == "It is noon.")
+}
+
+@Test func mergeNeverCrossesToolBoundaries() {
+    let call = ToolCall(id: "call-1", name: "list", arguments: .object([:]))
+    var calling = turn(0, .assistant, "checking")
+    calling.toolCallsJSON = [call].turnToolCallsJSON
+    var first = turn(1, .tool, "a.txt")
+    first.toolCallID = "call-1"
+    first.toolName = "list"
+    var second = turn(2, .tool, "b.txt")
+    second.toolCallID = "call-2"
+    second.toolName = "list"
+    let turns = [calling, first, second, turn(3, .assistant, "done")]
+    let messages = ChatFlow.messages(from: turns)
+    #expect(messages.count == 4)
+    #expect(messages[1].content == "a.txt")
+    #expect(messages[2].content == "b.txt")
+    #expect(messages[3].content == "done")
+}
