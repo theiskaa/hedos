@@ -28,7 +28,7 @@ public enum DuplicateDetector {
         for (size, candidates) in bySize where candidates.count > 1 {
             var byPrefix: [String: [(model: DiscoveredModel, path: String)]] = [:]
             for candidate in candidates {
-                guard let prefix = prefixHash(of: candidate.path) else { continue }
+                guard let prefix = fingerprint(ofPath: candidate.path) else { continue }
                 byPrefix[prefix, default: []].append(candidate)
             }
             for (_, matches) in byPrefix where matches.count > 1 {
@@ -42,7 +42,7 @@ public enum DuplicateDetector {
         return groups.sorted { $0.wastedBytes > $1.wastedBytes }
     }
 
-    private static func prefixHash(of path: String) -> String? {
+    static func fingerprint(ofPath path: String) -> String? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd() else { return nil }

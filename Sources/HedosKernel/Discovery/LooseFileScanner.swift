@@ -53,6 +53,7 @@ public struct LooseFileScanner: StoreScanner {
                 options: [.skipsHiddenFiles])
         else { return }
 
+        var ggufFiles: [(url: URL, bytes: Int64)] = []
         for entry in entries {
             let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
             if values?.isDirectory == true {
@@ -64,16 +65,7 @@ public struct LooseFileScanner: StoreScanner {
             } else if entry.pathExtension.lowercased() == "gguf",
                 !Identification.isMmprojName(entry.lastPathComponent)
             {
-                let hint = ModalityHints.gguf
-                result.discovered.append(
-                    DiscoveredModel(
-                        name: entry.deletingPathExtension().lastPathComponent,
-                        source: ModelSource(kind: .file, path: entry.path),
-                        modalityHint: hint.modality,
-                        capabilitiesHint: hint.capabilities,
-                        executionHint: hint.execution,
-                        footprintBytes: Int64(values?.fileSize ?? 0),
-                        primaryWeightPath: entry.path))
+                ggufFiles.append((entry, Int64(values?.fileSize ?? 0)))
             } else if entry.pathExtension.lowercased() == "bin",
                 Identification.hasGGMLMagic(at: entry)
             {
@@ -89,6 +81,10 @@ public struct LooseFileScanner: StoreScanner {
                         primaryWeightPath: entry.path))
             }
         }
+        let (models, issues) = GGUFShards.discoveredModels(
+            from: ggufFiles, kind: .file, repo: { _ in nil })
+        result.discovered.append(contentsOf: models)
+        result.issues.append(contentsOf: issues)
     }
 
     private func folderBundle(at dir: URL) -> DiscoveredModel? {

@@ -289,3 +289,177 @@ private func makeStripedFile(
     #expect(DiscoverySummary.formatBytes(350 << 20) == "350 MB")
     #expect(DiscoverySummary.formatBytes(512) == "512 B")
 }
+
+@Test func downloadingRepoStaysUnresolvedThenHealsWhenBlobsFinish() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let hub = root.appendingPathComponent("hub")
+    try FileManager.default.createDirectory(at: hub, withIntermediateDirectories: true)
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "mlx-community", repo: "Downloading-Model",
+            files: [("model.safetensors", 512), ("tokenizer.json", 64)],
+            configJSON: DiscoveryFixtures.causalLMConfig,
+            incompleteBlobs: ["pending"]))
+
+    let registry = Registry(directory: root.appendingPathComponent("store"))
+    let service = DiscoveryService(scanners: [HFCacheScanner(root: hub)], duplicateThreshold: 1024)
+    let engine = ResolutionEngine(adapters: [AlwaysBidAdapter()])
+
+    _ = try await service.discover(into: registry)
+    try await engine.resolveAll(in: registry)
+    let downloading = try #require(try await registry.list().first)
+    #expect(downloading.downloading)
+    #expect(downloading.state == .unresolved)
+
+    try FileManager.default.removeItem(
+        at: hub.appendingPathComponent(
+            "models--mlx-community--Downloading-Model/blobs/pending.incomplete"))
+
+    _ = try await service.discover(into: registry)
+    try await engine.resolveAll(in: registry)
+    let healed = try #require(try await registry.list().first)
+    #expect(!healed.downloading)
+    #expect(healed.state == .ready)
+}
+
+private func moveScenario() throws -> (root: URL, registry: Registry, service: DiscoveryService, fileA: URL, dirB: URL) {
+    let root = try Fixtures.tempDirectory()
+    let dirA = root.appendingPathComponent("A")
+    let dirB = root.appendingPathComponent("B")
+    try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+    let fileA = dirA.appendingPathComponent("model.gguf")
+    try DiscoveryFixtures.makeGGUF(at: fileA, bytes: 4096, fill: 0x5A)
+
+    let registry = Registry(directory: root.appendingPathComponent("store"))
+    let service = DiscoveryService(
+        scanners: [LooseFileScanner(directories: [dirA, dirB])], duplicateThreshold: 1 << 30)
+    return (root, registry, service, fileA, dirB)
+}
+
+@Test func movedWeightKeepsAliasPromptAndParamValues() async throws {
+    let (root, registry, service, fileA, dirB) = try moveScenario()
+    defer { try? FileManager.default.removeItem(at: root) }
+    _ = try await service.discover(into: registry)
+
+    var configured = try #require(try await registry.list().first)
+    configured.params = [
+        ParamSpec(key: "temperature", type: .float, range: [.double(0), .double(2)])
+    ]
+    configured.alias = "My Model"
+    configured.systemPrompt = "be concise"
+    configured.paramValues = ["temperature": .double(0.4)]
+    try await registry.register(configured)
+
+    try FileManager.default.moveItem(at: fileA, to: dirB.appendingPathComponent("model.gguf"))
+    _ = try await service.discover(into: registry)
+
+    let records = try await registry.list()
+    #expect(records.count == 1)
+    let moved = try #require(records.first)
+    #expect(moved.primaryWeightPath?.hasSuffix("/B/model.gguf") == true)
+    #expect(moved.alias == "My Model")
+    #expect(moved.systemPrompt == "be concise")
+    #expect(moved.paramValues["temperature"] == .double(0.4))
+    #expect(moved.state != .missing)
+}
+
+@Test func moveMigrationRemovesTheOrphanedRecord() async throws {
+    let (root, registry, service, fileA, dirB) = try moveScenario()
+    defer { try? FileManager.default.removeItem(at: root) }
+    _ = try await service.discover(into: registry)
+    let originalID = try #require(try await registry.list().first).id
+
+    try FileManager.default.moveItem(at: fileA, to: dirB.appendingPathComponent("model.gguf"))
+    _ = try await service.discover(into: registry)
+
+    #expect(try await registry.get(id: originalID) == nil)
+    #expect(try await registry.list().count == 1)
+}
+
+@Test func moveMigrationSkipsWhenTwoOrphansShareContent() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let dirA = root.appendingPathComponent("A")
+    let dirB = root.appendingPathComponent("B")
+    try FileManager.default.createDirectory(at: dirA, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: dirB, withIntermediateDirectories: true)
+    let one = dirA.appendingPathComponent("one.gguf")
+    let two = dirA.appendingPathComponent("two.gguf")
+    try DiscoveryFixtures.makeGGUF(at: one, bytes: 4096, fill: 0x7C)
+    try DiscoveryFixtures.makeGGUF(at: two, bytes: 4096, fill: 0x7C)
+
+    let registry = Registry(directory: root.appendingPathComponent("store"))
+    let service = DiscoveryService(
+        scanners: [LooseFileScanner(directories: [dirA, dirB])], duplicateThreshold: 1 << 30)
+    _ = try await service.discover(into: registry)
+
+    var configured = try #require(try await registry.list().first {
+        $0.primaryWeightPath?.hasSuffix("one.gguf") == true
+    })
+    configured.alias = "Configured"
+    try await registry.register(configured)
+
+    try FileManager.default.removeItem(at: one)
+    try FileManager.default.removeItem(at: two)
+    try DiscoveryFixtures.makeGGUF(
+        at: dirB.appendingPathComponent("moved.gguf"), bytes: 4096, fill: 0x7C)
+    _ = try await service.discover(into: registry)
+
+    let moved = try #require(try await registry.list().first {
+        $0.primaryWeightPath?.hasSuffix("moved.gguf") == true
+    })
+    #expect(moved.alias == nil)
+}
+
+private struct FlippableFoundationBackend: AppleFoundationBackend {
+    let state: BuiltinAvailability
+    func availability() -> BuiltinAvailability { state }
+
+    func stream(
+        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
+        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
+    ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}
+
+@Test func builtinFlipDemotesOnScanAndHealsOnReturn() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let registry = Registry(directory: dir)
+    func service(_ state: BuiltinAvailability) -> DiscoveryService {
+        DiscoveryService(
+            scanners: [AppleFoundationScanner(backend: FlippableFoundationBackend(state: state))],
+            duplicateThreshold: 1 << 30)
+    }
+
+    _ = try await service(.available).discover(into: registry)
+    #expect(try await registry.list().first?.state != .missing)
+
+    _ = try await service(.notEnabled).discover(into: registry)
+    let demoted = try await registry.list()
+    #expect(demoted.count == 1)
+    #expect(demoted.first?.state == .missing)
+
+    _ = try await service(.available).discover(into: registry)
+    #expect(try await registry.list().first?.state != .missing)
+}
+
+private struct AlwaysBidAdapter: RuntimeAdapter {
+    var id: RuntimeID { "always" }
+
+    func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool { true }
+
+    func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
+        RuntimeBid(tier: .native, preference: 10)
+    }
+
+    func invoke(
+        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
+    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
+}

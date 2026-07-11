@@ -89,12 +89,14 @@ public actor DiscoveryService {
             existing.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var seenIDs = Set<String>()
         var toRegister: [ModelRecord] = []
+        var newRecordIDs = Set<String>()
 
         for model in discovered {
             let id = ModelRecord.stableID(for: model.source)
             guard seenIDs.insert(id).inserted else { continue }
 
             if var record = existingByID[id] {
+                record.contentFingerprint = fingerprint(for: model, existing: record)
                 record.name = model.name
                 record.source = model.source
                 record.footprintMB = Int(model.footprintBytes / (1 << 20))
@@ -111,6 +113,7 @@ public actor DiscoveryService {
                     record.stopTokens = stopTokens
                 }
                 record.execution = model.executionHint
+                record.downloading = model.downloading
                 if record.state == .missing { record.state = .unresolved }
                 toRegister.append(record)
             } else {
@@ -126,7 +129,10 @@ public actor DiscoveryService {
                     hasChatTemplate: model.hasChatTemplateHint,
                     stopTokens: model.stopTokensHint)
                 record.primaryWeightPath = model.primaryWeightPath
+                record.downloading = model.downloading
+                record.contentFingerprint = fingerprint(for: model, existing: nil)
                 toRegister.append(record)
+                newRecordIDs.insert(id)
             }
         }
 
@@ -139,7 +145,18 @@ public actor DiscoveryService {
             stale.state = .missing
             toRegister.append(stale)
         }
-        try await registry.register(contentsOf: toRegister)
+
+        let migratedAwayIDs = migrateMovedConfig(
+            into: &toRegister, newRecordIDs: newRecordIDs,
+            missingCandidates: existing.filter {
+                !seenIDs.contains($0.id)
+                    && ($0.state == .missing || scannedKinds.contains($0.source.kind))
+            })
+        try await registry.register(
+            contentsOf: toRegister.filter { !migratedAwayIDs.contains($0.id) })
+        for id in migratedAwayIDs {
+            try await registry.unregister(id: id)
+        }
 
         var perKind: [SourceKind: DiscoverySummary.KindStat] = [:]
         for model in discovered {
@@ -155,5 +172,37 @@ public actor DiscoveryService {
             duplicates: DuplicateDetector.detect(in: discovered, threshold: duplicateThreshold),
             issues: issues,
             failedKinds: failedKinds)
+    }
+
+    private func fingerprint(for model: DiscoveredModel, existing: ModelRecord?) -> String? {
+        guard let path = model.primaryWeightPath else { return existing?.contentFingerprint }
+        if let existing, let known = existing.contentFingerprint,
+            existing.primaryWeightPath == model.primaryWeightPath,
+            existing.footprintMB == Int(model.footprintBytes / (1 << 20))
+        {
+            return known
+        }
+        return DuplicateDetector.fingerprint(ofPath: path)
+    }
+
+    private func migrateMovedConfig(
+        into toRegister: inout [ModelRecord], newRecordIDs: Set<String>,
+        missingCandidates: [ModelRecord]
+    ) -> Set<String> {
+        var claimed = Set<String>()
+        for index in toRegister.indices where newRecordIDs.contains(toRegister[index].id) {
+            guard let fingerprint = toRegister[index].contentFingerprint else { continue }
+            let matches = missingCandidates.filter {
+                $0.contentFingerprint == fingerprint
+                    && $0.footprintMB == toRegister[index].footprintMB
+                    && !claimed.contains($0.id)
+            }
+            guard matches.count == 1, let orphan = matches.first else { continue }
+            toRegister[index].paramValues = orphan.paramValues
+            toRegister[index].systemPrompt = orphan.systemPrompt
+            toRegister[index].alias = orphan.alias
+            claimed.insert(orphan.id)
+        }
+        return claimed
     }
 }

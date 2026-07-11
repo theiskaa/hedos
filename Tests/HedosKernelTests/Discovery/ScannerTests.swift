@@ -206,6 +206,170 @@ import Testing
     #expect(model.capabilitiesHint == [.embed])
 }
 
+@Test func hfScannerFlagsIncompleteBlobsAsDownloading() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "mlx-community", repo: "Half-Downloaded",
+            files: [("model.safetensors", 512), ("tokenizer.json", 64)],
+            configJSON: DiscoveryFixtures.causalLMConfig,
+            incompleteBlobs: ["a1b2c3"]))
+
+    let model = try #require(await HFCacheScanner(root: hub).scan().discovered.first)
+    #expect(model.downloading)
+}
+
+@Test func hfScannerFlagsIndexReferencedMissingShards() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    let indexJSON =
+        #"{"weight_map": {"a.weight": "model-00001-of-00002.safetensors", "b.weight": "model-00002-of-00002.safetensors"}}"#
+
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "mlx-community", repo: "Sharded-Partial",
+            files: [("model-00001-of-00002.safetensors", 512), ("tokenizer.json", 64)],
+            configJSON: DiscoveryFixtures.causalLMConfig,
+            safetensorsIndexJSON: indexJSON))
+    let partial = try #require(await HFCacheScanner(root: hub).scan().discovered.first)
+    #expect(partial.downloading)
+
+    let whole = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: whole) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: whole,
+        .init(
+            org: "mlx-community", repo: "Sharded-Complete",
+            files: [
+                ("model-00001-of-00002.safetensors", 512),
+                ("model-00002-of-00002.safetensors", 512),
+                ("tokenizer.json", 64),
+            ],
+            configJSON: DiscoveryFixtures.causalLMConfig,
+            safetensorsIndexJSON: indexJSON))
+    let complete = try #require(await HFCacheScanner(root: whole).scan().discovered.first)
+    #expect(!complete.downloading)
+}
+
+@Test func shardedGGUFCollapsesToOneRecordWithSummedFootprint() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("Models")
+    let written = try DiscoveryFixtures.makeShardedGGUF(
+        at: models, baseName: "big-model", parts: 3)
+    let expected = written.reduce(Int64(0)) {
+        $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+    }
+
+    let result = await LooseFileScanner(directories: [models]).scan()
+    #expect(result.discovered.count == 1)
+    let model = try #require(result.discovered.first)
+    #expect(model.name == "big-model")
+    #expect(model.primaryWeightPath?.hasSuffix("big-model-00001-of-00003.gguf") == true)
+    #expect(model.footprintBytes == expected)
+    #expect(!model.downloading)
+}
+
+@Test func shardSetWithoutFirstPartReportsIssueNotRecord() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("Models")
+    try DiscoveryFixtures.makeShardedGGUF(
+        at: models, baseName: "headless", parts: 3, presentParts: [2, 3])
+
+    let result = await LooseFileScanner(directories: [models]).scan()
+    #expect(result.discovered.isEmpty)
+    #expect(result.issues.contains { $0.contains("headless") })
+}
+
+@Test func shardSetMissingLaterPartFlagsDownloading() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("Models")
+    try DiscoveryFixtures.makeShardedGGUF(
+        at: models, baseName: "partial", parts: 3, presentParts: [1, 2])
+
+    let result = await LooseFileScanner(directories: [models]).scan()
+    #expect(result.discovered.count == 1)
+    #expect(result.discovered.first?.downloading == true)
+}
+
+@Test func shardedGGUFCollapsesInLMStudio() async throws {
+    let root = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let models = root.appendingPathComponent("org/big-model")
+    try DiscoveryFixtures.makeShardedGGUF(at: models, baseName: "big-model", parts: 2)
+
+    let result = await LMStudioScanner(roots: [root]).scan()
+    #expect(result.discovered.count == 1)
+    let model = try #require(result.discovered.first)
+    #expect(model.name == "big-model")
+    #expect(model.primaryWeightPath?.hasSuffix("big-model-00001-of-00002.gguf") == true)
+    #expect(model.source.repo == "org/big-model")
+}
+
+@Test func hfGGUFOnlyRepoGetsWeightPath() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "org", repo: "gguf-only",
+            files: [("model.gguf", 4096)],
+            configJSON: DiscoveryFixtures.causalLMConfig))
+
+    let model = try #require(await HFCacheScanner(root: hub).scan().discovered.first)
+    #expect(model.primaryWeightPath != nil)
+}
+
+@Test func hfShardedGGUFPointsAtFirstShard() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "org", repo: "sharded-gguf",
+            files: [
+                ("m-00001-of-00002.gguf", 4096),
+                ("m-00002-of-00002.gguf", 4096),
+            ],
+            configJSON: DiscoveryFixtures.causalLMConfig))
+
+    let model = try #require(await HFCacheScanner(root: hub).scan().discovered.first)
+    #expect(model.primaryWeightPath?.hasSuffix("blob0") == true)
+}
+
+@Test func hfShardedGGUFMissingPartFlagsDownloading() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "org", repo: "partial-gguf",
+            files: [("m-00001-of-00003.gguf", 4096), ("m-00002-of-00003.gguf", 4096)],
+            configJSON: DiscoveryFixtures.causalLMConfig))
+
+    let model = try #require(await HFCacheScanner(root: hub).scan().discovered.first)
+    #expect(model.downloading)
+}
+
+@Test func hfLargestWeightSkipsMmprojProjector() async throws {
+    let hub = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: hub) }
+    try DiscoveryFixtures.makeHFRepo(
+        at: hub,
+        .init(
+            org: "org", repo: "vision-gguf",
+            files: [("model.gguf", 2048), ("mmproj-model-f16.gguf", 8192)],
+            configJSON: DiscoveryFixtures.causalLMConfig))
+
+    let model = try #require(await HFCacheScanner(root: hub).scan().discovered.first)
+    #expect(model.primaryWeightPath?.hasSuffix("blob0") == true)
+}
+
 @Test func hfScannerCarriesContextLengthHint() async throws {
     let hub = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: hub) }

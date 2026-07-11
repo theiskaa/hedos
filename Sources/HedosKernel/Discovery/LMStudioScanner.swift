@@ -34,26 +34,25 @@ public struct LMStudioScanner: StoreScanner {
                 result.failedKinds.insert(.lmStudio)
                 continue
             }
+            var ggufFiles: [(url: URL, bytes: Int64)] = []
             for case let url as URL in enumerator {
                 guard url.pathExtension.lowercased() == "gguf",
                     !Identification.isMmprojName(url.lastPathComponent),
                     (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
                 else { continue }
                 let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
-                let rel = url.relativePath.split(separator: "/")
-                let repo = rel.count >= 3 ? rel.dropLast().joined(separator: "/") : nil
-                let hint = ModalityHints.gguf
-                result.discovered.append(
-                    DiscoveredModel(
-                        name: url.deletingPathExtension().lastPathComponent,
-                        source: ModelSource(kind: .lmStudio, path: url.path, repo: repo),
-                        modalityHint: hint.modality,
-                        capabilitiesHint: hint.capabilities,
-                        executionHint: hint.execution,
-                        footprintBytes: size,
-                        primaryWeightPath: url.path))
+                ggufFiles.append((url, size))
             }
+            let (models, issues) = GGUFShards.discoveredModels(
+                from: ggufFiles, kind: .lmStudio, repo: Self.repoFromRelativePath)
+            result.discovered.append(contentsOf: models)
+            result.issues.append(contentsOf: issues)
         }
         return result
+    }
+
+    private static func repoFromRelativePath(_ url: URL) -> String? {
+        let rel = url.relativePath.split(separator: "/")
+        return rel.count >= 3 ? rel.dropLast().joined(separator: "/") : nil
     }
 }

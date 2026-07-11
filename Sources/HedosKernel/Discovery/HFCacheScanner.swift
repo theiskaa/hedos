@@ -119,6 +119,11 @@ public struct HFCacheScanner: StoreScanner {
                 diagnostics.append("no tokenizer found")
             }
 
+            let downloading =
+                hasIncompleteBlobs(in: repoDir.appendingPathComponent("blobs"))
+                || indexReferencesMissingShard(snapshot: snapshot.url, fileNames: fileNames)
+                || ggufShardsIncomplete(snapshot: snapshot.url, fileNames: fileNames)
+
             result.discovered.append(
                 DiscoveredModel(
                     name: String(repo.split(separator: "/").last ?? Substring(repo)),
@@ -131,7 +136,8 @@ public struct HFCacheScanner: StoreScanner {
                     footprintBytes: directoryBytes(repoDir.appendingPathComponent("blobs")),
                     primaryWeightPath: largestWeight(in: snapshot.url),
                     diagnostics: diagnostics,
-                    contextLengthHint: hint.contextLength))
+                    contextLengthHint: hint.contextLength,
+                    downloading: downloading))
         }
     }
 
@@ -160,6 +166,41 @@ public struct HFCacheScanner: StoreScanner {
         return newest.map { ($0, $0.lastPathComponent) }
     }
 
+    private func hasIncompleteBlobs(in blobs: URL) -> Bool {
+        let fm = FileManager.default
+        guard
+            let entries = try? fm.contentsOfDirectory(
+                at: blobs, includingPropertiesForKeys: [.isRegularFileKey])
+        else { return false }
+        return entries.contains { url in
+            url.lastPathComponent.hasSuffix(".incomplete")
+                && (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+        }
+    }
+
+    private func ggufShardsIncomplete(snapshot: URL, fileNames: Set<String>) -> Bool {
+        let ggufs = fileNames.filter { $0.lowercased().hasSuffix(".gguf") }
+            .map { (url: snapshot.appendingPathComponent($0), bytes: Int64(0)) }
+        return GGUFShards.group(ggufs).groups.contains { !$0.complete }
+    }
+
+    private func indexReferencesMissingShard(snapshot: URL, fileNames: Set<String>) -> Bool {
+        let fm = FileManager.default
+        for indexName in fileNames where indexName.hasSuffix(".safetensors.index.json") {
+            guard
+                let data = try? Data(
+                    contentsOf: snapshot.appendingPathComponent(indexName)),
+                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let weightMap = json["weight_map"] as? [String: Any]
+            else { continue }
+            for shard in Set(weightMap.values.compactMap({ $0 as? String })) {
+                let resolved = snapshot.appendingPathComponent(shard).resolvingSymlinksInPath()
+                if !fm.fileExists(atPath: resolved.path) { return true }
+            }
+        }
+        return false
+    }
+
     private func directoryBytes(_ dir: URL) -> Int64 {
         let fm = FileManager.default
         guard
@@ -178,13 +219,30 @@ public struct HFCacheScanner: StoreScanner {
         let fm = FileManager.default
         let files =
             (try? fm.contentsOfDirectory(at: snapshot, includingPropertiesForKeys: nil)) ?? []
-        var best: (path: String, size: Int64)?
-        for file in files where file.pathExtension == "safetensors" {
-            let resolved = file.resolvingSymlinksInPath()
+        var best: (url: URL, size: Int64)?
+        for file in files where isWeightFile(file) {
             let size =
-                Int64((try? resolved.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
-            if size > (best?.size ?? -1) { best = (resolved.path, size) }
+                Int64(
+                    (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.fileSizeKey]))?
+                        .fileSize ?? 0)
+            if size > (best?.size ?? -1) { best = (file, size) }
         }
-        return best?.path
+        guard let best else { return nil }
+        if let shard = GGUFShards.parse(best.url.lastPathComponent) {
+            let firstName = GGUFShards.name(base: shard.base, index: 1, total: shard.total)
+            if files.contains(where: { $0.lastPathComponent == firstName }) {
+                return snapshot.appendingPathComponent(firstName).resolvingSymlinksInPath().path
+            }
+        }
+        return best.url.resolvingSymlinksInPath().path
+    }
+
+    private func isWeightFile(_ url: URL) -> Bool {
+        guard !Identification.isMmprojName(url.lastPathComponent) else { return false }
+        switch url.pathExtension.lowercased() {
+        case "safetensors", "gguf": return true
+        case "bin": return Identification.hasGGMLMagic(at: url)
+        default: return false
+        }
     }
 }
