@@ -25,17 +25,39 @@ public struct GenerationStats: Codable, Sendable, Hashable {
     public var completionTokens: Int?
     public var durationMs: Int?
     public var ttftMs: Int?
+    public var loadMs: Int?
     public var finishReason: String?
+    public var tokenCountsEstimated: Bool
 
     public init(
         promptTokens: Int? = nil, completionTokens: Int? = nil, durationMs: Int? = nil,
-        ttftMs: Int? = nil, finishReason: String? = nil
+        ttftMs: Int? = nil, loadMs: Int? = nil, finishReason: String? = nil,
+        tokenCountsEstimated: Bool = false
     ) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.durationMs = durationMs
         self.ttftMs = ttftMs
+        self.loadMs = loadMs
         self.finishReason = finishReason
+        self.tokenCountsEstimated = tokenCountsEstimated
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case promptTokens, completionTokens, durationMs, ttftMs, loadMs, finishReason
+        case tokenCountsEstimated
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        promptTokens = try container.decodeIfPresent(Int.self, forKey: .promptTokens)
+        completionTokens = try container.decodeIfPresent(Int.self, forKey: .completionTokens)
+        durationMs = try container.decodeIfPresent(Int.self, forKey: .durationMs)
+        ttftMs = try container.decodeIfPresent(Int.self, forKey: .ttftMs)
+        loadMs = try container.decodeIfPresent(Int.self, forKey: .loadMs)
+        finishReason = try container.decodeIfPresent(String.self, forKey: .finishReason)
+        tokenCountsEstimated =
+            try container.decodeIfPresent(Bool.self, forKey: .tokenCountsEstimated) ?? false
     }
 }
 

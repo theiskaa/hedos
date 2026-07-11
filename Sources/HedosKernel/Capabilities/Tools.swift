@@ -186,6 +186,40 @@ extension ChatMessage {
             toolName: fields["tool_name"]?.stringValue)
     }
 
+    public static func parseStrict(_ value: JSONValue, index: Int) throws -> ChatMessage {
+        guard case .object(let fields) = value else {
+            throw KernelError.payloadInvalid("message at index \(index) is not an object")
+        }
+        guard let rawRole = fields["role"]?.stringValue, let role = Role(rawValue: rawRole) else {
+            throw KernelError.payloadInvalid(
+                "message at index \(index) has a missing or unknown role")
+        }
+        if let content = fields["content"], content != .null {
+            guard case .string = content else {
+                throw KernelError.payloadInvalid(
+                    "message at index \(index) has non-string content")
+            }
+        }
+        var toolCalls: [ToolCall] = []
+        if case .array(let calls)? = fields["tool_calls"] {
+            toolCalls = calls.compactMap(ToolCall.fromPayload)
+        }
+        return ChatMessage(
+            role: role, content: fields["content"]?.stringValue ?? "", toolCalls: toolCalls,
+            toolCallID: fields["tool_call_id"]?.stringValue,
+            toolName: fields["tool_name"]?.stringValue)
+    }
+
+    public static func parseAll(from object: [String: JSONValue]) throws -> [ChatMessage] {
+        if case .array(let rawMessages)? = object["messages"] {
+            return try rawMessages.enumerated().map { try parseStrict($1, index: $0) }
+        }
+        if case .string(let prompt)? = object["prompt"] {
+            return [ChatMessage(role: .user, content: prompt)]
+        }
+        throw KernelError.payloadInvalid("chat payload must carry a messages array or a prompt")
+    }
+
     public var inlinedToolTranscript: ChatMessage {
         guard role == .assistant, !toolCalls.isEmpty else { return self }
         let blocks = toolCalls.map { call in
