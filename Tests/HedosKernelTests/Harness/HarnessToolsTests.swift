@@ -223,3 +223,8 @@ private func call(_ name: String, _ arguments: [String: JSONValue]) -> ToolCall 
     #expect(!result.contains("build/out.txt"))
 }
 
+@Test func emptyMentionQueryListsPathsAlphabeticallyIncludingNested() {
+    let paths = ["pubspec.yaml", "lib/services/sync.dart", "README.md", "android/build.gradle"]
+    let ranked = PlaceFiles.matches(query: "", in: paths)
+    #expect(ranked == ["README.md", "android/build.gradle", "lib/services/sync.dart", "pubspec.yaml"])
+}

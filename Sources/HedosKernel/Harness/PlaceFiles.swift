@@ -36,7 +36,10 @@ public enum PlaceFiles {
     }
 
     public static func matches(query: String, in paths: [String]) -> [String] {
-        paths
+        guard !query.isEmpty else {
+            return Array(paths.sorted().prefix(menuCapacity))
+        }
+        return paths
             .compactMap { path -> (String, Int)? in
                 let filename = (path as NSString).lastPathComponent
                 if let nameScore = PromptComposer.matchScore(query, against: filename) {
