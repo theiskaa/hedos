@@ -442,7 +442,15 @@ public actor Kernel {
     }
 
     public func autoTitleIfNeeded(sessionID: String) async throws -> String? {
-        try await chatFlow().autoTitleIfNeeded(sessionID: sessionID)
+        try await ChatTitling(
+            chats: chats,
+            stream: { modelID, messages in
+                try await self.chat(modelID, messages: messages)
+            },
+            shelf: {
+                try await self.shelf()
+            }
+        ).autoTitleIfNeeded(sessionID: sessionID)
     }
 
     public func chatContextAssessment(
@@ -516,12 +524,43 @@ public actor Kernel {
     private func chatFlow() -> ChatFlow {
         ChatFlow(
             chats: chats,
-            stream: { modelID, messages in
-                try await self.chat(modelID, messages: messages)
+            stream: { modelID, messages, tools in
+                try await self.chat(modelID, messages: messages, tools: tools)
             },
             shelf: {
                 try await self.shelf()
+            },
+            toolbox: { session in
+                guard let place = session.place, let modelID = session.modelID else {
+                    return []
+                }
+                let supported = (try? await self.supportsTools(modelID: modelID)) ?? false
+                return Harness.toolbox(place: place, supportsTools: supported)
+            },
+            execute: { sessionID, call in
+                let transcript = try? await self.chats.session(id: sessionID)
+                guard let place = transcript?.session.place else {
+                    return "This conversation has no folder."
+                }
+                return await Harness.execute(call, place: place)
             })
+    }
+
+    public func setChatPlace(sessionID: String, path: String?) async throws {
+        if let path {
+            let canonical = PlaceBoundary.canonical(path)
+            var isDirectory: ObjCBool = false
+            guard
+                FileManager.default.fileExists(
+                    atPath: canonical, isDirectory: &isDirectory),
+                isDirectory.boolValue
+            else {
+                throw HarnessError.invalidPath(requested: path)
+            }
+            try await chats.setPlace(id: sessionID, place: canonical)
+        } else {
+            try await chats.setPlace(id: sessionID, place: nil)
+        }
     }
 
     public func resolve() async throws {
@@ -621,16 +660,26 @@ public actor Kernel {
     public func chat(
         _ modelID: String, messages: [ChatMessage]
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
-        let payload: JSONValue = .object([
-            "messages": .array(
-                messages.map {
-                    .object([
-                        "role": .string($0.role.rawValue),
-                        "content": .string($0.content),
-                    ])
-                })
-        ])
-        return try await invoke(modelID, .chat, payload: payload)
+        try await chat(modelID, messages: messages, tools: [])
+    }
+
+    public func supportsTools(modelID: String) async throws -> Bool {
+        guard let record = try await registry.get(id: modelID) else { return false }
+        guard let adapter = adapters.first(where: { $0.canServe(record, Capability.chat) })
+        else { return false }
+        return adapter.supportsTools(record)
+    }
+
+    public func chat(
+        _ modelID: String, messages: [ChatMessage], tools: [ToolSpec]
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        var object: [String: JSONValue] = [
+            "messages": .array(messages.map(\.payloadValue))
+        ]
+        if !tools.isEmpty {
+            object["tools"] = .array(tools.map(\.payloadValue))
+        }
+        return try await invoke(modelID, .chat, payload: .object(object))
     }
 
     public func submit(

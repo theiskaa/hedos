@@ -2,13 +2,15 @@ import Foundation
 
 struct ChatFlow: Sendable {
     let chats: ChatStore
-    let stream: @Sendable (String, [ChatMessage]) async throws -> AsyncThrowingStream<
-        CapabilityChunk, Error
-    >
+    let stream: @Sendable (String, [ChatMessage], [ToolSpec]) async throws
+        -> AsyncThrowingStream<CapabilityChunk, Error>
     let shelf: @Sendable () async throws -> [ModelRecord]
+    var toolbox: @Sendable (ChatSession) async -> [ToolSpec] = { _ in [] }
+    var execute: @Sendable (String, ToolCall) async -> String = { _, _ in "" }
 
-    static let titlingFootprintCeilingMB = 8192
     static let persistCadence: Duration = .milliseconds(250)
+    static let maxToolCallsPerSend = 8
+    static let toolResultContextBudgetBytes = 16_384
 
     func send(sessionID: String, text: String) async throws -> AsyncThrowingStream<
         CapabilityChunk, Error
@@ -67,30 +69,6 @@ struct ChatFlow: Sendable {
             retiring: Array(active[index...]))
     }
 
-    func autoTitleIfNeeded(sessionID: String) async throws -> String? {
-        guard let transcript = try await chats.session(id: sessionID),
-            transcript.session.title == ChatSession.defaultTitle
-        else { return nil }
-        let active = transcript.turns.filter { $0.supersededBy == nil }
-        guard let firstUser = active.first(where: { $0.role == .user }) else { return nil }
-        guard let reply = active.first(where: { $0.role == .assistant && !$0.content.isEmpty })
-        else {
-            guard active.contains(where: { $0.role == .assistant && !$0.artifactRefs.isEmpty })
-            else { return nil }
-            let title = ChatSession.title(from: firstUser.content)
-            try await chats.renameSession(id: sessionID, title: title)
-            return title
-        }
-        let title =
-            await generatedTitle(
-                user: firstUser.content,
-                assistant: reply.content,
-                boundModelID: transcript.session.modelID)
-            ?? ChatSession.title(from: firstUser.content)
-        try await chats.renameSession(id: sessionID, title: title)
-        return title
-    }
-
     private func run(
         session: ChatSession, history: [ChatMessage], retiring: [ChatTurn] = [],
         userRetirementID: String? = nil
@@ -98,23 +76,35 @@ struct ChatFlow: Sendable {
         guard let modelID = session.modelID else {
             throw KernelError.noBoundModel
         }
-        let upstream = try await stream(modelID, history)
+        let tools = await toolbox(session)
+        let upstream = try await stream(modelID, history, tools)
         let chats = chats
+        let stream = stream
+        let execute = execute
         let sessionID = session.id
         return AsyncThrowingStream { continuation in
             let task = Task {
+                var history = history
+                var retiring = retiring
+                var currentUpstream = upstream
+                var offeredTools = tools
+                var executedCalls = 0
                 var turn: ChatTurn?
                 var content = ""
                 var thinking = ""
                 var stats: GenerationStats?
+                var toolCalls: [ToolCall] = []
                 var ttftMs: Int?
+                var pendingCalls: [ToolCall] = []
                 var persistFailure: Error?
                 let clock = ContinuousClock()
                 let started = clock.now
                 var lastPersist = started
 
                 func persist() async {
-                    guard !content.isEmpty || !thinking.isEmpty || stats != nil else { return }
+                    guard !content.isEmpty || !thinking.isEmpty || stats != nil
+                        || !toolCalls.isEmpty
+                    else { return }
                     persistFailure = nil
                     let tags = thinking.isEmpty ? [] : [SessionTag.thinking]
                     var mergedStats = stats
@@ -126,6 +116,7 @@ struct ChatFlow: Sendable {
                             updated.content = content
                             updated.thinking = thinking.isEmpty ? nil : thinking
                             updated.statsJSON = mergedStats?.turnStatsJSON
+                            updated.toolCallsJSON = toolCalls.turnToolCallsJSON
                             turn = try await chats.updateTurn(
                                 updated, mergingCapabilityTags: tags)
                         } else {
@@ -135,7 +126,8 @@ struct ChatFlow: Sendable {
                                     content: content,
                                     thinking: thinking.isEmpty ? nil : thinking,
                                     modelID: modelID,
-                                    stats: mergedStats),
+                                    stats: mergedStats,
+                                    toolCalls: toolCalls),
                                 to: sessionID,
                                 mergingCapabilityTags: tags)
                             turn = appended
@@ -146,6 +138,7 @@ struct ChatFlow: Sendable {
                                     ? userRetirementID ?? appended.id : appended.id
                                 _ = try await chats.updateTurn(superseded)
                             }
+                            retiring = []
                         }
                     } catch {
                         persistFailure = error
@@ -153,30 +146,90 @@ struct ChatFlow: Sendable {
                 }
 
                 do {
-                    for try await chunk in upstream {
-                        switch chunk {
-                        case .text(let delta):
-                            if ttftMs == nil, !delta.isEmpty {
-                                ttftMs = Int((clock.now - started) / .milliseconds(1))
+                    while true {
+                        for try await chunk in currentUpstream {
+                            switch chunk {
+                            case .text(let delta):
+                                if ttftMs == nil, !delta.isEmpty {
+                                    ttftMs = Int((clock.now - started) / .milliseconds(1))
+                                }
+                                content += delta
+                            case .thinking(let delta):
+                                if ttftMs == nil, !delta.isEmpty {
+                                    ttftMs = Int((clock.now - started) / .milliseconds(1))
+                                }
+                                thinking += delta
+                            case .toolCall(let call):
+                                toolCalls.append(call)
+                            case .done(let generationStats):
+                                stats = generationStats ?? GenerationStats()
+                            default:
+                                break
                             }
-                            content += delta
-                        case .thinking(let delta):
-                            if ttftMs == nil, !delta.isEmpty {
-                                ttftMs = Int((clock.now - started) / .milliseconds(1))
+                            continuation.yield(chunk)
+                            if turn == nil || clock.now - lastPersist > Self.persistCadence {
+                                await persist()
+                                lastPersist = clock.now
                             }
-                            thinking += delta
-                        case .done(let generationStats):
-                            stats = generationStats ?? GenerationStats()
-                        default:
-                            break
                         }
-                        continuation.yield(chunk)
-                        if turn == nil || clock.now - lastPersist > Self.persistCadence {
-                            await persist()
-                            lastPersist = clock.now
+                        await persist()
+                        guard persistFailure == nil else { break }
+                        guard !toolCalls.isEmpty, !offeredTools.isEmpty else { break }
+
+                        let calls = toolCalls
+                        pendingCalls = calls
+                        var projections: [ChatMessage] = [
+                            ChatMessage(
+                                role: .assistant, content: content, toolCalls: calls)
+                        ]
+                        for call in calls {
+                            var result: String
+                            if executedCalls >= Self.maxToolCallsPerSend {
+                                result =
+                                    "[skipped: the tool-call limit of "
+                                    + "\(Self.maxToolCallsPerSend) calls for this message "
+                                    + "was reached — answer with what you have]"
+                            } else {
+                                try Task.checkCancellation()
+                                result = await execute(sessionID, call)
+                                try Task.checkCancellation()
+                                result = Self.truncatedToolResult(result)
+                                executedCalls += 1
+                                if executedCalls >= Self.maxToolCallsPerSend {
+                                    result +=
+                                        "\n\n[tool-call limit reached: "
+                                        + "\(Self.maxToolCallsPerSend) calls for this message — "
+                                        + "answer with what you have]"
+                                }
+                            }
+                            let resultTurn = try await chats.appendTurn(
+                                TurnDraft(
+                                    role: .tool,
+                                    content: result,
+                                    stats: nil,
+                                    toolCallID: call.id,
+                                    toolName: call.name),
+                                to: sessionID)
+                            pendingCalls.removeAll { $0.id == call.id }
+                            projections.append(
+                                ChatMessage(
+                                    role: .tool, content: result,
+                                    toolCallID: resultTurn.toolCallID,
+                                    toolName: resultTurn.toolName))
+                            continuation.yield(.status("tool: \(Harness.actionSummary(call))"))
                         }
+                        history.append(contentsOf: projections)
+                        if executedCalls >= Self.maxToolCallsPerSend {
+                            offeredTools = []
+                        }
+                        turn = nil
+                        content = ""
+                        thinking = ""
+                        stats = nil
+                        toolCalls = []
+                        ttftMs = nil
+                        currentUpstream = try await stream(modelID, history, offeredTools)
                     }
-                    await persist()
                     if let persistFailure {
                         continuation.finish(throwing: persistFailure)
                     } else {
@@ -184,6 +237,16 @@ struct ChatFlow: Sendable {
                     }
                 } catch {
                     await persist()
+                    for call in pendingCalls {
+                        _ = try? await chats.appendTurn(
+                            TurnDraft(
+                                role: .tool,
+                                content: "[cancelled before this tool ran]",
+                                stats: nil,
+                                toolCallID: call.id,
+                                toolName: call.name),
+                            to: sessionID)
+                    }
                     continuation.finish(throwing: error)
                 }
             }
@@ -191,63 +254,15 @@ struct ChatFlow: Sendable {
         }
     }
 
-    private func generatedTitle(
-        user: String, assistant: String, boundModelID: String?
-    ) async -> String? {
-        guard let modelID = await titlingModelID(bound: boundModelID) else { return nil }
-        let prompt = """
-            Reply with only a short title, six words at most, naming the topic of this \
-            conversation. No quotes, no trailing punctuation.
-
-            User: \(user.prefix(600))
-            Assistant: \(assistant.prefix(600))
-            """
-        guard let upstream = try? await stream(modelID, [ChatMessage(role: .user, content: prompt)])
-        else { return nil }
-        var text = ""
-        do {
-            for try await chunk in upstream {
-                if case .text(let delta) = chunk {
-                    text += delta
-                }
-                if text.count > 200 { break }
-            }
-        } catch {
-            return nil
+    static func truncatedToolResult(_ result: String) -> String {
+        let bytes = result.utf8.count
+        guard bytes > toolResultContextBudgetBytes else { return result }
+        var kept = result.prefix(toolResultContextBudgetBytes)
+        while kept.utf8.count > toolResultContextBudgetBytes {
+            kept = kept.dropLast()
         }
-        return Self.sanitizedTitle(text)
-    }
-
-    private func titlingModelID(bound: String?) async -> String? {
-        guard let records = try? await shelf() else { return nil }
-        let candidates = records.filter {
-            $0.state == .ready && $0.capabilities.contains(.chat)
-                && $0.runtime.id != nil && $0.runtime.tier != .recipeNeeded
-        }
-        guard !candidates.isEmpty else { return nil }
-        if let bound,
-            let boundRecord = candidates.first(where: { $0.id == bound }),
-            boundRecord.footprintMB.map({ $0 <= Self.titlingFootprintCeilingMB }) ?? false
-        {
-            return boundRecord.id
-        }
-        return candidates.min {
-            ($0.footprintMB ?? .max) < ($1.footprintMB ?? .max)
-        }?.id
-    }
-
-    static func sanitizedTitle(_ raw: String) -> String? {
-        var line =
-            raw.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty } ?? ""
-        line = line.trimmingCharacters(in: CharacterSet(charactersIn: "\"'“”‘’`#*_ "))
-        while let last = line.last, ".!,:;".contains(last) {
-            line.removeLast()
-        }
-        let words = line.split(whereSeparator: \.isWhitespace)
-        guard !words.isEmpty else { return nil }
-        return words.prefix(6).joined(separator: " ")
+        return "[truncated: showing first \(toolResultContextBudgetBytes) of \(bytes) bytes]\n"
+            + kept
     }
 
     static func messages(from turns: [ChatTurn]) -> [ChatMessage] {
@@ -262,8 +277,19 @@ struct ChatFlow: Sendable {
                 index += 2
                 continue
             }
-            if let role = ChatMessage.Role(rawValue: turn.role.rawValue), !turn.content.isEmpty {
-                if let last = messages.last, last.role == role {
+            let calls = turn.toolCalls
+            if turn.role == .tool {
+                messages.append(
+                    ChatMessage(
+                        role: .tool, content: turn.content,
+                        toolCallID: turn.toolCallID, toolName: turn.toolName))
+            } else if let role = turn.role.messageRole, !calls.isEmpty {
+                messages.append(
+                    ChatMessage(role: role, content: turn.content, toolCalls: calls))
+            } else if let role = turn.role.messageRole, !turn.content.isEmpty {
+                if let last = messages.last, last.role == role, last.toolCalls.isEmpty,
+                    last.toolCallID == nil
+                {
                     messages[messages.count - 1] = ChatMessage(
                         role: role, content: last.content + "\n\n" + turn.content)
                 } else {

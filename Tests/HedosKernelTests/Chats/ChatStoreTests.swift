@@ -391,3 +391,31 @@ private func makeStore(in directory: URL) -> ChatStore {
     let reloaded = try #require(try await store.session(id: session.id))
     #expect(reloaded.session.turnCount == 2)
 }
+
+@Test func placeColumnMigratesPersistsClearsAndExports() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite"))
+    let session = try await store.createSession(modelID: "model-a")
+    #expect(session.place == nil)
+
+    try await store.setPlace(id: session.id, place: "/tmp/hedos-place")
+    let placed = try #require(try await store.session(id: session.id)).session
+    #expect(placed.place == "/tmp/hedos-place")
+
+    let reloaded = ChatStore(databaseURL: dir.appendingPathComponent("chats.sqlite"))
+    let persisted = try #require(try await reloaded.session(id: session.id)).session
+    #expect(persisted.place == "/tmp/hedos-place")
+
+    _ = try await reloaded.appendTurn(TurnDraft(role: .user, content: "hi"), to: session.id)
+    let archive = try ChatExport.json(try #require(try await reloaded.session(id: session.id)))
+    #expect(String(decoding: archive, as: UTF8.self).contains("hedos-place"))
+
+    try await reloaded.setPlace(id: session.id, place: nil)
+    let cleared = try #require(try await reloaded.session(id: session.id)).session
+    #expect(cleared.place == nil)
+
+    await #expect(throws: ChatStoreError.self) {
+        try await reloaded.setPlace(id: "no-such-session", place: "/tmp/x")
+    }
+}

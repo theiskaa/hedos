@@ -11,6 +11,7 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
     public var pinned: Bool
     public var archived: Bool
     public var deletedAt: Date?
+    public var place: String?
 
     public init(
         id: String,
@@ -22,7 +23,8 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         turnCount: Int = 0,
         pinned: Bool = false,
         archived: Bool = false,
-        deletedAt: Date? = nil
+        deletedAt: Date? = nil,
+        place: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -34,6 +36,7 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         self.pinned = pinned
         self.archived = archived
         self.deletedAt = deletedAt
+        self.place = place
     }
 
     public static let defaultTitle = "New Chat"
