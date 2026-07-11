@@ -112,6 +112,30 @@ private func ollamaRecord(name: String = "qwen3.5:9b") -> ModelRecord {
     #expect(messages[0]["content"] as? String == "hello")
 }
 
+@Test func adapterMapsResponseFormatToDaemonFormat() throws {
+    let jsonObject: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])]),
+        "response_format": .object(["type": .string("json_object")]),
+    ])
+    let objectBody =
+        try JSONSerialization.jsonObject(
+            with: OllamaAdapter.requestBody(model: "m", payload: jsonObject)) as! [String: Any]
+    #expect(objectBody["format"] as? String == "json")
+
+    let schema: JSONValue = .object(["type": .string("object")])
+    let jsonSchema: JSONValue = .object([
+        "messages": .array([.object(["role": .string("user"), "content": .string("hi")])]),
+        "response_format": .object([
+            "type": .string("json_schema"),
+            "json_schema": .object(["schema": schema]),
+        ]),
+    ])
+    let schemaBody =
+        try JSONSerialization.jsonObject(
+            with: OllamaAdapter.requestBody(model: "m", payload: jsonSchema)) as! [String: Any]
+    #expect((schemaBody["format"] as? [String: Any])?["type"] as? String == "object")
+}
+
 @Test func adapterRejectsPayloadWithoutMessages() {
     #expect(throws: KernelError.self) {
         _ = try OllamaAdapter.requestBody(model: "m", payload: .object([:]))

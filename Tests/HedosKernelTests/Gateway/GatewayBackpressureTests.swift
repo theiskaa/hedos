@@ -42,7 +42,8 @@ private func waitUntil(
     #expect(http.value(forHTTPHeaderField: "Retry-After") == "1")
     let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
     let error = object["error"] as? [String: Any]
-    #expect(error?["type"] as? String == "overloaded")
+    #expect(error?["type"] as? String == "api_error")
+    #expect(error?["code"] as? String == "overloaded")
 
     let entries = await stack.audit.tail(limit: 5)
     #expect(entries.last?.outcome == "saturated")

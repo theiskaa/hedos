@@ -419,8 +419,9 @@ private struct FlippableFoundationBackend: AppleFoundationBackend {
     func availability() -> BuiltinAvailability { state }
 
     func stream(
-        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
-        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
+        messages: [ChatMessage], temperature: Double?, topP: Double?, topK: Int?,
+        seed: UInt64?, maxTokens: Int?, tools: [ToolSpec],
+        resultProvider: BuiltinToolResultProvider?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         AsyncThrowingStream { $0.finish() }
     }

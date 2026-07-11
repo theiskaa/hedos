@@ -38,12 +38,21 @@ struct FakeGatewayPort: GatewayPort {
     var pipelineEventScript: [PipelineEvent] = []
     var pipelineHangs = false
     var toolCapableModels: Set<String> = []
+    var streamFailure: String?
+    var honoredKeys: Set<String> = [
+        "temperature", "top_p", "max_tokens", "context_length", "stop", "seed", "top_k",
+        "min_p", "repeat_penalty", "frequency_penalty", "presence_penalty", "response_format",
+    ]
     var recorder = InvokeRecorder()
 
     func shelf() async throws -> [ModelRecord] { records }
 
     func supportsTools(modelID: String) async throws -> Bool {
         toolCapableModels.contains(modelID)
+    }
+
+    func honoredParams(modelID: String, capability: Capability) async throws -> Set<String> {
+        honoredKeys
     }
 
     func invoke(
@@ -74,11 +83,16 @@ struct FakeGatewayPort: GatewayPort {
                 continuation.finish(throwing: error)
             }
         }
+        let failure = streamFailure
         return AsyncThrowingStream { continuation in
             for chunk in script {
                 continuation.yield(chunk)
             }
-            continuation.finish()
+            if let failure {
+                continuation.finish(throwing: KernelError.runtimeFailed(failure))
+            } else {
+                continuation.finish()
+            }
         }
     }
 

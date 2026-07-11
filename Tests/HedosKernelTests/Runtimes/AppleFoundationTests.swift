@@ -61,8 +61,9 @@ private struct FakeFoundationBackend: AppleFoundationBackend {
     }
 
     func stream(
-        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
-        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
+        messages: [ChatMessage], temperature: Double?, topP: Double?, topK: Int?,
+        seed: UInt64?, maxTokens: Int?, tools: [ToolSpec],
+        resultProvider: BuiltinToolResultProvider?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         recorded.record(messages: messages, temperature: temperature, maxTokens: maxTokens)
         let events = events
@@ -186,7 +187,10 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(identified.modality == .text)
     #expect(identified.capabilities == [.chat, .complete])
     #expect(identified.execution == .stream)
-    #expect(identified.params.map(\.key) == ["temperature", "max_tokens"])
+    #expect(
+        identified.params.map(\.key) == [
+            "temperature", "top_p", "top_k", "max_tokens", "seed",
+        ])
 }
 
 @Test func resolutionPutsAppleFoundationNativeReadyWithoutProfileNoise() async throws {
@@ -207,10 +211,14 @@ private struct FakeOllamaScanner: StoreScanner {
     #expect(resolved.runtime.id == "apple-foundation")
     #expect(resolved.runtime.tier == .native)
     #expect(resolved.state == .ready)
-    let keys = resolved.params.map(\.key)
-    #expect(!keys.contains("top_p"))
+    let keys = Set(resolved.params.map(\.key))
+    #expect(keys.contains("top_p"))
+    #expect(keys.contains("top_k"))
+    #expect(keys.contains("seed"))
     #expect(!keys.contains("context_length"))
     #expect(!keys.contains("thinking"))
+    #expect(!keys.contains("min_p"))
+    #expect(!keys.contains("repeat_penalty"))
 }
 
 @Test func adapterDiffsCumulativeSnapshotsIntoDeltas() async throws {

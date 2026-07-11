@@ -55,7 +55,7 @@ private struct ScopedHandler: GatewayHandling {
     #expect(body["error"] is String)
 
     let entries = await stack.audit.tail(limit: 10)
-    #expect(entries.count == 2)
+    #expect(entries.count == 1)
     #expect(entries.allSatisfy { $0.outcome == "unauthorized" })
     await stack.stop()
 }

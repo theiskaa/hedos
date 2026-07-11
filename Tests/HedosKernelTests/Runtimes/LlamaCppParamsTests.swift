@@ -15,6 +15,35 @@ import Testing
     #expect(params.maxTokens == 512)
 }
 
+@Test func llamaAdapterMapsFullSamplingSet() {
+    let payload: [String: JSONValue] = [
+        "top_k": .int(40),
+        "min_p": .double(0.05),
+        "repeat_penalty": .double(1.15),
+        "frequency_penalty": .double(0.5),
+        "presence_penalty": .double(0.3),
+        "seed": .int(7),
+        "stop": .array([.string("\n\n"), .string("END")]),
+    ]
+    let params = LlamaCppAdapter.params(from: payload)
+    #expect(params.topK == 40)
+    #expect(params.minP == 0.05)
+    #expect(params.repeatPenalty == 1.15)
+    #expect(params.frequencyPenalty == 0.5)
+    #expect(params.presencePenalty == 0.3)
+    #expect(params.seed == 7)
+    #expect(params.stop == ["\n\n", "END"])
+}
+
+@Test func llamaAdapterBuildsJSONGrammarForResponseFormat() {
+    let none = LlamaCppAdapter.params(from: ["temperature": .double(0.5)])
+    #expect(none.jsonGrammar == nil)
+    let jsonMode = LlamaCppAdapter.params(from: [
+        "response_format": .object(["type": .string("json_object")])
+    ])
+    #expect(jsonMode.jsonGrammar == JSONGrammar.generic)
+}
+
 @Test func llamaAdapterFallsBackWhenParamsAbsent() {
     let params = LlamaCppAdapter.params(from: [:])
     #expect(params.temperature == 0.7)

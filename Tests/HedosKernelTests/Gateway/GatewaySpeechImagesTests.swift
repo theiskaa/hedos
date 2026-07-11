@@ -183,6 +183,51 @@ private func imageModel() -> ModelRecord {
     await stack.stop()
 }
 
+@Test func embeddingsBase64DefaultDimensionsAndTokenArray() async throws {
+    var embedder = Fixtures.gguf(path: "/tmp/hedos-fixtures/embedder-b64.gguf")
+    embedder.name = "embedder-b64"
+    embedder.capabilities = [.embed]
+    embedder.state = .ready
+    let port = FakeGatewayPort(
+        records: [embedder],
+        embedScript: [.vector([0.5, -0.25]), .done(GenerationStats(promptTokens: 2))])
+    let stack = try await GatewayHarness.stack(
+        port: port, routes: GatewayRouter.standardRoutes())
+
+    let base64Body = GatewayHarness.json([
+        "model": "embedder-b64", "input": "x", "encoding_format": "base64",
+    ])
+    let (base64Data, base64Response) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/embeddings"), token: stack.token, body: base64Body))
+    #expect((base64Response as! HTTPURLResponse).statusCode == 200)
+    let base64Object = try JSONSerialization.jsonObject(with: base64Data) as! [String: Any]
+    let embedding = (base64Object["data"] as! [[String: Any]])[0]["embedding"] as! String
+    let raw = Data(base64Encoded: embedding)!
+    #expect(raw.count == 8)
+    let floats = raw.withUnsafeBytes { pointer in
+        (0..<2).map { Float(bitPattern: UInt32(littleEndian: pointer.loadUnaligned(
+            fromByteOffset: $0 * 4, as: UInt32.self))) }
+    }
+    #expect(floats == [0.5, -0.25])
+
+    let (_, dimensionsResponse) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/embeddings"), token: stack.token,
+            body: GatewayHarness.json(["model": "embedder-b64", "input": "x", "dimensions": 64])))
+    #expect((dimensionsResponse as! HTTPURLResponse).statusCode == 400)
+
+    let (tokenData, tokenResponse) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/embeddings"), token: stack.token,
+            body: GatewayHarness.json(["model": "embedder-b64", "input": [1, 2, 3]])))
+    #expect((tokenResponse as! HTTPURLResponse).statusCode == 400)
+    let tokenObject = try JSONSerialization.jsonObject(with: tokenData) as! [String: Any]
+    #expect(
+        ((tokenObject["error"] as? [String: Any])?["message"] as? String ?? "").contains("token"))
+    await stack.stop()
+}
+
 @Test func embeddingsRefuseNonEmbedModelHonestly() async throws {
     let chatOnly = Fixtures.gguf(path: "/tmp/hedos-fixtures/chat-only.gguf")
     var chatModel = chatOnly

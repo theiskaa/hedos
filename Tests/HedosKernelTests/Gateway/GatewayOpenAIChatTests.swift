@@ -38,6 +38,7 @@ private func sseEvents(_ raw: String) -> [String] {
         "messages": [["role": "user", "content": "say hello"]],
         "stream": true,
         "temperature": 0.2,
+        "stream_options": ["include_usage": true],
     ])
     let (data, response) = try await URLSession.shared.data(
         for: GatewayHarness.request(
@@ -57,12 +58,15 @@ private func sseEvents(_ raw: String) -> [String] {
         let object = try JSONSerialization.jsonObject(with: Data(event.utf8)) as! [String: Any]
         #expect(object["object"] as? String == "chat.completion.chunk")
         let choices = object["choices"] as! [[String: Any]]
+        if let extractedUsage = object["usage"] as? [String: Any], choices.isEmpty {
+            usage = extractedUsage
+            continue
+        }
         let delta = choices[0]["delta"] as! [String: Any]
         if let text = delta["content"] as? String { contents.append(text) }
         if let thought = delta["reasoning_content"] as? String { reasonings.append(thought) }
         if choices[0]["finish_reason"] as? String == "stop" {
             sawStop = true
-            usage = object["usage"] as? [String: Any]
         }
     }
     #expect(contents.joined() == "Hello")
@@ -84,6 +88,31 @@ private func sseEvents(_ raw: String) -> [String] {
     } else {
         Issue.record("payload should be an object")
     }
+    await stack.stop()
+}
+
+@Test func paramUnsupportedByRuntimeAnswers400NamingBoth() async throws {
+    var model = chatModel()
+    model.runtime.id = .mlxSwift
+    var port = FakeGatewayPort(records: [model], chatScript: [.text("hi")])
+    port.honoredKeys = ["temperature", "max_tokens"]
+    let stack = try await GatewayHarness.stack(
+        port: port, routes: GatewayRouter.standardRoutes())
+    let body = GatewayHarness.json([
+        "model": "test-chat:latest",
+        "messages": [["role": "user", "content": "hi"]],
+        "top_p": 0.5,
+    ])
+    let (data, response) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/chat/completions"), token: stack.token, body: body))
+    #expect((response as! HTTPURLResponse).statusCode == 400)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+    let error = object["error"] as! [String: Any]
+    let message = error["message"] as! String
+    #expect(message.contains("top_p"))
+    #expect(message.contains("mlx-swift"))
+    #expect(error["code"] as? String == "unsupported_parameter")
     await stack.stop()
 }
 

@@ -225,7 +225,8 @@ private func pipeline(
     #expect(http.statusCode == 504)
     let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
     let error = object["error"] as! [String: Any]
-    #expect(error["type"] as? String == "timeout_error")
+    #expect(error["type"] as? String == "api_error")
+    #expect(error["code"] as? String == "timeout")
 
     let (_, listResponse) = try await URLSession.shared.data(
         for: GatewayHarness.request("GET", stack.url("/v1/pipelines"), token: stack.token))
