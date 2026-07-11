@@ -39,7 +39,6 @@ public struct GatewayOutcome: Sendable, Hashable {
 }
 
 public protocol GatewayHandling: Sendable {
-    var surface: GatewaySurface { get }
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder

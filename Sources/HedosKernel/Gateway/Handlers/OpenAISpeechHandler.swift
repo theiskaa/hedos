@@ -1,8 +1,6 @@
 import Foundation
 
 struct OpenAISpeechHandler: GatewayHandling {
-    var surface: GatewaySurface { .openAI }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -18,10 +16,8 @@ struct OpenAISpeechHandler: GatewayHandling {
             throw GatewayError(
                 .badRequest, "only wav output is available — set response_format to wav")
         }
-        let shelf = try await port.shelf()
-        let record = try GatewayModelResolver.resolve(model, shelf: shelf)
-        try identity.require(modelID: record.id, capability: .speak)
-        try await GatewayBackpressure.require(port, record: record, kind: .stream)
+        let record = try await GatewayModelResolver.resolveAuthorized(
+            model, capability: .speak, kind: .stream, port: port, identity: identity)
 
         var voice = body["voice"] as? String
         if voice == nil || voice!.isEmpty {

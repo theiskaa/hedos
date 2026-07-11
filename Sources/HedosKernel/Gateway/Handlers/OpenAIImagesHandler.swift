@@ -1,8 +1,6 @@
 import Foundation
 
 struct OpenAIImagesHandler: GatewayHandling {
-    var surface: GatewaySurface { .openAI }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -21,10 +19,8 @@ struct OpenAIImagesHandler: GatewayHandling {
             throw GatewayError(
                 .badRequest, "only b64_json output is available — images never leave this machine")
         }
-        let shelf = try await port.shelf()
-        let record = try GatewayModelResolver.resolve(model, shelf: shelf)
-        try identity.require(modelID: record.id, capability: .image)
-        try await GatewayBackpressure.require(port, record: record, kind: .job)
+        let record = try await GatewayModelResolver.resolveAuthorized(
+            model, capability: .image, kind: .job, port: port, identity: identity)
 
         var payload: [String: JSONValue] = ["prompt": .string(prompt)]
         if let size = body["size"] as? String { payload["size"] = .string(size) }
@@ -57,7 +53,7 @@ struct OpenAIImagesHandler: GatewayHandling {
         }
         try await responder.respond(
             status: 200,
-            body: OpenAIWire.serialize([
+            body: WireJSON.serialize([
                 "created": Int(Date().timeIntervalSince1970),
                 "data": [["b64_json": imageData.base64EncodedString()]],
             ]))

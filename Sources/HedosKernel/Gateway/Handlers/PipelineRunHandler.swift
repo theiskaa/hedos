@@ -1,8 +1,7 @@
 import Foundation
 
 struct PipelineRunHandler: GatewayHandling {
-    var surface: GatewaySurface { .openAI }
-    var runTimeout: Duration = .seconds(300)
+    var runTimeout: Duration = GatewayDefaults.pipelineRunTimeout
 
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
@@ -78,6 +77,23 @@ struct PipelineRunHandler: GatewayHandling {
         }
     }
 
+    private func withRunTimeout<Result: Sendable>(
+        _ body: @escaping @Sendable () async throws -> Result,
+        onTimeout: @escaping @Sendable () throws -> Result
+    ) async throws -> Result {
+        let timeout = runTimeout
+        return try await withThrowingTaskGroup(of: Result.self) { group in
+            group.addTask { try await body() }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                return try onTimeout()
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
     private enum TextDrain { case done(failure: String?), timedOut }
 
     private func timeoutMessage() -> String {
@@ -91,34 +107,27 @@ struct PipelineRunHandler: GatewayHandling {
         let id = "pipe-\(UUID().uuidString.lowercased())"
         let created = Int(Date().timeIntervalSince1970)
 
-        let drain: TextDrain = try await withThrowingTaskGroup(of: TextDrain.self) { group in
-            group.addTask {
-                var first = true
-                var failure: String?
-                for await event in stream {
-                    switch event {
-                    case .delta(_, let text):
-                        try await body.write(
-                            OpenAIWire.sseFrame(
-                                OpenAIWire.chunkFrame(
-                                    id: id, created: created, model: model, content: text,
-                                    role: first)))
-                        first = false
-                    case .failed(let message):
-                        failure = message
-                    default:
-                        break
-                    }
+        let drain: TextDrain = try await withRunTimeout {
+            var first = true
+            var failure: String?
+            for await event in stream {
+                switch event {
+                case .delta(_, let text):
+                    try await body.write(
+                        OpenAIWire.sseFrame(
+                            OpenAIWire.chunkFrame(
+                                id: id, created: created, model: model, content: text,
+                                role: first)))
+                    first = false
+                case .failed(let message):
+                    failure = message
+                default:
+                    break
                 }
-                return .done(failure: failure)
             }
-            group.addTask {
-                try await Task.sleep(for: runTimeout)
-                return .timedOut
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            return .done(failure: failure)
+        } onTimeout: {
+            .timedOut
         }
 
         switch drain {
@@ -148,31 +157,24 @@ struct PipelineRunHandler: GatewayHandling {
         _ stream: AsyncStream<PipelineEvent>, responder: GatewayResponder
     ) async throws {
         typealias Collected = (pcm: Data, sampleRate: Int, failure: String?)
-        let collected: Collected = try await withThrowingTaskGroup(of: Collected.self) { group in
-            group.addTask {
-                var pcm = Data()
-                var sampleRate = 24000
-                var failure: String?
-                for await event in stream {
-                    switch event {
-                    case .audio(let frame):
-                        if pcm.isEmpty { sampleRate = frame.sampleRate }
-                        pcm.append(frame.data)
-                    case .failed(let message):
-                        failure = message
-                    default:
-                        break
-                    }
+        let collected: Collected = try await withRunTimeout {
+            var pcm = Data()
+            var sampleRate = 24000
+            var failure: String?
+            for await event in stream {
+                switch event {
+                case .audio(let frame):
+                    if pcm.isEmpty { sampleRate = frame.sampleRate }
+                    pcm.append(frame.data)
+                case .failed(let message):
+                    failure = message
+                default:
+                    break
                 }
-                return (pcm, sampleRate, failure)
             }
-            group.addTask {
-                try await Task.sleep(for: runTimeout)
-                throw GatewayError(.timeout, timeoutMessage())
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            return (pcm, sampleRate, failure)
+        } onTimeout: {
+            throw GatewayError(.timeout, timeoutMessage())
         }
         if let failure = collected.failure { throw GatewayError(.serverError, failure) }
         guard !collected.pcm.isEmpty else {
@@ -187,29 +189,22 @@ struct PipelineRunHandler: GatewayHandling {
         _ stream: AsyncStream<PipelineEvent>, port: any GatewayPort, responder: GatewayResponder
     ) async throws {
         typealias Collected = (artifactID: String?, failure: String?)
-        let collected: Collected = try await withThrowingTaskGroup(of: Collected.self) { group in
-            group.addTask {
-                var artifactID: String?
-                var failure: String?
-                for await event in stream {
-                    switch event {
-                    case .artifact(let id):
-                        artifactID = id
-                    case .failed(let message):
-                        failure = message
-                    default:
-                        break
-                    }
+        let collected: Collected = try await withRunTimeout {
+            var artifactID: String?
+            var failure: String?
+            for await event in stream {
+                switch event {
+                case .artifact(let id):
+                    artifactID = id
+                case .failed(let message):
+                    failure = message
+                default:
+                    break
                 }
-                return (artifactID, failure)
             }
-            group.addTask {
-                try await Task.sleep(for: runTimeout)
-                throw GatewayError(.timeout, timeoutMessage())
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            return (artifactID, failure)
+        } onTimeout: {
+            throw GatewayError(.timeout, timeoutMessage())
         }
         if let failure = collected.failure { throw GatewayError(.serverError, failure) }
         guard let artifactID = collected.artifactID, let data = try await port.artifactData(id: artifactID)
@@ -218,7 +213,7 @@ struct PipelineRunHandler: GatewayHandling {
         }
         try await responder.respond(
             status: 200,
-            body: OpenAIWire.serialize([
+            body: WireJSON.serialize([
                 "created": Int(Date().timeIntervalSince1970),
                 "data": [["b64_json": data.base64EncodedString()]],
             ]))
@@ -228,29 +223,22 @@ struct PipelineRunHandler: GatewayHandling {
         _ stream: AsyncStream<PipelineEvent>, responder: GatewayResponder
     ) async throws {
         typealias Collected = (vectors: [[Double]], failure: String?)
-        let collected: Collected = try await withThrowingTaskGroup(of: Collected.self) { group in
-            group.addTask {
-                var vectors: [[Double]] = []
-                var failure: String?
-                for await event in stream {
-                    switch event {
-                    case .vector(let values):
-                        vectors.append(values)
-                    case .failed(let message):
-                        failure = message
-                    default:
-                        break
-                    }
+        let collected: Collected = try await withRunTimeout {
+            var vectors: [[Double]] = []
+            var failure: String?
+            for await event in stream {
+                switch event {
+                case .vector(let values):
+                    vectors.append(values)
+                case .failed(let message):
+                    failure = message
+                default:
+                    break
                 }
-                return (vectors, failure)
             }
-            group.addTask {
-                try await Task.sleep(for: runTimeout)
-                throw GatewayError(.timeout, timeoutMessage())
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            return (vectors, failure)
+        } onTimeout: {
+            throw GatewayError(.timeout, timeoutMessage())
         }
         if let failure = collected.failure { throw GatewayError(.serverError, failure) }
         guard !collected.vectors.isEmpty else {
@@ -261,7 +249,7 @@ struct PipelineRunHandler: GatewayHandling {
         }
         try await responder.respond(
             status: 200,
-            body: OpenAIWire.serialize([
+            body: WireJSON.serialize([
                 "object": "list",
                 "data": data,
             ]))

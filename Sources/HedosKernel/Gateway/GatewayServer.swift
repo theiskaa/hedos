@@ -13,32 +13,17 @@ public struct GatewayStatus: Sendable, Hashable {
     }
 }
 
-final class GatewayConnectionCounter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var count = 0
-
-    func admit(limit: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard count < limit else { return false }
-        count += 1
-        return true
-    }
-
-    func release() {
-        lock.lock()
-        count -= 1
-        lock.unlock()
-    }
-}
-
 public actor GatewayServer {
     public struct Configuration: Sendable, Hashable {
         public var port: Int
         public var maxConnections: Int
         public var maxBodyBytes: Int
 
-        public init(port: Int = 43367, maxConnections: Int = 128, maxBodyBytes: Int = 2_097_152) {
+        public init(
+            port: Int = GatewayDefaults.port,
+            maxConnections: Int = GatewayDefaults.maxConnections,
+            maxBodyBytes: Int = GatewayDefaults.maxBodyBytes
+        ) {
             self.port = port
             self.maxConnections = maxConnections
             self.maxBodyBytes = maxBodyBytes
@@ -106,16 +91,16 @@ public actor GatewayServer {
         let router = router
         let configuration = configuration
         acceptTask = Task {
-            let counter = GatewayConnectionCounter()
+            let counter = GatewayCounter()
             try? await serverChannel.executeThenClose { inbound in
                 try await withThrowingDiscardingTaskGroup { tasks in
                     for try await connection in inbound {
-                        guard counter.admit(limit: configuration.maxConnections) else {
+                        guard counter.enter(limit: configuration.maxConnections) else {
                             connection.channel.close(promise: nil)
                             continue
                         }
                         tasks.addTask {
-                            defer { counter.release() }
+                            defer { counter.exit() }
                             try? await Self.serve(
                                 connection: connection, router: router,
                                 maxBodyBytes: configuration.maxBodyBytes)

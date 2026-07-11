@@ -1,8 +1,6 @@
 import Foundation
 
 struct OpenAIEmbeddingsHandler: GatewayHandling {
-    var surface: GatewaySurface { .openAI }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -16,10 +14,8 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
             throw GatewayError(
                 .badRequest, "only float output is available — set encoding_format to float")
         }
-        let shelf = try await port.shelf()
-        let record = try GatewayModelResolver.resolve(model, shelf: shelf)
-        try identity.require(modelID: record.id, capability: .embed)
-        try await GatewayBackpressure.require(port, record: record, kind: .stream)
+        let record = try await GatewayModelResolver.resolveAuthorized(
+            model, capability: .embed, kind: .stream, port: port, identity: identity)
 
         let inputPayload: JSONValue =
             inputs.count == 1 ? .string(inputs[0]) : .array(inputs.map(JSONValue.string))
@@ -36,7 +32,7 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
                     vectors.append(vector)
                 case .done(let stats):
                     finalStats = stats
-                case .text, .thinking, .audio, .status:
+                case .text, .thinking, .audio, .status, .toolCall:
                     break
                 }
             }
@@ -56,7 +52,7 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
             let promptTokens = finalStats?.promptTokens ?? 0
             try await responder.respond(
                 status: 200,
-                body: OpenAIWire.serialize([
+                body: WireJSON.serialize([
                     "object": "list",
                     "data": data,
                     "model": model,

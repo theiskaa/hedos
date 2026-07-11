@@ -1,21 +1,17 @@
 import Foundation
 
 struct OllamaVersionHandler: GatewayHandling {
-    var surface: GatewaySurface { .ollama }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
     ) async throws -> GatewayOutcome {
         try await responder.respond(
-            status: 200, body: OpenAIWire.serialize(["version": "0.1.0-hedos"]))
+            status: 200, body: WireJSON.serialize(["version": "0.1.0-hedos"]))
         return .ok
     }
 }
 
 struct OllamaShowHandler: GatewayHandling {
-    var surface: GatewaySurface { .ollama }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -31,7 +27,7 @@ struct OllamaShowHandler: GatewayHandling {
         }
         try await responder.respond(
             status: 200,
-            body: OpenAIWire.serialize([
+            body: WireJSON.serialize([
                 "details": OllamaWire.details(record),
                 "capabilities": record.capabilities.contains(.chat) ? ["completion"] : [],
                 "model_info": [:],

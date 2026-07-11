@@ -1,8 +1,6 @@
 import Foundation
 
 struct PipelineListHandler: GatewayHandling {
-    var surface: GatewaySurface { .openAI }
-
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -30,7 +28,7 @@ struct PipelineListHandler: GatewayHandling {
             ])
         }
         try await responder.respond(
-            status: 200, body: OpenAIWire.serialize(["pipelines": entries]))
+            status: 200, body: WireJSON.serialize(["pipelines": entries]))
         return .ok
     }
 }

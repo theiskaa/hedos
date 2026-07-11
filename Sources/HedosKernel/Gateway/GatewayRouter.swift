@@ -27,7 +27,7 @@ public struct GatewayRouter: Sendable {
     let auth: GatewayAuth
     let audit: GatewayAuditLog
     let maxConcurrentInference: Int
-    private let inflight = GatewayInflight()
+    private let inflight = GatewayCounter()
 
     public init(
         port: any GatewayPort, auth: GatewayAuth, audit: GatewayAuditLog,

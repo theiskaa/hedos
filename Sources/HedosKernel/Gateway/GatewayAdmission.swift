@@ -10,7 +10,7 @@ public enum GatewayAdmissionState: Sendable, Hashable {
     case saturated(retryAfterSeconds: Int)
 }
 
-final class GatewayInflight: @unchecked Sendable {
+final class GatewayCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
 
