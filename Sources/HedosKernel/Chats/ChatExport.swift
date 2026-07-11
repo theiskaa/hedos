@@ -12,7 +12,9 @@ public enum ChatExportError: Error, Sendable, LocalizedError {
 }
 
 public enum ChatExport {
-    public static func markdown(_ transcript: ChatTranscript) -> String {
+    public static func markdown(
+        _ transcript: ChatTranscript, includeThinking: Bool = false
+    ) -> String {
         var lines: [String] = []
         lines.append("# \(transcript.session.title)")
         lines.append("")
@@ -25,9 +27,27 @@ public enum ChatExport {
         lines.append(metadata.joined(separator: " · "))
         for turn in transcript.turns where turn.supersededBy == nil {
             lines.append("")
-            lines.append("## \(turn.role.rawValue.capitalized)")
+            var heading = "## \(turn.role.rawValue.capitalized)"
+            if turn.role == .assistant, let modelID = turn.modelID {
+                heading += " · \(modelID)"
+            }
+            if turn.interrupted { heading += " (interrupted)" }
+            lines.append(heading)
             lines.append("")
-            lines.append(turn.content)
+            if includeThinking, let thinking = turn.thinking, !thinking.isEmpty {
+                lines.append("**Thinking**")
+                lines.append("")
+                for line in thinking.split(separator: "\n", omittingEmptySubsequences: false) {
+                    lines.append("> \(line)")
+                }
+                lines.append("")
+            }
+            if !turn.content.isEmpty {
+                lines.append(turn.content)
+            }
+            for ref in turn.artifactRefs {
+                lines.append("*(generated artifact: \(ref))*")
+            }
         }
         lines.append("")
         return lines.joined(separator: "\n")

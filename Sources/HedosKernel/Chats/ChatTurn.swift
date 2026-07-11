@@ -116,6 +116,7 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
     public var toolCallsJSON: String?
     public var toolCallID: String?
     public var toolName: String?
+    public var interrupted: Bool
 
     public init(
         id: String,
@@ -133,7 +134,8 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         updatedAt: Date,
         toolCallsJSON: String? = nil,
         toolCallID: String? = nil,
-        toolName: String? = nil
+        toolName: String? = nil,
+        interrupted: Bool = false
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -151,6 +153,34 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         self.toolCallsJSON = toolCallsJSON
         self.toolCallID = toolCallID
         self.toolName = toolName
+        self.interrupted = interrupted
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, sessionID, seq, role, content, thinking, modelID, statsJSON, artifactRefs
+        case supersededBy, contentHash, createdAt, updatedAt, toolCallsJSON, toolCallID, toolName
+        case interrupted
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        seq = try container.decode(Int.self, forKey: .seq)
+        role = try container.decode(TurnRole.self, forKey: .role)
+        content = try container.decode(String.self, forKey: .content)
+        thinking = try container.decodeIfPresent(String.self, forKey: .thinking)
+        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
+        statsJSON = try container.decodeIfPresent(String.self, forKey: .statsJSON)
+        artifactRefs = try container.decodeIfPresent([String].self, forKey: .artifactRefs) ?? []
+        supersededBy = try container.decodeIfPresent(String.self, forKey: .supersededBy)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        toolCallsJSON = try container.decodeIfPresent(String.self, forKey: .toolCallsJSON)
+        toolCallID = try container.decodeIfPresent(String.self, forKey: .toolCallID)
+        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        interrupted = try container.decodeIfPresent(Bool.self, forKey: .interrupted) ?? false
     }
 
     public var stats: GenerationStats? {

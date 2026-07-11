@@ -43,7 +43,7 @@ public actor ChatStore {
 
     public func createSession(
         title: String = ChatSession.defaultTitle, modelID: String? = nil,
-        capabilityTags: [String] = []
+        capabilityTags: [String] = [], systemPrompt: String? = nil
     ) throws -> ChatSession {
         let now = Self.now()
         let session = ChatSession(
@@ -52,7 +52,8 @@ public actor ChatStore {
             createdAt: now,
             updatedAt: now,
             modelID: modelID,
-            capabilityTags: capabilityTags)
+            capabilityTags: capabilityTags,
+            systemPrompt: systemPrompt)
         if let database = try writableDatabase() {
             try apply(.insertSession(session), to: database)
         } else {
@@ -73,7 +74,7 @@ public actor ChatStore {
         let rows = try database.rows(
             """
             SELECT id, title, created_at, updated_at, model_id, capability_tags,
-                   turn_count, pinned, archived, deleted_at, place
+                   turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by
             FROM sessions
             WHERE \(condition)
             ORDER BY updated_at DESC, id
@@ -88,7 +89,8 @@ public actor ChatStore {
                 let row = try database.rows(
                     """
                     SELECT id, title, created_at, updated_at, model_id, capability_tags,
-                           turn_count, pinned, archived, deleted_at, place
+                           turn_count, pinned, archived, deleted_at, place,
+                           system_prompt, titled_by
                     FROM sessions
                     WHERE id = ? AND deleted_at IS NULL
                     """, [.text(id)]
@@ -98,7 +100,7 @@ public actor ChatStore {
                 """
                 SELECT id, session_id, seq, role, content, thinking, model_id, stats_json,
                        artifact_refs, superseded_by, content_hash, created_at, updated_at,
-                       tool_calls_json, tool_call_id, tool_name
+                       tool_calls_json, tool_call_id, tool_name, interrupted
                 FROM turns
                 WHERE session_id = ?
                 ORDER BY seq, created_at, id
@@ -167,7 +169,7 @@ public actor ChatStore {
             statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
             supersededBy: turn.supersededBy,
             toolCallsJSON: turn.toolCallsJSON, toolCallID: turn.toolCallID,
-            toolName: turn.toolName)
+            toolName: turn.toolName, interrupted: turn.interrupted)
         if let database = try writableDatabase() {
             return try database.transaction {
                 guard
@@ -209,10 +211,14 @@ public actor ChatStore {
         return updated
     }
 
-    public func renameSession(id: String, title: String) throws {
+    public func renameSession(id: String, title: String, titledBy: String? = nil) throws {
         let now = Self.now()
-        try mutateSession(id: id, at: now, write: .renameSession(id: id, title: title, at: now)) {
+        try mutateSession(
+            id: id, at: now,
+            write: .renameSession(id: id, title: title, titledBy: titledBy, at: now)
+        ) {
             $0.title = title
+            $0.titledBy = titledBy
         }
     }
 
@@ -222,6 +228,15 @@ public actor ChatStore {
             id: id, at: now, write: .rebindSession(id: id, modelID: modelID, at: now)
         ) {
             $0.modelID = modelID
+        }
+    }
+
+    public func setSystemPrompt(id: String, prompt: String?) throws {
+        let now = Self.now()
+        try mutateSession(
+            id: id, at: now, write: .setSystemPrompt(id: id, prompt: prompt, at: now)
+        ) {
+            $0.systemPrompt = prompt
         }
     }
 
@@ -255,20 +270,26 @@ public actor ChatStore {
 
     public func importTranscript(_ transcript: ChatTranscript) throws -> ChatSession {
         let database = try open()
-        var session = transcript.session
-        session.turnCount = transcript.turns.count
+        let collidesWithActive =
+            try database.rows(
+                "SELECT 1 FROM sessions WHERE id = ? AND deleted_at IS NULL",
+                [.text(transcript.session.id)]
+            ).first != nil
+        let resolved = collidesWithActive ? Self.remapped(transcript) : transcript
+        var session = resolved.session
+        session.turnCount = resolved.turns.count
         try database.transaction {
             try apply(.insertSession(session), to: database)
             try database.run(
-                "DELETE FROM turns WHERE session_id = ?", [.text(transcript.session.id)])
-            for turn in transcript.turns {
+                "DELETE FROM turns WHERE session_id = ?", [.text(session.id)])
+            for turn in resolved.turns {
                 try database.run(
                     """
                     INSERT INTO turns
                         (id, session_id, seq, role, content, thinking, model_id, stats_json,
                          artifact_refs, superseded_by, content_hash, created_at, updated_at,
-                         tool_calls_json, tool_call_id, tool_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         tool_calls_json, tool_call_id, tool_name, interrupted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         .text(turn.id),
@@ -287,10 +308,41 @@ public actor ChatStore {
                         turn.toolCallsJSON.map(SQLiteValue.text) ?? .null,
                         turn.toolCallID.map(SQLiteValue.text) ?? .null,
                         turn.toolName.map(SQLiteValue.text) ?? .null,
+                        .integer(turn.interrupted ? 1 : 0),
                     ])
             }
         }
         return session
+    }
+
+    static func remapped(_ transcript: ChatTranscript) -> ChatTranscript {
+        let newSessionID = freshID()
+        var idMap: [String: String] = [:]
+        for turn in transcript.turns { idMap[turn.id] = freshID() }
+        let old = transcript.session
+        let session = ChatSession(
+            id: newSessionID, title: old.title, createdAt: old.createdAt,
+            updatedAt: old.updatedAt, modelID: old.modelID, capabilityTags: old.capabilityTags,
+            turnCount: old.turnCount, pinned: old.pinned, archived: old.archived, deletedAt: nil,
+            place: old.place, systemPrompt: old.systemPrompt, titledBy: old.titledBy)
+        let turns = transcript.turns.map { turn -> ChatTurn in
+            let supersededBy = turn.supersededBy.map { idMap[$0] ?? $0 }
+            return ChatTurn(
+                id: idMap[turn.id] ?? freshID(), sessionID: newSessionID, seq: turn.seq,
+                role: turn.role, content: turn.content, thinking: turn.thinking,
+                modelID: turn.modelID, statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
+                supersededBy: supersededBy,
+                contentHash: contentHash(
+                    content: turn.content, thinking: turn.thinking, modelID: turn.modelID,
+                    statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
+                    supersededBy: supersededBy, toolCallsJSON: turn.toolCallsJSON,
+                    toolCallID: turn.toolCallID, toolName: turn.toolName,
+                    interrupted: turn.interrupted),
+                createdAt: turn.createdAt, updatedAt: turn.updatedAt,
+                toolCallsJSON: turn.toolCallsJSON, toolCallID: turn.toolCallID,
+                toolName: turn.toolName, interrupted: turn.interrupted)
+        }
+        return ChatTranscript(session: session, turns: turns)
     }
 
     public func searchChats(query: String, limit: Int = 50) throws -> [SearchHit] {

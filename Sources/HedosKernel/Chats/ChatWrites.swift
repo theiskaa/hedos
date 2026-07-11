@@ -6,9 +6,10 @@ extension ChatStore {
         case insertSession(ChatSession)
         case insertTurn(ChatTurn, mergeTags: [String])
         case updateTurn(ChatTurn, mergeTags: [String])
-        case renameSession(id: String, title: String, at: Date)
+        case renameSession(id: String, title: String, titledBy: String?, at: Date)
         case setPlace(id: String, place: String?, at: Date)
         case rebindSession(id: String, modelID: String?, at: Date)
+        case setSystemPrompt(id: String, prompt: String?, at: Date)
         case setPinned(id: String, pinned: Bool, at: Date)
         case setArchived(id: String, archived: Bool, at: Date)
         case tombstoneSession(id: String, at: Date)
@@ -21,8 +22,8 @@ extension ChatStore {
                 """
                 INSERT OR REPLACE INTO sessions
                     (id, title, created_at, updated_at, model_id, capability_tags,
-                     turn_count, pinned, archived, deleted_at, place)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     .text(session.id),
@@ -36,6 +37,8 @@ extension ChatStore {
                     .integer(session.archived ? 1 : 0),
                     session.deletedAt.map { .real($0.timeIntervalSince1970) } ?? .null,
                     session.place.map(SQLiteValue.text) ?? .null,
+                    session.systemPrompt.map(SQLiteValue.text) ?? .null,
+                    session.titledBy.map(SQLiteValue.text) ?? .null,
                 ])
         case .insertTurn(let turn, let mergeTags):
             try database.run(
@@ -43,8 +46,8 @@ extension ChatStore {
                 INSERT INTO turns
                     (id, session_id, seq, role, content, thinking, model_id, stats_json,
                      artifact_refs, superseded_by, content_hash, created_at, updated_at,
-                     tool_calls_json, tool_call_id, tool_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tool_calls_json, tool_call_id, tool_name, interrupted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     .text(turn.id),
@@ -63,6 +66,7 @@ extension ChatStore {
                     turn.toolCallsJSON.map(SQLiteValue.text) ?? .null,
                     turn.toolCallID.map(SQLiteValue.text) ?? .null,
                     turn.toolName.map(SQLiteValue.text) ?? .null,
+                    .integer(turn.interrupted ? 1 : 0),
                 ])
             let storedTags = try database.rows(
                 "SELECT capability_tags FROM sessions WHERE id = ?", [.text(turn.sessionID)]
@@ -84,7 +88,7 @@ extension ChatStore {
                 UPDATE turns
                 SET content = ?, thinking = ?, model_id = ?, stats_json = ?, artifact_refs = ?,
                     superseded_by = ?, content_hash = ?, updated_at = ?,
-                    tool_calls_json = ?, tool_call_id = ?, tool_name = ?
+                    tool_calls_json = ?, tool_call_id = ?, tool_name = ?, interrupted = ?
                 WHERE id = ?
                 """,
                 [
@@ -99,6 +103,7 @@ extension ChatStore {
                     turn.toolCallsJSON.map(SQLiteValue.text) ?? .null,
                     turn.toolCallID.map(SQLiteValue.text) ?? .null,
                     turn.toolName.map(SQLiteValue.text) ?? .null,
+                    .integer(turn.interrupted ? 1 : 0),
                     .text(turn.id),
                 ])
             let storedTags = try database.rows(
@@ -111,10 +116,15 @@ extension ChatStore {
                     .text(Self.mergedTags(storedTags, mergeTags).joined(separator: ",")),
                     .text(turn.sessionID),
                 ])
-        case .renameSession(let id, let title, let at):
+        case .renameSession(let id, let title, let titledBy, let at):
             try database.run(
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
-                [.text(title), .real(at.timeIntervalSince1970), .text(id)])
+                "UPDATE sessions SET title = ?, titled_by = ?, updated_at = ? WHERE id = ?",
+                [
+                    .text(title),
+                    titledBy.map(SQLiteValue.text) ?? .null,
+                    .real(at.timeIntervalSince1970),
+                    .text(id),
+                ])
         case .setPlace(let id, let place, let at):
             try database.run(
                 "UPDATE sessions SET place = ?, updated_at = ? WHERE id = ?",
@@ -128,6 +138,14 @@ extension ChatStore {
                 "UPDATE sessions SET model_id = ?, updated_at = ? WHERE id = ?",
                 [
                     modelID.map(SQLiteValue.text) ?? .null,
+                    .real(at.timeIntervalSince1970),
+                    .text(id),
+                ])
+        case .setSystemPrompt(let id, let prompt, let at):
+            try database.run(
+                "UPDATE sessions SET system_prompt = ?, updated_at = ? WHERE id = ?",
+                [
+                    prompt.map(SQLiteValue.text) ?? .null,
                     .real(at.timeIntervalSince1970),
                     .text(id),
                 ])
@@ -158,7 +176,9 @@ extension ChatStore {
             pinned: row.integer(7) != 0,
             archived: row.integer(8) != 0,
             deletedAt: row.optionalReal(9).map(Date.init(timeIntervalSince1970:)),
-            place: row.optionalText(10))
+            place: row.optionalText(10),
+            systemPrompt: row.optionalText(11),
+            titledBy: row.optionalText(12))
     }
 
     static func turn(from row: SQLiteRow) -> ChatTurn {
@@ -178,7 +198,8 @@ extension ChatStore {
             updatedAt: Date(timeIntervalSince1970: row.real(12)),
             toolCallsJSON: row.optionalText(13),
             toolCallID: row.optionalText(14),
-            toolName: row.optionalText(15))
+            toolName: row.optionalText(15),
+            interrupted: row.integer(16) != 0)
     }
 
     static func turn(
@@ -209,7 +230,8 @@ extension ChatStore {
     static func contentHash(
         content: String, thinking: String?, modelID: String?, statsJSON: String?,
         artifactRefs: [String], supersededBy: String?,
-        toolCallsJSON: String?, toolCallID: String?, toolName: String?
+        toolCallsJSON: String?, toolCallID: String?, toolName: String?,
+        interrupted: Bool = false
     ) -> String {
         var fields = [
             content,
@@ -224,6 +246,7 @@ extension ChatStore {
             fields.append(toolCallID ?? "")
             fields.append(toolName ?? "")
         }
+        if interrupted { fields.append("interrupted") }
         let joined = fields.joined(separator: "\u{1f}")
         return SHA256.hash(data: Data(joined.utf8))
             .map { String(format: "%02x", $0) }

@@ -77,5 +77,10 @@ extension ChatStore {
         """
         ALTER TABLE sessions ADD COLUMN place TEXT;
         """,
+        """
+        ALTER TABLE turns ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN system_prompt TEXT;
+        ALTER TABLE sessions ADD COLUMN titled_by TEXT;
+        """,
     ]
 }

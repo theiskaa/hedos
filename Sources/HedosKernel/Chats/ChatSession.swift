@@ -12,6 +12,8 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
     public var archived: Bool
     public var deletedAt: Date?
     public var place: String?
+    public var systemPrompt: String?
+    public var titledBy: String?
 
     public init(
         id: String,
@@ -24,7 +26,9 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         pinned: Bool = false,
         archived: Bool = false,
         deletedAt: Date? = nil,
-        place: String? = nil
+        place: String? = nil,
+        systemPrompt: String? = nil,
+        titledBy: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,6 +41,8 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         self.archived = archived
         self.deletedAt = deletedAt
         self.place = place
+        self.systemPrompt = systemPrompt
+        self.titledBy = titledBy
     }
 
     public static let defaultTitle = "New Chat"
@@ -70,6 +76,16 @@ public struct ChatTranscript: Codable, Sendable, Hashable {
     public init(session: ChatSession, turns: [ChatTurn]) {
         self.session = session
         self.turns = turns
+    }
+
+    public var attributionNeeded: Bool {
+        let modelIDs = Set(
+            turns
+                .filter { $0.supersededBy == nil && $0.role == .assistant }
+                .compactMap(\.modelID))
+        if modelIDs.count > 1 { return true }
+        if let bound = session.modelID, let only = modelIDs.first, only != bound { return true }
+        return false
     }
 }
 
