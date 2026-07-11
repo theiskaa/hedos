@@ -103,6 +103,8 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
     public var contextLength: Int?
     public var hasChatTemplate: Bool?
     public var stopTokens: [String]?
+    public var downloading: Bool = false
+    public var contentFingerprint: String?
 
     public init(
         name: String,
@@ -146,6 +148,7 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         case systemPrompt, alias, execution, footprintMB, state, registeredAt
         case primaryWeightPath
         case contextLength, hasChatTemplate, stopTokens
+        case downloading, contentFingerprint
     }
 
     public init(from decoder: any Decoder) throws {
@@ -170,6 +173,10 @@ public struct ModelRecord: Codable, Hashable, Sendable, Identifiable {
         self.contextLength = try container.decodeIfPresent(Int.self, forKey: .contextLength)
         self.hasChatTemplate = try container.decodeIfPresent(Bool.self, forKey: .hasChatTemplate)
         self.stopTokens = try container.decodeIfPresent([String].self, forKey: .stopTokens)
+        self.downloading =
+            try container.decodeIfPresent(Bool.self, forKey: .downloading) ?? false
+        self.contentFingerprint = try container.decodeIfPresent(
+            String.self, forKey: .contentFingerprint)
     }
 
     public var displayName: String {

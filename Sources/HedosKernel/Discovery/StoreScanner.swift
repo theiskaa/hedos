@@ -12,6 +12,7 @@ public struct DiscoveredModel: Sendable, Hashable {
     public var contextLengthHint: Int?
     public var hasChatTemplateHint: Bool?
     public var stopTokensHint: [String]?
+    public var downloading: Bool
 
     public init(
         name: String,
@@ -24,7 +25,8 @@ public struct DiscoveredModel: Sendable, Hashable {
         diagnostics: [String] = [],
         contextLengthHint: Int? = nil,
         hasChatTemplateHint: Bool? = nil,
-        stopTokensHint: [String]? = nil
+        stopTokensHint: [String]? = nil,
+        downloading: Bool = false
     ) {
         self.name = name
         self.source = source
@@ -37,6 +39,7 @@ public struct DiscoveredModel: Sendable, Hashable {
         self.contextLengthHint = contextLengthHint
         self.hasChatTemplateHint = hasChatTemplateHint
         self.stopTokensHint = stopTokensHint
+        self.downloading = downloading
     }
 }
 

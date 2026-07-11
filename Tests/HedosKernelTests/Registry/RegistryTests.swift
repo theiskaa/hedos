@@ -202,3 +202,38 @@ import Testing
     let names = try await registry.list().map(\.name)
     #expect(names == ["FLUX.1-schnell", "Zeta"])
 }
+
+@Test func downloadingAndFingerprintRoundTripThroughStore() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    var record = Fixtures.gguf()
+    record.downloading = true
+    record.contentFingerprint = "abc123"
+    try await Registry(directory: dir).register(record)
+
+    let reloaded = try #require(try await Registry(directory: dir).get(id: record.id))
+    #expect(reloaded.downloading)
+    #expect(reloaded.contentFingerprint == "abc123")
+    #expect(reloaded == record)
+}
+
+@Test func legacyStoreWithoutNewFieldsDecodesWithDefaults() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try await Registry(directory: dir).register(Fixtures.gguf())
+
+    let storeURL = dir.appendingPathComponent("models.json")
+    var envelope =
+        try JSONSerialization.jsonObject(with: Data(contentsOf: storeURL)) as! [String: Any]
+    var models = envelope["models"] as! [[String: Any]]
+    for index in models.indices {
+        models[index].removeValue(forKey: "downloading")
+        models[index].removeValue(forKey: "contentFingerprint")
+    }
+    envelope["models"] = models
+    try JSONSerialization.data(withJSONObject: envelope).write(to: storeURL)
+
+    let reloaded = try #require(try await Registry(directory: dir).list().first)
+    #expect(!reloaded.downloading)
+    #expect(reloaded.contentFingerprint == nil)
+}
