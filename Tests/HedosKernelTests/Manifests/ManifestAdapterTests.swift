@@ -63,21 +63,22 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let identified = Identification.identify(record)
 
     let matching = ManifestCommandAdapter(
-        manifest: invokeManifest(command: "echo hi"), approvedNetwork: false)
+        manifest: invokeManifest(command: "echo hi"), approvedHostExecution: true, approvedNetwork: false)
     #expect(matching.bid(record, identified)?.tier == .managed)
     #expect(matching.bid(record, identified)?.preference == 100)
 
     let wrongDetect = ManifestCommandAdapter(
         manifest: invokeManifest(command: "echo hi", detect: ManifestDetect(fileExtension: "gguf")),
-        approvedNetwork: false)
+        approvedHostExecution: true, approvedNetwork: false)
     #expect(wrongDetect.bid(record, identified) == nil)
 
     let unapprovedNetwork = ManifestCommandAdapter(
-        manifest: invokeManifest(command: "echo hi", network: true), approvedNetwork: false)
+        manifest: invokeManifest(command: "echo hi", network: true),
+        approvedHostExecution: false, approvedNetwork: false)
     #expect(unapprovedNetwork.bid(record, identified) == nil)
 
     let approvedNetwork = ManifestCommandAdapter(
-        manifest: invokeManifest(command: "echo hi", network: true), approvedNetwork: true)
+        manifest: invokeManifest(command: "echo hi", network: true), approvedHostExecution: true, approvedNetwork: true)
     #expect(approvedNetwork.bid(record, identified) != nil)
 }
 
@@ -97,7 +98,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
         command: "run --model {model} --prompt {prompt} --out {outputs}",
         record: record, payload: payload, workdir: workdir, outputs: outputs, envDir: nil)
     #expect(tokens.count == 7)
-    #expect(tokens[4] == "hello wide world")
+    #expect(tokens[4] == "user: hello wide world")
     #expect(tokens[6] == outputs.path)
 
     #expect(throws: KernelError.self) {
@@ -121,7 +122,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
 
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path) {prompt}")
     let adapter = ManifestCommandAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let payload: JSONValue = .object([
@@ -137,7 +138,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
         if case .text(let delta) = chunk { text += delta }
         if case .done = chunk { sawDone = true }
     }
-    #expect(text.contains("echo: ping"))
+    #expect(text.contains("echo: user: ping"))
     #expect(sawDone)
 }
 
@@ -157,7 +158,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     let manifest = invokeManifest(
         command: "\(try realPythonPath()) \(script.path) {outputs}", execution: .job)
     let adapter = ManifestCommandAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
@@ -187,7 +188,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
 
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
     let adapter = ManifestCommandAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
@@ -216,7 +217,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
 
     let manifest = invokeManifest(command: "\(try realPythonPath()) \(script.path)")
     let adapter = ManifestCommandAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
@@ -229,13 +230,33 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
     #expect(text.contains("final answer"))
 }
 
+@Test func hungCommandIsKilledAtTheExecutionTimeout() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let record = try xyzRecord(in: dir)
+    let manifest = invokeManifest(command: "/bin/sleep 3600")
+    let adapter = ManifestCommandAdapter(
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
+        governor: MemoryGovernor(totalMemoryMB: 262_144),
+        workdirRoot: dir.appendingPathComponent("workdirs"),
+        executionTimeout: .milliseconds(500))
+
+    do {
+        for try await _ in adapter.invoke(
+            pinned(record, to: manifest.id), .chat, payload: .object([:])) {}
+        Issue.record("expected the timeout error")
+    } catch {
+        #expect(String(describing: error).contains("ran for more than"))
+    }
+}
+
 @Test func unapprovedInvokeRefusesWithConsentHint() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
     let record = try xyzRecord(in: dir)
     let manifest = invokeManifest(command: "echo hi", network: true)
     let adapter = ManifestCommandAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: false, approvedNetwork: false,
         governor: MemoryGovernor(totalMemoryMB: 262_144),
         workdirRoot: dir.appendingPathComponent("workdirs"))
 
@@ -244,7 +265,7 @@ private func pinned(_ record: ModelRecord, to id: String) -> ModelRecord {
             pinned(record, to: manifest.id), .chat, payload: .object([:])) {}
         Issue.record("expected the consent refusal")
     } catch {
-        #expect(String(describing: error).contains("network permission"))
+        #expect(String(describing: error).contains("needs your approval"))
     }
 }
 
@@ -475,7 +496,7 @@ private final class CapFlag: @unchecked Sendable {
             [.posixPermissions: 0o755], ofItemAtPath: outputs.path)
     }
     let adapter = ManifestCommandAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         governor: MemoryGovernor(totalMemoryMB: 262_144), workdirRoot: workdirRoot)
 
     do {

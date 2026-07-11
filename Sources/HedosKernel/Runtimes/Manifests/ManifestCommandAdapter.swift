@@ -2,27 +2,34 @@ import Darwin
 import Foundation
 
 struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
+    static let defaultExecutionTimeout: Duration = .seconds(1800)
+
     let manifest: RuntimeManifest
+    let approvedHostExecution: Bool
     let approvedNetwork: Bool
     let workdirRoot: URL
+    let executionTimeout: Duration
 
     private let governor: MemoryGovernor
 
     var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
     init(
-        manifest: RuntimeManifest, approvedNetwork: Bool,
+        manifest: RuntimeManifest, approvedHostExecution: Bool, approvedNetwork: Bool,
         governor: MemoryGovernor = .shared,
-        workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
+        workdirRoot: URL = ManifestSupport.defaultWorkdirRoot(),
+        executionTimeout: Duration = ManifestCommandAdapter.defaultExecutionTimeout
     ) {
         self.manifest = manifest
+        self.approvedHostExecution = approvedHostExecution
         self.approvedNetwork = approvedNetwork
         self.governor = governor
         self.workdirRoot = workdirRoot
+        self.executionTimeout = executionTimeout
     }
 
-    private var networkBlocked: Bool {
-        manifest.permissions.network && !approvedNetwork
+    private var executionBlocked: Bool {
+        !approvedHostExecution
     }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
@@ -30,7 +37,7 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     }
 
     func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
-        guard let detect = manifest.detect, detect.matches(record), !networkBlocked else {
+        guard let detect = manifest.detect, detect.matches(record), !executionBlocked else {
             return nil
         }
         return RuntimeBid(tier: .managed, preference: BidPreference.manifest, alternatives: manifest.alternativeIDs)
@@ -93,7 +100,7 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
                     }
                     continuation.yield(.started)
                     for file in outputs {
-                        let data = try Data(contentsOf: file)
+                        let data = try ManifestSupport.boundedOutputData(at: file)
                         continuation.yield(
                             .result(data: data, fileExtension: file.pathExtension))
                     }
@@ -128,9 +135,9 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
         _ record: ModelRecord, payload: JSONValue,
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> (stdout: String, outputs: URL) {
-        guard !networkBlocked else {
+        guard !executionBlocked else {
             throw KernelError.runtimeUnavailable(
-                hint: "\(id) needs network permission. Approve it from the model's page.")
+                hint: "\(id) runs code on this Mac and needs your approval. Approve it from the model's page.")
         }
         guard let invoke = manifest.invoke else {
             throw KernelError.runtimeFailed("\(id) declares no [invoke] command")
@@ -174,8 +181,23 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             Self.terminateProcessTree(process)
         }
         try process.run()
+        let executionTimeout = executionTimeout
+        let timedOut = TimeoutFlag()
+        let timeoutTask = Task {
+            try? await Task.sleep(for: executionTimeout)
+            guard !Task.isCancelled else { return }
+            await timedOut.fire()
+            Self.terminateProcessTree(process)
+            drain.cancel()
+        }
         return try await withTaskCancellationHandler {
             let (outputData, errorData) = await drain.collect(process: process)
+            timeoutTask.cancel()
+            if await timedOut.didFire {
+                let minutes = max(1, Int(executionTimeout.components.seconds / 60))
+                throw KernelError.runtimeFailed(
+                    "\(id) ran for more than \(minutes) minutes and was stopped")
+            }
             guard process.terminationStatus == 0 else {
                 let tail = ManifestSupport.errorSummary(String(decoding: errorData, as: UTF8.self))
                 throw KernelError.runtimeFailed(
@@ -183,6 +205,7 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             }
             return (String(decoding: outputData, as: UTF8.self), outputs)
         } onCancel: {
+            timeoutTask.cancel()
             drain.cancel()
             Self.terminateProcessTree(process)
         }
@@ -243,6 +266,11 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             }
         }
     }
+}
+
+actor TimeoutFlag {
+    private(set) var didFire = false
+    func fire() { didFire = true }
 }
 
 final class PipeDrain: @unchecked Sendable {

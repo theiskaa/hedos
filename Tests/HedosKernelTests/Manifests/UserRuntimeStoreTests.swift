@@ -16,7 +16,7 @@ private func writeManifest(_ text: String, at directory: URL, name: String, loos
 private let looseInvoke = """
     id = "%ID%"
     capabilities = ["chat"]
-    execution = "stream"
+    execution = "sync"
     detect = { extension = "xyz" }
     [invoke]
     command = "echo {prompt}"
@@ -111,7 +111,7 @@ private let looseInvoke = """
     let noDetect = """
         id = "blind"
         capabilities = ["chat"]
-        execution = "stream"
+        execution = "sync"
         [invoke]
         command = "echo hi"
         """

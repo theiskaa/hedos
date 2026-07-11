@@ -13,10 +13,12 @@ extension RuntimeManifest {
 public struct ManifestConsentInfo: Sendable, Hashable {
     public let id: String
     public let paths: [String]
+    public let network: Bool
 
-    public init(id: String, paths: [String]) {
+    public init(id: String, paths: [String], network: Bool = false) {
         self.id = id
         self.paths = paths
+        self.network = network
     }
 }
 
@@ -88,30 +90,66 @@ enum ManifestSupport {
         if case .string(let prompt)? = object["prompt"] {
             return prompt
         }
-        guard case .array(let entries)? = object["messages"] else { return "" }
-        for entry in entries.reversed() {
+        return conversationText(from: payload)
+    }
+
+    static func conversationText(from payload: JSONValue) -> String {
+        guard case .object(let object) = payload,
+            case .array(let entries)? = object["messages"]
+        else { return "" }
+        var lines: [String] = []
+        for entry in entries {
             guard case .object(let fields) = entry,
-                case .string(let role)? = fields["role"], role == "user",
+                case .string(let role)? = fields["role"],
                 case .string(let content)? = fields["content"]
             else { continue }
-            return content
+            lines.append("\(role): \(content)")
         }
-        return ""
+        return lines.joined(separator: "\n")
+    }
+
+    static let maxOutputFileBytes = 256 * 1024 * 1024
+
+    static func boundedOutputData(at url: URL, limit: Int = maxOutputFileBytes) throws -> Data {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= limit else {
+            throw KernelError.runtimeFailed(
+                "output file \(url.lastPathComponent) is \(size) bytes, larger than the \(limit) cap")
+        }
+        return try Data(contentsOf: url)
+    }
+
+    static func expandPlaceholders(_ token: String, _ replacements: [String: String]) -> String {
+        let keys = replacements.keys.sorted { $0.count > $1.count }
+        var result = ""
+        var index = token.startIndex
+        while index < token.endIndex {
+            var matched = false
+            for key in keys where token[index...].hasPrefix(key) {
+                result += replacements[key] ?? ""
+                index = token.index(index, offsetBy: key.count)
+                matched = true
+                break
+            }
+            if !matched {
+                result.append(token[index])
+                index = token.index(after: index)
+            }
+        }
+        return result
     }
 
     static func substitutedForVM(command: String, payload: JSONValue) throws -> [String] {
-        let prompt = promptText(from: payload)
-        var tokens: [String] = []
-        for token in command.split(separator: " ").map(String.init) {
-            var expanded = token
-            expanded = expanded.replacingOccurrences(of: "{model}", with: VMGuestPath.model)
-            expanded = expanded.replacingOccurrences(of: "{prompt}", with: prompt)
-            expanded = expanded.replacingOccurrences(of: "{workdir}", with: VMGuestPath.workdir)
-            expanded = expanded.replacingOccurrences(of: "{outputs}", with: VMGuestPath.outputs)
-            expanded = expanded.replacingOccurrences(
-                of: "{resources}", with: VMGuestPath.resources)
-            expanded = expanded.replacingOccurrences(of: "{python}", with: "python3")
-            tokens.append(expanded)
+        let replacements: [String: String] = [
+            "{model}": VMGuestPath.model,
+            "{prompt}": promptText(from: payload),
+            "{workdir}": VMGuestPath.workdir,
+            "{outputs}": VMGuestPath.outputs,
+            "{resources}": VMGuestPath.resources,
+            "{python}": "python3",
+        ]
+        let tokens = command.split(separator: " ").map {
+            expandPlaceholders(String($0), replacements)
         }
         guard !tokens.isEmpty else {
             throw KernelError.runtimeFailed("the manifest command is empty")
@@ -124,23 +162,21 @@ enum ManifestSupport {
         workdir: URL, outputs: URL, envDir: URL?
     ) throws -> [String] {
         let paths = SidecarModelPaths.resolve(record)
-        let prompt = promptText(from: payload)
-        var tokens: [String] = []
-        for token in command.split(separator: " ").map(String.init) {
-            var expanded = token
-            expanded = expanded.replacingOccurrences(of: "{model}", with: paths.snapshot)
-            expanded = expanded.replacingOccurrences(of: "{prompt}", with: prompt)
-            expanded = expanded.replacingOccurrences(of: "{workdir}", with: workdir.path)
-            expanded = expanded.replacingOccurrences(of: "{outputs}", with: outputs.path)
-            if expanded.contains("{python}") {
-                guard let envDir else {
-                    throw KernelError.runtimeFailed(
-                        "the command uses {python} but the manifest declares no [env]")
-                }
-                expanded = expanded.replacingOccurrences(
-                    of: "{python}", with: envDir.appendingPathComponent("bin/python").path)
-            }
-            tokens.append(expanded)
+        if command.contains("{python}"), envDir == nil {
+            throw KernelError.runtimeFailed(
+                "the command uses {python} but the manifest declares no [env]")
+        }
+        var replacements: [String: String] = [
+            "{model}": paths.snapshot,
+            "{prompt}": promptText(from: payload),
+            "{workdir}": workdir.path,
+            "{outputs}": outputs.path,
+        ]
+        if let envDir {
+            replacements["{python}"] = envDir.appendingPathComponent("bin/python").path
+        }
+        let tokens = command.split(separator: " ").map {
+            expandPlaceholders(String($0), replacements)
         }
         guard !tokens.isEmpty else {
             throw KernelError.runtimeFailed("the manifest command is empty")

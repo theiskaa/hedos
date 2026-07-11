@@ -40,7 +40,7 @@ private func xyzRecord(in dir: URL, runtimeID: String) throws -> ModelRecord {
     try Data("print()".utf8).write(to: resources.appendingPathComponent("main.py"))
     let manifest = serveManifest(directory: resources)
     let adapter = ManifestSidecarAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let record = try xyzRecord(in: dir, runtimeID: manifest.id)
 
@@ -54,7 +54,7 @@ private func xyzRecord(in dir: URL, runtimeID: String) throws -> ModelRecord {
 
     let jobManifest = serveManifest(execution: .job, directory: resources)
     let jobAdapter = ManifestSidecarAdapter(
-        manifest: jobManifest, approvedNetwork: false,
+        manifest: jobManifest, approvedHostExecution: true, approvedNetwork: false,
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let jobSpec = try jobAdapter.spec(record: record, envDir: nil)
     #expect(!jobSpec.cooperativeCancel)
@@ -65,7 +65,7 @@ private func xyzRecord(in dir: URL, runtimeID: String) throws -> ModelRecord {
     defer { try? FileManager.default.removeItem(at: dir) }
     let manifest = serveManifest(network: true)
     let adapter = ManifestSidecarAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: false, approvedNetwork: false,
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let record = try xyzRecord(in: dir, runtimeID: manifest.id)
 
@@ -73,13 +73,13 @@ private func xyzRecord(in dir: URL, runtimeID: String) throws -> ModelRecord {
         for try await _ in adapter.invoke(record, .chat, payload: .object([:])) {}
         Issue.record("expected the stream consent refusal")
     } catch let KernelError.runtimeUnavailable(hint) {
-        #expect(hint.contains("network permission"))
+        #expect(hint.contains("needs your approval"))
     }
     do {
         for try await _ in adapter.run(record, .chat, payload: .object([:])) {}
         Issue.record("expected the job consent refusal")
     } catch let KernelError.runtimeUnavailable(hint) {
-        #expect(hint.contains("network permission"))
+        #expect(hint.contains("needs your approval"))
     }
     #expect(adapter.bid(record, Identification.identify(record)) == nil)
 }
@@ -90,7 +90,7 @@ private func xyzRecord(in dir: URL, runtimeID: String) throws -> ModelRecord {
     var manifest = serveManifest()
     manifest.serve = nil
     let adapter = ManifestSidecarAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let record = try xyzRecord(in: dir, runtimeID: manifest.id)
 
@@ -107,7 +107,7 @@ private func xyzRecord(in dir: URL, runtimeID: String) throws -> ModelRecord {
     defer { try? FileManager.default.removeItem(at: dir) }
     let manifest = serveManifest()
     let adapter = ManifestSidecarAdapter(
-        manifest: manifest, approvedNetwork: false,
+        manifest: manifest, approvedHostExecution: true, approvedNetwork: false,
         workdirRoot: dir.appendingPathComponent("workdirs"))
     let record = try xyzRecord(in: dir, runtimeID: manifest.id)
 

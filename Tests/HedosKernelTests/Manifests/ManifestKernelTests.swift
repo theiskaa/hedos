@@ -44,7 +44,7 @@ private let darkManifest = """
     id = "dark-runner"
     modalities = ["text"]
     capabilities = ["chat", "complete"]
-    execution = "stream"
+    execution = "sync"
     detect = { extension = "xyz" }
     [invoke]
     command = "echo {prompt}"
@@ -61,6 +61,7 @@ private let darkManifest = """
     try await kernel.registry.register(record)
 
     _ = try await kernel.discover()
+    try await kernel.approveNetworkRuntime("dark-runner")
 
     let resolved = try #require(try await kernel.registry.get(id: record.id))
     #expect(resolved.runtime.id == "dark-runner")
@@ -68,7 +69,7 @@ private let darkManifest = """
     #expect(resolved.state == .ready)
     #expect(resolved.modality == .text)
     #expect(resolved.capabilities == [.chat, .complete])
-    #expect(resolved.execution == .stream)
+    #expect(resolved.execution == .sync)
 }
 
 @Test func discoverSurfacesManifestIssuesInSummary() async throws {
@@ -93,6 +94,7 @@ private let darkManifest = """
     try await kernel.registry.register(record)
 
     _ = try await kernel.discover()
+    try await kernel.approveNetworkRuntime("dark-runner")
 
     let resolved = try #require(try await kernel.registry.get(id: record.id))
     #expect(resolved.runtime.id == "dark-runner")
@@ -126,7 +128,7 @@ private let darkManifest = """
     let registry = Registry(directory: dir.appendingPathComponent("store"))
     try await registry.register(record)
     let engine = ResolutionEngine(adapters: [
-        ManifestCommandAdapter(manifest: manifest, approvedNetwork: false)
+        ManifestCommandAdapter(manifest: manifest, approvedHostExecution: true, approvedNetwork: false)
     ])
     try await engine.resolveAll(in: registry)
 
@@ -154,14 +156,14 @@ private let darkManifest = """
     let unresolved = try #require(try await kernel.registry.get(id: record.id))
     #expect(unresolved.runtime.tier == .recipeNeeded)
 
-    let consent = try await kernel.pendingNetworkConsent(for: record.id)
+    let consent = try await kernel.pendingHostConsent(for: record.id)
     #expect(consent?.id == "net-runner")
 
     try await kernel.approveNetworkRuntime("net-runner")
     let resolved = try #require(try await kernel.registry.get(id: record.id))
     #expect(resolved.runtime.id == "net-runner")
     #expect(resolved.state == .ready)
-    #expect(try await kernel.pendingNetworkConsent(for: record.id) == nil)
+    #expect(try await kernel.pendingHostConsent(for: record.id) == nil)
 }
 
 @Test func editingManifestAfterApprovalReTriggersNetworkConsent() async throws {
@@ -182,7 +184,7 @@ private let darkManifest = """
     try await kernel.approveNetworkRuntime("net-runner")
     let resolved = try #require(try await kernel.registry.get(id: record.id))
     #expect(resolved.state == .ready)
-    #expect(try await kernel.pendingNetworkConsent(for: record.id) == nil)
+    #expect(try await kernel.pendingHostConsent(for: record.id) == nil)
 
     let editedManifest = networkManifest
         .replacingOccurrences(
@@ -190,14 +192,14 @@ private let darkManifest = """
     try writeUserManifest(editedManifest, kernelDir: dir, name: "net-runner")
 
     _ = try await kernel.discover()
-    let consentAfterEdit = try await kernel.pendingNetworkConsent(for: record.id)
+    let consentAfterEdit = try await kernel.pendingHostConsent(for: record.id)
     #expect(consentAfterEdit?.id == "net-runner")
 
     let demoted = try #require(try await kernel.registry.get(id: record.id))
     #expect(demoted.runtime.tier == .recipeNeeded)
 
     try await kernel.approveNetworkRuntime("net-runner")
-    #expect(try await kernel.pendingNetworkConsent(for: record.id) == nil)
+    #expect(try await kernel.pendingHostConsent(for: record.id) == nil)
     let reResolved = try #require(try await kernel.registry.get(id: record.id))
     #expect(reResolved.state == .ready)
 }
@@ -218,6 +220,7 @@ private let darkManifest = """
     try await kernel.registry.register(record)
 
     _ = try await kernel.discover()
+    try await kernel.approveNetworkRuntime("dark-runner")
     let ready = try #require(try await kernel.registry.get(id: record.id))
     #expect(ready.runtime.id == "dark-runner")
     #expect(ready.state == .ready)
@@ -257,6 +260,129 @@ private let darkManifest = """
     let afterHeal = try #require(try await kernel.registry.get(id: record.id))
     #expect(afterHeal.runtime.id == "dark-runner")
     await kernel.stopWatching()
+}
+
+private func writeDirectoryManifest(
+    kernelDir: URL, name: String, toml: String, files: [String: String]
+) throws {
+    let dir = kernelDir.appendingPathComponent("runtimes.d/\(name)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data(toml.utf8).write(to: dir.appendingPathComponent("manifest.toml"))
+    for (file, content) in files {
+        try Data(content.utf8).write(to: dir.appendingPathComponent(file))
+    }
+}
+
+private func serveDirManifest(id: String, network: Bool) -> String {
+    """
+    id = "\(id)"
+    modalities = ["text"]
+    capabilities = ["chat", "complete"]
+    execution = "stream"
+    detect = { extension = "xyz" }
+    [env]
+    lockfile = "requirements.lock"
+    [serve]
+    entrypoint = "main.py"
+    \(network ? "[permissions]\nnetwork = true" : "")
+    """
+}
+
+@Test func consentHashCoversEntrypointAndLockfileAndSiblings() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
+    let toml = serveDirManifest(id: "serve-runner", network: true)
+    try writeDirectoryManifest(
+        kernelDir: dir, name: "serve-runner", toml: toml,
+        files: ["main.py": "print('v1')", "requirements.lock": "numpy==1.0"])
+    let record = try darkRecord(in: dir)
+    try await kernel.registry.register(record)
+
+    _ = try await kernel.discover()
+    #expect(try await kernel.pendingHostConsent(for: record.id)?.id == "serve-runner")
+    try await kernel.approveNetworkRuntime("serve-runner")
+    #expect(try #require(try await kernel.registry.get(id: record.id)).runtime.id == "serve-runner")
+    #expect(try await kernel.pendingHostConsent(for: record.id) == nil)
+
+    try writeDirectoryManifest(
+        kernelDir: dir, name: "serve-runner", toml: toml,
+        files: ["main.py": "print('v2 exfiltrate')", "requirements.lock": "numpy==1.0"])
+    _ = try await kernel.discover()
+    #expect(try await kernel.pendingHostConsent(for: record.id)?.id == "serve-runner")
+    #expect(
+        try #require(try await kernel.registry.get(id: record.id)).runtime.tier == .recipeNeeded)
+
+    try await kernel.approveNetworkRuntime("serve-runner")
+    try writeDirectoryManifest(
+        kernelDir: dir, name: "serve-runner", toml: toml,
+        files: [
+            "main.py": "print('v2 exfiltrate')", "requirements.lock": "numpy==2.0",
+        ])
+    _ = try await kernel.discover()
+    #expect(try await kernel.pendingHostConsent(for: record.id)?.id == "serve-runner")
+
+    try await kernel.approveNetworkRuntime("serve-runner")
+    try writeDirectoryManifest(
+        kernelDir: dir, name: "serve-runner", toml: toml,
+        files: [
+            "main.py": "print('v2 exfiltrate')", "requirements.lock": "numpy==2.0",
+            "helper.py": "import os",
+        ])
+    _ = try await kernel.discover()
+    #expect(try await kernel.pendingHostConsent(for: record.id)?.id == "serve-runner")
+}
+
+@Test func revokeHostRuntimeParksRecordAndReApprovalWorks() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
+    try writeDirectoryManifest(
+        kernelDir: dir, name: "serve-runner",
+        toml: serveDirManifest(id: "serve-runner", network: false),
+        files: ["main.py": "print('v1')", "requirements.lock": "numpy==1.0"])
+    let record = try darkRecord(in: dir)
+    try await kernel.registry.register(record)
+
+    _ = try await kernel.discover()
+    try await kernel.approveNetworkRuntime("serve-runner")
+    #expect(try #require(try await kernel.registry.get(id: record.id)).runtime.id == "serve-runner")
+
+    try await kernel.revokeNetworkRuntime("serve-runner")
+    #expect(
+        try #require(try await kernel.registry.get(id: record.id)).runtime.tier == .recipeNeeded)
+    #expect(try await kernel.pendingHostConsent(for: record.id)?.id == "serve-runner")
+
+    try await kernel.approveNetworkRuntime("serve-runner")
+    #expect(try #require(try await kernel.registry.get(id: record.id)).runtime.id == "serve-runner")
+}
+
+@Test func handCopiedHostManifestWithoutProvenanceNeedsConsent() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(
+        directory: dir, governor: MemoryGovernor(totalMemoryMB: 262_144),
+        secrets: InMemorySecretStore())
+    try writeUserManifest(darkManifest, kernelDir: dir, name: "dark-runner")
+    let record = try darkRecord(in: dir)
+    try await kernel.registry.register(record)
+
+    _ = try await kernel.discover()
+    let parked = try #require(try await kernel.registry.get(id: record.id))
+    #expect(parked.runtime.tier == .recipeNeeded)
+    #expect(try await kernel.pendingHostConsent(for: record.id)?.id == "dark-runner")
+
+    await #expect(throws: KernelError.self) {
+        for try await _ in try await kernel.chat(
+            record.id, messages: [.init(role: .user, content: "hi")]) {}
+    }
+
+    try await kernel.approveNetworkRuntime("dark-runner")
+    #expect(try #require(try await kernel.registry.get(id: record.id)).runtime.id == "dark-runner")
 }
 
 @Test func manifestTemplateRendersDetectFromRecordFacts() throws {
@@ -314,7 +440,7 @@ private let darkManifest = """
         id = "e2e-runner"
         modalities = ["text"]
         capabilities = ["chat", "complete"]
-        execution = "stream"
+        execution = "sync"
         detect = { extension = "xyz" }
         [invoke]
         command = "\(pythonPath) \(script.path) {prompt}"
@@ -327,6 +453,7 @@ private let darkManifest = """
     let record = try darkRecord(in: dir)
     try await kernel.registry.register(record)
     _ = try await kernel.discover()
+    try await kernel.approveNetworkRuntime("e2e-runner")
 
     var text = ""
     let stream = try await kernel.chat(
@@ -334,5 +461,5 @@ private let darkManifest = """
     for try await chunk in stream {
         if case .text(let delta) = chunk { text += delta }
     }
-    #expect(text.contains("reply: pong"))
+    #expect(text.contains("reply: user: pong"))
 }

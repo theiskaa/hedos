@@ -51,10 +51,21 @@ actor EnvironmentManager {
         }
     }
 
+    static func sanitizedRuntimeID(_ id: String) -> String {
+        String(
+            id.unicodeScalars.map { scalar -> Character in
+                let allowed =
+                    (scalar >= "A" && scalar <= "Z") || (scalar >= "a" && scalar <= "z")
+                    || (scalar >= "0" && scalar <= "9") || scalar == "." || scalar == "_"
+                    || scalar == "-"
+                return allowed ? Character(scalar) : "-"
+            })
+    }
+
     private func performPrepare(
         runtimeID: String, hash: String, lockfile: URL, progress: @Sendable (String) -> Void
     ) async throws -> URL {
-        let safeID = runtimeID.replacingOccurrences(of: ":", with: "-")
+        let safeID = Self.sanitizedRuntimeID(runtimeID)
         let runtimeDir = root.appendingPathComponent("runtimes/\(safeID)", isDirectory: true)
         let envDir = runtimeDir.appendingPathComponent("envs/\(hash)", isDirectory: true)
         let current = runtimeDir.appendingPathComponent("current")

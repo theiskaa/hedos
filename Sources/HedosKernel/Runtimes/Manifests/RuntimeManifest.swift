@@ -104,6 +104,18 @@ public struct RuntimeManifest: Sendable, Hashable {
         guard let id = table["id"]?.stringValue, !id.isEmpty else {
             throw ManifestValidationError(message: "manifest is missing an id")
         }
+        guard
+            id.allSatisfy({
+                $0.isASCII && ($0.isLetter || $0.isNumber || "._:-".contains($0))
+            }),
+            id.contains(where: { $0.isLetter || $0.isNumber }),
+            !id.replacingOccurrences(of: ".", with: "").isEmpty
+        else {
+            throw ManifestValidationError(
+                message:
+                    "manifest id may only contain letters, digits, dots, underscores, colons, and hyphens"
+            )
+        }
         let modalities = (table["modalities"]?.stringArray ?? []).map(Modality.init(rawValue:))
         let capabilities = (table["capabilities"]?.stringArray ?? [])
             .map(Capability.init(rawValue:))
@@ -170,6 +182,12 @@ public struct RuntimeManifest: Sendable, Hashable {
             throw ManifestValidationError(
                 message: "manifest \(id) declares neither [serve] nor [invoke]")
         }
+        if invoke != nil && execution == .stream {
+            throw ManifestValidationError(
+                message:
+                    "invoke manifests run to completion — declare sync (or job), or use [serve] to stream"
+            )
+        }
 
         let jobCapabilities: Set<Capability> = [.image]
         let declaresJob = execution == .job
@@ -206,6 +224,10 @@ public struct RuntimeManifest: Sendable, Hashable {
                     message:
                         "manifest \(id) declares both [vm] and [env] — the image and its setup are the environment"
                 )
+            }
+            if permissions.network {
+                throw ManifestValidationError(
+                    message: "vm runtimes always run offline — remove permissions.network")
             }
             vm = ManifestVM(
                 image: image,

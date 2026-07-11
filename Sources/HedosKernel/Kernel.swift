@@ -194,6 +194,7 @@ public actor Kernel {
         var manifestAdapters: [any RuntimeAdapter] = []
         for manifest in manifests {
             let approvedNetwork = Self.isNetworkApproved(manifest, in: models)
+            let approvedHostExecution = Self.isHostExecutionApproved(manifest, in: models)
             if manifest.vm != nil {
                 manifestAdapters.append(
                     VMCommandAdapter(
@@ -202,12 +203,14 @@ public actor Kernel {
             } else if manifest.serve != nil {
                 manifestAdapters.append(
                     ManifestSidecarAdapter(
-                        manifest: manifest, approvedNetwork: approvedNetwork,
+                        manifest: manifest, approvedHostExecution: approvedHostExecution,
+                        approvedNetwork: approvedNetwork,
                         governor: governor, workdirRoot: workdirRoot))
             } else {
                 manifestAdapters.append(
                     ManifestCommandAdapter(
-                        manifest: manifest, approvedNetwork: approvedNetwork,
+                        manifest: manifest, approvedHostExecution: approvedHostExecution,
+                        approvedNetwork: approvedNetwork,
                         governor: governor, workdirRoot: workdirRoot))
             }
         }
@@ -359,17 +362,24 @@ public actor Kernel {
         }
     }
 
-    public func pendingNetworkConsent(for modelID: String) async throws -> ManifestConsentInfo? {
+    public func pendingHostConsent(for modelID: String) async throws -> ManifestConsentInfo? {
         guard let record = try await registry.get(id: modelID) else { return nil }
         let models = await settings.models()
         let (manifests, _) = runtimeCatalog.load()
         for manifest in manifests
-        where manifest.permissions.network && !Self.isNetworkApproved(manifest, in: models) {
+        where Self.requiresHostConsent(manifest) && !Self.isHostExecutionApproved(manifest, in: models) {
             if manifest.detect?.matches(record) == true {
-                return ManifestConsentInfo(id: manifest.id, paths: manifest.permissions.paths)
+                return ManifestConsentInfo(
+                    id: manifest.id, paths: manifest.permissions.paths,
+                    network: manifest.permissions.network)
             }
         }
         return nil
+    }
+
+    static func requiresHostConsent(_ manifest: RuntimeManifest) -> Bool {
+        guard manifest.vm == nil else { return false }
+        return manifest.serve != nil || manifest.invoke != nil
     }
 
     static func isNetworkApproved(_ manifest: RuntimeManifest, in models: ModelsSettings) -> Bool {
@@ -377,12 +387,42 @@ public actor Kernel {
         return models.approvedNetworkRuntimeHashes[manifest.id] == manifest.contentHash
     }
 
+    static func isHostExecutionApproved(_ manifest: RuntimeManifest, in models: ModelsSettings)
+        -> Bool
+    {
+        guard requiresHostConsent(manifest) else { return true }
+        guard models.approvedHostRuntimes.contains(manifest.id) else { return false }
+        return models.approvedHostRuntimeHashes[manifest.id] == manifest.contentHash
+    }
+
     public func approveNetworkRuntime(_ id: String) async throws {
         let (manifests, _) = runtimeCatalog.load()
-        let contentHash = manifests.first(where: { $0.id == id })?.contentHash
-        _ = try await settings.approveNetworkRuntime(id, contentHash: contentHash)
+        guard let manifest = manifests.first(where: { $0.id == id }) else { return }
+        _ = try await settings.approveHostRuntime(
+            id, contentHash: manifest.contentHash, network: manifest.permissions.network)
         _ = await reloadUserRuntimes()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+    }
+
+    public func revokeNetworkRuntime(_ id: String) async throws {
+        _ = try await settings.revokeRuntime(id)
+        _ = await reloadUserRuntimes()
+        try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
+    }
+
+    public func approvedHostConsent(for modelID: String) async throws -> ManifestConsentInfo? {
+        guard let record = try await registry.get(id: modelID) else { return nil }
+        let models = await settings.models()
+        let (manifests, _) = runtimeCatalog.load()
+        for manifest in manifests
+        where Self.requiresHostConsent(manifest) && Self.isHostExecutionApproved(manifest, in: models) {
+            if record.runtime.id?.rawValue == manifest.id {
+                return ManifestConsentInfo(
+                    id: manifest.id, paths: manifest.permissions.paths,
+                    network: manifest.permissions.network)
+            }
+        }
+        return nil
     }
 
     private var manifestInstaller: ManifestInstaller {

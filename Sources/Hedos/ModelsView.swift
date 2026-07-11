@@ -464,6 +464,7 @@ struct ModelDetailSheet: View {
     let onClose: () -> Void
     @State private var reason: String?
     @State private var consent: ManifestConsentInfo?
+    @State private var approvedConsent: ManifestConsentInfo?
     @State private var copiedTemplate = false
     @State private var chosenRuntime: String
 
@@ -510,6 +511,9 @@ struct ModelDetailSheet: View {
                     if record.runtime.tier != .recipeNeeded {
                         ModelConfigureSection(record: record, shell: shell)
                     }
+                    if let approvedConsent {
+                        revokeRow(approvedConsent)
+                    }
                 }
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.vertical, Design.Space.xl)
@@ -529,7 +533,8 @@ struct ModelDetailSheet: View {
                     for: record, format: identified.format,
                     pipelineClass: identified.pipelineClass)
             }.value
-            consent = try? await shell.kernel.pendingNetworkConsent(for: record.id)
+            consent = try? await shell.kernel.pendingHostConsent(for: record.id)
+            approvedConsent = try? await shell.kernel.approvedHostConsent(for: record.id)
         }
     }
 
@@ -677,17 +682,43 @@ struct ModelDetailSheet: View {
     }
 
     @ViewBuilder
+    private func revokeRow(_ consent: ManifestConsentInfo) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.xs) {
+            MicroHeader(title: "[ Access granted ]")
+            Text(
+                consent.network
+                    ? "\(consent.id) runs on this Mac with network access."
+                    : "\(consent.id) runs its code on this Mac, sandboxed."
+            )
+            .font(Design.label)
+            .foregroundStyle(Design.inkSoft)
+            Button("Revoke \(consent.id)") {
+                let shell = shell
+                let id = consent.id
+                Task {
+                    try? await shell.kernel.revokeNetworkRuntime(id)
+                    await shell.library.refreshShelf()
+                }
+            }
+            .buttonStyle(InkButtonStyle())
+            .padding(.top, Design.Space.xs)
+        }
+    }
+
+    @ViewBuilder
     private var footer: some View {
         if record.runtime.tier == .recipeNeeded {
             VStack(alignment: .leading, spacing: Design.Space.m) {
                 if let consent {
                     VStack(alignment: .leading, spacing: Design.Space.xs) {
-                        Text("A runtime for this model exists but wants permissions:")
+                        Text("A runtime for this model runs its code on this Mac, sandboxed:")
                             .font(Design.label)
                             .foregroundStyle(Design.inkSoft)
-                        Text("Network access — outbound connections allowed")
-                            .font(Design.label)
-                            .foregroundStyle(Design.ink)
+                        if consent.network {
+                            Text("Network access — outbound connections allowed")
+                                .font(Design.label)
+                                .foregroundStyle(Design.ink)
+                        }
                         ForEach(consent.paths, id: \.self) { path in
                             Text("Files — \(path)")
                                 .font(Design.label)

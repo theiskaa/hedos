@@ -7,6 +7,8 @@ public struct ModelsSettings: SettingsDomain {
     public var hfCacheRoots: [String]
     public var approvedNetworkRuntimes: [String]
     public var approvedNetworkRuntimeHashes: [String: String]
+    public var approvedHostRuntimes: [String]
+    public var approvedHostRuntimeHashes: [String: String]
     public var keepWarm: KeepWarmPolicy
     public var eviction: EvictionPolicy
     public var ramBudgetMB: Int?
@@ -16,6 +18,8 @@ public struct ModelsSettings: SettingsDomain {
         hfCacheRoots = []
         approvedNetworkRuntimes = []
         approvedNetworkRuntimeHashes = [:]
+        approvedHostRuntimes = []
+        approvedHostRuntimeHashes = [:]
         keepWarm = .fiveMinutes
         eviction = .strictSingle
         ramBudgetMB = nil
@@ -26,6 +30,8 @@ public struct ModelsSettings: SettingsDomain {
         hfCacheRoots: [String] = [],
         approvedNetworkRuntimes: [String] = [],
         approvedNetworkRuntimeHashes: [String: String] = [:],
+        approvedHostRuntimes: [String] = [],
+        approvedHostRuntimeHashes: [String: String] = [:],
         keepWarm: KeepWarmPolicy = .fiveMinutes,
         eviction: EvictionPolicy = .strictSingle,
         ramBudgetMB: Int? = nil
@@ -34,6 +40,8 @@ public struct ModelsSettings: SettingsDomain {
         self.hfCacheRoots = hfCacheRoots
         self.approvedNetworkRuntimes = approvedNetworkRuntimes
         self.approvedNetworkRuntimeHashes = approvedNetworkRuntimeHashes
+        self.approvedHostRuntimes = approvedHostRuntimes
+        self.approvedHostRuntimeHashes = approvedHostRuntimeHashes
         self.keepWarm = keepWarm
         self.eviction = eviction
         self.ramBudgetMB = ramBudgetMB
@@ -45,6 +53,7 @@ public struct ModelsSettings: SettingsDomain {
 
     enum CodingKeys: String, CodingKey {
         case watchedFolders, hfCacheRoots, approvedNetworkRuntimes, approvedNetworkRuntimeHashes
+        case approvedHostRuntimes, approvedHostRuntimeHashes
         case keepWarm, eviction
         case ramBudgetMB
     }
@@ -65,6 +74,11 @@ public struct ModelsSettings: SettingsDomain {
         approvedNetworkRuntimeHashes = container.lenient(
             [String: String].self, .approvedNetworkRuntimeHashes,
             fallback: defaults.approvedNetworkRuntimeHashes)
+        approvedHostRuntimes = container.lenient(
+            [String].self, .approvedHostRuntimes, fallback: approvedNetworkRuntimes)
+        approvedHostRuntimeHashes = container.lenient(
+            [String: String].self, .approvedHostRuntimeHashes,
+            fallback: approvedNetworkRuntimeHashes)
         keepWarm = container.lenient(KeepWarmPolicy.self, .keepWarm, fallback: defaults.keepWarm)
         eviction = container.lenient(EvictionPolicy.self, .eviction, fallback: defaults.eviction)
         ramBudgetMB = container.lenient(Int.self, .ramBudgetMB)

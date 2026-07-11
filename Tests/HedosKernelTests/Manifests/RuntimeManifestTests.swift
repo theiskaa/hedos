@@ -7,7 +7,7 @@ private let validInvokeManifest = """
     id           = "kokoro-cli"
     modalities   = ["speech"]
     capabilities = ["speak"]
-    execution    = "stream"
+    execution    = "sync"
     detect       = { extension = "pth" }
 
     [invoke]
@@ -24,7 +24,7 @@ private let validInvokeManifest = """
     #expect(manifest.id == "kokoro-cli")
     #expect(manifest.modalities == [.speech])
     #expect(manifest.capabilities == [.speak])
-    #expect(manifest.execution == .stream)
+    #expect(manifest.execution == .sync)
     #expect(manifest.detect?.fileExtension == "pth")
     #expect(manifest.invoke?.command.contains("{prompt}") == true)
     #expect(manifest.permissions.network == false)
@@ -148,6 +148,81 @@ private let validInvokeManifest = """
     #expect(throws: Never.self) {
         _ = try RuntimeManifest.load(table: try TOMLLite.parse(imageJob), directory: nil)
     }
+}
+
+@Test func vmManifestRejectsNetworkPermission() throws {
+    let base = """
+        id = "python:kokoro-vm"
+        capabilities = ["speak"]
+        execution = "sync"
+        detect = { extension = "pth" }
+        [invoke]
+        command = "kokoro {prompt}"
+        [vm]
+        image = "ghcr.io/acme/kokoro@sha256:abc123"
+        """
+    #expect(throws: Never.self) {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(base), directory: nil)
+    }
+    let networked = base + "\n[permissions]\nnetwork = true"
+    do {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(networked), directory: nil)
+        Issue.record("a [vm] manifest asking for network should be rejected")
+    } catch let error as ManifestValidationError {
+        #expect(error.message.contains("vm runtimes always run offline"))
+    }
+    let offline = base + "\n[permissions]\nnetwork = false"
+    #expect(throws: Never.self) {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(offline), directory: nil)
+    }
+}
+
+@Test func invokeStreamIsRejectedButSyncJobServeAreAccepted() throws {
+    let invokeStream = """
+        id = "a"
+        capabilities = ["chat"]
+        execution = "stream"
+        [invoke]
+        command = "x"
+        """
+    do {
+        _ = try RuntimeManifest.load(table: try TOMLLite.parse(invokeStream), directory: nil)
+        Issue.record("invoke + stream should be rejected")
+    } catch let error as ManifestValidationError {
+        #expect(error.message.contains("invoke manifests run to completion"))
+    }
+
+    let invokeSync = "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"sync\"\n[invoke]\ncommand = \"x\""
+    let invokeJob = "id = \"a\"\ncapabilities = [\"image\"]\nexecution = \"job\"\n[invoke]\ncommand = \"x\""
+    let serveStream = "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"stream\"\n[serve]\nentrypoint = \"m.py\""
+    for good in [invokeSync, invokeJob, serveStream] {
+        #expect(throws: Never.self) {
+            _ = try RuntimeManifest.load(table: try TOMLLite.parse(good), directory: nil)
+        }
+    }
+}
+
+@Test func manifestIdSlugValidation() throws {
+    func manifest(id: String) -> String {
+        "id = \"\(id)\"\ncapabilities = [\"chat\"]\nexecution = \"sync\"\n[invoke]\ncommand = \"x\""
+    }
+    for bad in ["../evil", "a/b", "..", "…", "a b"] {
+        #expect(throws: ManifestValidationError.self) {
+            _ = try RuntimeManifest.load(table: try TOMLLite.parse(manifest(id: bad)), directory: nil)
+        }
+    }
+    for good in ["python:kokoro-vm", "my-runtime_2.0", "a.b.c"] {
+        #expect(throws: Never.self) {
+            _ = try RuntimeManifest.load(table: try TOMLLite.parse(manifest(id: good)), directory: nil)
+        }
+    }
+}
+
+@Test func environmentSanitizerNeutralizesTraversalIDs() {
+    #expect(EnvironmentManager.sanitizedRuntimeID("python:kokoro-vm") == "python-kokoro-vm")
+    #expect(!EnvironmentManager.sanitizedRuntimeID("x/../../y").contains("/"))
+    #expect(!EnvironmentManager.sanitizedRuntimeID("../evil").contains("/"))
+    #expect(!EnvironmentManager.sanitizedRuntimeID("a/b").contains("/"))
 }
 
 @Test func errorSummaryTakesLastMeaningfulLine() {

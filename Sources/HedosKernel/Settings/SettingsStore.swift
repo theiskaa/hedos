@@ -150,17 +150,62 @@ public actor SettingsStore {
     }
 
     @discardableResult
-    public func approveNetworkRuntime(_ id: String, contentHash: String? = nil) throws
+    public func approveHostRuntime(_ id: String, contentHash: String? = nil, network: Bool) throws
         -> ModelsSettings
     {
         var settings = models()
         var changed = false
-        if !settings.approvedNetworkRuntimes.contains(id) {
-            settings.approvedNetworkRuntimes.append(id)
+        if !settings.approvedHostRuntimes.contains(id) {
+            settings.approvedHostRuntimes.append(id)
             changed = true
         }
-        if let contentHash, settings.approvedNetworkRuntimeHashes[id] != contentHash {
-            settings.approvedNetworkRuntimeHashes[id] = contentHash
+        if let contentHash, settings.approvedHostRuntimeHashes[id] != contentHash {
+            settings.approvedHostRuntimeHashes[id] = contentHash
+            changed = true
+        }
+        if network {
+            if !settings.approvedNetworkRuntimes.contains(id) {
+                settings.approvedNetworkRuntimes.append(id)
+                changed = true
+            }
+            if let contentHash, settings.approvedNetworkRuntimeHashes[id] != contentHash {
+                settings.approvedNetworkRuntimeHashes[id] = contentHash
+                changed = true
+            }
+        } else {
+            if settings.approvedNetworkRuntimes.contains(id) {
+                settings.approvedNetworkRuntimes.removeAll { $0 == id }
+                changed = true
+            }
+            if settings.approvedNetworkRuntimeHashes[id] != nil {
+                settings.approvedNetworkRuntimeHashes[id] = nil
+                changed = true
+            }
+        }
+        if changed {
+            try save(settings)
+        }
+        return settings
+    }
+
+    @discardableResult
+    public func revokeRuntime(_ id: String) throws -> ModelsSettings {
+        var settings = models()
+        var changed = false
+        if settings.approvedHostRuntimes.contains(id) {
+            settings.approvedHostRuntimes.removeAll { $0 == id }
+            changed = true
+        }
+        if settings.approvedHostRuntimeHashes[id] != nil {
+            settings.approvedHostRuntimeHashes[id] = nil
+            changed = true
+        }
+        if settings.approvedNetworkRuntimes.contains(id) {
+            settings.approvedNetworkRuntimes.removeAll { $0 == id }
+            changed = true
+        }
+        if settings.approvedNetworkRuntimeHashes[id] != nil {
+            settings.approvedNetworkRuntimeHashes[id] = nil
             changed = true
         }
         if changed {

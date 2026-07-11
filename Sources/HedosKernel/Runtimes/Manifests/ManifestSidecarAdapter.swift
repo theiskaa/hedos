@@ -2,6 +2,7 @@ import Foundation
 
 struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     let manifest: RuntimeManifest
+    let approvedHostExecution: Bool
     let approvedNetwork: Bool
     let workdirRoot: URL
 
@@ -11,24 +12,25 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     var id: RuntimeID { RuntimeID(rawValue: manifest.id) }
 
     init(
-        manifest: RuntimeManifest, approvedNetwork: Bool,
+        manifest: RuntimeManifest, approvedHostExecution: Bool, approvedNetwork: Bool,
         governor: MemoryGovernor = .shared, supervisor: SidecarSupervisor = .shared,
         workdirRoot: URL = ManifestSupport.defaultWorkdirRoot()
     ) {
         self.manifest = manifest
+        self.approvedHostExecution = approvedHostExecution
         self.approvedNetwork = approvedNetwork
         self.governor = governor
         self.supervisor = supervisor
         self.workdirRoot = workdirRoot
     }
 
-    private var networkBlocked: Bool {
-        manifest.permissions.network && !approvedNetwork
+    private var executionBlocked: Bool {
+        !approvedHostExecution
     }
 
-    private var networkConsentError: KernelError {
+    private var executionConsentError: KernelError {
         .runtimeUnavailable(
-            hint: "\(id) needs network permission. Approve it from the model's page.")
+            hint: "\(id) runs code on this Mac and needs your approval. Approve it from the model's page.")
     }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
@@ -36,7 +38,7 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     }
 
     func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
-        guard let detect = manifest.detect, detect.matches(record), !networkBlocked else {
+        guard let detect = manifest.detect, detect.matches(record), !executionBlocked else {
             return nil
         }
         return RuntimeBid(
@@ -78,8 +80,8 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        guard !networkBlocked else {
-            let error = networkConsentError
+        guard !executionBlocked else {
+            let error = executionConsentError
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
         let stream = runtime.stream(record, op: capability, payload: payload)
@@ -90,8 +92,8 @@ struct ManifestSidecarAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
     func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {
-        guard !networkBlocked else {
-            let error = networkConsentError
+        guard !executionBlocked else {
+            let error = executionConsentError
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
         return runtime.job(record, op: capability.rawValue, payload: payload)

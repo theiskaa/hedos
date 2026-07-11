@@ -54,13 +54,13 @@ private func contractAdapters() -> [(String, any RuntimeAdapter)] {
         (
             "manifest-command",
             ManifestCommandAdapter(
-                manifest: contractManifest(), approvedNetwork: true,
+                manifest: contractManifest(), approvedHostExecution: true, approvedNetwork: true,
                 governor: governor, workdirRoot: workdirRoot)
         ),
         (
             "manifest-sidecar",
             ManifestSidecarAdapter(
-                manifest: contractManifest(id: "contract-serve"), approvedNetwork: true,
+                manifest: contractManifest(id: "contract-serve"), approvedHostExecution: true, approvedNetwork: true,
                 governor: governor, supervisor: SidecarSupervisor(),
                 workdirRoot: workdirRoot)
         ),

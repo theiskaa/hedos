@@ -42,7 +42,8 @@ struct UserRuntimeStore: Sendable {
                 let text = try String(contentsOf: manifestURL, encoding: .utf8)
                 let table = try TOMLLite.parse(text)
                 var manifest = try RuntimeManifest.load(table: table, directory: manifestDirectory)
-                manifest.contentHash = Self.contentHash(for: text)
+                manifest.contentHash = Self.consentHash(
+                    manifestText: text, directory: manifestDirectory, manifest: manifest)
                 if let manifestDirectory {
                     manifest.provenance = RuntimeProvenance.read(in: manifestDirectory)
                 }
@@ -86,5 +87,46 @@ struct UserRuntimeStore: Sendable {
 
     static func contentHash(for text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func consentHash(
+        manifestText: String, directory: URL?, manifest: RuntimeManifest
+    ) -> String {
+        guard let directory else { return contentHash(for: manifestText) }
+
+        var hasher = SHA256()
+        func absorb(path: String, content: Data?) {
+            hasher.update(data: Data(path.utf8))
+            hasher.update(data: Data([0]))
+            let count = content.map { UInt64($0.count) } ?? UInt64.max
+            withUnsafeBytes(of: count.littleEndian) { hasher.update(data: Data($0)) }
+            if let content { hasher.update(data: content) }
+        }
+
+        absorb(path: "manifest.toml", content: Data(manifestText.utf8))
+        if let serve = manifest.serve {
+            absorb(
+                path: serve.entrypoint,
+                content: try? Data(contentsOf: directory.appendingPathComponent(serve.entrypoint)))
+        }
+        if let env = manifest.env {
+            absorb(
+                path: env.lockfile,
+                content: try? Data(contentsOf: directory.appendingPathComponent(env.lockfile)))
+        }
+        let siblings =
+            ((try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles])) ?? [])
+            .filter { $0.pathExtension.lowercased() == "py" }
+            .filter {
+                ((try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false)
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for sibling in siblings {
+            absorb(path: sibling.lastPathComponent, content: try? Data(contentsOf: sibling))
+        }
+
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }
