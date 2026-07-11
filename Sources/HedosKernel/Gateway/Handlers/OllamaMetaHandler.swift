@@ -6,7 +6,7 @@ struct OllamaVersionHandler: GatewayHandling {
         responder: GatewayResponder
     ) async throws -> GatewayOutcome {
         try await responder.respond(
-            status: 200, body: WireJSON.serialize(["version": "0.1.0-hedos"]))
+            status: 200, body: WireJSON.serialize(["version": "0.5.0"]))
         return .ok
     }
 }
@@ -21,15 +21,20 @@ struct OllamaShowHandler: GatewayHandling {
             throw GatewayError(.badRequest, "model is required")
         }
         let shelf = try await port.shelf()
-        let record = try GatewayModelResolver.resolve(requested, shelf: shelf)
-        guard identity.scopes.permitsModel(record.id) else {
-            throw GatewayError(.forbidden, "this token is not scoped for that model")
+        let record = try GatewayModelResolver.resolve(
+            requested, shelf: shelf, scopes: identity.scopes)
+        var capabilities: [String] = []
+        if record.capabilities.contains(.chat) || record.capabilities.contains(.complete) {
+            capabilities.append("completion")
         }
+        if record.capabilities.contains(.embed) { capabilities.append("embedding") }
+        if record.capabilities.contains(.see) { capabilities.append("vision") }
+        if try await port.supportsTools(modelID: record.id) { capabilities.append("tools") }
         try await responder.respond(
             status: 200,
             body: WireJSON.serialize([
                 "details": OllamaWire.details(record),
-                "capabilities": record.capabilities.contains(.chat) ? ["completion"] : [],
+                "capabilities": capabilities,
                 "model_info": [:],
             ]))
         return .ok(model: record.id, capability: nil)

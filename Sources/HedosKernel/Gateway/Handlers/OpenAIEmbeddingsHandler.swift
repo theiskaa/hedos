@@ -10,9 +10,16 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
             throw GatewayError(.badRequest, "model is required")
         }
         let inputs = try Self.inputs(from: body)
-        if let format = body["encoding_format"] as? String, format != "float" {
+        let format = body["encoding_format"] as? String ?? "float"
+        guard format == "float" || format == "base64" else {
             throw GatewayError(
-                .badRequest, "only float output is available — set encoding_format to float")
+                .badRequest, "encoding_format '\(format)' is not supported",
+                code: "unsupported_parameter")
+        }
+        if body["dimensions"] != nil {
+            throw GatewayError(
+                .badRequest, "dimensions is not supported — no local runtime truncates embeddings",
+                code: "unsupported_parameter")
         }
         let record = try await GatewayModelResolver.resolveAuthorized(
             model, capability: .embed, kind: .stream, port: port, identity: identity)
@@ -47,7 +54,8 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
             }
 
             let data = vectors.enumerated().map { index, vector -> [String: Any] in
-                ["object": "embedding", "embedding": vector, "index": index]
+                let embedding: Any = format == "base64" ? Self.base64(vector) : vector
+                return ["object": "embedding", "embedding": embedding, "index": index]
             }
             let promptTokens = finalStats?.promptTokens ?? 0
             try await responder.respond(
@@ -78,6 +86,19 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
             guard !array.isEmpty else { throw GatewayError(.badRequest, "input is required") }
             return array
         }
+        if body["input"] is [Int] || body["input"] is [[Int]] {
+            throw GatewayError(
+                .badRequest, "token array input is not supported — send text")
+        }
         throw GatewayError(.badRequest, "input is required")
+    }
+
+    static func base64(_ vector: [Double]) -> String {
+        var data = Data(capacity: vector.count * 4)
+        for value in vector {
+            var little = Float(value).bitPattern.littleEndian
+            withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+        }
+        return data.base64EncodedString()
     }
 }

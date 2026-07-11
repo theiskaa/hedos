@@ -7,10 +7,12 @@ public struct GatewayRoute: Sendable {
     public var inference: Bool
     public var group: String
     public var summary: String
+    public var maxBodyBytes: Int?
 
     public init(
         _ method: String, _ path: String, _ handler: any GatewayHandling,
-        inference: Bool = false, group: String = "", summary: String = ""
+        inference: Bool = false, group: String = "", summary: String = "",
+        maxBodyBytes: Int? = nil
     ) {
         self.method = method.uppercased()
         self.path = path
@@ -18,6 +20,7 @@ public struct GatewayRoute: Sendable {
         self.inference = inference
         self.group = group
         self.summary = summary
+        self.maxBodyBytes = maxBodyBytes
     }
 }
 
@@ -44,6 +47,11 @@ public struct GatewayRouter: Sendable {
         path.hasPrefix("/api") ? .ollama : .openAI
     }
 
+    func bodyLimit(for uri: String, default defaultLimit: Int) -> Int {
+        let path = GatewayRequest(method: "GET", uri: uri, headers: [], body: Data()).path
+        return routes.first { $0.path == path }?.maxBodyBytes ?? defaultLimit
+    }
+
     public static func standardRoutes() -> [GatewayRoute] {
         [
             GatewayRoute(
@@ -56,14 +64,30 @@ public struct GatewayRouter: Sendable {
                 "POST", "/v1/embeddings", OpenAIEmbeddingsHandler(),
                 group: "OpenAI", summary: "Embed text (when a model serves it)"),
             GatewayRoute(
+                "POST", "/v1/completions", OpenAICompletionsHandler(), inference: true,
+                group: "OpenAI", summary: "Prompt-only text completion"),
+            GatewayRoute(
                 "POST", "/v1/audio/speech", OpenAISpeechHandler(), inference: true,
                 group: "OpenAI", summary: "Speak text to WAV audio"),
+            GatewayRoute(
+                "POST", "/v1/audio/transcriptions", OpenAITranscriptionsHandler(), inference: true,
+                group: "OpenAI", summary: "Transcribe an audio file to text",
+                maxBodyBytes: 32 * 1024 * 1024),
             GatewayRoute(
                 "POST", "/v1/images/generations", OpenAIImagesHandler(), inference: true,
                 group: "OpenAI", summary: "Generate an image (base64 PNG)"),
             GatewayRoute(
                 "POST", "/api/chat", OllamaChatHandler(), inference: true,
                 group: "Ollama", summary: "Chat over the Ollama NDJSON protocol"),
+            GatewayRoute(
+                "POST", "/api/generate", OllamaGenerateHandler(), inference: true,
+                group: "Ollama", summary: "Prompt-only generate, Ollama-style"),
+            GatewayRoute(
+                "POST", "/api/embed", OllamaEmbedHandler(), inference: true,
+                group: "Ollama", summary: "Embed text, Ollama-style"),
+            GatewayRoute(
+                "POST", "/api/embeddings", OllamaEmbedHandler(), inference: true,
+                group: "Ollama", summary: "Embed text (legacy single-vector)"),
             GatewayRoute(
                 "GET", "/api/tags", OllamaTagsHandler(),
                 group: "Ollama", summary: "List models, Ollama-style"),
@@ -97,12 +121,16 @@ public struct GatewayRouter: Sendable {
         } catch {
             let gatewayError = GatewayError.wrapping(error)
             let detail = gatewayError.kind == .serverError ? String(describing: error) : nil
-            await audit.append(
-                entry(
-                    for: request, identity: identity,
-                    outcome: GatewayOutcome(
-                        status: gatewayError.status, outcome: gatewayError.auditOutcome),
-                    started: started, detail: detail))
+            let auditEntry = entry(
+                for: request, identity: identity,
+                outcome: GatewayOutcome(
+                    status: gatewayError.status, outcome: gatewayError.auditOutcome),
+                started: started, detail: detail)
+            if gatewayError.status == 401, identity == nil {
+                await audit.appendUnauthorized(auditEntry)
+            } else {
+                await audit.append(auditEntry)
+            }
             guard !responder.hasStarted else { throw gatewayError }
             try await render(gatewayError, surface: surface, responder: responder)
         }
