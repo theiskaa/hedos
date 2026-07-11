@@ -71,8 +71,14 @@ public final class GatewayStreamBody: @unchecked Sendable {
         self.writer = writer
     }
 
+    private func isEnded() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return ended
+    }
+
     public func write(_ data: Data) async throws {
-        guard !data.isEmpty else { return }
+        guard !data.isEmpty, !isEnded() else { return }
         try await writer.write(.body(.byteBuffer(ByteBuffer(bytes: data))))
     }
 

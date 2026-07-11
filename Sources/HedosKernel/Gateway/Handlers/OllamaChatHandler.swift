@@ -12,6 +12,10 @@ struct OllamaChatHandler: GatewayHandling {
             throw GatewayError(
                 .badRequest, "\(chatRequest.model) does not support tool calling")
         }
+        try GatewayParamGuard.require(
+            chatRequest.options,
+            honoredBy: try await port.honoredParams(modelID: record.id, capability: .chat),
+            runtime: record.runtime.id)
 
         let stream = try await port.invoke(
             record.id, .chat, payload: OllamaWire.chatPayload(chatRequest))
@@ -19,33 +23,50 @@ struct OllamaChatHandler: GatewayHandling {
 
         if chatRequest.stream {
             let body = try await responder.beginStream(contentType: "application/x-ndjson")
-            var finalStats: GenerationStats?
-            var sawToolCall = false
-            for try await chunk in stream {
-                switch chunk {
-                case .text(let text):
+            do {
+                let timedOut = try await StreamTimeout.race(
+                    seconds: OpenAIChatHandler.runTimeoutSeconds
+                ) {
+                    var finalStats: GenerationStats?
+                    var sawToolCall = false
+                    for try await chunk in stream {
+                        switch chunk {
+                        case .text(let text):
+                            try await body.write(
+                                OllamaWire.line(
+                                    OllamaWire.delta(model: servedModel, content: text)))
+                        case .thinking(let thought):
+                            try await body.write(
+                                OllamaWire.line(
+                                    OllamaWire.delta(model: servedModel, thinking: thought)))
+                        case .toolCall(let call):
+                            sawToolCall = true
+                            try await body.write(
+                                OllamaWire.line(
+                                    OllamaWire.delta(model: servedModel, toolCall: call)))
+                        case .done(let stats):
+                            finalStats = stats
+                        case .audio, .status, .vector:
+                            break
+                        }
+                    }
+                    var stats = finalStats ?? GenerationStats()
+                    if sawToolCall {
+                        stats.finishReason = "stop"
+                    }
                     try await body.write(
-                        OllamaWire.line(OllamaWire.delta(model: servedModel, content: text)))
-                case .thinking(let thought):
-                    try await body.write(
-                        OllamaWire.line(OllamaWire.delta(model: servedModel, thinking: thought)))
-                case .toolCall(let call):
-                    sawToolCall = true
-                    try await body.write(
-                        OllamaWire.line(OllamaWire.delta(model: servedModel, toolCall: call)))
-                case .done(let stats):
-                    finalStats = stats
-                case .audio, .status, .vector:
-                    break
+                        OllamaWire.line(OllamaWire.final(model: servedModel, stats: stats)))
+                    try await body.end()
                 }
+                if timedOut {
+                    try await StreamFailure.timeout(
+                        surface: .ollama, body: body,
+                        seconds: OpenAIChatHandler.runTimeoutSeconds)
+                }
+            } catch {
+                try await StreamFailure.write(error, surface: .ollama, body: body)
+                throw error
             }
-            var stats = finalStats ?? GenerationStats()
-            if sawToolCall {
-                stats.finishReason = "stop"
-            }
-            try await body.write(
-                OllamaWire.line(OllamaWire.final(model: servedModel, stats: stats)))
-            try await body.end()
         } else {
             var content = ""
             var finalStats: GenerationStats?

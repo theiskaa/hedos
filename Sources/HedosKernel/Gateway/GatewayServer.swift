@@ -18,15 +18,18 @@ public actor GatewayServer {
         public var port: Int
         public var maxConnections: Int
         public var maxBodyBytes: Int
+        public var readIdleTimeout: Int
 
         public init(
             port: Int = GatewayDefaults.port,
             maxConnections: Int = GatewayDefaults.maxConnections,
-            maxBodyBytes: Int = GatewayDefaults.maxBodyBytes
+            maxBodyBytes: Int = GatewayDefaults.maxBodyBytes,
+            readIdleTimeout: Int = 60
         ) {
             self.port = port
             self.maxConnections = maxConnections
             self.maxBodyBytes = maxBodyBytes
+            self.readIdleTimeout = readIdleTimeout
         }
     }
 
@@ -96,14 +99,18 @@ public actor GatewayServer {
                 try await withThrowingDiscardingTaskGroup { tasks in
                     for try await connection in inbound {
                         guard counter.enter(limit: configuration.maxConnections) else {
-                            connection.channel.close(promise: nil)
+                            tasks.addTask {
+                                await Self.reject503(
+                                    connection, readIdleTimeout: configuration.readIdleTimeout)
+                            }
                             continue
                         }
                         tasks.addTask {
                             defer { counter.exit() }
                             try? await Self.serve(
                                 connection: connection, router: router,
-                                maxBodyBytes: configuration.maxBodyBytes)
+                                maxBodyBytes: configuration.maxBodyBytes,
+                                readIdleTimeout: configuration.readIdleTimeout)
                         }
                     }
                 }
@@ -126,27 +133,46 @@ public actor GatewayServer {
 
     private static func serve(
         connection: NIOAsyncChannel<HTTPServerRequestPart, HTTPServerResponsePart>,
-        router: GatewayRouter, maxBodyBytes: Int
+        router: GatewayRouter, maxBodyBytes: Int, readIdleTimeout: Int
     ) async throws {
+        let channel = connection.channel
         try await connection.executeThenClose { inbound, outbound in
             var iterator = inbound.makeAsyncIterator()
-            while let part = try await iterator.next() {
-                guard case .head(let head) = part else { continue }
+            while true {
+                var deadline = armDeadline(seconds: readIdleTimeout, channel: channel)
+                var head: HTTPRequestHead?
+                while let part = try await iterator.next() {
+                    deadline.cancel()
+                    if case .head(let value) = part {
+                        head = value
+                        break
+                    }
+                    deadline = armDeadline(seconds: readIdleTimeout, channel: channel)
+                }
+                deadline.cancel()
+                guard let head else { break }
+
+                let limit = router.bodyLimit(for: head.uri, default: maxBodyBytes)
                 var body = Data()
                 var tooLarge = false
+                deadline = armDeadline(seconds: readIdleTimeout, channel: channel)
                 while let next = try await iterator.next() {
+                    deadline.cancel()
                     if case .body(let buffer) = next {
-                        if body.count + buffer.readableBytes > maxBodyBytes {
+                        if body.count + buffer.readableBytes > limit {
                             tooLarge = true
                         } else {
                             body.append(contentsOf: buffer.readableBytesView)
                         }
                     }
                     if case .end = next { break }
+                    deadline = armDeadline(seconds: readIdleTimeout, channel: channel)
                 }
+                deadline.cancel()
+
                 let responder = GatewayResponder(writer: outbound)
                 if tooLarge {
-                    let error = GatewayError(.badRequest, "request body exceeds \(maxBodyBytes) bytes")
+                    let error = GatewayError(.badRequest, "request body exceeds \(limit) bytes")
                     var payload = error.body(for: GatewayRouter.surface(for: head.uri))
                     if payload.isEmpty { payload = Data("{}".utf8) }
                     try await responder.respond(status: 413, body: payload)
@@ -160,6 +186,36 @@ public actor GatewayServer {
                 try await router.dispatch(request, responder: responder)
                 if !head.isKeepAlive { break }
             }
+        }
+    }
+
+    private static func armDeadline(seconds: Int, channel: Channel) -> Task<Void, Never> {
+        Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            if !Task.isCancelled { channel.close(promise: nil) }
+        }
+    }
+
+    private static func reject503(
+        _ connection: NIOAsyncChannel<HTTPServerRequestPart, HTTPServerResponsePart>,
+        readIdleTimeout: Int
+    ) async {
+        let channel = connection.channel
+        try? await connection.executeThenClose { inbound, outbound in
+            let deadline = armDeadline(seconds: readIdleTimeout, channel: channel)
+            var iterator = inbound.makeAsyncIterator()
+            while let part = try await iterator.next() {
+                if case .head = part { break }
+            }
+            deadline.cancel()
+            var headers = HTTPHeaders()
+            headers.add(name: "Retry-After", value: "1")
+            headers.add(name: "Content-Length", value: "0")
+            headers.add(name: "Connection", value: "close")
+            let head = HTTPResponseHead(
+                version: .http1_1, status: .serviceUnavailable, headers: headers)
+            try await outbound.write(.head(head))
+            try await outbound.write(.end(nil))
         }
     }
 }

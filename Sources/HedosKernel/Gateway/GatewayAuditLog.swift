@@ -36,13 +36,47 @@ public actor GatewayAuditLog {
     private let fileURL: URL
     private let maxBytes: Int
     private let generations = 3
+    private let unauthorizedWindowSeconds: TimeInterval = 60
+    private var unauthorizedWindowStart: Date?
+    private var unauthorizedCount = 0
 
     public init(directory: URL, maxBytes: Int = 5_242_880) {
         self.fileURL = directory.appendingPathComponent("audit.jsonl")
         self.maxBytes = maxBytes
     }
 
+    public func appendUnauthorized(_ entry: GatewayAuditEntry) {
+        if let start = unauthorizedWindowStart,
+            entry.ts.timeIntervalSince(start) < unauthorizedWindowSeconds
+        {
+            unauthorizedCount += 1
+            return
+        }
+        flushUnauthorized()
+        unauthorizedWindowStart = entry.ts
+        unauthorizedCount = 0
+        writeEntry(entry)
+    }
+
+    private func flushUnauthorized() {
+        defer {
+            unauthorizedWindowStart = nil
+            unauthorizedCount = 0
+        }
+        guard let start = unauthorizedWindowStart, unauthorizedCount > 0 else { return }
+        writeEntry(
+            GatewayAuditEntry(
+                ts: start, method: "-", route: "-", outcome: "unauthorized", status: 401,
+                durationMs: 0,
+                detail: "\(unauthorizedCount) more unauthenticated requests rejected"))
+    }
+
     public func append(_ entry: GatewayAuditEntry) {
+        flushUnauthorized()
+        writeEntry(entry)
+    }
+
+    private func writeEntry(_ entry: GatewayAuditEntry) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard var line = try? encoder.encode(entry) else { return }

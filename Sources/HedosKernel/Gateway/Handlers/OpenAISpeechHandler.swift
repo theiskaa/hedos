@@ -1,6 +1,13 @@
 import Foundation
 
+private enum SpeechDrain: Sendable {
+    case audio(Data, Int)
+    case timedOut
+}
+
 struct OpenAISpeechHandler: GatewayHandling {
+    static let runTimeoutSeconds = 300
+
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -28,13 +35,30 @@ struct OpenAISpeechHandler: GatewayHandling {
         if let speed = body["speed"] as? Double { payload["speed"] = .double(speed) }
 
         let stream = try await port.invoke(record.id, .speak, payload: .object(payload))
-        var pcm = Data()
-        var sampleRate = 24000
-        for try await chunk in stream {
-            if case .audio(let frame) = chunk {
-                if pcm.isEmpty { sampleRate = frame.sampleRate }
-                pcm.append(frame.data)
+        let drained: SpeechDrain = try await withThrowingTaskGroup(of: SpeechDrain.self) {
+            group in
+            group.addTask {
+                var pcm = Data()
+                var sampleRate = 24000
+                for try await chunk in stream {
+                    if case .audio(let frame) = chunk {
+                        if pcm.isEmpty { sampleRate = frame.sampleRate }
+                        pcm.append(frame.data)
+                    }
+                }
+                return .audio(pcm, sampleRate)
             }
+            group.addTask {
+                try await Task.sleep(for: .seconds(Self.runTimeoutSeconds))
+                return .timedOut
+            }
+            let first = try await group.next()!
+            group.cancelAll()
+            return first
+        }
+        guard case .audio(let pcm, let sampleRate) = drained else {
+            throw GatewayError(
+                .timeout, "speech timed out after \(Self.runTimeoutSeconds)s", code: "timeout")
         }
         guard !pcm.isEmpty else {
             throw GatewayError(.serverError, "\(record.name) produced no audio")
