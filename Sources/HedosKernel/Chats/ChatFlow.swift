@@ -10,6 +10,7 @@ struct ChatFlow: Sendable {
 
     static let persistCadence: Duration = .milliseconds(250)
     static let maxToolCallsPerSend = 8
+    static let maxMentionReadsPerSend = 4
     static let toolResultContextBudgetBytes = 16_384
 
     func send(sessionID: String, text: String) async throws -> AsyncThrowingStream<
@@ -21,7 +22,56 @@ struct ChatFlow: Sendable {
         _ = try await chats.appendTurn(TurnDraft(role: .user, content: text), to: sessionID)
         var history = Self.messages(from: transcript.turns)
         history.append(ChatMessage(role: .user, content: text))
+
+        let mentioned = Self.mentionedFiles(in: text, place: transcript.session.place)
+        if !mentioned.isEmpty {
+            let calls = mentioned.map { path in
+                ToolCall(
+                    name: HarnessTools.readFileName,
+                    arguments: .object(["path": .string(path)]))
+            }
+            _ = try await chats.appendTurn(
+                TurnDraft(
+                    role: .assistant, content: "", modelID: transcript.session.modelID,
+                    stats: nil, toolCalls: calls),
+                to: sessionID)
+            history.append(ChatMessage(role: .assistant, content: "", toolCalls: calls))
+            for call in calls {
+                let result = Self.truncatedToolResult(await execute(sessionID, call))
+                _ = try await chats.appendTurn(
+                    TurnDraft(
+                        role: .tool, content: result, stats: nil,
+                        toolCallID: call.id, toolName: call.name),
+                    to: sessionID)
+                history.append(
+                    ChatMessage(
+                        role: .tool, content: result,
+                        toolCallID: call.id, toolName: call.name))
+            }
+        }
         return try await run(session: transcript.session, history: history)
+    }
+
+    static func mentionedFiles(in text: String, place: String?) -> [String] {
+        guard let place else { return [] }
+        var mentioned: [String] = []
+        for rawToken in text.split(whereSeparator: \.isWhitespace) {
+            guard let (token, explicit) = PromptComposer.mentionCore(rawToken) else { continue }
+            guard explicit || token.contains("/") || token.contains(".") else { continue }
+            guard let resolved = try? PlaceBoundary.resolve(token, in: place) else { continue }
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(
+                atPath: resolved, isDirectory: &isDirectory)
+            if exists, isDirectory.boolValue { continue }
+            if !exists, !explicit { continue }
+            guard resolved.hasPrefix(place + "/") else { continue }
+            let relative = String(resolved.dropFirst(place.count + 1))
+            if !mentioned.contains(relative) {
+                mentioned.append(relative)
+            }
+            if mentioned.count >= Self.maxMentionReadsPerSend { break }
+        }
+        return mentioned
     }
 
     func continueSession(sessionID: String) async throws -> AsyncThrowingStream<

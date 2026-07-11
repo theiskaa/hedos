@@ -174,3 +174,19 @@ import Testing
     let leftovers = try FileManager.default.contentsOfDirectory(atPath: dir.path)
     #expect(leftovers.contains { $0.contains(".corrupt-") })
 }
+
+@Test func mentionTokenDetectionMirrorsSlashRules() {
+    #expect(PromptComposer.mentionQuery(in: "@") == "")
+    #expect(PromptComposer.mentionQuery(in: "@read") == "read")
+    #expect(PromptComposer.mentionQuery(in: "explain @src/ma") == "src/ma")
+    #expect(PromptComposer.mentionQuery(in: "mail me a@b.com") == nil)
+    #expect(PromptComposer.mentionQuery(in: "@two words") == nil)
+    #expect(PromptComposer.query(in: "explain @src/ma") == nil)
+}
+
+@Test func acceptingMentionReplacesTheTokenWithThePath() {
+    #expect(
+        PromptComposer.acceptingMention("src/main.swift", in: "explain @ma")
+            == "explain src/main.swift ")
+    #expect(PromptComposer.acceptingMention("x", in: "no token here") == "no token here")
+}

@@ -91,4 +91,61 @@ private func qwenRecord() -> ModelRecord {
     #expect(!followup.content.isEmpty)
 }
 
+@Test(.timeLimit(.minutes(6))) func liveQwenAnswersFromAnAtMention() async throws {
+    guard await daemonReachable() else { return }
+
+    let placeDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: placeDir) }
+    try Data(
+        "# Zephyrwing\n\nZephyrwing is a paper-airplane flight simulator for macOS.\n".utf8
+    ).write(to: placeDir.appendingPathComponent("README.md"))
+    let place = PlaceBoundary.canonical(placeDir.path)
+
+    let storeDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: storeDir) }
+    let store = ChatStore(databaseURL: storeDir.appendingPathComponent("chats.sqlite"))
+    let session = try await store.createSession(modelID: qwenRecord().id)
+    try await store.setPlace(id: session.id, place: place)
+
+    let record = qwenRecord()
+    let adapter = OllamaAdapter()
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, messages, tools in
+            var payload: [String: JSONValue] = [
+                "messages": .array(messages.map(\.payloadValue))
+            ]
+            if !tools.isEmpty {
+                payload["tools"] = .array(tools.map(\.payloadValue))
+            }
+            return adapter.invoke(record, .chat, payload: .object(payload))
+        },
+        shelf: { [record] },
+        toolbox: { _ in HarnessTools.specs() },
+        execute: { _, call in await Harness.execute(call, place: place) })
+
+    func grounded(_ turns: [ChatTurn]) -> Bool {
+        guard turns.contains(where: { $0.role == .tool && $0.content.contains("Zephyrwing") }),
+            let answer = turns.last(where: { $0.role == .assistant }),
+            !answer.content.isEmpty
+        else { return false }
+        let lowered = answer.content.lowercased()
+        return lowered.contains("zephyrwing") || lowered.contains("paper")
+    }
+    var attempts = 0
+    var turns: [ChatTurn] = []
+    repeat {
+        attempts += 1
+        do {
+            for try await _ in try await flow.send(
+                sessionID: session.id, text: "what does @README.md say?") {}
+        } catch {
+            if attempts >= 3 { throw error }
+            continue
+        }
+        turns = try #require(try await store.session(id: session.id)).turns
+    } while !grounded(turns) && attempts < 3
+    #expect(grounded(turns))
+}
+
 }

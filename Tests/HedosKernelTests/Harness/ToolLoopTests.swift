@@ -251,3 +251,81 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     #expect(turns.last?.content == "Final answer.")
 }
 
+@Test func mentionedFileIsReadBeforeTheModelStreams() async throws {
+    let (store, dir) = try loopStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let placeDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: placeDir) }
+    try Data("# Zephyrwing docs".utf8).write(to: placeDir.appendingPathComponent("README.md"))
+    let place = PlaceBoundary.canonical(placeDir.path)
+    let session = try await store.createSession(modelID: "model-a")
+    try await store.setPlace(id: session.id, place: place)
+
+    let streams = ScriptedStreams(passes: [[.text("It documents Zephyrwing."), .done(nil)]])
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, messages, offered in streams.next(messages, offered) },
+        shelf: { [] },
+        toolbox: { _ in HarnessTools.specs() },
+        execute: { _, call in await Harness.execute(call, place: place) })
+
+    for try await _ in try await flow.send(
+        sessionID: session.id, text: "what does @README.md say?") {}
+
+    let turns = try #require(try await store.session(id: session.id)).turns
+    #expect(turns.map(\.role) == [.user, .assistant, .tool, .assistant])
+    #expect(turns[1].toolCalls.first?.name == "read_file")
+    #expect(turns[2].toolName == "read_file")
+    #expect(turns[2].content.contains("Zephyrwing docs"))
+    #expect(turns[3].content == "It documents Zephyrwing.")
+
+    let history = streams.historiesSeen[0]
+    #expect(history.contains { $0.role == .tool && $0.content.contains("Zephyrwing docs") })
+}
+
+@Test func mentionScanRulesResolveStripAndCap() throws {
+    let placeDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: placeDir) }
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "plain"] {
+        try Data("x".utf8).write(to: placeDir.appendingPathComponent(name))
+    }
+    let place = PlaceBoundary.canonical(placeDir.path)
+
+    #expect(ChatFlow.mentionedFiles(in: "see a.txt, and (b.txt)!", place: place) == ["a.txt", "b.txt"])
+    #expect(ChatFlow.mentionedFiles(in: "@plain please", place: place) == ["plain"])
+    #expect(ChatFlow.mentionedFiles(in: "the plain truth", place: place) == [])
+    #expect(ChatFlow.mentionedFiles(in: "a.txt a.txt", place: place) == ["a.txt"])
+    #expect(
+        ChatFlow.mentionedFiles(
+            in: "a.txt b.txt c.txt d.txt e.txt", place: place
+        ).count == ChatFlow.maxMentionReadsPerSend)
+    #expect(ChatFlow.mentionedFiles(in: "read /etc/passwd", place: place) == [])
+    #expect(ChatFlow.mentionedFiles(in: "read a.txt", place: nil) == [])
+}
+
+@Test func mentionOfAMissingFilePersistsAnHonestResultAndContinues() async throws {
+    let (store, dir) = try loopStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let placeDir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: placeDir) }
+    try Data("x".utf8).write(to: placeDir.appendingPathComponent("real.txt"))
+    let place = PlaceBoundary.canonical(placeDir.path)
+    let session = try await store.createSession(modelID: "model-a")
+    try await store.setPlace(id: session.id, place: place)
+
+    let streams = ScriptedStreams(passes: [[.text("Understood."), .done(nil)]])
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, messages, offered in streams.next(messages, offered) },
+        shelf: { [] },
+        toolbox: { _ in HarnessTools.specs() },
+        execute: { _, call in await Harness.execute(call, place: place) })
+
+    for try await _ in try await flow.send(
+        sessionID: session.id, text: "read @gone.txt now") {}
+
+    let turns = try #require(try await store.session(id: session.id)).turns
+    let toolTurn = try #require(turns.first { $0.role == .tool })
+    #expect(toolTurn.content.contains("does not exist"))
+    #expect(turns.last?.content == "Understood.")
+}

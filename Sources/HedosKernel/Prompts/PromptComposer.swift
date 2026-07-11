@@ -2,19 +2,56 @@ import Foundation
 
 public enum PromptComposer {
     public static func tokenRange(in draft: String) -> Range<String.Index>? {
-        guard let slash = draft.lastIndex(of: "/") else { return nil }
-        if slash > draft.startIndex {
-            let before = draft[draft.index(before: slash)]
+        tokenRange(in: draft, marker: "/")
+    }
+
+    public static func tokenRange(
+        in draft: String, marker: Character
+    ) -> Range<String.Index>? {
+        guard let start = draft.lastIndex(of: marker) else { return nil }
+        if start > draft.startIndex {
+            let before = draft[draft.index(before: start)]
             guard before.isWhitespace else { return nil }
         }
-        let token = draft[draft.index(after: slash)...]
+        let token = draft[draft.index(after: start)...]
         guard !token.contains(where: \.isWhitespace) else { return nil }
-        return slash..<draft.endIndex
+        return start..<draft.endIndex
     }
 
     public static func query(in draft: String) -> String? {
         guard let range = tokenRange(in: draft) else { return nil }
         return String(draft[range].dropFirst())
+    }
+
+    public static func mentionRange(in draft: String) -> Range<String.Index>? {
+        tokenRange(in: draft, marker: "@")
+    }
+
+    public static func mentionQuery(in draft: String) -> String? {
+        guard let range = mentionRange(in: draft) else { return nil }
+        return String(draft[range].dropFirst())
+    }
+
+    public static func mentionCore(_ token: some StringProtocol) -> (core: String, explicit: Bool)? {
+        var text = String(token)
+        while let first = text.first, "('\"`«".contains(first) {
+            text.removeFirst()
+        }
+        while let last = text.last, ".,:;!?)'\"`»".contains(last) {
+            text.removeLast()
+        }
+        var explicit = false
+        if text.hasPrefix("@") {
+            explicit = true
+            text.removeFirst()
+        }
+        guard !text.isEmpty else { return nil }
+        return (text, explicit)
+    }
+
+    public static func acceptingMention(_ path: String, in draft: String) -> String {
+        guard let range = mentionRange(in: draft) else { return draft }
+        return String(draft[..<range.lowerBound]) + path + " "
     }
 
     public static func matchScore(_ query: String, against title: String) -> Int? {
