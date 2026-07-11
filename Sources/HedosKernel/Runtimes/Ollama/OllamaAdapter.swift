@@ -235,8 +235,20 @@ struct OllamaAdapter: RuntimeAdapter {
         if !options.isEmpty { body["options"] = .object(options) }
         if let thinking = object["thinking"], thinking != .null {
             body["think"] = thinking
+        } else if carriesToolContent(object) {
+            body["think"] = .bool(false)
         }
         return try JSONEncoder().encode(JSONValue.object(body))
+    }
+
+    static func carriesToolContent(_ object: [String: JSONValue]) -> Bool {
+        if case .array(let tools)? = object["tools"], !tools.isEmpty { return true }
+        guard case .array(let messages)? = object["messages"] else { return false }
+        return messages.contains { message in
+            guard case .object(let fields) = message else { return false }
+            if fields["tool_calls"] != nil { return true }
+            return fields["role"]?.stringValue == "tool"
+        }
     }
 
     static func wireMessages(_ messages: JSONValue) -> JSONValue {
