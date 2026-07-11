@@ -62,6 +62,7 @@ final class ChatViewModel {
     private let audio: AudioSession
     let sessionID: String
     private var streamTask: Task<Void, Never>?
+    private var streamGeneration = 0
     private var readAloudTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var speakTask: Task<Void, Never>?
@@ -265,7 +266,10 @@ final class ChatViewModel {
                         audio.enqueue(frame, for: liveID)
                     }
                 }
-            } catch {}
+            } catch is CancellationError {
+            } catch {
+                notice = error.localizedDescription
+            }
             if previewingVoice == candidate {
                 previewingVoice = nil
             }
@@ -399,20 +403,27 @@ final class ChatViewModel {
         imageProgress = .none
         imagePreview = nil
         imageTask?.cancel()
-        imageTask = Task {
+        imageTask = Task { [weak self] in
             do {
                 let id = try await submit()
+                guard let self else { return }
                 self.jobID = id
                 if self.cancelRequested {
                     await self.kernel.scheduler.cancel(id)
                 }
                 await self.watchImage(id, prompt: prompt)
             } catch {
+                guard let self else { return }
                 self.imagePhase =
                     self.cancelRequested ? .idle : .failed(error.localizedDescription)
                 self.activeImagePrompt = nil
             }
         }
+    }
+
+    func releaseImageWatcher() {
+        imageTask?.cancel()
+        imageTask = nil
     }
 
     private func watchImage(_ id: String, prompt: String) async {
@@ -566,14 +577,24 @@ final class ChatViewModel {
     }
 
     func rebind(to record: ModelRecord) {
+        guard !isStreaming else { return }
         guard record.id != boundModelID else { return }
+        let previous = boundModelID
         boundModelID = record.id
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
         let displayName = record.displayName
         Task {
-            try? await kernel.chats.rebindSession(id: sessionID, modelID: recordID)
+            do {
+                try await kernel.chats.rebindSession(id: sessionID, modelID: recordID)
+            } catch {
+                if boundModelID == recordID {
+                    boundModelID = previous
+                }
+                notice = error.localizedDescription
+                return
+            }
             let assessment =
                 (try? await kernel.chatContextAssessment(
                     sessionID: sessionID, modelID: recordID)) ?? nil
@@ -755,6 +776,9 @@ final class ChatViewModel {
             CapabilityChunk, Error
         >
     ) {
+        streamTask?.cancel()
+        streamGeneration += 1
+        let generation = streamGeneration
         notice = nil
         canStartOllama = false
         transcript.append(Entry(role: .assistant, text: ""))
@@ -778,6 +802,7 @@ final class ChatViewModel {
             }
 
             @MainActor func settle() {
+                guard generation == self.streamGeneration else { return }
                 flushThinking()
                 guard !transcript.isEmpty else { return }
                 reveal.finish()
@@ -829,27 +854,35 @@ final class ChatViewModel {
                     }
                 }
                 settle()
-                Haptics.completion()
+                if generation == self.streamGeneration { Haptics.completion() }
             } catch KernelError.runtimeUnavailable(let hint) {
                 settle()
-                notice = hint
-                canStartOllama = hint.contains("ollama serve")
-                dropEmptyAssistantTail()
+                if generation == self.streamGeneration {
+                    notice = hint
+                    canStartOllama = hint.contains("ollama serve")
+                    dropEmptyAssistantTail()
+                }
             } catch is CancellationError {
                 settle()
-                dropEmptyAssistantTail()
+                if generation == self.streamGeneration {
+                    dropEmptyAssistantTail()
+                }
             } catch {
                 settle()
-                notice = error.localizedDescription
-                dropEmptyAssistantTail()
+                if generation == self.streamGeneration {
+                    notice = error.localizedDescription
+                    dropEmptyAssistantTail()
+                }
             }
+            guard generation == self.streamGeneration else { return }
             stopTicker()
             streamStatus = nil
             isStreaming = false
-            guard !Task.isCancelled else { return }
             _ = try? await kernel.autoTitleIfNeeded(sessionID: sessionID)
-            guard !Task.isCancelled else { return }
-            if let stored = try? await kernel.chats.session(id: sessionID) {
+            guard generation == self.streamGeneration else { return }
+            let stored = try? await kernel.chats.session(id: sessionID)
+            guard generation == self.streamGeneration else { return }
+            if let stored {
                 apply(stored)
             }
             onSessionsChanged?()
@@ -1060,6 +1093,11 @@ struct ChatView: View {
         library.record(id: model.boundModelID)
     }
 
+    private var boundReady: Bool {
+        guard let record = boundRecord else { return false }
+        return record.state == .ready && Launcher.destination(for: record) == .chat
+    }
+
     private var activeRecord: ModelRecord? {
         library.record(id: model.activeModelID)
     }
@@ -1098,6 +1136,7 @@ struct ChatView: View {
         }
         .onDisappear {
             model.suspend()
+            model.releaseImageWatcher()
             model.stopReadAloud()
             model.stopVoicePreview()
             voiceConversation.stop()
@@ -1106,6 +1145,9 @@ struct ChatView: View {
 
     private func applyLaunch() async {
         guard let launch, let record = library.record(id: launch.modelID) else { return }
+        if model.isWorking {
+            model.stop()
+        }
         switch launch.intent {
         case .text: model.rebind(to: record)
         case .image: model.bindImage(to: record)
@@ -1780,18 +1822,26 @@ struct ChatView: View {
 
     private var emptyHeadline: String {
         switch model.intent {
-        case .text: boundRecord != nil ? "Say the first thing." : "Pick a model to begin."
-        case .image: activeRecord != nil ? "Describe something." : "No image model yet."
-        case .speak: activeRecord != nil ? "Give it a line." : "No voice model yet."
+        case .text:
+            guard boundRecord != nil else { return "Pick a model to begin." }
+            return boundReady ? "Say the first thing." : "That model isn't ready."
+        case .image:
+            return activeRecord != nil ? "Describe something." : "No image model yet."
+        case .speak:
+            return activeRecord != nil ? "Give it a line." : "No voice model yet."
         }
     }
 
     private var emptyCaption: String {
         switch model.intent {
         case .text:
-            return boundRecord.map {
-                "\($0.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
-            } ?? "Every ready chat model on this Mac lives in the chip below the composer."
+            guard let record = boundRecord else {
+                return "Every ready chat model on this Mac lives in the chip below the composer."
+            }
+            if !boundReady {
+                return "\(record.displayName) isn't ready to run — pick another model from the chip below the composer."
+            }
+            return "\(record.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
         case .image:
             return activeRecord != nil
                 ? "A sentence in, an image out — right here in the conversation. Steps, size, and seed live next to the send button."
@@ -1814,9 +1864,14 @@ struct ChatView: View {
         }
     }
 
+    private var chatChipTitle: String {
+        guard let record = boundRecord else { return "Choose model" }
+        return boundReady ? record.displayName : "\(record.displayName) · not ready"
+    }
+
     private var chatChip: some View {
         InkMenu(
-            title: boundRecord?.displayName ?? "Choose model",
+            title: chatChipTitle,
             accessibilityName: "Chat model",
             externalOpen: $modelMenuOpen
         ) {
@@ -1933,7 +1988,10 @@ struct ChatView: View {
     private var placeholder: String {
         switch model.intent {
         case .text:
-            return boundRecord.map { "Message \($0.displayName)…" } ?? "Pick a model first…"
+            guard let record = boundRecord else { return "Pick a model first…" }
+            return boundReady
+                ? "Message \(record.displayName)…"
+                : "\(record.displayName) isn't ready — pick another model…"
         case .image:
             return activeRecord != nil
                 ? "What should this look like?" : "Pick an image model first…"
@@ -1944,8 +2002,15 @@ struct ChatView: View {
     }
 
     private var sendable: Bool {
-        !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && model.activeModelID != nil
+        guard !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        switch model.intent {
+        case .text:
+            return boundReady
+        case .image, .speak:
+            return model.activeModelID != nil
+        }
     }
 }
 
