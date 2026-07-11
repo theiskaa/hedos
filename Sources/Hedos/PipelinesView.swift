@@ -8,6 +8,7 @@ final class PipelinesModel {
     let kernel: Kernel
     var pipelines: [Pipeline] = []
     var signatures: [String: PipelineSignature] = [:]
+    var issues: [String: String] = [:]
 
     init(kernel: Kernel) {
         self.kernel = kernel
@@ -16,12 +17,16 @@ final class PipelinesModel {
     func refresh() async {
         pipelines = await kernel.pipelineStore.list()
         var resolved: [String: PipelineSignature] = [:]
+        var problems: [String: String] = [:]
         for pipeline in pipelines {
             if let signature = await kernel.pipelineStore.signature(of: pipeline) {
                 resolved[pipeline.id] = signature
+            } else if let diagnostic = await kernel.pipelineDiagnostic(pipeline) {
+                problems[pipeline.id] = diagnostic
             }
         }
         signatures = resolved
+        issues = problems
     }
 
     func delete(_ pipeline: Pipeline) {
@@ -161,6 +166,13 @@ struct PipelinesPane: View {
                 kernel: shell.kernel, pipeline: pipeline, signature: signature,
                 audio: shell.audio)
                 .id(pipeline.id)
+        } else if let model, let id = shell.pipelineSelection,
+            model.pipelines.contains(where: { $0.id == id })
+        {
+            ModeEmptyState(
+                headline: "This pipeline can't run right now",
+                caption: (model.issues[id] ?? "A stage isn't ready.")
+                    + " Edit the pipeline or bring the model back.")
         } else {
             ModeEmptyState(
                 headline: "Pick a pipeline",
@@ -503,7 +515,7 @@ final class PipelineRunModel {
     var notice: String?
     var listening = false
 
-    private let audio: AudioSession
+    let audio: AudioSession
     private let capture = MicCapture()
     private var vad = VADLite()
     private var runTask: Task<Void, Never>?
@@ -738,6 +750,14 @@ private struct PipelineRunContent: View {
                 .frame(maxWidth: .infinity)
             }
             .onChange(of: model.turns.last?.response) {
+                guard let last = model.turns.last else { return }
+                if model.running {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                } else {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+            .onChange(of: model.turns.count) {
                 if let last = model.turns.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
@@ -756,6 +776,10 @@ private struct PipelineRunContent: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .responseShell()
+            }
+            if let image = turn.image {
+                ArtifactExchangeView(
+                    reference: image, kernel: model.kernel, session: model.audio)
             }
             if turn.spoke {
                 HStack(spacing: Design.Space.xs) {

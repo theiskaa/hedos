@@ -19,6 +19,18 @@ extension Kernel {
         return PipelineExecutor(stages: runners).run(input: input)
     }
 
+    public func pipelineDiagnostic(_ pipeline: Pipeline) async -> String? {
+        let shelf = (try? await registry.list()) ?? []
+        do {
+            try PipelineValidator.validate(pipeline.stages, shelf: shelf)
+            return nil
+        } catch let error as PipelineValidationError {
+            return error.description
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     func pipelineRunners(for pipeline: Pipeline) async throws -> [PipelineStageRunner] {
         let shelf = try await registry.list()
         try PipelineValidator.validate(pipeline.stages, shelf: shelf)

@@ -127,6 +127,22 @@ private func stage(_ record: ModelRecord, _ capability: Capability) -> PipelineS
     }
 }
 
+@Test func pipelineDiagnosticIsNilWhenValidAndExplainsWhenNot() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir, adapters: [])
+    let chat = model("chat", name: "gemma", capabilities: [.chat])
+    try await kernel.registry.register(chat)
+
+    let valid = Pipeline(name: "ok", stages: [stage(chat, .chat)])
+    #expect(await kernel.pipelineDiagnostic(valid) == nil)
+
+    let broken = Pipeline(
+        name: "bad", stages: [PipelineStage(modelID: "ghost", capability: .chat)])
+    let diagnostic = await kernel.pipelineDiagnostic(broken)
+    #expect(diagnostic?.contains("no longer on the shelf") == true)
+}
+
 @Test func nextCapabilitiesNeverOfferVectorOutputs() {
     let chat = model("chat", name: "gemma", capabilities: [.chat])
     #expect(!PipelineValidator.nextCapabilities(after: []).contains(.embed))
