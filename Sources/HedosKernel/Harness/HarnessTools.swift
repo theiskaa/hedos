@@ -189,8 +189,10 @@ public enum HarnessTools {
 
         var matches: [String] = []
         var cutOff = false
+        let ignore = PlaceIgnore.load(place: place)
         let enumerator = FileManager.default.enumerator(
-            at: URL(fileURLWithPath: root), includingPropertiesForKeys: [.isRegularFileKey],
+            at: URL(fileURLWithPath: root),
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: [.skipsHiddenFiles])
         while let entry = enumerator?.nextObject() as? URL {
             if matches.count >= searchMatchesCap {
@@ -198,10 +200,20 @@ public enum HarnessTools {
                 break
             }
             let values = try? entry.resourceValues(
-                forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+            let entryRelative =
+                entry.path.hasPrefix(root + "/")
+                ? String(entry.path.dropFirst(root.count + 1)) : entry.path
+            if values?.isDirectory == true {
+                if ignore.ignored(entryRelative, isDirectory: true) {
+                    enumerator?.skipDescendants()
+                }
+                continue
+            }
             guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
                 continue
             }
+            guard !ignore.ignored(entryRelative, isDirectory: false) else { continue }
             guard let resolved = try? PlaceBoundary.resolve(entry.path, in: root),
                 resolved == entry.path || resolved.hasPrefix(root + "/")
             else { continue }

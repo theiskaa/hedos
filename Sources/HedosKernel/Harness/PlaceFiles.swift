@@ -6,21 +6,31 @@ public enum PlaceFiles {
 
     public static func list(place: String) -> [String] {
         var paths: [String] = []
+        let ignore = PlaceIgnore.load(place: place)
         let enumerator = FileManager.default.enumerator(
-            at: URL(fileURLWithPath: place), includingPropertiesForKeys: [.isRegularFileKey],
+            at: URL(fileURLWithPath: place),
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: [.skipsHiddenFiles])
         while let entry = enumerator?.nextObject() as? URL {
             if paths.count >= mentionIndexCap { break }
             let values = try? entry.resourceValues(
-                forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
+            guard entry.path.hasPrefix(place + "/") else { continue }
+            let relative = String(entry.path.dropFirst(place.count + 1))
+            if values?.isDirectory == true {
+                if ignore.ignored(relative, isDirectory: true) {
+                    enumerator?.skipDescendants()
+                }
+                continue
+            }
             guard values?.isRegularFile == true, values?.isSymbolicLink != true else {
                 continue
             }
+            guard !ignore.ignored(relative, isDirectory: false) else { continue }
             guard let resolved = try? PlaceBoundary.resolve(entry.path, in: place),
                 resolved == entry.path || resolved.hasPrefix(place + "/")
             else { continue }
-            guard entry.path.hasPrefix(place + "/") else { continue }
-            paths.append(String(entry.path.dropFirst(place.count + 1)))
+            paths.append(relative)
         }
         return paths.sorted()
     }

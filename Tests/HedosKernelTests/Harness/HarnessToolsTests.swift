@@ -153,3 +153,73 @@ private func call(_ name: String, _ arguments: [String: JSONValue]) -> ToolCall 
     #expect(result.contains("No matches"))
 }
 
+@Test func placeFilesListsCapsAndScreensSymlinks() throws {
+    let (place, dir) = try fixtureTree()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let outside = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: outside) }
+    try Data("loot".utf8).write(to: outside.appendingPathComponent("loot.txt"))
+    try FileManager.default.createSymbolicLink(
+        atPath: place + "/escape.txt", withDestinationPath: outside.path + "/loot.txt")
+    try Data("hidden".utf8).write(to: URL(fileURLWithPath: place + "/.secret"))
+
+    let files = PlaceFiles.list(place: place)
+    #expect(files.contains("README.md"))
+    #expect(files.contains("src/main.swift"))
+    #expect(!files.contains("escape.txt"))
+    #expect(!files.contains(".secret"))
+}
+
+@Test func placeFilesRanksFilenamePrefixOverPathSubsequence() {
+    let paths = ["src/reader.swift", "README.md", "lib/parse/real.dart", "docs/notes.txt"]
+    let ranked = PlaceFiles.matches(query: "rea", in: paths)
+    #expect(ranked.first == "README.md" || ranked.first == "src/reader.swift")
+    #expect(ranked.prefix(3).contains("README.md"))
+    #expect(ranked.prefix(3).contains("src/reader.swift"))
+    #expect(!ranked.contains("docs/notes.txt"))
+
+    let byPath = PlaceFiles.matches(query: "parse", in: paths)
+    #expect(byPath.contains("lib/parse/real.dart"))
+}
+
+@Test func gitignoredTreesNeverCrowdDeepSourceOutOfTheIndex() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try Data("build/\n*.log\n".utf8).write(to: dir.appendingPathComponent(".gitignore"))
+    let junk = dir.appendingPathComponent("build/generated")
+    try FileManager.default.createDirectory(at: junk, withIntermediateDirectories: true)
+    for index in 0..<(PlaceFiles.mentionIndexCap + 100) {
+        try Data("x".utf8).write(
+            to: junk.appendingPathComponent(String(format: "gen%05d.txt", index)))
+    }
+    let deep = dir.appendingPathComponent("lib/src/feature")
+    try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+    try Data("void main() {}".utf8).write(to: deep.appendingPathComponent("main.dart"))
+    try Data("noise".utf8).write(to: dir.appendingPathComponent("session.log"))
+    let place = PlaceBoundary.canonical(dir.path)
+
+    let files = PlaceFiles.list(place: place)
+    #expect(files.contains("lib/src/feature/main.dart"))
+    #expect(!files.contains { $0.hasPrefix("build/") })
+    #expect(!files.contains("session.log"))
+    #expect(PlaceFiles.matches(query: "main", in: files).contains("lib/src/feature/main.dart"))
+}
+
+@Test func searchSkipsGitignoredTrees() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try Data("build/\n".utf8).write(to: dir.appendingPathComponent(".gitignore"))
+    let built = dir.appendingPathComponent("build")
+    try FileManager.default.createDirectory(at: built, withIntermediateDirectories: true)
+    try Data("the flumph secret".utf8).write(to: built.appendingPathComponent("out.txt"))
+    let lib = dir.appendingPathComponent("lib")
+    try FileManager.default.createDirectory(at: lib, withIntermediateDirectories: true)
+    try Data("a flumph in source".utf8).write(to: lib.appendingPathComponent("real.txt"))
+    let place = PlaceBoundary.canonical(dir.path)
+
+    let result = await HarnessTools.execute(
+        call("search", ["query": .string("flumph")]), place: place)
+    #expect(result.contains("lib/real.txt"))
+    #expect(!result.contains("build/out.txt"))
+}
+
