@@ -36,7 +36,7 @@ private func cannedFlow(
 ) -> ChatFlow {
     ChatFlow(
         chats: store,
-        stream: { modelID, _, _ in
+        stream: { modelID, _, _, _ in
             await asked?.record(modelID)
             return AsyncThrowingStream { continuation in
                 for chunk in chunks(modelID) {
@@ -112,13 +112,26 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     #expect(turns[1].content == "recovered answer")
 }
 
+@Test func continueSessionRefusesTrailingAssistantTurn() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    _ = try await store.appendTurn(TurnDraft(role: .user, content: "q"), to: session.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "a", modelID: "model-a"), to: session.id)
+    let flow = cannedFlow(store: store) { _ in [.text("x"), .done(nil)] }
+    await #expect(throws: KernelError.self) {
+        _ = try await flow.continueSession(sessionID: session.id)
+    }
+}
+
 @Test func abandonedStreamPersistsPartialAssistantTurn() async throws {
     let (store, dir) = try flowStore()
     defer { try? FileManager.default.removeItem(at: dir) }
     let session = try await store.createSession(modelID: "model-a")
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text("partial"))
             }
@@ -143,13 +156,187 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     #expect(turns.last?.content == "partial")
 }
 
+private actor PromptRecorder {
+    var received: [String?] = []
+    func record(_ prompt: String?) { received.append(prompt) }
+    var last: String?? { received.last }
+}
+
+@Test func sendPassesSessionSnapshotNotLivePrompt() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(
+        modelID: "model-a", systemPrompt: "founding prompt")
+    let recorder = PromptRecorder()
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, _, _, sessionPrompt in
+            await recorder.record(sessionPrompt)
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.text("ok"))
+                continuation.yield(.done(nil))
+                continuation.finish()
+            }
+        },
+        shelf: { [] })
+    for try await _ in try await flow.send(sessionID: session.id, text: "hi") {}
+    #expect(await recorder.last == "founding prompt")
+}
+
+private func hangingFlow(_ store: ChatStore) -> ChatFlow {
+    ChatFlow(
+        chats: store,
+        stream: { _, _, _, _ in
+            AsyncThrowingStream { continuation in
+                let producer = Task {
+                    continuation.yield(.text("partial"))
+                    try? await Task.sleep(for: .seconds(30))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in producer.cancel() }
+            }
+        },
+        shelf: { [] })
+}
+
+private func waitUntilStreaming(_ store: ChatStore, _ sessionID: String) async throws {
+    for _ in 0..<300 {
+        if (try await store.session(id: sessionID)?.turns.count ?? 0) >= 2 { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+@Test func secondSendOnStreamingSessionThrowsSessionBusy() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let flow = hangingFlow(store)
+    let first = try await flow.send(sessionID: session.id, text: "q1")
+    let consumer = Task { try await drainText(first) }
+    try await waitUntilStreaming(store, session.id)
+
+    await #expect(throws: KernelError.self) {
+        _ = try await flow.send(sessionID: session.id, text: "q2")
+    }
+    consumer.cancel()
+}
+
+@Test func editDuringStreamIsRefusedNotInterleaved() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let user = try await store.appendTurn(TurnDraft(role: .user, content: "original"), to: session.id)
+    let flow = hangingFlow(store)
+    let first = try await flow.send(sessionID: session.id, text: "q1")
+    let consumer = Task { try await drainText(first) }
+    try await waitUntilStreaming(store, session.id)
+
+    await #expect(throws: KernelError.self) {
+        _ = try await flow.editUserTurn(sessionID: session.id, turnID: user.id, text: "edited")
+    }
+    consumer.cancel()
+}
+
+@Test func gateReleasesWhenStreamSettlesSoNextSendSucceeds() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let flow = cannedFlow(store: store) { _ in [.text("done"), .done(nil)] }
+    for try await _ in try await flow.send(sessionID: session.id, text: "q1") {}
+    for try await _ in try await flow.send(sessionID: session.id, text: "q2") {}
+    let turns = try #require(try await store.session(id: session.id)).turns
+    #expect(turns.filter { $0.role == .user }.count == 2)
+}
+
+@Test func cancelledStreamMarksAssistantTurnInterrupted() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, _, _, _ in
+            AsyncThrowingStream { continuation in
+                let producer = Task {
+                    continuation.yield(.text("partial"))
+                    try? await Task.sleep(for: .seconds(30))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in producer.cancel() }
+            }
+        },
+        shelf: { [] })
+    let stream = try await flow.send(sessionID: session.id, text: "q")
+    let consumer = Task { try await drainText(stream) }
+    for _ in 0..<200 {
+        let turns = try await store.session(id: session.id)?.turns ?? []
+        if turns.count == 2, turns[1].content == "partial" { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    consumer.cancel()
+    _ = try? await consumer.value
+    for _ in 0..<200 {
+        let turns = try #require(try await store.session(id: session.id)).turns
+        if let last = turns.last, last.role == .assistant, last.interrupted { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    Issue.record("assistant turn was never marked interrupted")
+}
+
+@Test func erroredStreamMarksAssistantTurnInterrupted() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, _, _, _ in
+            AsyncThrowingStream { continuation in
+                continuation.yield(.text("partial"))
+                continuation.finish(throwing: KernelError.runtimeFailed("boom"))
+            }
+        },
+        shelf: { [] })
+    let stream = try await flow.send(sessionID: session.id, text: "q")
+    _ = await Task { try? await drainText(stream) }.value
+    for _ in 0..<200 {
+        let turns = try #require(try await store.session(id: session.id)).turns
+        if let last = turns.last, last.role == .assistant, last.interrupted { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    Issue.record("errored assistant turn was never marked interrupted")
+}
+
+@Test func completedStreamStaysUninterrupted() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let session = try await store.createSession(modelID: "model-a")
+    let flow = ChatFlow(
+        chats: store,
+        stream: { _, _, _, _ in
+            AsyncThrowingStream { continuation in
+                continuation.yield(.text("done"))
+                continuation.yield(.done(GenerationStats()))
+                continuation.finish()
+            }
+        },
+        shelf: { [] })
+    let stream = try await flow.send(sessionID: session.id, text: "q")
+    try await drainText(stream)
+    let turns = try #require(try await store.session(id: session.id)).turns
+    #expect(turns.last?.role == .assistant)
+    #expect(turns.last?.interrupted == false)
+}
+
+private func drainText(_ stream: AsyncThrowingStream<CapabilityChunk, Error>) async throws {
+    for try await _ in stream {}
+}
+
 @Test func failureBeforeAnyContentLeavesOnlyUserTurn() async throws {
     let (store, dir) = try flowStore()
     defer { try? FileManager.default.removeItem(at: dir) }
     let session = try await store.createSession(modelID: "model-a")
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "daemon down"))
             }
@@ -173,6 +360,63 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
     await #expect(throws: KernelError.self) {
         _ = try await flow.send(sessionID: session.id, text: "hi")
     }
+}
+
+private actor MessagesRecorder {
+    var received: [[ChatMessage]] = []
+    func record(_ messages: [ChatMessage]) { received.append(messages) }
+    var last: [ChatMessage]? { received.last }
+}
+
+@Test func titlingRequestCarriesItsOwnSystemMessage() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let model = readyChatModel(path: "~/models/titler.gguf", footprintMB: 2000)
+    let session = try await store.createSession(modelID: model.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .user, content: "how does X work"), to: session.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "the answer", modelID: model.id), to: session.id)
+    let recorder = MessagesRecorder()
+    let titling = ChatTitling(
+        chats: store,
+        stream: { _, messages in
+            await recorder.record(messages)
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.text("Some Title"))
+                continuation.finish()
+            }
+        },
+        shelf: { [model] })
+    _ = try await titling.autoTitleIfNeeded(sessionID: session.id)
+    let messages = await recorder.last
+    #expect(messages?.first?.role == .system)
+    #expect(messages?.first?.content == ChatTitling.titlingInstruction)
+    #expect(messages?.last?.role == .user)
+    #expect(messages?.last?.content.contains("the answer") == true)
+}
+
+@Test func autoTitleStampsTitledByAndFallbackClearsIt() async throws {
+    let (store, dir) = try flowStore()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let model = readyChatModel(path: "~/models/m.gguf", footprintMB: 2000)
+
+    let titled = try await store.createSession(modelID: model.id)
+    _ = try await store.appendTurn(TurnDraft(role: .user, content: "q"), to: titled.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "a", modelID: model.id), to: titled.id)
+    let generating = cannedTitling(store: store, shelf: [model]) { _ in [.text("Generated Title")] }
+    _ = try await generating.autoTitleIfNeeded(sessionID: titled.id)
+    #expect(try await store.session(id: titled.id)?.session.titledBy == model.id)
+
+    let fallback = try await store.createSession(modelID: model.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .user, content: "first line question"), to: fallback.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "reply", modelID: model.id), to: fallback.id)
+    let fallbackTitling = cannedTitling(store: store, shelf: []) { _ in [] }
+    _ = try await fallbackTitling.autoTitleIfNeeded(sessionID: fallback.id)
+    #expect(try await store.session(id: fallback.id)?.session.titledBy == nil)
 }
 
 @Test func autoTitleAsksSmallestReadyChatModelAndSanitizes() async throws {
@@ -305,7 +549,7 @@ private func readyChatModel(path: String, footprintMB: Int?) -> ModelRecord {
 
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 let task = Task {
                     var opened = gate.makeAsyncIterator()

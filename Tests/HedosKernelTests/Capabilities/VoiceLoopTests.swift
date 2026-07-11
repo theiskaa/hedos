@@ -172,6 +172,55 @@ private let quiet = [Float](repeating: 0.0, count: 4)
     #expect(await spoken.sentences == ["First sentence here.", "Second bit follows."])
 }
 
+private actor PersistLog {
+    var calls: [(pcm: Data, sampleRate: Int, text: String)] = []
+    func record(_ pcm: Data, _ sampleRate: Int, _ text: String) {
+        calls.append((pcm, sampleRate, text))
+    }
+    var count: Int { calls.count }
+    var last: (pcm: Data, sampleRate: Int, text: String)? { calls.last }
+}
+
+@Test func completedVoiceTurnHandsAccumulatedAudioAndTextToPersistClosure() async throws {
+    let persisted = PersistLog()
+    let backends = VoiceLoopBackends(
+        transcribe: { _ in textStream(["hello"]) },
+        chat: { _ in textStream(["The reply here."]) },
+        speak: { _ in
+            AsyncThrowingStream { continuation in
+                Task {
+                    continuation.yield(
+                        .audio(AudioFrame(data: Data([1, 2]), sampleRate: 22050)))
+                    continuation.yield(
+                        .audio(AudioFrame(data: Data([3, 4]), sampleRate: 22050)))
+                    continuation.yield(.done(nil))
+                    continuation.finish()
+                }
+            }
+        },
+        persistTurnAudio: { pcm, sampleRate, text in
+            await persisted.record(pcm, sampleRate, text)
+        })
+
+    let loop = VoiceLoop(backends: backends, vadConfig: tinyVAD)
+    let log = EventLog()
+    let events = await loop.start()
+    let collector = Task {
+        for await event in events { await log.record(event) }
+    }
+    await loop.feed(voiced + voiced + voiced)
+    await loop.feed(quiet + quiet + quiet)
+    try await waitUntil { await log.completions() == 1 }
+    await loop.stop()
+    _ = await collector.value
+
+    #expect(await persisted.count == 1)
+    let call = await persisted.last
+    #expect(call?.pcm == Data([1, 2, 3, 4]))
+    #expect(call?.sampleRate == 22050)
+    #expect(call?.text == "The reply here.")
+}
+
 @Test func bargeInCancelsSpeechAndStartsANewTurn() async throws {
     let spoken = SpokenLog()
     let backends = VoiceLoopBackends(

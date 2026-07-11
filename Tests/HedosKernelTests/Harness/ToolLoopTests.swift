@@ -56,7 +56,7 @@ private func loopFlow(
 ) -> ChatFlow {
     ChatFlow(
         chats: store,
-        stream: { _, messages, offered in streams.next(messages, offered) },
+        stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in tools },
         execute: { _, call in await executed.record(call) })
@@ -181,7 +181,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     executed.result = { call in "" }
     let flow = ChatFlow(
         chats: store,
-        stream: { _, messages, offered in streams.next(messages, offered) },
+        stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in HarnessTools.specs() },
         execute: { _, call in await Harness.execute(call, place: place) })
@@ -264,7 +264,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     let streams = ScriptedStreams(passes: [[.text("It documents Zephyrwing."), .done(nil)]])
     let flow = ChatFlow(
         chats: store,
-        stream: { _, messages, offered in streams.next(messages, offered) },
+        stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in HarnessTools.specs() },
         execute: { _, call in await Harness.execute(call, place: place) })
@@ -316,7 +316,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     let streams = ScriptedStreams(passes: [[.text("Understood."), .done(nil)]])
     let flow = ChatFlow(
         chats: store,
-        stream: { _, messages, offered in streams.next(messages, offered) },
+        stream: { _, messages, offered, _ in streams.next(messages, offered) },
         shelf: { [] },
         toolbox: { _ in HarnessTools.specs() },
         execute: { _, call in await Harness.execute(call, place: place) })

@@ -7,6 +7,132 @@ private func makeStore(in directory: URL) -> ChatStore {
     ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
 }
 
+@Test func setSystemPromptPersistsAndSurvivesReopen() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = makeStore(in: dir)
+    let session = try await store.createSession(
+        title: "Prompted", modelID: "m", systemPrompt: "be terse")
+    #expect(try await store.session(id: session.id)?.session.systemPrompt == "be terse")
+
+    try await store.setSystemPrompt(id: session.id, prompt: "be verbose")
+    let reopened = makeStore(in: dir)
+    #expect(try await reopened.session(id: session.id)?.session.systemPrompt == "be verbose")
+
+    try await store.setSystemPrompt(id: session.id, prompt: nil)
+    #expect(try await makeStore(in: dir).session(id: session.id)?.session.systemPrompt == nil)
+}
+
+@Test func attributionNeededWhenActiveAssistantTurnsSpanModels() {
+    func assistant(_ id: String, model: String, superseded: String? = nil) -> ChatTurn {
+        ChatTurn(
+            id: id, sessionID: "s", seq: 0, role: .assistant, content: "x", modelID: model,
+            supersededBy: superseded, contentHash: id,
+            createdAt: Date(timeIntervalSince1970: 0), updatedAt: Date(timeIntervalSince1970: 0))
+    }
+    func session(model: String?) -> ChatSession {
+        ChatSession(
+            id: "s", title: "t", createdAt: Date(timeIntervalSince1970: 0),
+            updatedAt: Date(timeIntervalSince1970: 0), modelID: model)
+    }
+
+    let single = ChatTranscript(
+        session: session(model: "a"), turns: [assistant("t1", model: "a")])
+    #expect(!single.attributionNeeded)
+
+    let spanning = ChatTranscript(
+        session: session(model: "a"),
+        turns: [assistant("t1", model: "a"), assistant("t2", model: "b")])
+    #expect(spanning.attributionNeeded)
+
+    let differsFromBound = ChatTranscript(
+        session: session(model: "a"), turns: [assistant("t1", model: "b")])
+    #expect(differsFromBound.attributionNeeded)
+
+    let supersededSpanIgnored = ChatTranscript(
+        session: session(model: "a"),
+        turns: [assistant("t1", model: "a"), assistant("t2", model: "b", superseded: "t3")])
+    #expect(!supersededSpanIgnored.attributionNeeded)
+}
+
+@Test func importCollidingWithLiveSessionDuplicatesUnderFreshIDsPreservingSupersedeChain()
+    async throws
+{
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = makeStore(in: dir)
+    let session = try await store.createSession(modelID: "m")
+    _ = try await store.appendTurn(TurnDraft(role: .user, content: "q"), to: session.id)
+    var first = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "first", modelID: "m"), to: session.id)
+    let second = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "second", modelID: "m"), to: session.id)
+    first.supersededBy = second.id
+    _ = try await store.updateTurn(first)
+
+    let transcript = try #require(try await store.session(id: session.id))
+    let imported = try await store.importTranscript(transcript)
+    #expect(imported.id != session.id)
+
+    let active = try await store.sessions(filter: .active).map(\.id)
+    #expect(active.contains(session.id))
+    #expect(active.contains(imported.id))
+
+    let copy = try #require(try await store.session(id: imported.id))
+    let copyFirst = try #require(copy.turns.first { $0.content == "first" })
+    let copySecond = try #require(copy.turns.first { $0.content == "second" })
+    #expect(copyFirst.supersededBy == copySecond.id)
+    #expect(copyFirst.id != first.id)
+}
+
+@Test func importOfTombstonedSessionStillRestoresVerbatim() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = makeStore(in: dir)
+    let session = try await store.createSession(modelID: "m")
+    _ = try await store.appendTurn(TurnDraft(role: .user, content: "hi"), to: session.id)
+    let transcript = try #require(try await store.session(id: session.id))
+    try await store.deleteSession(id: session.id)
+
+    let restored = try await store.importTranscript(transcript)
+    #expect(restored.id == session.id)
+    #expect(try await store.session(id: session.id) != nil)
+}
+
+@Test func migrationAddsInterruptedAndSessionColumnsToExistingDatabase() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = makeStore(in: dir)
+    let session = try await store.createSession(title: "Migration", modelID: "m")
+    _ = try await store.appendTurn(TurnDraft(role: .user, content: "hi"), to: session.id)
+    _ = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "hello", modelID: "m"), to: session.id)
+
+    let reopened = makeStore(in: dir)
+    let transcript = try await reopened.session(id: session.id)
+    #expect(transcript?.turns.allSatisfy { !$0.interrupted } == true)
+    #expect(transcript?.session.systemPrompt == nil)
+    #expect(transcript?.session.titledBy == nil)
+}
+
+@Test func interruptedFlagPersistsThroughUpdateAndReopen() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = makeStore(in: dir)
+    let session = try await store.createSession(title: "Interrupted")
+    var turn = try await store.appendTurn(
+        TurnDraft(role: .assistant, content: "partial answer", modelID: "m"), to: session.id)
+    #expect(!turn.interrupted)
+    turn.interrupted = true
+    let updated = try await store.updateTurn(turn)
+    #expect(updated.interrupted)
+
+    let reopened = makeStore(in: dir)
+    let transcript = try await reopened.session(id: session.id)
+    #expect(
+        transcript?.turns.first(where: { $0.role == .assistant })?.interrupted == true)
+}
+
 @Test func chatPersistsAcrossStoreReload() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

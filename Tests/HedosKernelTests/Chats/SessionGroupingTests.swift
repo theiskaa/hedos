@@ -63,7 +63,7 @@ private func session(
     let session = try await store.createSession(modelID: "model-a")
     let flow = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text("first"))
                 continuation.yield(.thinking("hmm"))
@@ -82,7 +82,7 @@ private func session(
     let plain = try await store.createSession(modelID: "model-a")
     let plainFlow = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text("no thoughts"))
                 continuation.finish()

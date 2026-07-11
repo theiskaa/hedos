@@ -24,6 +24,29 @@ private func roles(_ messages: [ChatMessage]) -> [String] {
     messages.map(\.role.rawValue)
 }
 
+@Test func mergedSameRoleTurnsCarryExplicitBoundary() {
+    let turns = [
+        turn(0, .user, "hi"),
+        turn(1, .assistant, "part one"),
+        turn(2, .assistant, "part two"),
+    ]
+    let messages = ChatFlow.messages(from: turns)
+    #expect(messages.last?.content == "part one" + ChatFlow.mergeBoundary + "part two")
+    #expect(messages.last?.content.contains("---") == true)
+}
+
+@Test func interruptedTurnProjectsWithAnnotation() {
+    let interrupted = ChatTurn(
+        id: "t1", sessionID: "s", seq: 1, role: .assistant, content: "half an answer",
+        contentHash: "h1", createdAt: Date(timeIntervalSince1970: 0),
+        updatedAt: Date(timeIntervalSince1970: 0), interrupted: true)
+    let annotated = ChatFlow.messages(from: [turn(0, .user, "q"), interrupted])
+    #expect(annotated.last?.content.hasSuffix(ChatFlow.interruptedMarker) == true)
+
+    let clean = ChatFlow.messages(from: [turn(0, .user, "q"), turn(1, .assistant, "full answer")])
+    #expect(clean.last?.content == "full answer")
+}
+
 @Test func generatedImageTurnsAreOmittedFromChatContext() {
     let turns = [
         turn(0, .user, "hi"),
@@ -90,7 +113,7 @@ private func roles(_ messages: [ChatMessage]) -> [String] {
 
     let messages = ChatFlow.messages(from: turns)
     #expect(roles(messages) == ["user"])
-    #expect(messages[0].content == "hi\n\nafter")
+    #expect(messages[0].content == "hi" + ChatFlow.mergeBoundary + "after")
     #expect(!messages[0].content.contains("an image prompt"))
 }
 

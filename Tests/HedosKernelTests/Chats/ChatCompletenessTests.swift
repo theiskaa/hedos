@@ -18,7 +18,7 @@ private func seededSession(
 private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
     ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.yield(.text(reply))
                 continuation.yield(.done(GenerationStats(completionTokens: 3, durationMs: 90)))
@@ -60,7 +60,7 @@ private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
 
     let failing = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "down"))
             }
@@ -96,7 +96,7 @@ private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
 
     let failing = ChatFlow(
         chats: store,
-        stream: { _, _, _ in
+        stream: { _, _, _, _ in
             AsyncThrowingStream { continuation in
                 continuation.finish(throwing: KernelError.runtimeUnavailable(hint: "down"))
             }
@@ -177,6 +177,27 @@ private func textFlow(_ store: ChatStore, reply: String) -> ChatFlow {
     #expect(markdown.contains("revised question"))
     #expect(markdown.contains("revised answer"))
     #expect(!markdown.contains("original question"))
+}
+
+@Test func markdownExportCarriesModelAttributionArtifactPlaceholdersAndOptInThinking() {
+    let assistant = ChatTurn(
+        id: "a1", sessionID: "s", seq: 1, role: .assistant, content: "the answer",
+        thinking: "quiet reasoning", modelID: "ollama:qwen3", artifactRefs: ["kokoro_x_1"],
+        contentHash: "h", createdAt: Date(timeIntervalSince1970: 0),
+        updatedAt: Date(timeIntervalSince1970: 0), interrupted: true)
+    let session = ChatSession(
+        id: "s", title: "T", createdAt: Date(timeIntervalSince1970: 0),
+        updatedAt: Date(timeIntervalSince1970: 0), modelID: "ollama:qwen3")
+    let transcript = ChatTranscript(session: session, turns: [assistant])
+
+    let plain = ChatExport.markdown(transcript)
+    #expect(plain.contains("## Assistant · ollama:qwen3 (interrupted)"))
+    #expect(plain.contains("*(generated artifact: kokoro_x_1)*"))
+    #expect(!plain.contains("quiet reasoning"))
+
+    let withThinking = ChatExport.markdown(transcript, includeThinking: true)
+    #expect(withThinking.contains("**Thinking**"))
+    #expect(withThinking.contains("> quiet reasoning"))
 }
 
 @Test func markdownParserSplitsBlocksAndSurvivesUnclosedFence() {

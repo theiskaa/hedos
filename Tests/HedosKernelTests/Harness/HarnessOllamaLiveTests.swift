@@ -46,7 +46,7 @@ private func qwenRecord() -> ModelRecord {
     let adapter = OllamaAdapter()
     let flow = ChatFlow(
         chats: store,
-        stream: { _, messages, tools in
+        stream: { _, messages, tools, _ in
             var payload: [String: JSONValue] = [
                 "messages": .array(messages.map(\.payloadValue))
             ]
@@ -111,7 +111,7 @@ private func qwenRecord() -> ModelRecord {
     let adapter = OllamaAdapter()
     let flow = ChatFlow(
         chats: store,
-        stream: { _, messages, tools in
+        stream: { _, messages, tools, _ in
             var payload: [String: JSONValue] = [
                 "messages": .array(messages.map(\.payloadValue))
             ]

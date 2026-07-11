@@ -89,6 +89,79 @@ private func speechRecord() -> ModelRecord {
         state: .ready)
 }
 
+private func chatPayloadForMerge(_ turns: [(String, String)]) -> JSONValue {
+    .object([
+        "messages": .array(
+            turns.map {
+                .object(["role": .string($0.0), "content": .string($0.1)])
+            })
+    ])
+}
+
+private func systemContent(_ merged: JSONValue) -> String? {
+    guard case .object(let fields) = merged, case .array(let turns)? = fields["messages"]
+    else { return nil }
+    for turn in turns {
+        guard case .object(let entry) = turn, entry["role"] == .string("system"),
+            case .string(let content)? = entry["content"]
+        else { continue }
+        return content
+    }
+    return nil
+}
+
+@Test func sessionPromptOverridesRecordPromptAndFallback() {
+    var record = Fixtures.gguf()
+    record.systemPrompt = "record prompt"
+    let merged = ModelConfiguration.merged(
+        record: record, capability: .chat, payload: chatPayloadForMerge([("user", "hi")]),
+        fallbackPrompt: "fallback", sessionPrompt: "session snapshot")
+    #expect(systemContent(merged) == "session snapshot")
+}
+
+@Test func emptySessionPromptInjectsNothing() {
+    var record = Fixtures.gguf()
+    record.systemPrompt = "record prompt"
+    let merged = ModelConfiguration.merged(
+        record: record, capability: .chat, payload: chatPayloadForMerge([("user", "hi")]),
+        fallbackPrompt: "fallback", sessionPrompt: "")
+    #expect(systemContent(merged) == nil)
+}
+
+@Test func nilSessionPromptKeepsLegacyChain() {
+    var record = Fixtures.gguf()
+    record.systemPrompt = "record prompt"
+    let withRecord = ModelConfiguration.merged(
+        record: record, capability: .chat, payload: chatPayloadForMerge([("user", "hi")]),
+        fallbackPrompt: "fallback", sessionPrompt: nil)
+    #expect(systemContent(withRecord) == "record prompt")
+
+    record.systemPrompt = nil
+    let fallenBack = ModelConfiguration.merged(
+        record: record, capability: .chat, payload: chatPayloadForMerge([("user", "hi")]),
+        fallbackPrompt: "fallback", sessionPrompt: nil)
+    #expect(systemContent(fallenBack) == "fallback")
+}
+
+@Test func embeddedSystemTurnStillBeatsEveryInjection() {
+    var record = Fixtures.gguf()
+    record.systemPrompt = "record prompt"
+    let merged = ModelConfiguration.merged(
+        record: record, capability: .chat,
+        payload: chatPayloadForMerge([("system", "embedded"), ("user", "hi")]),
+        fallbackPrompt: "fallback", sessionPrompt: "session snapshot")
+    #expect(systemContent(merged) == "embedded")
+    guard case .object(let fields) = merged, case .array(let turns)? = fields["messages"] else {
+        Issue.record("no messages")
+        return
+    }
+    let systemCount = turns.filter {
+        if case .object(let e) = $0 { return e["role"] == .string("system") }
+        return false
+    }.count
+    #expect(systemCount == 1)
+}
+
 @Test func profilesPopulateTextSchema() {
     var record = Fixtures.gguf()
     record.runtime = RuntimeRef(id: "fake:llm", resolved: .auto, tier: .native)
