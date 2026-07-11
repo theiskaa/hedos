@@ -108,7 +108,6 @@ final class ShellModel {
     func start() async {
         guard !started else { return }
         started = true
-        system.start()
         await settings.load()
         let restored = await kernel.settings.shellState()
         mode = restored.mode

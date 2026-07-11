@@ -79,7 +79,7 @@ final class AudioSession {
 
     var duration: TimeInterval {
         guard let track else { return 0 }
-        return Double(max(1000, track.durationMs)) / 1000
+        return Double(max(1, track.durationMs)) / 1000
     }
 
     func toggle(_ artifact: Artifact) {

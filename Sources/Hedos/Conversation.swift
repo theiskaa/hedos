@@ -394,25 +394,38 @@ struct ArtifactExchangeView: View {
     @State private var artifact: Artifact?
     @State private var image: NSImage?
     @State private var resolved = false
+    @State private var saveNotice: String?
 
     var body: some View {
-        content
-            .task(id: reference) {
-                resolved = false
-                artifact = try? await kernel.artifactStore.get(id: reference)
-                resolved = true
-                if artifact?.capability == .image, image == nil {
-                    let scale = NSScreen.main?.backingScaleFactor ?? 2
-                    if let url = try? await kernel.artifactStore.url(id: reference),
-                        let sharp = GalleryModel.downsampled(
-                            url, maxPixel: Design.Bubble.imageMax * scale)
-                    {
-                        image = sharp
-                    } else if let data = try? await kernel.artifactStore.previewData(id: reference) {
-                        image = NSImage(data: data)
-                    }
+        VStack(alignment: .leading, spacing: Design.Space.xs) {
+            content
+            if let saveNotice {
+                Text(saveNotice)
+                    .font(Design.label)
+                    .foregroundStyle(Design.heatText)
+                    .lineLimit(2)
+            }
+        }
+        .task(id: reference) {
+            resolved = false
+            artifact = try? await kernel.artifactStore.get(id: reference)
+            resolved = true
+            if artifact?.capability == .image, image == nil {
+                let scale = NSScreen.main?.backingScaleFactor ?? 2
+                let maxPixel = Design.Bubble.imageMax * scale
+                var sharp: NSImage?
+                if let url = try? await kernel.artifactStore.url(id: reference) {
+                    sharp = await Task.detached(priority: .utility) {
+                        GalleryModel.downsampled(url, maxPixel: maxPixel)
+                    }.value
+                }
+                if let sharp {
+                    image = sharp
+                } else if let data = try? await kernel.artifactStore.previewData(id: reference) {
+                    image = await Task.detached(priority: .utility) { NSImage(data: data) }.value
                 }
             }
+        }
     }
 
     @ViewBuilder
@@ -504,14 +517,22 @@ struct ArtifactExchangeView: View {
     private func exportArtifact(_ artifact: Artifact, suggested: String) {
         let kernel = kernel
         Task { @MainActor in
-            guard let source = try? await kernel.artifactStore.url(id: artifact.id),
-                let data = try? Data(contentsOf: source)
-            else { return }
+            guard let source = try? await kernel.artifactStore.url(id: artifact.id) else {
+                saveNotice = "This artifact's file is missing."
+                return
+            }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = source.lastPathComponent.isEmpty
                 ? suggested : source.lastPathComponent
             guard panel.runModal() == .OK, let destination = panel.url else { return }
-            try? data.write(to: destination)
+            do {
+                try await Task.detached(priority: .utility) {
+                    try AtomicFileWrite.copy(from: source, to: destination)
+                }.value
+                saveNotice = nil
+            } catch {
+                saveNotice = error.localizedDescription
+            }
         }
     }
 
@@ -521,7 +542,12 @@ struct ArtifactExchangeView: View {
         panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = "image.png"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        try? data.write(to: destination)
+        do {
+            try data.write(to: destination, options: .atomic)
+            saveNotice = nil
+        } catch {
+            saveNotice = error.localizedDescription
+        }
     }
 
     private func copyImage() {

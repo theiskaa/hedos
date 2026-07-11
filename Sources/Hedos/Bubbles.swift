@@ -43,6 +43,7 @@ struct VoiceBubble: View {
     let artifact: Artifact
     let session: AudioSession
     let onToggle: () -> Void
+    @State private var displayPeaks: [Double] = []
 
     private var isActive: Bool {
         session.isActive(artifact.id)
@@ -56,7 +57,7 @@ struct VoiceBubble: View {
         HStack(spacing: Design.Space.chipX) {
             playButton
             WavePlayerBars(
-                peaks: SpeechArtifact.peaks(of: artifact),
+                peaks: displayPeaks,
                 fraction: isActive ? session.progress : 0,
                 onSeek: { fraction in
                     if isActive {
@@ -87,6 +88,9 @@ struct VoiceBubble: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Narration, \(durationText)")
+        .task(id: artifact.id) {
+            displayPeaks = WavePlayerBars.displayPeaks(from: SpeechArtifact.peaks(of: artifact))
+        }
     }
 
     private var playButton: some View {
@@ -109,7 +113,11 @@ struct VoiceBubble: View {
     }
 
     private var durationText: String {
-        Self.clock(Double(max(1000, artifact.durationMs)) / 1000)
+        let ms = Double(artifact.durationMs)
+        if artifact.durationMs < 1000 {
+            return String(format: "%.1fs", ms / 1000)
+        }
+        return Self.clock(ms / 1000)
     }
 
     private static func clock(_ seconds: TimeInterval) -> String {
@@ -122,8 +130,15 @@ struct WavePlayerBars: View {
     let peaks: [Double]
     let fraction: Double
     var height: CGFloat = 26
-    var barCount: Int = 80
     var onSeek: ((Double) -> Void)? = nil
+
+    static func displayPeaks(from source: [Double], barCount: Int = 80) -> [Double] {
+        let base = source.isEmpty ? Array(repeating: 0.4, count: barCount) : source
+        let resampled = resample(base, to: barCount)
+        let low = resampled.min() ?? 0
+        let range = max((resampled.max() ?? 1) - low, 0.001)
+        return resampled.map { ($0 - low) / range }
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -151,23 +166,15 @@ struct WavePlayerBars: View {
     }
 
     private func bars(_ style: AnyShapeStyle) -> some View {
-        let normalized = displayPeaks
+        let levels = peaks.isEmpty ? Array(repeating: 0.35, count: 48) : peaks
         return HStack(alignment: .center, spacing: 1.5) {
-            ForEach(Array(normalized.enumerated()), id: \.offset) { _, level in
+            ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
                 RoundedRectangle(cornerRadius: Design.Radius.control)
                     .fill(style)
                     .frame(maxWidth: .infinity)
                     .frame(height: (0.14 + 0.86 * level) * height)
             }
         }
-    }
-
-    private var displayPeaks: [Double] {
-        let source = peaks.isEmpty ? Array(repeating: 0.4, count: barCount) : peaks
-        let resampled = Self.resample(source, to: barCount)
-        let low = resampled.min() ?? 0
-        let range = max((resampled.max() ?? 1) - low, 0.001)
-        return resampled.map { ($0 - low) / range }
     }
 
     private static func resample(_ source: [Double], to target: Int) -> [Double] {

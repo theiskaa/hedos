@@ -41,6 +41,8 @@ struct HomePane: View {
                 .allowsHitTesting(false)
         }
         .background(PixelGrid())
+        .onAppear { shell.system.start() }
+        .onDisappear { shell.system.stop() }
         .task {
             await shell.refreshSessions()
             if shell.library.summary == nil {

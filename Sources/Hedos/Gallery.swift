@@ -37,16 +37,23 @@ final class GalleryModel {
     func loadThumbnail(_ artifact: Artifact) async {
         guard thumbnails[artifact.id] == nil else { return }
         let scale = NSScreen.main?.backingScaleFactor ?? 2
-        if let url = try? await kernel.artifactStore.url(id: artifact.id),
-            let image = Self.downsampled(url, maxPixel: Design.Bubble.imageMax * scale)
-        {
-            thumbnails[artifact.id] = image
+        let maxPixel = Design.Bubble.imageMax * scale
+        if let url = try? await kernel.artifactStore.url(id: artifact.id) {
+            let sharp = await Task.detached(priority: .utility) {
+                Self.downsampled(url, maxPixel: maxPixel)
+            }.value
+            if let sharp {
+                thumbnails[artifact.id] = sharp
+                return
+            }
+        }
+        guard let data = try? await kernel.artifactStore.previewData(id: artifact.id) else {
             return
         }
-        guard let data = try? await kernel.artifactStore.previewData(id: artifact.id),
-            let image = NSImage(data: data)
-        else { return }
-        thumbnails[artifact.id] = image
+        let fallback = await Task.detached(priority: .utility) { NSImage(data: data) }.value
+        if let fallback {
+            thumbnails[artifact.id] = fallback
+        }
     }
 
     func delete(_ artifact: Artifact) async {
@@ -67,13 +74,16 @@ final class GalleryModel {
             panel.nameFieldStringValue = url.lastPathComponent
             panel.begin { response in
                 guard response == .OK, let destination = panel.url else { return }
-                try? FileManager.default.removeItem(at: destination)
-                try? FileManager.default.copyItem(at: url, to: destination)
+                do {
+                    try AtomicFileWrite.copy(from: url, to: destination)
+                } catch {
+                    self.notice = error.localizedDescription
+                }
             }
         }
     }
 
-    static func downsampled(_ url: URL, maxPixel: CGFloat) -> NSImage? {
+    nonisolated static func downsampled(_ url: URL, maxPixel: CGFloat) -> NSImage? {
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else {
             return nil

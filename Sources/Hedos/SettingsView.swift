@@ -163,6 +163,7 @@ final class SettingsModel {
     var voices: [String] = []
     var previewing = false
     var previewingVoice: String?
+    var voiceNotice: String?
     private(set) var loaded = false
 
     static weak var active: SettingsModel?
@@ -396,7 +397,11 @@ final class SettingsModel {
                         self.audio?.enqueue(frame, for: liveID)
                     }
                 }
-            } catch {}
+                self.voiceNotice = nil
+            } catch is CancellationError {
+            } catch {
+                self.voiceNotice = error.localizedDescription
+            }
             self.audio?.finishLive(liveID)
         }
     }
@@ -1312,6 +1317,12 @@ struct SettingsRoot: View {
                     .help(
                         model.voices.isEmpty
                             ? "Voices appear when a speech model is ready." : "")
+                }
+                if let voiceNotice = model.voiceNotice {
+                    Text(voiceNotice)
+                        .font(Design.label)
+                        .foregroundStyle(Design.heatText)
+                        .lineLimit(2)
                 }
             }
             Divider()

@@ -115,14 +115,17 @@ struct NowPlayingCard: View {
 private struct ClipScrubber: View {
     let session: AudioSession
     let peaks: [Double]
+    @State private var displayPeaks: [Double] = []
 
     var body: some View {
         WavePlayerBars(
-            peaks: peaks,
+            peaks: displayPeaks,
             fraction: session.progress,
             height: 14,
-            barCount: 28,
             onSeek: { session.seek(to: $0) })
+            .task(id: peaks) {
+                displayPeaks = WavePlayerBars.displayPeaks(from: peaks, barCount: 28)
+            }
     }
 }
 
