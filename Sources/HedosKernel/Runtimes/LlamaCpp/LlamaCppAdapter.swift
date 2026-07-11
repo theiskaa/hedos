@@ -33,6 +33,7 @@ struct LlamaCppAdapter: RuntimeAdapter {
         if let maxTokens = object["max_tokens"]?.intValue, maxTokens > 0 {
             params.maxTokens = maxTokens
         }
+        params.tools = ToolSpec.fromPayloadArray(object["tools"])
         return params
     }
 
@@ -49,6 +50,10 @@ struct LlamaCppAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .native, preference: BidPreference.llamaCpp)
     }
 
+    func supportsTools(_ record: ModelRecord) -> Bool {
+        true
+    }
+
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
@@ -61,14 +66,7 @@ struct LlamaCppAdapter: RuntimeAdapter {
                     throwing: KernelError.runtimeFailed("chat payload must carry messages"))
                 return
             }
-            let messages = rawMessages.compactMap { value -> ChatMessage? in
-                guard case .object(let fields) = value,
-                    case .string(let role)? = fields["role"],
-                    case .string(let content)? = fields["content"],
-                    let parsedRole = ChatMessage.Role(rawValue: role)
-                else { return nil }
-                return ChatMessage(role: parsedRole, content: content)
-            }
+            let messages = rawMessages.compactMap(ChatMessage.fromPayload)
             let expanded = (path as NSString).expandingTildeInPath
             let governor = governor
             let engine = engine

@@ -43,6 +43,10 @@ struct MlxSwiftAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .native, preference: BidPreference.mlxSwift)
     }
 
+    func supportsTools(_ record: ModelRecord) -> Bool {
+        record.hasChatTemplate ?? false
+    }
+
     func invoke(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<CapabilityChunk, Error> {
@@ -54,18 +58,12 @@ struct MlxSwiftAdapter: RuntimeAdapter {
                     throwing: KernelError.runtimeFailed("chat payload must carry messages"))
                 return
             }
-            let messages = rawMessages.compactMap { value -> ChatMessage? in
-                guard case .object(let fields) = value,
-                    case .string(let role)? = fields["role"],
-                    case .string(let content)? = fields["content"],
-                    let parsedRole = ChatMessage.Role(rawValue: role)
-                else { return nil }
-                return ChatMessage(role: parsedRole, content: content)
-            }
+            let messages = rawMessages.compactMap(ChatMessage.fromPayload)
             let directory = SidecarModelPaths.resolve(record).snapshot
             let governor = governor
             let engine = engine
             let params = Self.params(from: object)
+            let tools = ToolSpec.fromPayloadArray(object["tools"])
             let task = Task {
                 await engine.run(
                     path: directory,
@@ -75,6 +73,7 @@ struct MlxSwiftAdapter: RuntimeAdapter {
                     governor: governor,
                     messages: messages,
                     params: params,
+                    tools: tools,
                     continuation: continuation)
             }
             continuation.onTermination = { _ in task.cancel() }

@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMCommon
 import Testing
 
 @testable import HedosKernel
@@ -73,7 +74,7 @@ private func mlxTextRecord() -> ModelRecord {
 }
 
 @Test func mlxSwiftAdapterReadsMergedParams() {
-    let payload: [String: JSONValue] = [
+    let payload: [String: HedosKernel.JSONValue] = [
         "temperature": .double(0.2),
         "top_p": .double(0.85),
         "max_tokens": .int(512),
@@ -197,4 +198,34 @@ private func mlxTextRecord() -> ModelRecord {
         .text("before "),
         .thinking("never closes"),
     ])
+}
+
+@Test func mlxKernelJSONConvertsTheLibraryShape() {
+    let arguments: [String: MLXLMCommon.JSONValue] = [
+        "zone": .string("UTC"),
+        "count": .int(3),
+        "nested": .object(["flag": .bool(true)]),
+        "list": .array([.double(1.5), .null]),
+    ]
+    let converted = MlxSwiftEngine.kernelJSON(arguments)
+    #expect(
+        converted
+            == .object([
+                "zone": .string("UTC"),
+                "count": .int(3),
+                "nested": .object(["flag": .bool(true)]),
+                "list": .array([.double(1.5), .null]),
+            ]))
+}
+
+@Test func mlxSupportsToolsFollowsTheChatTemplateFact() {
+    let adapter = MlxSwiftAdapter(
+        governor: MemoryGovernor(totalMemoryMB: 262_144), engine: .shared)
+    var record = Fixtures.gguf()
+    record.hasChatTemplate = true
+    #expect(adapter.supportsTools(record))
+    record.hasChatTemplate = false
+    #expect(!adapter.supportsTools(record))
+    record.hasChatTemplate = nil
+    #expect(!adapter.supportsTools(record))
 }

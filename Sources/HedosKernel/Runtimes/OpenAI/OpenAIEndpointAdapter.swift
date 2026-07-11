@@ -78,6 +78,10 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
         normalizedBase(base)
     }
 
+    func supportsTools(_ record: ModelRecord) -> Bool {
+        true
+    }
+
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         record.runtime.id == id && (capability == .chat || capability == .complete)
     }
@@ -230,7 +234,7 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
             "stream_options": .object(["include_usage": .bool(true)]),
         ]
         if let messages = object["messages"] {
-            body["messages"] = messages
+            body["messages"] = wireMessages(messages)
         } else if case .string(let prompt)? = object["prompt"] {
             body["messages"] = .array([
                 .object(["role": .string("user"), "content": .string(prompt)])
@@ -238,12 +242,50 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
         } else {
             throw KernelError.runtimeFailed("chat payload must carry a messages array")
         }
+        if case .array(let tools)? = object["tools"], !tools.isEmpty {
+            body["tools"] = .array(
+                tools.map { tool in
+                    .object(["type": .string("function"), "function": tool])
+                })
+        }
+        if let toolChoice = object["tool_choice"], toolChoice != .null {
+            body["tool_choice"] = toolChoice
+        }
         for key in optionKeys {
             if let value = object[key], value != .null {
                 body[key] = value
             }
         }
         return try JSONEncoder().encode(JSONValue.object(body))
+    }
+
+    static func wireMessages(_ messages: JSONValue) -> JSONValue {
+        guard case .array(let entries) = messages else { return messages }
+        return .array(
+            entries.map { entry in
+                guard case .object(var fields) = entry else { return entry }
+                if case .array(let calls)? = fields["tool_calls"] {
+                    fields["tool_calls"] = .array(
+                        calls.map { call in
+                            guard case .object(let parts) = call else { return call }
+                            return .object([
+                                "id": parts["id"] ?? .string(""),
+                                "type": .string("function"),
+                                "function": .object([
+                                    "name": parts["name"] ?? .string(""),
+                                    "arguments": .string(
+                                        (parts["arguments"] ?? .object([:])).jsonString),
+                                ]),
+                            ])
+                        })
+                    if fields["content"] == .string("") { fields["content"] = .null }
+                }
+                if let toolName = fields["tool_name"] {
+                    fields["name"] = toolName
+                    fields["tool_name"] = nil
+                }
+                return .object(fields)
+            })
     }
 
     static func listModels(baseURL: String, key: String?) async throws -> [String] {

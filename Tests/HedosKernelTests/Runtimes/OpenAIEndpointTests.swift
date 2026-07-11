@@ -344,3 +344,50 @@ private func endpointRecord(port: Int, model: String = "fake-chat-1") -> ModelRe
     #expect(try secrets.get(account: "http://host:8080") == nil)
     #expect(try secrets.get(account: "https://host:8080") == "tls-key")
 }
+
+@Test func endpointRequestBodyPassesToolsThroughWithStringArguments() throws {
+    let payload: JSONValue = .object([
+        "messages": .array([
+            .object(["role": .string("user"), "content": .string("time?")]),
+            .object([
+                "role": .string("assistant"), "content": .string(""),
+                "tool_calls": .array([
+                    .object([
+                        "id": .string("call-1"), "name": .string("get_time"),
+                        "arguments": .object(["zone": .string("UTC")]),
+                    ])
+                ]),
+            ]),
+            .object([
+                "role": .string("tool"), "content": .string("12:00"),
+                "tool_call_id": .string("call-1"), "tool_name": .string("get_time"),
+            ]),
+        ]),
+        "tools": .array([
+            .object([
+                "name": .string("get_time"), "description": .string("clock"),
+                "parameters": .object(["type": .string("object")]),
+            ])
+        ]),
+        "tool_choice": .string("auto"),
+    ])
+    let data = try OpenAIEndpointAdapter.requestBody(model: "served", payload: payload)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+    let tools = object["tools"] as! [[String: Any]]
+    #expect(tools[0]["type"] as? String == "function")
+    #expect(object["tool_choice"] as? String == "auto")
+
+    let messages = object["messages"] as! [[String: Any]]
+    let calls = messages[1]["tool_calls"] as! [[String: Any]]
+    #expect(calls[0]["id"] as? String == "call-1")
+    let function = calls[0]["function"] as! [String: Any]
+    #expect(function["name"] as? String == "get_time")
+    let argumentsString = function["arguments"] as! String
+    let parsed =
+        try JSONSerialization.jsonObject(with: Data(argumentsString.utf8)) as! [String: Any]
+    #expect(parsed["zone"] as? String == "UTC")
+    #expect(messages[1]["content"] is NSNull)
+    #expect(messages[2]["name"] as? String == "get_time")
+    #expect(messages[2]["tool_name"] == nil)
+}

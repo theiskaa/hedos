@@ -49,3 +49,45 @@ import Testing
         parser.parse(line: #"data: {"choices": [{"delta": {"role": "assistant"}}]}"#).isEmpty)
     #expect(parser.parse(line: #"data: {"choices": [{"delta": {"content": ""}}]}"#).isEmpty)
 }
+
+@Test func parserAccumulatesToolCallFragmentsAndYieldsOnFinish() {
+    var parser = OpenAIStreamParser()
+    _ = parser.parse(
+        line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-5","function":{"name":"get_","arguments":""}}]},"finish_reason":null}]}"#
+    )
+    _ = parser.parse(
+        line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"time","arguments":"{\"zo"}}]},"finish_reason":null}]}"#
+    )
+    _ = parser.parse(
+        line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ne\":\"UTC\"}"}}]},"finish_reason":null}]}"#
+    )
+    let flushed = parser.parse(
+        line: #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+    #expect(flushed.count == 1)
+    guard case .toolCall(let call) = flushed[0] else {
+        Issue.record("expected a tool call, got \(flushed)")
+        return
+    }
+    #expect(call.id == "call-5")
+    #expect(call.name == "get_time")
+    #expect(call.arguments == .object(["zone": .string("UTC")]))
+
+    let done = parser.parse(line: "data: [DONE]")
+    guard case .done(let stats) = done.last else {
+        Issue.record("expected done")
+        return
+    }
+    #expect(stats?.finishReason == "tool_calls")
+}
+
+@Test func parserReadsFinishReasonIntoStats() {
+    var parser = OpenAIStreamParser()
+    _ = parser.parse(
+        line: #"data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"length"}]}"#)
+    let done = parser.parse(line: "data: [DONE]")
+    guard case .done(let stats) = done.last else {
+        Issue.record("expected done")
+        return
+    }
+    #expect(stats?.finishReason == "length")
+}

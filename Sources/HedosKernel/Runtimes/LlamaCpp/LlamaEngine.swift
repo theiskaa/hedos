@@ -20,11 +20,16 @@ actor LlamaEngine {
         var temperature: Float
         var topP: Float?
         var maxTokens: Int
+        var tools: [ToolSpec]
 
-        init(temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048) {
+        init(
+            temperature: Float = 0.7, topP: Float? = nil, maxTokens: Int = 2048,
+            tools: [ToolSpec] = []
+        ) {
             self.temperature = temperature
             self.topP = topP
             self.maxTokens = maxTokens
+            self.tools = tools
         }
     }
 
@@ -104,7 +109,10 @@ actor LlamaEngine {
             throw KernelError.runtimeFailed("llama model not loaded")
         }
         let vocab = llama_model_get_vocab(model)
-        let prompt = renderPrompt(model: model, messages: messages)
+        let prompt = renderPrompt(
+            model: model,
+            messages: Self.messagesWithToolBlock(
+                messages.map(\.inlinedToolTranscript), tools: params.tools))
         var tokens = tokenize(vocab: vocab, text: prompt)
         guard !tokens.isEmpty else {
             throw KernelError.runtimeFailed("prompt produced no tokens")
@@ -127,6 +135,16 @@ actor LlamaEngine {
 
         let samplerParams = llama_sampler_chain_default_params()
         let sampler = llama_sampler_chain_init(samplerParams)
+        if !params.tools.isEmpty, let grammar = try? ToolGrammar.grammar(for: params.tools) {
+            ToolGrammar.triggerPattern.withCString { pattern in
+                var patterns: [UnsafePointer<CChar>?] = [pattern]
+                if let grammarSampler = llama_sampler_init_grammar_lazy_patterns(
+                    vocab, grammar, "root", &patterns, 1, nil, 0)
+                {
+                    llama_sampler_chain_add(sampler, grammarSampler)
+                }
+            }
+        }
         if params.temperature <= 0 {
             llama_sampler_chain_add(sampler, llama_sampler_init_greedy())
         } else {
@@ -143,6 +161,9 @@ actor LlamaEngine {
         let maxTokens = min(params.maxTokens, contextTokens - promptCount)
         var pieceBuffer = [CChar](repeating: 0, count: 512)
         var assembler = Utf8StreamAssembler()
+        var scanner = ToolCallScanner()
+        let scanningForCalls = !params.tools.isEmpty
+        var emittedToolCall = false
 
         while generated < maxTokens {
             await Task.yield()
@@ -157,10 +178,22 @@ actor LlamaEngine {
                 let piece = assembler.feed(
                     pieceBuffer[0..<written].map { UInt8(bitPattern: $0) })
                 if !piece.isEmpty {
-                    continuation.yield(.text(piece))
+                    if scanningForCalls {
+                        let scanned = scanner.feed(piece)
+                        if !scanned.text.isEmpty {
+                            continuation.yield(.text(scanned.text))
+                        }
+                        if let call = scanned.call {
+                            continuation.yield(.toolCall(call))
+                            emittedToolCall = true
+                        }
+                    } else {
+                        continuation.yield(.text(piece))
+                    }
                 }
             }
             generated += 1
+            if emittedToolCall { break }
 
             batch = llama_batch_get_one(&token, 1)
             guard llama_decode(context, batch) == 0 else {
@@ -168,11 +201,25 @@ actor LlamaEngine {
             }
         }
 
-        let remainder = assembler.flush()
+        var remainder = assembler.flush()
+        if scanningForCalls {
+            let scanned = scanner.feed(remainder)
+            remainder = scanned.text + scanner.flush()
+            if let call = scanned.call {
+                continuation.yield(.toolCall(call))
+                emittedToolCall = true
+            }
+        }
         if !remainder.isEmpty {
             continuation.yield(.text(remainder))
         }
 
+        var finishReason: String?
+        if emittedToolCall {
+            finishReason = "tool_calls"
+        } else if generated >= maxTokens {
+            finishReason = "length"
+        }
         let elapsed = clock.now - started
         continuation.yield(
             .done(
@@ -180,7 +227,23 @@ actor LlamaEngine {
                     promptTokens: promptCount,
                     completionTokens: generated,
                     durationMs: Int(elapsed.components.seconds) * 1000
-                        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
+                        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000),
+                    finishReason: finishReason)))
+    }
+
+    static func messagesWithToolBlock(
+        _ messages: [ChatMessage], tools: [ToolSpec]
+    ) -> [ChatMessage] {
+        guard !tools.isEmpty else { return messages }
+        let block = ToolGrammar.systemBlock(for: tools)
+        var extended = messages
+        if let first = extended.first, first.role == .system {
+            extended[0] = ChatMessage(
+                role: .system, content: first.content + "\n\n" + block)
+        } else {
+            extended.insert(ChatMessage(role: .system, content: block), at: 0)
+        }
+        return extended
     }
 
     private func load(path: String, modelID: String, contextTokens: Int) throws {

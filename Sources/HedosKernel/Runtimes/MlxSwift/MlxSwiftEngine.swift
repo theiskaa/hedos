@@ -31,6 +31,7 @@ actor MlxSwiftEngine {
         governor: MemoryGovernor,
         messages: [ChatMessage],
         params: GenerationParams = GenerationParams(),
+        tools: [ToolSpec] = [],
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async {
         await governor.beginGeneration(modelID)
@@ -41,7 +42,9 @@ actor MlxSwiftEngine {
                 footprintMB: footprintMB, governor: governor, continuation: continuation)
             await generationSlot.acquire()
             do {
-                try await generate(messages: messages, params: params, continuation: continuation)
+                try await generate(
+                    messages: messages, params: params, tools: tools,
+                    continuation: continuation)
                 MLX.Stream().synchronize()
                 await generationSlot.release()
                 await governor.gate.release(producer)
@@ -87,6 +90,7 @@ actor MlxSwiftEngine {
     private func generate(
         messages: [ChatMessage],
         params: GenerationParams,
+        tools: [ToolSpec],
         continuation: AsyncThrowingStream<CapabilityChunk, Error>.Continuation
     ) async throws {
         guard let container else {
@@ -106,6 +110,7 @@ actor MlxSwiftEngine {
         var splitter = ThinkSplitter()
         var promptTokenCount = 0
         var completionTokenCount = 0
+        var sawToolCall = false
 
         let stream = try await container.perform { context -> AsyncStream<Generation> in
             let input: LMInput
@@ -114,10 +119,25 @@ actor MlxSwiftEngine {
                     switch message.role {
                     case .system: .system(message.content)
                     case .user: .user(message.content)
-                    case .assistant: .assistant(message.content)
+                    case .assistant: .assistant(message.inlinedToolTranscript.content)
+                    case .tool: .tool(message.content)
                     }
                 }
-                input = try await context.processor.prepare(input: UserInput(chat: chat))
+                let libraryTools: [[String: Any]]? =
+                    tools.isEmpty
+                    ? nil
+                    : tools.map { spec in
+                        [
+                            "type": "function",
+                            "function": [
+                                "name": spec.name,
+                                "description": spec.description,
+                                "parameters": spec.parameters.anyValue,
+                            ],
+                        ]
+                    }
+                input = try await context.processor.prepare(
+                    input: UserInput(chat: chat, tools: libraryTools))
             } else {
                 let rendered = Self.renderChatML(messages)
                 input = try await context.processor.prepare(input: UserInput(prompt: .text(rendered)))
@@ -139,8 +159,13 @@ actor MlxSwiftEngine {
             case .info(let info):
                 promptTokenCount = info.promptTokenCount
                 completionTokenCount = info.generationTokenCount
-            case .toolCall:
-                break
+            case .toolCall(let call):
+                sawToolCall = true
+                continuation.yield(
+                    .toolCall(
+                        ToolCall(
+                            name: call.function.name,
+                            arguments: Self.kernelJSON(call.function.arguments))))
             }
         }
         for piece in splitter.flush() {
@@ -157,7 +182,8 @@ actor MlxSwiftEngine {
                     promptTokens: promptTokenCount,
                     completionTokens: completionTokenCount,
                     durationMs: Int(elapsed.components.seconds) * 1000
-                        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))))
+                        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000),
+                    finishReason: sawToolCall ? "tool_calls" : nil)))
     }
 
     private func load(path: String, modelID: String) async throws {
@@ -194,6 +220,22 @@ actor MlxSwiftEngine {
 
     private static func applyCacheLimit(footprintMB: Int?) {
         MLX.GPU.set(cacheLimit: cacheLimit(footprintMB: footprintMB))
+    }
+
+    static func kernelJSON(_ value: MLXLMCommon.JSONValue) -> JSONValue {
+        switch value {
+        case .null: .null
+        case .bool(let flag): .bool(flag)
+        case .int(let number): .int(number)
+        case .double(let number): .double(number)
+        case .string(let text): .string(text)
+        case .array(let values): .array(values.map(kernelJSON))
+        case .object(let fields): .object(fields.mapValues(kernelJSON))
+        }
+    }
+
+    static func kernelJSON(_ arguments: [String: MLXLMCommon.JSONValue]) -> JSONValue {
+        .object(arguments.mapValues(kernelJSON))
     }
 
     static func renderChatML(_ messages: [ChatMessage]) -> String {

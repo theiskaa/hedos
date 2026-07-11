@@ -21,6 +21,10 @@ struct OllamaAdapter: RuntimeAdapter {
         requested ?? record.contextLength
     }
 
+    func supportsTools(_ record: ModelRecord) -> Bool {
+        true
+    }
+
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
         guard capability == .chat || capability == .complete || capability == .embed else {
             return false
@@ -126,6 +130,9 @@ struct OllamaAdapter: RuntimeAdapter {
                         if let message = OllamaStreamParser.errorMessage(line: line) {
                             throw KernelError.runtimeFailed("ollama: \(message)")
                         }
+                        for call in OllamaStreamParser.toolCalls(line: line) {
+                            continuation.yield(.toolCall(call))
+                        }
                         guard let chunk = OllamaStreamParser.parse(line: line) else { continue }
                         continuation.yield(chunk)
                         if case .done = chunk { break }
@@ -207,9 +214,18 @@ struct OllamaAdapter: RuntimeAdapter {
         }
         var body: [String: JSONValue] = [
             "model": .string(model),
-            "messages": messages,
+            "messages": wireMessages(messages),
             "stream": .bool(true),
         ]
+        if case .array(let tools) = object["tools"] ?? .null, !tools.isEmpty {
+            body["tools"] = .array(
+                tools.map { tool in
+                    .object([
+                        "type": .string("function"),
+                        "function": tool,
+                    ])
+                })
+        }
         var options: [String: JSONValue] = [:]
         for mapping in Self.optionKeys {
             if let value = object[mapping.payload], value != .null {
@@ -221,6 +237,28 @@ struct OllamaAdapter: RuntimeAdapter {
             body["think"] = thinking
         }
         return try JSONEncoder().encode(JSONValue.object(body))
+    }
+
+    static func wireMessages(_ messages: JSONValue) -> JSONValue {
+        guard case .array(let entries) = messages else { return messages }
+        return .array(
+            entries.map { entry in
+                guard case .object(var fields) = entry else { return entry }
+                if case .array(let calls)? = fields["tool_calls"] {
+                    fields["tool_calls"] = .array(
+                        calls.map { call in
+                            guard case .object(let parts) = call else { return call }
+                            return .object([
+                                "function": .object([
+                                    "name": parts["name"] ?? .string(""),
+                                    "arguments": parts["arguments"] ?? .object([:]),
+                                ])
+                            ])
+                        })
+                }
+                fields["tool_call_id"] = nil
+                return .object(fields)
+            })
     }
 
     static func embedRequestBody(model: String, payload: JSONValue) throws -> Data {

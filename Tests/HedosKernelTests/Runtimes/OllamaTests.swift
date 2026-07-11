@@ -316,3 +316,55 @@ private struct FakeAdapter: RuntimeAdapter {
     #expect(OllamaStreamParser.errorMessage(line: "") == nil)
     #expect(OllamaStreamParser.parse(line: #"{"error":"boom"}"#) == nil)
 }
+
+@Test func chatRequestBodyCarriesToolsAndOllamaShapedToolMessages() throws {
+    let payload: JSONValue = .object([
+        "messages": .array([
+            .object(["role": .string("user"), "content": .string("time?")]),
+            .object([
+                "role": .string("assistant"), "content": .string(""),
+                "tool_calls": .array([
+                    .object([
+                        "id": .string("call-1"), "name": .string("get_time"),
+                        "arguments": .object(["zone": .string("UTC")]),
+                    ])
+                ]),
+            ]),
+            .object([
+                "role": .string("tool"), "content": .string("12:00"),
+                "tool_call_id": .string("call-1"), "tool_name": .string("get_time"),
+            ]),
+        ]),
+        "tools": .array([
+            .object([
+                "name": .string("get_time"), "description": .string("clock"),
+                "parameters": .object(["type": .string("object")]),
+            ])
+        ]),
+    ])
+    let data = try OllamaAdapter.requestBody(model: "qwen3", payload: payload)
+    let object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+
+    let tools = object["tools"] as! [[String: Any]]
+    #expect(tools[0]["type"] as? String == "function")
+    #expect((tools[0]["function"] as! [String: Any])["name"] as? String == "get_time")
+
+    let messages = object["messages"] as! [[String: Any]]
+    let assistantCalls = messages[1]["tool_calls"] as! [[String: Any]]
+    let function = assistantCalls[0]["function"] as! [String: Any]
+    #expect(function["name"] as? String == "get_time")
+    #expect((function["arguments"] as! [String: Any])["zone"] as? String == "UTC")
+    #expect(messages[1]["tool_call_id"] == nil)
+    #expect(messages[2]["role"] as? String == "tool")
+    #expect(messages[2]["tool_name"] as? String == "get_time")
+}
+
+@Test func streamParserYieldsToolCallsFromMessageLines() {
+    let line = #"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"get_time","arguments":{"zone":"UTC"}}}]},"done":false}"#
+    let calls = OllamaStreamParser.toolCalls(line: line)
+    #expect(calls.count == 1)
+    #expect(calls[0].name == "get_time")
+    #expect(calls[0].arguments == .object(["zone": .string("UTC")]))
+    #expect(!calls[0].id.isEmpty)
+    #expect(OllamaStreamParser.parse(line: line) == nil)
+}

@@ -85,6 +85,8 @@ struct AppleFoundationAdapter: RuntimeAdapter {
                                     (ContinuousClock.now - started) / .milliseconds(1))
                             }
                             continuation.yield(.text(delta))
+                        case .toolCalled(let call, _):
+                            continuation.yield(.status("tool: " + call.name))
                         case .done(let prompt, let completion):
                             promptTokens = prompt
                             completionTokens = completion

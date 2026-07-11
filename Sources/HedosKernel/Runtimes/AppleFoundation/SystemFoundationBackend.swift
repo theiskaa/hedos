@@ -41,14 +41,27 @@ struct SystemFoundationBackend: AppleFoundationBackend {
     }
 
     func stream(
-        messages: [ChatMessage], temperature: Double?, maxTokens: Int?
+        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
+        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let parts = Self.split(messages)
+                    let bridged: [any FoundationModels.Tool] =
+                        resultProvider.map { provider in
+                            tools.compactMap {
+                                BridgedFoundationTool(
+                                    spec: $0, provider: provider,
+                                    onCall: { call, result in
+                                        continuation.yield(
+                                            .toolCalled(call, result: result))
+                                    })
+                            }
+                        } ?? []
                     let session = Self.session(
-                        instructions: parts.instructions, history: parts.history)
+                        instructions: parts.instructions, history: parts.history,
+                        tools: bridged)
                     let options = GenerationOptions(
                         sampling: nil, temperature: temperature, maximumResponseTokens: maxTokens)
                     var finalText = ""
@@ -78,10 +91,11 @@ struct SystemFoundationBackend: AppleFoundationBackend {
     }
 
     private static func session(
-        instructions: String?, history: [ChatMessage]
+        instructions: String?, history: [ChatMessage], tools: [any FoundationModels.Tool] = []
     ) -> LanguageModelSession {
         guard !history.isEmpty else {
-            return LanguageModelSession(model: .default, tools: [], instructions: instructions)
+            return LanguageModelSession(
+                model: .default, tools: tools, instructions: instructions)
         }
         var entries: [Transcript.Entry] = []
         if let instructions {
@@ -89,10 +103,31 @@ struct SystemFoundationBackend: AppleFoundationBackend {
                 .instructions(
                     Transcript.Instructions(
                         segments: [.text(Transcript.TextSegment(content: instructions))],
-                        toolDefinitions: [])))
+                        toolDefinitions: tools.map { Transcript.ToolDefinition(tool: $0) })))
         }
         for message in history {
             switch message.role {
+            case .assistant where !message.toolCalls.isEmpty:
+                entries.append(
+                    .toolCalls(
+                        Transcript.ToolCalls(
+                            message.toolCalls.map { call in
+                                Transcript.ToolCall(
+                                    id: call.id,
+                                    toolName: call.name,
+                                    arguments: (try? GeneratedContent(
+                                        json: call.arguments.jsonString))
+                                        ?? GeneratedContent(call.arguments.jsonString))
+                            })))
+            case .tool:
+                entries.append(
+                    .toolOutput(
+                        Transcript.ToolOutput(
+                            id: message.toolCallID ?? UUID().uuidString.lowercased(),
+                            toolName: message.toolName ?? "",
+                            segments: [
+                                .text(Transcript.TextSegment(content: message.content))
+                            ])))
             case .assistant:
                 entries.append(
                     .response(
@@ -107,7 +142,7 @@ struct SystemFoundationBackend: AppleFoundationBackend {
             }
         }
         return LanguageModelSession(
-            model: .default, tools: [], transcript: Transcript(entries: entries))
+            model: .default, tools: tools, transcript: Transcript(entries: entries))
     }
 
     private static func tokenCount(_ text: String) async -> Int? {
@@ -130,6 +165,91 @@ struct SystemFoundationBackend: AppleFoundationBackend {
                 "Apple's model isn't available right now — check Apple Intelligence in System Settings.")
         default:
             return .runtimeFailed("Apple's model hit an error: \(error.localizedDescription)")
+        }
+    }
+}
+
+struct BridgedFoundationTool: FoundationModels.Tool {
+    typealias Arguments = GeneratedContent
+    typealias Output = String
+
+    let name: String
+    let description: String
+    let parameters: GenerationSchema
+    private let provider: BuiltinToolResultProvider
+    private let onCall: @Sendable (ToolCall, String) -> Void
+
+    init?(
+        spec: ToolSpec, provider: @escaping BuiltinToolResultProvider,
+        onCall: @escaping @Sendable (ToolCall, String) -> Void
+    ) {
+        guard let schema = Self.schema(from: spec) else { return nil }
+        self.name = spec.name
+        self.description = spec.description
+        self.parameters = schema
+        self.provider = provider
+        self.onCall = onCall
+    }
+
+    func call(arguments: GeneratedContent) async throws -> String {
+        let parsed =
+            (try? JSONSerialization.jsonObject(
+                with: Data(arguments.jsonString.utf8)) as? [String: Any])
+            .flatMap { JSONValue.fromAny($0) } ?? .object([:])
+        let call = ToolCall(name: name, arguments: parsed)
+        let result = await provider(call)
+        onCall(call, result)
+        return result
+    }
+
+    static func schema(from spec: ToolSpec) -> GenerationSchema? {
+        guard let root = dynamicSchema(named: spec.name, from: spec.parameters) else {
+            return nil
+        }
+        return try? GenerationSchema(root: root, dependencies: [])
+    }
+
+    private static func dynamicSchema(
+        named name: String, from schema: JSONValue
+    ) -> DynamicGenerationSchema? {
+        guard case .object(let fields) = schema else { return nil }
+        if case .array(let options)? = fields["enum"] {
+            let choices = options.compactMap(\.stringValue)
+            guard choices.count == options.count else { return nil }
+            return DynamicGenerationSchema(name: name, anyOf: choices)
+        }
+        switch fields["type"]?.stringValue ?? "object" {
+        case "string":
+            return DynamicGenerationSchema(type: String.self)
+        case "number":
+            return DynamicGenerationSchema(type: Double.self)
+        case "integer":
+            return DynamicGenerationSchema(type: Int.self)
+        case "boolean":
+            return DynamicGenerationSchema(type: Bool.self)
+        case "array":
+            guard let items = fields["items"],
+                let item = dynamicSchema(named: name + "Item", from: items)
+            else { return nil }
+            return DynamicGenerationSchema(arrayOf: item)
+        case "object":
+            guard case .object(let properties)? = fields["properties"] ?? .object([:])
+            else { return nil }
+            var required: Set<String> = []
+            if case .array(let names)? = fields["required"] {
+                required = Set(names.compactMap(\.stringValue))
+            }
+            var built: [DynamicGenerationSchema.Property] = []
+            for key in properties.keys.sorted() {
+                guard let value = dynamicSchema(named: name + "-" + key, from: properties[key]!)
+                else { return nil }
+                built.append(
+                    DynamicGenerationSchema.Property(
+                        name: key, schema: value, isOptional: !required.contains(key)))
+            }
+            return DynamicGenerationSchema(name: name, properties: built)
+        default:
+            return nil
         }
     }
 }

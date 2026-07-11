@@ -61,7 +61,8 @@ private struct FakeFoundationBackend: AppleFoundationBackend {
     }
 
     func stream(
-        messages: [ChatMessage], temperature: Double?, maxTokens: Int?
+        messages: [ChatMessage], temperature: Double?, maxTokens: Int?,
+        tools: [ToolSpec], resultProvider: BuiltinToolResultProvider?
     ) -> AsyncThrowingStream<BuiltinGenerationEvent, Error> {
         recorded.record(messages: messages, temperature: temperature, maxTokens: maxTokens)
         let events = events
