@@ -32,6 +32,7 @@ final class ChatViewModel {
         var artifactRefs: [String] = []
         var persisted = false
         var generatesArtifact = false
+        var interrupted = false
         var versions: [Version] = []
     }
 
@@ -162,6 +163,7 @@ final class ChatViewModel {
                 artifactRefs: turn.artifactRefs,
                 persisted: true,
                 generatesArtifact: generates,
+                interrupted: turn.interrupted,
                 versions: history.map {
                     Version(
                         id: $0.id, text: $0.content, thinking: $0.thinking ?? "",
@@ -1443,6 +1445,12 @@ struct ChatView: View {
                             SpeakingIndicator()
                         }
                         Spacer(minLength: 0)
+                        if entry.interrupted {
+                            Text("interrupted")
+                                .font(Design.micro)
+                                .tracking(Design.microTracking)
+                                .foregroundStyle(Design.inkFaint)
+                        }
                         if showsStats, let stats = displayStats(entry) {
                             statsLine(stats)
                         }

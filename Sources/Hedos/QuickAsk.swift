@@ -216,7 +216,7 @@ final class QuickAskModel {
             guard let self else { return }
             do {
                 if sessionID == nil {
-                    sessionID = try await kernel.chats.createSession(modelID: record.id).id
+                    sessionID = try await kernel.createChatSession(modelID: record.id).id
                 }
                 guard let sessionID else { return }
                 let stream = try await kernel.sendChat(sessionID: sessionID, text: question)

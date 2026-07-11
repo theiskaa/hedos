@@ -301,7 +301,7 @@ final class ShellModel {
         Task {
             let preferred = await kernel.settings.defaultChatModelID()
             let chatModel = Launcher.defaultChatModel(in: records, preferring: preferred)
-            let session = try? await kernel.chats.createSession(modelID: chatModel?.id)
+            let session = try? await kernel.createChatSession(modelID: chatModel?.id)
             await refreshSessions()
             chatSelection = session?.id
             mode = .chat
@@ -312,7 +312,7 @@ final class ShellModel {
     func startChat(bound record: ModelRecord) {
         let kernel = kernel
         Task {
-            let session = try? await kernel.chats.createSession(modelID: record.id)
+            let session = try? await kernel.createChatSession(modelID: record.id)
             await refreshSessions()
             chatSelection = session?.id
             librarySelection = nil
