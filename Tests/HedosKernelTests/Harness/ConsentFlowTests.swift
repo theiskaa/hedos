@@ -49,6 +49,22 @@ private func writeCall(_ path: String, _ content: String) -> ToolCall {
     #expect(await commandAsks.value == 1)
 }
 
+@Test func dontAskGrantStillPromptsOnForeignFileOverwrite() async throws {
+    let (place, dir) = try consentPlace()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let state = HarnessActState()
+    let asks = Counter()
+    let ask: ConsentAsk = { _ in await asks.bump(); return .approved(dontAskAgain: true) }
+    let ctx = HarnessActContext(sessionID: "s", ask: ask, state: state)
+
+    _ = await HarnessActTools.execute(writeCall("mine.txt", "1\n"), place: place, context: ctx)
+    _ = await HarnessActTools.execute(writeCall("mine.txt", "2\n"), place: place, context: ctx)
+    #expect(await asks.value == 1)
+
+    _ = await HarnessActTools.execute(writeCall("file.txt", "clobber\n"), place: place, context: ctx)
+    #expect(await asks.value == 2)
+}
+
 @Test func grantIsScopedPerSessionAndDoesNotLeak() async throws {
     let (place, dir) = try consentPlace()
     defer { try? FileManager.default.removeItem(at: dir) }

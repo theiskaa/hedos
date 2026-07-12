@@ -109,7 +109,11 @@ public enum HarnessActTools {
     private static func requestConsent(
         _ kind: ConsentRequest.Kind, context: HarnessActContext, toolName: String
     ) async -> ConsentDecision {
-        if await context.state.isGranted(toolName, session: context.sessionID) {
+        var overwritesForeignFile = false
+        if case .write(_, _, let foreign) = kind { overwritesForeignFile = foreign != nil }
+        if !overwritesForeignFile,
+            await context.state.isGranted(toolName, session: context.sessionID)
+        {
             return .approved(dontAskAgain: true)
         }
         let request = ConsentRequest(
@@ -296,9 +300,11 @@ public enum HarnessActTools {
         process.arguments =
             ["-f", profile.path, "-D", "PLACE=\(canonicalPlace)", "-D", "TMP=\(tmp)"] + argv
         process.currentDirectoryURL = URL(fileURLWithPath: place)
-        var environment = ProcessInfo.processInfo.environment
-        environment.removeValue(forKey: "PYTHONPATH")
-        environment.removeValue(forKey: "PYTHONHOME")
+        let host = ProcessInfo.processInfo.environment
+        var environment = ["PATH": host["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"]
+        if let home = host["HOME"] { environment["HOME"] = home }
+        if let lang = host["LANG"] { environment["LANG"] = lang }
+        environment["TMPDIR"] = tmp
         process.environment = environment
         let stdout = Pipe()
         let stderr = Pipe()
