@@ -42,9 +42,17 @@ enum OllamaWire {
             guard let role = ChatMessage.Role(rawValue: rawRole) else {
                 throw GatewayError(.badRequest, "unsupported message role \(rawRole)")
             }
+            var attachments: [ChatAttachment] = []
             if let images = raw["images"] as? [Any], !images.isEmpty {
-                throw GatewayError(
-                    .badRequest, "vision is not served yet", code: "unsupported_parameter")
+                for image in images {
+                    guard let encoded = image as? String, let data = Data(base64Encoded: encoded)
+                    else {
+                        throw GatewayError(
+                            .badRequest, "each image must be a base64-encoded string")
+                    }
+                    attachments.append(
+                        ChatAttachment(kind: .image, data: data, mimeType: "image/png"))
+                }
             }
             let toolCalls = try decodeToolCalls(raw["tool_calls"])
             let content = raw["content"] as? String
@@ -61,7 +69,7 @@ enum OllamaWire {
             guard let content else {
                 throw GatewayError(.badRequest, "message content must be a string")
             }
-            return ChatMessage(role: role, content: content)
+            return ChatMessage(role: role, content: content, attachments: attachments)
         }
         let options = try decodeOptions(from: body)
         let tools = try ToolWireDecoding.specs(from: body["tools"]) {

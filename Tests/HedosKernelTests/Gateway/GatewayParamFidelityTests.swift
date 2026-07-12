@@ -230,14 +230,15 @@ private func post(_ stack: GatewayStack, _ path: String, _ body: [String: Any]) 
     await stack.stop()
 }
 
-@Test func ollamaImagesInMessageAnswer400() async throws {
+@Test func ollamaImagesInMessageAreDecodedNotRejected() async throws {
     let (stack, _) = try await fidelityStack()
+    let encoded = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
     let (status, _) = try await post(
         stack, "/api/chat",
         [
             "model": "fidelity:latest",
-            "messages": [["role": "user", "content": "hi", "images": ["deadbeef"]]],
+            "messages": [["role": "user", "content": "hi", "images": [encoded]]],
         ])
-    #expect(status == 400)
+    #expect(status == 200)
     await stack.stop()
 }

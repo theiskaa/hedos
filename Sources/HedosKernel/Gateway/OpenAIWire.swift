@@ -136,20 +136,53 @@ enum OpenAIWire {
         }
         if let parts = raw["content"] as? [[String: Any]] {
             var texts: [String] = []
+            var attachments: [ChatAttachment] = []
             for part in parts {
-                guard part["type"] as? String == "text", let text = part["text"] as? String
-                else {
+                switch part["type"] as? String {
+                case "text":
+                    guard let text = part["text"] as? String else {
+                        throw GatewayError(.badRequest, "text content part is missing its text")
+                    }
+                    texts.append(text)
+                case "image_url":
+                    guard let field = part["image_url"] as? [String: Any],
+                        let url = field["url"] as? String
+                    else {
+                        throw GatewayError(.badRequest, "image_url content part is missing its url")
+                    }
+                    attachments.append(try decodeImageDataURI(url))
+                default:
                     throw GatewayError(
-                        .badRequest, "only text content parts are supported")
+                        .badRequest, "only text and image_url content parts are supported")
                 }
-                texts.append(text)
             }
-            return ChatMessage(role: role, content: texts.joined(), toolCalls: toolCalls)
+            return ChatMessage(
+                role: role, content: texts.joined(), toolCalls: toolCalls,
+                attachments: attachments)
         }
         if role == .assistant, !toolCalls.isEmpty {
             return ChatMessage(role: .assistant, content: "", toolCalls: toolCalls)
         }
         throw GatewayError(.badRequest, "message content must be a string or text parts")
+    }
+
+    static func decodeImageDataURI(_ url: String) throws -> ChatAttachment {
+        guard url.hasPrefix("data:") else {
+            throw GatewayError(
+                .badRequest,
+                "image urls must be data: URIs — this gateway fetches nothing off this machine")
+        }
+        let body = url.dropFirst("data:".count)
+        guard let comma = body.firstIndex(of: ",") else {
+            throw GatewayError(.badRequest, "malformed image data: URI")
+        }
+        let meta = body[body.startIndex..<comma]
+        let encoded = String(body[body.index(after: comma)...])
+        guard meta.contains("base64"), let data = Data(base64Encoded: encoded) else {
+            throw GatewayError(.badRequest, "image data: URI must carry base64 content")
+        }
+        let mimeType = meta.split(separator: ";").first.map(String.init) ?? "image/png"
+        return ChatAttachment(kind: .image, data: data, mimeType: mimeType)
     }
 
     private static func decodeToolCalls(_ raw: Any?) throws -> [ToolCall] {
