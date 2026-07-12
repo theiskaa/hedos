@@ -4,7 +4,10 @@ import Testing
 @testable import HedosKernel
 
 @Test func bundledPythonEntrypointsCompile() throws {
-    for name in ["python-mlx-audio", "python-mflux", "python-diffusers", "python-mlx-lm", "python-whisper-cpp"] {
+    for name in [
+        "python-mlx-audio", "python-mflux", "python-diffusers", "python-mlx-lm",
+        "python-whisper-cpp", "python-mlx-vlm", "python-embeddings",
+    ] {
         guard let bundle = RuntimeBundle.directory(named: name) else { continue }
         let main = bundle.appendingPathComponent("main.py")
         guard FileManager.default.fileExists(atPath: main.path) else { continue }

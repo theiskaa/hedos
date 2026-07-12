@@ -60,18 +60,24 @@ public struct RuntimeID: RawRepresentable, Codable, Hashable, Sendable, Expressi
     public static let diffusers = RuntimeID(rawValue: "python:diffusers")
     public static let mlxLm = RuntimeID(rawValue: "python:mlx-lm")
     public static let mlxAudio = RuntimeID(rawValue: "python:mlx-audio")
+    public static let mlxVlm = RuntimeID(rawValue: "python:mlx-vlm")
+    public static let embeddings = RuntimeID(rawValue: "python:embeddings")
 }
 
 public enum BidPreference {
     public static let llamaCpp = 10
     public static let whisperCpp = 10
     public static let endpoint = 10
+    public static let mlxVlm = 14
     public static let mlxSwift = 15
     public static let appleFoundation = 15
     public static let ollama = 20
     public static let mflux = 25
     public static let diffusers = 26
+    public static let comfyUI = 27
+    public static let a1111 = 28
     public static let mlxAudio = 30
+    public static let embeddings = 32
     public static let mlxLm = 40
     public static let manifest = 100
 }

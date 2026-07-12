@@ -189,7 +189,9 @@ public actor Kernel {
             MfluxAdapter(governor: governor),
             DiffusersAdapter(governor: governor),
             MlxSwiftAdapter(governor: governor),
+            MlxVlmAdapter(governor: governor),
             MlxLmAdapter(governor: governor),
+            EmbeddingsAdapter(governor: governor),
             AppleFoundationAdapter(registry: registry),
             OpenAIEndpointAdapter(secrets: secrets, registry: registry),
         ]
