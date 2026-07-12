@@ -65,6 +65,7 @@ struct ConsentCard: View {
     let onDecide: (ConsentDecision) -> Void
     @State private var dontAskAgain = false
     @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.l) {
@@ -76,6 +77,7 @@ struct ConsentCard: View {
                         .padding(.trailing, Design.Space.xs)
                 }
                 .frame(maxHeight: 220)
+                .transition(.opacity)
             }
             footer
         }
@@ -96,7 +98,7 @@ struct ConsentCard: View {
                 .truncationMode(.middle)
             Spacer(minLength: Design.Space.m)
             Button {
-                withAnimation(Design.spring) { expanded.toggle() }
+                withAnimation(Design.motion(reduceMotion: reduceMotion)) { expanded.toggle() }
             } label: {
                 HStack(spacing: Design.Space.xs) {
                     Text(expanded ? "Hide details" : "Show details")

@@ -215,9 +215,10 @@ enum Design {
     }
 
     static let spring = Animation.spring(response: 0.4, dampingFraction: 0.8)
+    static let snap = Animation.spring(response: 0.25, dampingFraction: 0.9)
 
     static func motion(reduceMotion: Bool) -> Animation? {
-        reduceMotion ? nil : spring
+        reduceMotion ? .easeOut(duration: 0.15) : spring
     }
 
     static let paper = adaptive { $0.ground }
@@ -351,18 +352,28 @@ extension RoundedRectangle {
 
 struct ModalScrim<Modal: View>: ViewModifier {
     let isPresented: Bool
+    var anchor: UnitPoint = .center
     let onDismiss: () -> Void
     @ViewBuilder let modal: () -> Modal
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        content.overlay {
-            Group {
-                if isPresented {
-                    ZStack {
+        content
+            .overlay {
+                Group {
+                    if isPresented {
                         Design.shadowColor.opacity(0.24)
                             .ignoresSafeArea()
                             .onTapGesture(perform: onDismiss)
                             .accessibilityLabel("Dismiss")
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: isPresented)
+            }
+            .overlay {
+                Group {
+                    if isPresented {
                         modal()
                             .background(
                                 Design.paper,
@@ -373,22 +384,29 @@ struct ModalScrim<Modal: View>: ViewModifier {
                                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
                             .shade(Design.Elevation.sheet)
                             .padding(Design.Space.xxl)
+                            .onExitCommand(perform: onDismiss)
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .opacity.combined(
+                                        with: .scale(scale: 0.96, anchor: anchor)))
                     }
-                    .onExitCommand(perform: onDismiss)
-                    .transition(.opacity)
                 }
+                .animation(
+                    reduceMotion ? .easeOut(duration: 0.15) : Design.spring,
+                    value: isPresented)
             }
-            .animation(.easeOut(duration: 0.18), value: isPresented)
-        }
     }
 }
 
 extension View {
     func modalScrim<Modal: View>(
-        isPresented: Bool, onDismiss: @escaping () -> Void,
+        isPresented: Bool, anchor: UnitPoint = .center, onDismiss: @escaping () -> Void,
         @ViewBuilder modal: @escaping () -> Modal
     ) -> some View {
-        modifier(ModalScrim(isPresented: isPresented, onDismiss: onDismiss, modal: modal))
+        modifier(
+            ModalScrim(
+                isPresented: isPresented, anchor: anchor, onDismiss: onDismiss, modal: modal))
     }
 }
 
@@ -457,6 +475,92 @@ extension View {
 
     func inkFocusRing<S: InsettableShape>(_ shape: S) -> some View {
         modifier(InkFocusRing(shape: shape))
+    }
+}
+
+extension AnyTransition {
+    static func arrive(from anchor: UnitPoint, reduceMotion: Bool = false) -> AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .opacity.combined(with: .scale(scale: 0.97, anchor: anchor))
+    }
+}
+
+private struct DenyShake: GeometryEffect {
+    var attempts: CGFloat
+    var amplitude: CGFloat
+
+    var animatableData: CGFloat {
+        get { attempts }
+        set { attempts = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        ProjectionTransform(
+            CGAffineTransform(
+                translationX: amplitude * sin(attempts * .pi * 6), y: 0))
+    }
+}
+
+struct DenyFeedback<S: InsettableShape>: ViewModifier {
+    let attempts: Int
+    let shape: S
+    var amplitude: CGFloat = 6
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var flash = false
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(
+                DenyShake(
+                    attempts: CGFloat(attempts),
+                    amplitude: reduceMotion ? 0 : amplitude))
+            .animation(.easeOut(duration: 0.35), value: attempts)
+            .overlay(
+                shape.strokeBorder(
+                    Design.heat.opacity(flash ? 0.55 : 0), lineWidth: Design.hairlineWidth))
+            .onChange(of: attempts) {
+                var immediate = Transaction()
+                immediate.disablesAnimations = true
+                withTransaction(immediate) { flash = true }
+                withAnimation(.easeOut(duration: 0.25).delay(0.1)) { flash = false }
+            }
+    }
+}
+
+extension View {
+    func denyShake<S: InsettableShape>(
+        on attempts: Int, in shape: S, amplitude: CGFloat = 6
+    ) -> some View {
+        modifier(DenyFeedback(attempts: attempts, shape: shape, amplitude: amplitude))
+    }
+}
+
+struct StaggeredArrival: ViewModifier {
+    let index: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared || reduceMotion ? 0 : 3)
+            .onAppear {
+                guard !appeared else { return }
+                if reduceMotion {
+                    withAnimation(.easeOut(duration: 0.2)) { appeared = true }
+                } else {
+                    withAnimation(Design.spring.delay(0.05 * Double(min(index, 8)))) {
+                        appeared = true
+                    }
+                }
+            }
+    }
+}
+
+extension View {
+    func staggeredArrival(_ index: Int) -> some View {
+        modifier(StaggeredArrival(index: index))
     }
 }
 
@@ -575,6 +679,7 @@ struct FilterChip: View {
         .onHover { hovering = $0 }
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .animation(Design.wash, value: hovering)
+        .animation(Design.wash, value: isOn)
         .accessibilityLabel(count.map { "\(label), \($0)" } ?? label)
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
@@ -593,7 +698,86 @@ struct PressDipStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .opacity(configuration.isPressed ? 0.72 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+struct ConfirmingButton: View {
+    enum Appearance { case tray, micro, plain }
+
+    let label: String
+    let confirmedLabel: String
+    var glyph = "doc.on.doc"
+    var confirmedGlyph = "checkmark"
+    var appearance: Appearance = .tray
+    var holdFor: Duration = .seconds(2)
+    let action: () -> Void
+    @State private var confirmed = false
+    @State private var revert: Task<Void, Never>?
+    @State private var hovering = false
+
+    var body: some View {
+        Group {
+            switch appearance {
+            case .plain:
+                button.buttonStyle(QuietButtonStyle())
+            case .tray, .micro:
+                button.buttonStyle(PressDipStyle())
+            }
+        }
+        .onHover { hovering = $0 }
+        .onDisappear { revert?.cancel() }
+        .animation(Design.wash, value: hovering)
+        .animation(Design.snap, value: confirmed)
+        .accessibilityLabel(confirmed ? confirmedLabel : label)
+    }
+
+    private var button: some View {
+        Button(action: fire) { content }
+    }
+
+    private func fire() {
+        action()
+        confirmed = true
+        revert?.cancel()
+        revert = Task {
+            try? await Task.sleep(for: holdFor)
+            guard !Task.isCancelled else { return }
+            confirmed = false
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch appearance {
+        case .tray:
+            HStack(spacing: Design.Space.xs) {
+                Image(systemName: confirmed ? confirmedGlyph : glyph)
+                    .font(Design.glyphSmall)
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.bounce, value: confirmed)
+                Text(confirmed ? confirmedLabel : label)
+                    .font(Design.caption.weight(.medium))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .contentTransition(.opacity)
+            }
+            .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+            .padding(.horizontal, Design.Space.s)
+            .padding(.vertical, Design.Space.xxs + 1)
+            .contentShape(Rectangle())
+        case .micro:
+            Text(confirmed ? confirmedLabel : label)
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .contentTransition(.opacity)
+                .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                .contentShape(Rectangle())
+        case .plain:
+            Text(confirmed ? confirmedLabel : label)
+                .contentTransition(.opacity)
+        }
     }
 }
 
@@ -604,6 +788,63 @@ struct MicroHeader: View {
         Text(title)
             .font(Design.label.weight(.semibold))
             .foregroundStyle(Design.inkFaint)
+    }
+}
+
+struct ConfirmableIconButton: View {
+    var glyph = "xmark.circle.fill"
+    let label: String
+    let confirmLabel: String
+    let action: () -> Void
+    @State private var armed = false
+    @State private var disarm: Task<Void, Never>?
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            if armed {
+                disarm?.cancel()
+                armed = false
+                action()
+            } else {
+                armed = true
+                disarm?.cancel()
+                disarm = Task {
+                    try? await Task.sleep(for: .seconds(4))
+                    guard !Task.isCancelled else { return }
+                    armed = false
+                }
+            }
+        } label: {
+            Group {
+                if armed {
+                    Text(confirmLabel)
+                        .font(Design.label.weight(.semibold))
+                        .foregroundStyle(Design.heatText)
+                } else {
+                    Image(systemName: glyph)
+                        .font(Design.glyphInline)
+                        .foregroundStyle(hovering ? Design.ink : Design.inkFaint)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressDipStyle())
+        .onHover { inside in
+            hovering = inside
+            if !inside && armed {
+                armed = false
+                disarm?.cancel()
+            }
+        }
+        .onDisappear { disarm?.cancel() }
+        .onExitCommand {
+            armed = false
+            disarm?.cancel()
+        }
+        .animation(Design.snap, value: armed)
+        .animation(Design.wash, value: hovering)
+        .accessibilityLabel(armed ? confirmLabel : label)
     }
 }
 
@@ -672,6 +913,32 @@ struct SheetDivider: View {
             .fill(Design.hairline)
             .frame(height: Design.hairlineWidth)
             .accessibilityHidden(true)
+    }
+}
+
+struct RowRule: View {
+    var body: some View {
+        Rectangle()
+            .fill(Design.line)
+            .frame(height: Design.hairlineWidth)
+            .accessibilityHidden(true)
+    }
+}
+
+struct SettingsGroup<Content: View>: View {
+    let header: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: header)
+            VStack(alignment: .leading, spacing: 0) {
+                content()
+            }
+            .padding(.horizontal, Design.Space.tile)
+            .padding(.vertical, Design.Space.xs)
+            .surfaceCard(radius: Design.Radius.tile)
+        }
     }
 }
 
@@ -911,23 +1178,27 @@ struct SheetCloseButton: View {
 }
 
 struct QuietDisclosureStyle: DisclosureGroupStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
             Button {
-                configuration.isExpanded.toggle()
+                withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+                    configuration.isExpanded.toggle()
+                }
             } label: {
                 HStack(spacing: Design.Space.xs) {
                     configuration.label
-                    Image(
-                        systemName: configuration.isExpanded ? "chevron.down" : "chevron.right"
-                    )
-                    .font(Design.glyphMicro)
-                    .foregroundStyle(Design.inkFaint)
+                    Image(systemName: "chevron.right")
+                        .font(Design.glyphMicro)
+                        .foregroundStyle(Design.inkFaint)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
                 }
             }
             .buttonStyle(.plain)
             if configuration.isExpanded {
                 configuration.content
+                    .transition(.opacity)
             }
         }
     }

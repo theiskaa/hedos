@@ -131,6 +131,7 @@ struct WavePlayerBars: View {
     let fraction: Double
     var height: CGFloat = 26
     var onSeek: ((Double) -> Void)? = nil
+    @State private var scrubFraction: Double?
 
     static func displayPeaks(from source: [Double], barCount: Int = 80) -> [Double] {
         let base = source.isEmpty ? Array(repeating: 0.4, count: barCount) : source
@@ -142,23 +143,31 @@ struct WavePlayerBars: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let shown = scrubFraction ?? fraction
             ZStack(alignment: .leading) {
                 bars(AnyShapeStyle(Design.ink.opacity(0.2)))
                 bars(AnyShapeStyle(Design.accent))
                     .mask(alignment: .leading) {
                         Rectangle()
-                            .frame(width: max(0, geometry.size.width * fraction))
+                            .frame(width: max(0, geometry.size.width * shown))
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .animation(.linear(duration: 0.11), value: fraction)
+                            .animation(
+                                scrubFraction == nil ? .linear(duration: 0.11) : nil,
+                                value: shown)
                     }
             }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard geometry.size.width > 0, onSeek != nil else { return }
+                        scrubFraction = min(max(value.location.x / geometry.size.width, 0), 1)
+                    }
                     .onEnded { value in
                         guard geometry.size.width > 0 else { return }
-                        onSeek?(
-                            min(max(value.location.x / geometry.size.width, 0), 1))
+                        let target = min(max(value.location.x / geometry.size.width, 0), 1)
+                        scrubFraction = nil
+                        onSeek?(target)
                     })
         }
         .frame(height: height)

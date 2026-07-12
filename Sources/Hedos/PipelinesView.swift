@@ -73,7 +73,7 @@ struct PipelinesPane: View {
             if model == nil { model = PipelinesModel(kernel: shell.kernel) }
             await model?.refresh()
         }
-        .modalScrim(isPresented: composing, onDismiss: { composing = false }) {
+        .modalScrim(isPresented: composing, anchor: .top, onDismiss: { composing = false }) {
             PipelineComposerSheet(
                 shell: shell, existing: nil,
                 onSaved: {
@@ -81,7 +81,7 @@ struct PipelinesPane: View {
                     Task { await model?.refresh() }
                 }, onClose: { composing = false })
         }
-        .modalScrim(isPresented: editDraft != nil, onDismiss: { editDraft = nil }) {
+        .modalScrim(isPresented: editDraft != nil, anchor: .top, onDismiss: { editDraft = nil }) {
             if let editDraft {
                 PipelineComposerSheet(
                     shell: shell, existing: editDraft,
@@ -895,6 +895,7 @@ private struct PipelineRunScreen: View {
 
 private struct PipelineRunContent: View {
     @Bindable var model: PipelineRunModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if model.isAudioHead {
@@ -951,12 +952,16 @@ private struct PipelineRunContent: View {
                 if model.running {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 } else {
-                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                 }
             }
             .onChange(of: model.turns.count) {
                 if let last = model.turns.last {
-                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                 }
             }
         }
