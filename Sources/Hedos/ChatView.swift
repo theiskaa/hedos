@@ -1646,44 +1646,11 @@ struct ChatView: View {
     private func versionSwitcher(_ entry: ChatViewModel.Entry) -> some View {
         if entry.versions.count > 1 {
             let index = versionIndex(entry)
-            HStack(spacing: Design.Space.xs) {
-                versionStep(
-                    glyph: "chevron.left", label: "Previous version",
-                    enabled: index > 0
-                ) {
-                    versionSelection[entry.id] = index - 1
-                }
-                Text("\(index + 1)/\(entry.versions.count)")
-                    .font(Design.micro)
-                    .monospacedDigit()
-                    .foregroundStyle(Design.inkFaint)
-                    .lineLimit(1)
-                    .fixedSize()
-                versionStep(
-                    glyph: "chevron.right", label: "Next version",
-                    enabled: index < entry.versions.count - 1
-                ) {
-                    versionSelection[entry.id] = index + 1
-                }
-            }
-            .accessibilityLabel("Version \(index + 1) of \(entry.versions.count)")
+            VersionSwitcher(
+                index: index, count: entry.versions.count,
+                onPrev: { versionSelection[entry.id] = index - 1 },
+                onNext: { versionSelection[entry.id] = index + 1 })
         }
-    }
-
-    private func versionStep(
-        glyph: String, label: String, enabled: Bool, action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: glyph)
-                .font(Design.glyphMicro)
-                .foregroundStyle(enabled ? Design.inkSoft : Design.inkFaint.opacity(0.4))
-                .frame(width: 14, height: 14)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .help(label)
-        .accessibilityLabel(label)
     }
 
     private func artifactCard(_ reference: String) -> some View {
@@ -1743,34 +1710,7 @@ struct ChatView: View {
     }
 
     private func statsLine(_ stats: GenerationStats) -> some View {
-        var parts: [String] = []
-        if let load = stats.loadMs, load > 0 {
-            parts.append(String(format: "load %.1fs", Double(load) / 1000))
-        }
-        if let ttft = stats.ttftMs {
-            parts.append(String(format: "ttft %.1fs", Double(ttft) / 1000))
-        }
-        if let tokens = stats.completionTokens {
-            let tilde = stats.tokenCountsEstimated ? "~" : ""
-            let generationMs = (stats.durationMs ?? 0) - (stats.ttftMs ?? 0)
-            if generationMs > 0 {
-                parts.append(
-                    String(
-                        format: "\(tilde)%.0f tok/s", Double(tokens) / Double(generationMs) * 1000))
-            } else if let ms = stats.durationMs, ms > 0 {
-                parts.append(
-                    String(format: "\(tilde)%.0f tok/s", Double(tokens) / Double(ms) * 1000))
-            }
-            parts.append("\(tilde)\(tokens) tok")
-        }
-        return Text(parts.joined(separator: " · "))
-            .font(Design.micro)
-            .tracking(Design.microTracking)
-            .monospacedDigit()
-            .foregroundStyle(Design.inkFaint)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .layoutPriority(-1)
+        GenerationStatsLine(stats: stats)
     }
 
     private func displayText(_ entry: ChatViewModel.Entry) -> String {
@@ -2014,3 +1954,81 @@ struct ChatView: View {
     }
 }
 
+
+private struct VersionSwitcher: View {
+    let index: Int
+    let count: Int
+    let onPrev: () -> Void
+    let onNext: () -> Void
+
+    var body: some View {
+        HStack(spacing: Design.Space.xs) {
+            step(glyph: "chevron.left", label: "Previous version", enabled: index > 0, action: onPrev)
+            Text("\(index + 1)/\(count)")
+                .font(Design.micro)
+                .monospacedDigit()
+                .foregroundStyle(Design.inkFaint)
+                .lineLimit(1)
+                .fixedSize()
+            step(
+                glyph: "chevron.right", label: "Next version",
+                enabled: index < count - 1, action: onNext)
+        }
+        .accessibilityLabel("Version \(index + 1) of \(count)")
+    }
+
+    private func step(
+        glyph: String, label: String, enabled: Bool, action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: glyph)
+                .font(Design.glyphMicro)
+                .foregroundStyle(enabled ? Design.inkSoft : Design.inkFaint.opacity(0.4))
+                .frame(width: 14, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct GenerationStatsLine: View {
+    let stats: GenerationStats
+
+    var body: some View {
+        Text(parts.joined(separator: " · "))
+            .font(Design.micro)
+            .tracking(Design.microTracking)
+            .monospacedDigit()
+            .foregroundStyle(Design.inkFaint)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(-1)
+    }
+
+    private var parts: [String] {
+        var parts: [String] = []
+        if let load = stats.loadMs, load > 0 {
+            parts.append(String(format: "load %.1fs", Double(load) / 1000))
+        }
+        if let ttft = stats.ttftMs {
+            parts.append(String(format: "ttft %.1fs", Double(ttft) / 1000))
+        }
+        if let tokens = stats.completionTokens {
+            let tilde = stats.tokenCountsEstimated ? "~" : ""
+            let generationMs = (stats.durationMs ?? 0) - (stats.ttftMs ?? 0)
+            if generationMs > 0 {
+                parts.append(
+                    String(
+                        format: "\(tilde)%.0f tok/s", Double(tokens) / Double(generationMs) * 1000))
+            } else if let ms = stats.durationMs, ms > 0 {
+                parts.append(
+                    String(format: "\(tilde)%.0f tok/s", Double(tokens) / Double(ms) * 1000))
+            }
+            parts.append("\(tilde)\(tokens) tok")
+        }
+        return parts
+    }
+}
