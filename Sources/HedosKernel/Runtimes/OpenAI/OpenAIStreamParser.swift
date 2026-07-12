@@ -76,14 +76,17 @@ struct OpenAIStreamParser {
         toolFragments = [:]
         return fragments.compactMap { fragment in
             guard !fragment.name.isEmpty else { return nil }
+            let raw = fragment.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
             let arguments: JSONValue
             if let data = fragment.arguments.data(using: .utf8),
                 let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                 let value = JSONValue.fromAny(parsed)
             {
                 arguments = value
-            } else {
+            } else if raw.isEmpty {
                 arguments = .object([:])
+            } else {
+                arguments = .object(["_raw": .string(fragment.arguments)])
             }
             let call =
                 fragment.id.map {

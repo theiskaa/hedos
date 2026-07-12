@@ -80,6 +80,34 @@ import Testing
     #expect(stats?.finishReason == "tool_calls")
 }
 
+@Test func truncatedToolArgumentsArePreservedNotZeroed() {
+    var parser = OpenAIStreamParser()
+    _ = parser.parse(
+        line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"write_file","arguments":"{\"path\": \"/im"}}]}}]}"#
+    )
+    let flushed = parser.parse(
+        line: #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+    guard case .toolCall(let call) = flushed.first else {
+        Issue.record("expected a tool call")
+        return
+    }
+    #expect(call.arguments == .object(["_raw": .string("{\"path\": \"/im")]))
+}
+
+@Test func emptyToolArgumentsStayAnEmptyObject() {
+    var parser = OpenAIStreamParser()
+    _ = parser.parse(
+        line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","function":{"name":"get_time","arguments":""}}]}}]}"#
+    )
+    let flushed = parser.parse(
+        line: #"data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#)
+    guard case .toolCall(let call) = flushed.first else {
+        Issue.record("expected a tool call")
+        return
+    }
+    #expect(call.arguments == .object([:]))
+}
+
 @Test func parserReadsFinishReasonIntoStats() {
     var parser = OpenAIStreamParser()
     _ = parser.parse(
