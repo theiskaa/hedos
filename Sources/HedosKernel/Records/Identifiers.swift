@@ -62,6 +62,8 @@ public struct RuntimeID: RawRepresentable, Codable, Hashable, Sendable, Expressi
     public static let mlxAudio = RuntimeID(rawValue: "python:mlx-audio")
     public static let mlxVlm = RuntimeID(rawValue: "python:mlx-vlm")
     public static let embeddings = RuntimeID(rawValue: "python:embeddings")
+    public static let comfyUI = RuntimeID(rawValue: "comfyui")
+    public static let a1111 = RuntimeID(rawValue: "a1111")
 }
 
 public enum BidPreference {
