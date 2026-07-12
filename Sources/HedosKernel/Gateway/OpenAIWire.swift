@@ -181,7 +181,9 @@ enum OpenAIWire {
         guard meta.contains("base64"), let data = Data(base64Encoded: encoded) else {
             throw GatewayError(.badRequest, "image data: URI must carry base64 content")
         }
-        let mimeType = meta.split(separator: ";").first.map(String.init) ?? "image/png"
+        let mediatype = meta.split(separator: ";").first.map(String.init) ?? ""
+        let mimeType =
+            mediatype.isEmpty || mediatype == "base64" ? "image/png" : mediatype
         return ChatAttachment(kind: .image, data: data, mimeType: mimeType)
     }
 
