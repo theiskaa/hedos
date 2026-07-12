@@ -24,10 +24,7 @@ public final class IdentificationCache: @unchecked Sendable {
             return Identification.identify(record)
         }
         let path = (record.source.path as NSString).expandingTildeInPath
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-            let mtime = attributes[.modificationDate] as? Date,
-            let size = (attributes[.size] as? NSNumber)?.int64Value
-        else {
+        guard let (mtime, size) = Self.freshnessSignature(path) else {
             return Identification.identify(record)
         }
         let cached = lock.withLock { entries[path] }
@@ -40,5 +37,31 @@ public final class IdentificationCache: @unchecked Sendable {
             entries[path] = Entry(mtime: mtime, size: size, identified: identified)
         }
         return identified
+    }
+
+    static func freshnessSignature(_ path: String) -> (Date, Int64)? {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDirectory),
+            let attributes = try? fm.attributesOfItem(atPath: path),
+            let mtime = attributes[.modificationDate] as? Date,
+            let size = (attributes[.size] as? NSNumber)?.int64Value
+        else { return nil }
+        guard isDirectory.boolValue,
+            let children = try? fm.contentsOfDirectory(atPath: path)
+        else { return (mtime, size) }
+        var latest = mtime
+        var total = size
+        for child in children {
+            let childPath = (path as NSString).appendingPathComponent(child)
+            guard let attributes = try? fm.attributesOfItem(atPath: childPath) else { continue }
+            if let childMtime = attributes[.modificationDate] as? Date, childMtime > latest {
+                latest = childMtime
+            }
+            if let childSize = (attributes[.size] as? NSNumber)?.int64Value {
+                total = total &+ childSize
+            }
+        }
+        return (latest, total)
     }
 }

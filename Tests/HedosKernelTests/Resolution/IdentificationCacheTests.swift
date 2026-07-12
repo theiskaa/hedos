@@ -78,6 +78,17 @@ private func fileRecord(at url: URL) -> ModelRecord {
     #expect(reIdentified.capabilities == [.chat, .complete])
 }
 
+@Test func directorySignatureTracksInnerFileEdits() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let config = dir.appendingPathComponent("config.json")
+    try Data("{\"a\":1}".utf8).write(to: config)
+    let first = try #require(IdentificationCache.freshnessSignature(dir.path))
+    try Data("{\"architectures\":[\"LlamaForCausalLM\"]}".utf8).write(to: config)
+    let second = try #require(IdentificationCache.freshnessSignature(dir.path))
+    #expect(first.1 != second.1)
+}
+
 @Test func uncachedKindsBypassTheCache() {
     let cache = IdentificationCache()
     let record = ModelRecord(
