@@ -140,4 +140,17 @@ public final class DaemonLiveness: @unchecked Sendable {
     static func lastComponent(_ path: String) -> String {
         (path as NSString).lastPathComponent
     }
+
+    static func dimensions(_ object: [String: JSONValue], fallback: Int = 512) -> (Int, Int) {
+        if let width = object["width"]?.intValue, let height = object["height"]?.intValue {
+            return (width, height)
+        }
+        if let size = object["size"]?.stringValue {
+            let parts = size.lowercased().split(separator: "x")
+            if parts.count == 2, let width = Int(parts[0]), let height = Int(parts[1]) {
+                return (width, height)
+            }
+        }
+        return (fallback, fallback)
+    }
 }

@@ -72,6 +72,19 @@ private func liveness(_ snapshot: DaemonLiveness.Snapshot) -> DaemonLiveness {
     #expect(latent?["width"] as? Int == 768)
 }
 
+@Test func daemonAdaptersHonorTheOpenAISizeString() {
+    let payload = JSONValue.object([
+        "prompt": .string("a fox"), "size": .string("1024x768"),
+    ])
+    let graph = ComfyUIAdapter.graph(payload: payload, checkpoint: "m.safetensors")
+    let latent = (graph["5"] as? [String: Any])?["inputs"] as? [String: Any]
+    #expect(latent?["width"] as? Int == 1024)
+    #expect(latent?["height"] as? Int == 768)
+    let body = A1111Adapter.requestBody(payload: payload)
+    #expect(body["width"] as? Int == 1024)
+    #expect(body["height"] as? Int == 768)
+}
+
 @Test func a1111RequestBodyCarriesTheSeededKnobs() {
     let payload = JSONValue.object([
         "prompt": .string("a fox"), "steps": .int(15), "cfg_scale": .double(6),

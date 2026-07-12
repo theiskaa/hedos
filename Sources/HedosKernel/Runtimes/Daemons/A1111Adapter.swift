@@ -35,12 +35,13 @@ struct A1111Adapter: RuntimeAdapter, JobRunning {
 
     static func requestBody(payload: JSONValue) -> [String: Any] {
         let object = payload.objectValue ?? [:]
+        let (width, height) = DaemonLiveness.dimensions(object)
         return [
             "prompt": object["prompt"]?.stringValue ?? "",
             "steps": object["steps"]?.intValue ?? 20,
             "cfg_scale": object["guidance"]?.doubleValue ?? object["cfg_scale"]?.doubleValue ?? 7,
-            "width": object["width"]?.intValue ?? 512,
-            "height": object["height"]?.intValue ?? 512,
+            "width": width,
+            "height": height,
             "seed": object["seed"]?.intValue ?? -1,
         ]
     }

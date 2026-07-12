@@ -44,8 +44,7 @@ struct ComfyUIAdapter: RuntimeAdapter, JobRunning {
         let prompt = object["prompt"]?.stringValue ?? ""
         let steps = object["steps"]?.intValue ?? 20
         let cfg = object["guidance"]?.doubleValue ?? object["cfg_scale"]?.doubleValue ?? 7
-        let width = object["width"]?.intValue ?? 512
-        let height = object["height"]?.intValue ?? 512
+        let (width, height) = DaemonLiveness.dimensions(object)
         let seed = object["seed"]?.intValue ?? 0
         return [
             "3": [
