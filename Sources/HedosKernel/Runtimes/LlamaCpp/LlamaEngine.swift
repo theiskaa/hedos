@@ -216,7 +216,8 @@ actor LlamaEngine {
         var scanner = ToolCallScanner()
         let scanningForCalls = !params.tools.isEmpty
         var emittedToolCall = false
-        var stopMatcher = StopMatcher(params.stop)
+        var stopMatcher = StopMatcher(
+            rendered.fellBack ? params.stop + ["<|im_end|>"] : params.stop)
         var stoppedByMatch = false
         var splitter = ThinkSplitter()
 
