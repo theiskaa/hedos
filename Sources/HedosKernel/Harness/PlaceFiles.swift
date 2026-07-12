@@ -2,7 +2,7 @@ import Foundation
 
 public enum PlaceFiles {
     public static let mentionIndexCap = 2000
-    public static let menuCapacity = 8
+    public static let menuCapacity = 20
 
     public static func list(place: String) -> [String] {
         var paths: [String] = []
