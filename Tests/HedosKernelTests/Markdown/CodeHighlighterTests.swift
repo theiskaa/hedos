@@ -149,3 +149,56 @@ import Testing
 @Test func tokensForEmptyStringReturnEmptyArray() {
     #expect(CodeHighlighter.tokens("", language: "swift") == [])
 }
+
+@Test func tokensHighlightJSONKeysDistinctlyFromStringValues() {
+    let tokens = CodeHighlighter.tokens(
+        "{\"model\": \"gpt\", \"stream\": true, \"n\": 42}", language: "json")
+    #expect(tokens.contains(CodeToken(text: "\"model\"", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "\"gpt\"", kind: .string)))
+    #expect(tokens.contains(CodeToken(text: "\"stream\"", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "true", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "42", kind: .number)))
+    #expect(tokens.map(\.text).joined() == "{\"model\": \"gpt\", \"stream\": true, \"n\": 42}")
+}
+
+@Test func tokensHighlightJSONBooleanAndNullLiterals() {
+    let tokens = CodeHighlighter.tokens("[true, false, null]", language: "json")
+    #expect(tokens.contains(CodeToken(text: "true", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "false", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "null", kind: .keyword)))
+}
+
+@Test func tokensJSONHasNoLineComment() {
+    let tokens = CodeHighlighter.tokens("// x", language: "json")
+    #expect(tokens.contains { $0.kind == .comment } == false)
+}
+
+@Test func tokensHighlightShellCurlKeywordAndFlags() {
+    let tokens = CodeHighlighter.tokens("curl -s --data-raw", language: "bash")
+    #expect(tokens.contains(CodeToken(text: "curl", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "-s", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "--data-raw", kind: .keyword)))
+    #expect(tokens.map(\.text).joined() == "curl -s --data-raw")
+}
+
+@Test func tokensRouteCurlLanguageToShellSet() {
+    let tokens = CodeHighlighter.tokens("curl -H", language: "curl")
+    #expect(tokens.contains(CodeToken(text: "curl", kind: .keyword)))
+    #expect(tokens.contains(CodeToken(text: "-H", kind: .keyword)))
+}
+
+@Test func tokensDoNotTreatDashAsFlagOutsideShell() {
+    let tokens = CodeHighlighter.tokens("-H", language: "json")
+    #expect(tokens.contains { $0.kind == .keyword } == false)
+}
+
+@Test func tokensCoverPythonSDKKeywords() {
+    let keywords = [
+        "def", "import", "from", "class", "return", "None", "True", "False",
+        "for", "in", "with", "as", "print",
+    ]
+    for keyword in keywords {
+        let tokens = CodeHighlighter.tokens(keyword, language: "python")
+        #expect(tokens == [CodeToken(text: keyword, kind: .keyword)])
+    }
+}

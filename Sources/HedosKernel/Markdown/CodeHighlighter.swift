@@ -22,6 +22,11 @@ public enum CodeHighlighter {
     public static func tokens(_ code: String, language: String?) -> [CodeToken] {
         let keywords = Self.keywords(for: language)
         let lineComment = Self.lineComment(for: language)
+        let normalizedLanguage = language?.lowercased()
+        let isShell = normalizedLanguage.map {
+            ["sh", "bash", "zsh", "shell", "curl"].contains($0)
+        } ?? false
+        let isJSON = normalizedLanguage == "json"
         var tokens: [CodeToken] = []
         var plain = ""
 
@@ -57,8 +62,27 @@ public enum CodeHighlighter {
                     literal.append(closing)
                     scan = scan.dropFirst()
                 }
-                tokens.append(CodeToken(text: literal, kind: .string))
+                var stringKind: CodeTokenKind = .string
+                if isJSON, character == "\"" {
+                    var lookahead = scan
+                    while let next = lookahead.first, next == " " || next == "\t" {
+                        lookahead = lookahead.dropFirst()
+                    }
+                    if lookahead.first == ":" {
+                        stringKind = .keyword
+                    }
+                }
+                tokens.append(CodeToken(text: literal, kind: stringKind))
                 rest = scan
+                continue
+            }
+            if isShell, character == "-", let after = rest.dropFirst().first,
+                after.isLetter || after == "-"
+            {
+                flushPlain()
+                let flag = rest.prefix { $0 == "-" || $0.isLetter || $0.isNumber }
+                tokens.append(CodeToken(text: String(flag), kind: .keyword))
+                rest = rest.dropFirst(flag.count)
                 continue
             }
             if character.isNumber, plainEndsAtBoundary(plain) {
@@ -117,7 +141,7 @@ public enum CodeHighlighter {
 
     private static func lineComment(for language: String?) -> String? {
         switch language?.lowercased() {
-        case "python", "ruby", "sh", "bash", "shell", "zsh", "yaml", "toml", "r":
+        case "python", "ruby", "sh", "bash", "shell", "zsh", "yaml", "toml", "r", "curl":
             "#"
         case "lua", "sql":
             "--"
@@ -208,10 +232,14 @@ public enum CodeHighlighter {
                 "require_once", "include", "include_once", "array", "foreach",
                 "elseif", "endif", "var",
             ])
-        case "sh", "bash", "zsh", "shell":
+        case "sh", "bash", "zsh", "shell", "curl":
             return commonKeywords.union([
                 "fi", "done", "function", "echo", "esac", "local", "export",
+                "curl", "cd", "cat", "ls", "grep", "sed", "awk", "set", "unset",
+                "source", "exit", "read", "wget", "sudo", "chmod", "mkdir", "rm",
             ])
+        case "json":
+            return ["true", "false", "null"]
         case "sql":
             return commonKeywords.union([
                 "select", "insert", "update", "delete", "join", "on", "group", "order",
