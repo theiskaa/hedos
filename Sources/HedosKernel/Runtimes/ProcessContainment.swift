@@ -48,9 +48,6 @@ enum ProcessContainment {
                 for child in descendantPIDs(of: pid) where kill(child, 0) == 0 {
                     kill(child, SIGKILL)
                 }
-                for child in descendants where kill(child, 0) == 0 {
-                    kill(child, SIGKILL)
-                }
                 if process.isRunning {
                     kill(pid, SIGKILL)
                 }
