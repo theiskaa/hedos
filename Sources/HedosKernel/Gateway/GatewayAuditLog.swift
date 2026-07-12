@@ -76,6 +76,10 @@ public actor GatewayAuditLog {
         writeEntry(entry)
     }
 
+    public func flush() {
+        flushUnauthorized()
+    }
+
     private func writeEntry(_ entry: GatewayAuditEntry) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

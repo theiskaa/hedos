@@ -19,6 +19,23 @@ import Testing
     #expect(tail.allSatisfy { $0.outcome == "ok" })
 }
 
+@Test func flushWritesThePendingUnauthorizedAggregate() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let log = GatewayAuditLog(directory: dir)
+    let base = Date(timeIntervalSince1970: 1_750_000_000)
+    for index in 0..<4 {
+        await log.appendUnauthorized(
+            GatewayAuditEntry(
+                ts: base.addingTimeInterval(Double(index)), method: "GET",
+                route: "/v1/models", outcome: "unauthorized", status: 401, durationMs: 0))
+    }
+    #expect(await log.tail(limit: 10).allSatisfy { $0.detail == nil })
+    await log.flush()
+    let tail = await log.tail(limit: 10)
+    #expect(tail.contains { $0.detail?.contains("more unauthenticated") == true })
+}
+
 @Test func auditRotatesAtSizeThresholdKeepingGenerations() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }

@@ -129,6 +129,7 @@ public actor GatewayServer {
             try? await group.shutdownGracefully()
         }
         group = nil
+        await router.audit.flush()
     }
 
     private static func serve(
