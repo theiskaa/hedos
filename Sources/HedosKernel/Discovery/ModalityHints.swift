@@ -77,14 +77,6 @@ enum ModalityHints {
             ?? (json["n_positions"] as? Int)
             ?? (json["max_seq_len"] as? Int)).flatMap { $0 > 0 ? $0 : nil }
 
-        for arch in architectures {
-            if let rule = architectureRules.first(where: { $0.matches(arch) }) {
-                var hint = rule.hint
-                hint.contextLength = contextLength
-                return hint
-            }
-        }
-
         if json["vision_config"] != nil,
             architectures.contains(where: { arch in
                 arch.hasSuffix("ForConditionalGeneration")
@@ -94,6 +86,14 @@ enum ModalityHints {
             var hint = visionChatHint
             hint.contextLength = contextLength
             return hint
+        }
+
+        for arch in architectures {
+            if let rule = architectureRules.first(where: { $0.matches(arch) }) {
+                var hint = rule.hint
+                hint.contextLength = contextLength
+                return hint
+            }
         }
 
         let keys = Set(json.keys)

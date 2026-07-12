@@ -13,6 +13,17 @@ private func fileRecord(at url: URL) -> ModelRecord {
         registeredAt: Date(timeIntervalSince1970: 1_750_000_000))
 }
 
+@Test func visionConfigWinsOverACausalLMArchitectureSuffix() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let config = dir.appendingPathComponent("config.json")
+    try Data(
+        #"{"architectures":["LlavaLlamaForCausalLM"],"vision_config":{"hidden_size":1024}}"#.utf8
+    ).write(to: config)
+    let hint = try #require(ModalityHints.fromConfigJSON(at: config))
+    #expect(hint.capabilities.contains(.see))
+}
+
 @Test func visionArchitectureGGUFCarriesSeeAlongsideChat() throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
