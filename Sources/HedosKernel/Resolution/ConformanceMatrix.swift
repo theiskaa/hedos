@@ -379,6 +379,15 @@ public enum ConformanceMatrix {
                 status: .fail, reason: "ready record cannot serve \(capability.rawValue)")
         } catch KernelError.runtimeUnavailable(let hint) {
             return Outcome(status: .fail, reason: "ready record has no runtime: \(hint)")
+        } catch let error as KernelError {
+            switch error {
+            case .runtimeFailed, .sidecarDied, .bundleMissing, .wrongExecutionMode:
+                return Outcome(
+                    status: .fail,
+                    reason: "ready record's runtime failed: \(error.errorDescription ?? "")")
+            default:
+                return Outcome(status: .pass, reason: nil)
+            }
         } catch {
             return Outcome(status: .pass, reason: nil)
         }
@@ -395,6 +404,14 @@ public enum ConformanceMatrix {
         switch capability {
         case .embed: return .object(["input": .string("hedos")])
         case .image, .speak: return .object(["prompt": .string("hedos")])
+        case .transcribe:
+            return .object(["audio": .string(ShelfSweep.transcribeFixtureURL()?.path ?? "")])
+        case .see:
+            let message = ChatMessage(
+                role: .user, content: "hi",
+                attachments: (ShelfSweep.seeFixtureURL().flatMap { try? Data(contentsOf: $0) })
+                    .map { [ChatAttachment(kind: .image, data: $0, mimeType: "image/png")] } ?? [])
+            return .object(["messages": .array([message.payloadValue])])
         default:
             return .object([
                 "messages": .array([ChatMessage(role: .user, content: "hi").payloadValue])
