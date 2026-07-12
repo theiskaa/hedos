@@ -5,10 +5,12 @@ import SwiftUI
 private struct TranscriptTailKey: Equatable {
     var count: Int
     var lastID: String?
+    var lastRole: TurnRole?
 
     init(_ transcript: [ChatViewModel.Entry]) {
         count = transcript.count
         lastID = transcript.last?.id
+        lastRole = transcript.last?.role
     }
 }
 
@@ -1113,7 +1115,6 @@ struct ChatView: View {
     @State private var editText = ""
     @State private var modelMenuOpen = false
     @State private var voiceConversation = VoiceConversationController()
-    @State private var copiedEntryID: String?
     @State private var showParams = false
 
     init(
@@ -1155,6 +1156,7 @@ struct ChatView: View {
             draft: $model.draft,
             isWorking: model.isWorking,
             canSend: sendable,
+            readyToSend: composerReady,
             notice: contextNotice ?? model.notice,
             noticeActionLabel: model.canStartOllama ? "Start Ollama" : nil,
             noticeAction: model.canStartOllama ? { model.startOllamaAndRetry() } : nil,
@@ -1201,6 +1203,11 @@ struct ChatView: View {
         case .speak: await model.bindVoice(to: record)
         }
         model.setIntent(launch.intent)
+        let seed = launch.seed
+        if !seed.isEmpty {
+            model.draft = seed
+            model.send()
+        }
         onLaunchConsumed?()
     }
 
@@ -1211,6 +1218,7 @@ struct ChatView: View {
             boundPlaceChip
         }
         .padding(.horizontal, Design.Space.xs)
+        .animation(Design.wash, value: model.place)
     }
 
     @ViewBuilder
@@ -1218,27 +1226,23 @@ struct ChatView: View {
         if model.intent == .text, let place = model.place {
             HStack(spacing: Design.Space.xs) {
                 Image(systemName: "folder")
-                    .font(Design.micro)
+                    .font(Design.glyphSmall)
                 Text(URL(fileURLWithPath: place).lastPathComponent)
-                    .font(Design.micro)
+                    .font(Design.label.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Button {
-                    model.clearPlace()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(Design.micro)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Stop reading this folder")
+                ChipCloseButton(
+                    action: { model.clearPlace() }, label: "Stop reading this folder")
             }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, Design.Space.chipX)
+            .foregroundStyle(Design.inkSoft)
+            .padding(.leading, Design.Space.chipX)
+            .padding(.trailing, Design.Space.xs)
             .frame(height: Design.Control.size)
             .background(Design.inkWash, in: Capsule())
             .overlay(
                 Capsule()
                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+            .transition(.arrive(from: .leading))
             .help(
                 "The model can list, read, and search inside \(place). "
                     + "It cannot touch anything outside it, and it cannot write or run anything."
@@ -1381,9 +1385,11 @@ struct ChatView: View {
                 VStack(alignment: .leading, spacing: transcriptSpacing) {
                     if model.transcript.isEmpty && model.pendingSpeech == nil && !model.imageBusy {
                         emptyTranscript
+                            .transition(.opacity)
                     }
                     ForEach(Array(model.transcript.enumerated()), id: \.element.id) { index, entry in
                         turn(entry, at: index)
+                            .transition(.opacity.combined(with: .offset(y: 3)))
                     }
                     if let pending = model.pendingSpeech {
                         pendingSpeechRow(pending)
@@ -1400,6 +1406,8 @@ struct ChatView: View {
                 .padding(.vertical, Design.Space.xxl)
                 .frame(maxWidth: conversationWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .animation(
+                    Design.motion(reduceMotion: reduceMotion), value: model.transcript.count)
             }
             .onScrollGeometryChange(for: ScrollAnchorState.self) { geometry in
                 ScrollAnchorState(
@@ -1425,8 +1433,10 @@ struct ChatView: View {
                 }
             }
             .onChange(of: TranscriptTailKey(model.transcript)) { old, new in
-                if new.count > old.count {
+                if new.count > old.count && new.lastRole == .user {
                     followsStream = true
+                    settleAtTail(proxy)
+                } else if new.count > old.count && followsStream {
                     settleAtTail(proxy)
                 }
             }
@@ -1495,10 +1505,12 @@ struct ChatView: View {
     }
 
     private func settleAtTail(_ proxy: ScrollViewProxy) {
+        guard followsStream else { return }
         proxy.scrollTo("tail", anchor: .bottom)
         Task {
             for delay in [80, 350] {
                 try? await Task.sleep(for: .milliseconds(delay))
+                guard followsStream else { return }
                 proxy.scrollTo("tail", anchor: .bottom)
             }
         }
@@ -1568,16 +1580,10 @@ struct ChatView: View {
                 if !displayText(entry).isEmpty && !(model.isStreaming && !entry.persisted) {
                     HStack(spacing: Design.Space.m) {
                         ArtifactTray {
-                            TrayButton(
-                                label: copiedEntryID == entry.id ? "Copied" : "Copy",
-                                glyph: copiedEntryID == entry.id ? "checkmark" : "doc.on.doc"
+                            ConfirmingButton(
+                                label: "Copy", confirmedLabel: "Copied"
                             ) {
                                 copy(displayText(entry))
-                                copiedEntryID = entry.id
-                                Task {
-                                    try? await Task.sleep(for: .seconds(1.5))
-                                    if copiedEntryID == entry.id { copiedEntryID = nil }
-                                }
                             }
                             if entry.persisted && !model.isStreaming {
                                 TrayButton(label: "Regenerate", glyph: "arrow.clockwise") {
@@ -1890,7 +1896,8 @@ struct ChatView: View {
             accessibilityName: "Chat model",
             readyDot: boundRecord != nil ? boundReady : nil,
             externalOpen: $modelMenuOpen,
-            trigger: .chip
+            trigger: .chip,
+            help: chatChipTitle
         ) {
             if chatGroups.isEmpty {
                 InkMenuRow(title: "No chat-capable model is ready.", disabled: true) {}
@@ -2026,6 +2033,10 @@ struct ChatView: View {
         guard !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return false
         }
+        return composerReady
+    }
+
+    private var composerReady: Bool {
         switch model.intent {
         case .text:
             return boundReady

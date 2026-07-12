@@ -15,6 +15,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     @Binding var draft: String
     let isWorking: Bool
     let canSend: Bool
+    var readyToSend: Bool = false
     let notice: String?
     var noticeActionLabel: String? = nil
     var noticeAction: (() -> Void)? = nil
@@ -32,6 +33,8 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     @Environment(\.sendWithEnter) private var sendWithEnter
     @State private var composerHeight: CGFloat = 22
     @State private var composerFocusToken = 0
+    @State private var composerFocused = false
+    @State private var denyCount = 0
     @State private var slashPrompts: [Prompt] = []
     @State private var slashHighlight = 0
     @State private var slashSuppressed = false
@@ -46,9 +49,11 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if let notice {
                 noticeBar(notice)
+                    .transition(.arrive(from: .bottom))
             }
             composer
         }
+        .animation(Design.motion(reduceMotion: reduceMotion), value: notice)
         .onAppear { composerFocusToken += 1 }
     }
 
@@ -99,12 +104,13 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                             text: $draft,
                             sendWithEnter: sendWithEnter,
                             measuredHeight: $composerHeight,
+                            focused: $composerFocused,
                             onCommand: interceptCommand,
                             focusToken: composerFocusToken,
                             mentionPaths: mentionIndex
                         ) {
-                            if canSend && !isWorking {
-                                onSend()
+                            if !isWorking {
+                                performSend()
                             }
                         }
                         .frame(height: composerHeight)
@@ -124,16 +130,27 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                         micControl
                         aux()
                         chip()
-                        if isWorking {
+                        ZStack {
+                            if isWorking {
+                                Button("Stop", action: onStop)
+                                    .keyboardShortcut(.cancelAction)
+                                    .labelsHidden()
+                                    .frame(width: 0, height: 0)
+                                    .opacity(0)
+                                    .accessibilityHidden(true)
+                            }
                             CircleControl(
-                                glyph: "stop.fill", prominent: true, label: "Stop", action: onStop
-                            )
-                            .keyboardShortcut(.cancelAction)
-                        } else {
-                            CircleControl(
-                                glyph: "arrow.up", prominent: true, label: "Send", action: onSend
-                            )
-                            .disabled(!canSend)
+                                glyph: isWorking ? "stop.fill" : "arrow.up",
+                                prominent: isWorking || canSend,
+                                label: isWorking ? "Stop" : "Send"
+                            ) {
+                                if isWorking {
+                                    onStop()
+                                } else {
+                                    performSend()
+                                }
+                            }
+                            .disabled(!isWorking && !(readyToSend || canSend))
                         }
                     }
                 }
@@ -141,9 +158,19 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
             }
             .surfaceCard(radius: composerCornerRadius)
             .clipShape(RoundedRectangle.soft(composerCornerRadius))
+            .overlay(
+                RoundedRectangle.soft(composerCornerRadius)
+                    .strokeBorder(
+                        composerFocused ? Design.accent.opacity(0.35) : .clear,
+                        lineWidth: Design.hairlineWidth))
             .shade(Design.Elevation.raised)
-            .animation(Design.spring, value: menuActive)
-            .animation(Design.spring, value: ConsentCoordinator.shared.pending?.id)
+            .animation(Design.wash, value: composerFocused)
+            .denyShake(
+                on: denyCount, in: RoundedRectangle.soft(composerCornerRadius), amplitude: 4)
+            .animation(Design.motion(reduceMotion: reduceMotion), value: menuActive)
+            .animation(
+                Design.motion(reduceMotion: reduceMotion),
+                value: ConsentCoordinator.shared.pending?.id)
         }
         .frame(maxWidth: conversationWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -268,6 +295,22 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
         }
     }
 
+    private var draftEmpty: Bool {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func performSend() {
+        if draftEmpty {
+            if readyToSend {
+                denyCount += 1
+                composerFocusToken += 1
+            }
+            return
+        }
+        guard canSend else { return }
+        onSend()
+    }
+
     private func acceptSlash(_ entry: SlashEntry) {
         switch entry.kind {
         case .command(let command):
@@ -320,20 +363,24 @@ struct TranscriptEmptyState: View {
             HedosLogo(size: 52, color: Design.inkSoft)
                 .opacity(0.9)
                 .padding(.bottom, Design.Space.xs)
+                .staggeredArrival(0)
             VStack(spacing: Design.Space.m) {
                 Text(eyebrow)
                     .font(Design.micro)
                     .foregroundStyle(Design.inkFaint)
+                    .staggeredArrival(1)
                 Text(headline)
                     .font(Design.title)
                     .tracking(Design.tightTracking)
                     .foregroundStyle(Design.ink)
+                    .staggeredArrival(2)
                 Text(caption)
                     .font(Design.caption)
                     .foregroundStyle(Design.inkSoft)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2.5)
                     .frame(maxWidth: Design.Column.emptyCaption)
+                    .staggeredArrival(3)
             }
         }
         .frame(maxWidth: .infinity)
@@ -357,12 +404,20 @@ struct CircleControl: View {
         Button(action: action) {
             Image(systemName: glyph)
                 .font(Design.caption.weight(.semibold))
-                .foregroundStyle(prominent ? Design.paper : Design.inkSoft)
+                .foregroundStyle(
+                    prominent
+                        ? Design.paper
+                        : hovering ? Design.ink : Design.inkSoft)
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: Design.Control.size, height: Design.Control.size)
                 .background(
                     live
                         ? AnyShapeStyle(Design.accent)
-                        : prominent ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface),
+                        : prominent
+                            ? AnyShapeStyle(Design.ink)
+                            : hovering
+                                ? AnyShapeStyle(Design.inkWash)
+                                : AnyShapeStyle(Design.surface),
                     in: Circle())
                 .overlay {
                     if prominent || live {
@@ -386,6 +441,9 @@ struct CircleControl: View {
         .buttonStyle(CirclePressStyle(prominent: prominent, hovering: hovering))
         .onHover { hovering = $0 }
         .inkFocusRing(Circle())
+        .animation(Design.wash, value: hovering)
+        .animation(Design.snap, value: prominent)
+        .animation(Design.snap, value: glyph)
         .help(label)
         .accessibilityLabel(label)
     }
@@ -429,7 +487,6 @@ struct ArtifactExchangeView: View {
     @State private var image: NSImage?
     @State private var resolved = false
     @State private var saveNotice: String?
-    @State private var copiedImage = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.xs) {
@@ -502,16 +559,10 @@ struct ArtifactExchangeView: View {
                                 TrayButton(label: "Save .png", glyph: "arrow.down.to.line") {
                                     saveImage()
                                 }
-                                TrayButton(
-                                    label: copiedImage ? "Copied" : "Copy",
-                                    glyph: copiedImage ? "checkmark" : "doc.on.doc"
+                                ConfirmingButton(
+                                    label: "Copy", confirmedLabel: "Copied"
                                 ) {
                                     copyImage()
-                                    copiedImage = true
-                                    Task {
-                                        try? await Task.sleep(for: .seconds(1.5))
-                                        copiedImage = false
-                                    }
                                 }
                             }
                         }
@@ -629,6 +680,27 @@ struct ArtifactTray<Content: View>: View {
     }
 }
 
+struct ChipCloseButton: View {
+    let action: () -> Void
+    var label: String = "Remove"
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(Design.glyphSmall)
+                .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(hovering ? Design.ink.opacity(0.08) : .clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressDipStyle())
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .accessibilityLabel(label)
+    }
+}
+
 struct TrayButton: View {
     let label: String
     let glyph: String
@@ -665,6 +737,7 @@ private struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     let sendWithEnter: Bool
     @Binding var measuredHeight: CGFloat
+    var focused: Binding<Bool>? = nil
     var onCommand: ((Selector) -> Bool)? = nil
     var focusToken: Int = 0
     var mentionPaths: Set<String> = []
@@ -683,6 +756,14 @@ private struct ComposerTextView: NSViewRepresentable {
             parent.text = view.string
             parent.restyleMentions(view)
             parent.remeasure(view)
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            parent.focused?.wrappedValue = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            parent.focused?.wrappedValue = false
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {

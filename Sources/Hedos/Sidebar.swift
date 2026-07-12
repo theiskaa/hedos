@@ -47,8 +47,9 @@ struct InkSearchField: View {
                         .font(Design.glyphInline)
                         .foregroundStyle(Design.inkFaint)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressDipStyle())
                 .accessibilityLabel("Clear search")
+                .transition(.arrive(from: .trailing))
             }
         }
         .padding(.horizontal, Design.Space.chipX)
@@ -61,6 +62,8 @@ struct InkSearchField: View {
                         ? AnyShapeStyle(Design.accent.opacity(0.55))
                         : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
+        .animation(Design.wash, value: focused)
+        .animation(Design.wash, value: query.isEmpty)
         .onExitCommand { query = "" }
         .onChange(of: focusTick) { _, _ in
             focused = true
@@ -95,7 +98,7 @@ struct InkSidebarRow<ID: Hashable>: View {
                 pill
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
         .onHover { inside in
             if inside {
                 hovered = id
@@ -172,7 +175,7 @@ struct SidebarCollapseToggle: View {
                 .contentShape(RoundedRectangle.soft(Design.Radius.control))
                 .animation(Design.wash, value: hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .help(collapsed ? "Expand the sidebar" : "Collapse the sidebar")

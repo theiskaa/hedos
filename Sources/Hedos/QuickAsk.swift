@@ -122,38 +122,49 @@ struct HotkeyRecorder: View {
     let onChange: (QuickAskHotkey?) -> Void
     @State private var recording = false
     @State private var monitor: Any?
+    @State private var denyCount = 0
 
     var body: some View {
         HStack(spacing: Design.Space.m) {
             Button {
                 recording ? stopRecording() : startRecording()
             } label: {
-                Text(recording ? "Press keys…" : hotkey.map(KeyDisplay.string(for:)) ?? "Record shortcut")
-                    .font(hotkey == nil && !recording ? Design.label : Design.data(12))
-                    .foregroundStyle(
+                Group {
+                    if recording {
+                        ShimmerText(text: "Press keys…", font: Design.data(12), tracked: false)
+                    } else if let hotkey {
+                        Text(KeyDisplay.string(for: hotkey))
+                            .font(Design.data(12))
+                            .foregroundStyle(Design.ink)
+                    } else {
+                        Text("Record shortcut")
+                            .font(Design.label)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                }
+                .padding(.horizontal, Design.Space.chipX)
+                .padding(.vertical, Design.Space.xs + 1)
+                .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
+                .overlay(
+                    RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                         recording
-                            ? Design.inkSoft : hotkey == nil ? Design.inkFaint : Design.ink)
-                    .padding(.horizontal, Design.Space.chipX)
-                    .padding(.vertical, Design.Space.xs + 1)
-                    .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
-                    .overlay(
-                        RoundedRectangle.soft(Design.Radius.control).strokeBorder(
-                            recording
-                                ? AnyShapeStyle(Design.ink.opacity(0.35))
-                                : AnyShapeStyle(Design.line),
-                            lineWidth: Design.hairlineWidth))
-                    .contentShape(RoundedRectangle.soft(Design.Radius.control))
+                            ? AnyShapeStyle(Design.ink.opacity(0.35))
+                            : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+                .contentShape(RoundedRectangle.soft(Design.Radius.control))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressDipStyle())
+            .denyShake(on: denyCount, in: RoundedRectangle.soft(Design.Radius.control))
             .accessibilityLabel(
                 recording ? "Recording shortcut, press keys or Escape to cancel"
                     : "Record global shortcut")
-            if hotkey != nil && !recording {
-                Button("Clear") {
-                    onChange(nil)
-                }
-                .buttonStyle(QuietButtonStyle())
+            Button("Clear") {
+                onChange(nil)
             }
+            .buttonStyle(QuietButtonStyle())
+            .opacity(hotkey != nil && !recording ? 1 : 0)
+            .disabled(hotkey == nil || recording)
+            .allowsHitTesting(hotkey != nil && !recording)
         }
         .onDisappear { stopRecording() }
     }
@@ -171,6 +182,7 @@ struct HotkeyRecorder: View {
             }
             let modifiers = KeyDisplay.carbonModifiers(from: event.modifierFlags)
             guard modifiers & (cmdKey | optionKey | controlKey) != 0 else {
+                denyCount += 1
                 return nil
             }
             onChange(QuickAskHotkey(keyCode: Int(event.keyCode), modifiers: modifiers))
@@ -199,6 +211,8 @@ final class QuickAskModel {
     var isStreaming = false
     var notice: String?
     var focusToken = 0
+    var visible = false
+    var denyCount = 0
     private(set) var sessionID: String?
     private var task: Task<Void, Never>?
 
@@ -208,7 +222,11 @@ final class QuickAskModel {
 
     func ask(kernel: Kernel, records: [ModelRecord]) {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !isStreaming else { return }
+        guard !isStreaming else { return }
+        guard !question.isEmpty else {
+            denyCount += 1
+            return
+        }
         guard Launcher.defaultChatModel(in: records) != nil else {
             notice = "No chat-capable model is ready."
             return
@@ -273,11 +291,20 @@ final class QuickAskController {
         }
     }
 
+    private var materialize: Animation {
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? .easeOut(duration: 0.15) : Design.spring
+    }
+
     func hide() {
-        panel?.orderOut(nil)
         if let escapeMonitor {
             NSEvent.removeMonitor(escapeMonitor)
             self.escapeMonitor = nil
+        }
+        withAnimation(materialize, completionCriteria: .logicallyComplete) {
+            model.visible = false
+        } completion: { [weak self] in
+            self?.panel?.orderOut(nil)
         }
     }
 
@@ -287,6 +314,7 @@ final class QuickAskController {
             build(shell: shell)
         }
         guard let panel else { return }
+        model.visible = false
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
             let size = panel.frame.size
@@ -298,6 +326,7 @@ final class QuickAskController {
         panel.orderFrontRegardless()
         panel.makeKey()
         model.requestFocus()
+        withAnimation(materialize) { model.visible = true }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
             if event.keyCode == UInt16(kVK_Escape), self?.panel?.isKeyWindow == true {
@@ -408,6 +437,10 @@ private struct QuickAskView: View {
             RoundedRectangle.soft(Design.Radius.surface)
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         .shade(Design.Elevation.modal)
+        .denyShake(
+            on: model.denyCount, in: RoundedRectangle.soft(Design.Radius.surface), amplitude: 4)
+        .scaleEffect(model.visible ? 1 : 0.96, anchor: .top)
+        .opacity(model.visible ? 1 : 0)
         .onAppear { focused = true }
         .onChange(of: model.focusToken) { focused = true }
         .accessibilityIdentifier("quick-ask")
