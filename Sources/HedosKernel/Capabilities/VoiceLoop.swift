@@ -264,6 +264,7 @@ public actor VoiceLoop {
     private var vad: VADLite
     private var continuation: AsyncStream<Event>.Continuation?
     private var turnTask: Task<Void, Never>?
+    private var turnGeneration = 0
     private var running = false
 
     public init(backends: VoiceLoopBackends, vadConfig: VADLite.Config = VADLite.Config()) {
@@ -306,8 +307,10 @@ public actor VoiceLoop {
 
     private func beginTurn(_ samples: [Float]) {
         turnTask?.cancel()
+        turnGeneration += 1
+        let generation = turnGeneration
         turnTask = Task { [weak self] in
-            await self?.runTurn(samples)
+            await self?.runTurn(samples, generation: generation)
         }
     }
 
@@ -325,8 +328,8 @@ public actor VoiceLoop {
         ]
     }
 
-    private func runTurn(_ samples: [Float]) async {
-        defer { turnTask = nil }
+    private func runTurn(_ samples: [Float], generation: Int) async {
+        defer { if turnGeneration == generation { turnTask = nil } }
         continuation?.yield(.status("transcribing"))
         var reportedTurn = false
         var pcm = Data()
