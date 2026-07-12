@@ -12,9 +12,9 @@ struct PromptBubble: View {
             .padding(.horizontal, Design.Space.l)
             .padding(.vertical, Design.Space.m)
             .background(
-                Design.accentWash, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
+                Design.accentWash, in: RoundedRectangle.soft(Design.Radius.bubble))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                RoundedRectangle.soft(Design.Radius.bubble)
                     .strokeBorder(Design.accentEdge, lineWidth: Design.hairlineWidth))
             .frame(maxWidth: Design.Bubble.promptMax, alignment: .trailing)
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -26,9 +26,9 @@ struct ResponseShell: ViewModifier {
         content
             .padding(.horizontal, Design.Space.l)
             .padding(.vertical, Design.Space.m)
-            .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
+            .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.bubble))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                RoundedRectangle.soft(Design.Radius.bubble)
                     .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
     }
 }
@@ -75,8 +75,8 @@ struct VoiceBubble: View {
         }
         .padding(.vertical, Design.Space.m)
         .padding(.horizontal, Design.Space.l)
-        .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.artifact))
-        .overlay(RoundedRectangle(cornerRadius: Design.Radius.artifact).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.artifact))
+        .overlay(RoundedRectangle.soft(Design.Radius.artifact).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         .frame(maxWidth: 340)
         .help(SpeechArtifact.voiceName(of: artifact).map { "Voice: \($0)" } ?? "Narration")
         .contextMenu {
@@ -99,11 +99,11 @@ struct VoiceBubble: View {
                 .font(Design.caption.weight(.semibold))
                 .foregroundStyle(Design.paper)
                 .frame(width: 34, height: 34)
-                .background(Design.ink, in: RoundedRectangle(cornerRadius: Design.Radius.control))
-                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                .background(Design.ink, in: Circle())
+                .contentShape(Circle())
         }
         .buttonStyle(PressDipStyle())
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(Circle())
         .help(isSounding ? "Pause" : isActive ? "Resume" : "Play")
         .accessibilityLabel(isSounding ? "Pause" : "Play")
     }
@@ -169,7 +169,7 @@ struct WavePlayerBars: View {
         let levels = peaks.isEmpty ? Array(repeating: 0.35, count: 48) : peaks
         return HStack(alignment: .center, spacing: 1.5) {
             ForEach(Array(levels.enumerated()), id: \.offset) { _, level in
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(style)
                     .frame(maxWidth: .infinity)
                     .frame(height: (0.14 + 0.86 * level) * height)
@@ -211,12 +211,21 @@ struct ImageBubble: View {
                         .resizable()
                         .interpolation(.high)
                         .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+                        .clipShape(RoundedRectangle.soft(Design.Radius.card))
                 } else if isLoading {
-                    SkeletonPulse()
-                        .aspectRatio(1, contentMode: .fit)
+                    ZStack {
+                        RoundedRectangle.soft(Design.Radius.card)
+                            .fill(Design.cardFill)
+                        SkeletonPulse(radius: Design.Radius.card)
+                        SheenBand()
+                        Image(systemName: "photo")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    .aspectRatio(1, contentMode: .fit)
+                    .clipShape(RoundedRectangle.soft(Design.Radius.card))
                 } else {
-                    RoundedRectangle(cornerRadius: Design.Radius.card)
+                    RoundedRectangle.soft(Design.Radius.card)
                         .fill(Design.cardFill)
                         .aspectRatio(1, contentMode: .fit)
                 }
@@ -232,9 +241,9 @@ struct ImageBubble: View {
             }
         }
         .padding(Design.Space.m)
-        .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
+        .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.bubble))
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.bubble)
+            RoundedRectangle.soft(Design.Radius.bubble)
                 .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
@@ -244,23 +253,179 @@ struct ImageBubble: View {
     }
 }
 
-struct ToolActionLine: View {
-    let summary: String
+struct ImageDrawingCanvas: View {
+    let preview: NSImage?
+    let progress: JobProgress
+    let statusLine: String?
+    let onCancel: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var fraction: Double? {
+        progress.fraction > 0 ? min(max(progress.fraction, 0), 1) : nil
+    }
+
+    private var footerLabel: String? {
+        if let step = progress.step, let total = progress.totalSteps {
+            return "step \(step) / \(total)"
+        }
+        return statusLine
+    }
 
     var body: some View {
-        HStack(spacing: Design.Space.chipX) {
-            Image(systemName: "wrench.and.screwdriver")
-                .font(Design.micro)
+        ZStack {
+            RoundedRectangle.soft(Design.Radius.artifact)
+                .fill(Design.cardFill)
+            if let preview {
+                Image(nsImage: preview)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .opacity(0.5)
+            }
+            SkeletonPulse(radius: Design.Radius.artifact)
+            SheenBand()
+            centerCue
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                footer
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .frame(maxWidth: Design.Bubble.imageMax, maxHeight: Design.Bubble.imageMax)
+        .clipShape(RoundedRectangle.soft(Design.Radius.artifact))
+        .overlay(
+            RoundedRectangle.soft(Design.Radius.artifact)
+                .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .overlay(alignment: .topTrailing) {
+            cancelButton
+                .padding(Design.Space.m)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Drawing image" + (statusLine.map { ", \($0)" } ?? ""))
+    }
+
+    private var centerCue: some View {
+        VStack(spacing: Design.Space.s) {
+            Image(systemName: "paintbrush.pointed")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(Design.inkFaint)
+            ShimmerText(text: "drawing…", font: Design.micro)
+            TypingDots()
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xs) {
+            if let footerLabel {
+                Text(footerLabel)
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(Design.motion(reduceMotion: reduceMotion), value: footerLabel)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            progressBar
+        }
+        .padding(Design.Space.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var progressBar: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Design.line)
+                if let fraction {
+                    Capsule()
+                        .fill(Design.accent)
+                        .frame(width: max(geometry.size.width * fraction, 3))
+                        .animation(Design.motion(reduceMotion: reduceMotion), value: fraction)
+                } else {
+                    Capsule()
+                        .fill(Design.accentWash)
+                        .overlay(
+                            SheenBand(tint: Design.accent, opacity: 0.9)
+                                .clipShape(Capsule()))
+                }
+            }
+        }
+        .frame(height: 3)
+        .accessibilityHidden(true)
+    }
+
+    private var cancelButton: some View {
+        Button(action: onCancel) {
+            Image(systemName: "xmark")
+                .font(Design.glyphSmall.weight(.bold))
+                .foregroundStyle(Design.inkSoft)
+                .frame(width: 22, height: 22)
+                .background(Design.surface, in: Circle())
+                .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressDipStyle())
+        .help("Cancel")
+        .accessibilityLabel("Cancel image generation")
+    }
+}
+
+struct ToolTimelineRow: View {
+    let summary: String
+    let connectsUp: Bool
+    let connectsDown: Bool
+    let gap: CGFloat
+
+    private let node: CGFloat = 14
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Design.Space.chipX) {
+            rail
             Text(summary)
                 .font(Design.micro)
+                .foregroundStyle(Design.inkSoft)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, Design.Space.m)
-        .padding(.vertical, Design.Space.s)
-        .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.bubble)
-                .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var rail: some View {
+        ZStack {
+            if connectsUp {
+                VStack(spacing: 0) {
+                    segment(overshoot: .top)
+                    Spacer(minLength: 0)
+                }
+            }
+            if connectsDown {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    segment(overshoot: .bottom)
+                }
+            }
+            Circle()
+                .fill(Design.surface)
+                .overlay(
+                    Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                .overlay(
+                    Image(systemName: "wrench.and.screwdriver")
+                        .font(.system(size: 6, weight: .semibold))
+                        .foregroundStyle(Design.inkSoft))
+                .frame(width: node, height: node)
+        }
+        .frame(width: node)
+        .frame(maxHeight: .infinity)
+    }
+
+    private func segment(overshoot edge: Edge.Set) -> some View {
+        Rectangle()
+            .fill(Design.line)
+            .frame(width: Design.hairlineWidth)
+            .frame(maxHeight: .infinity)
+            .padding(edge, -gap)
     }
 }

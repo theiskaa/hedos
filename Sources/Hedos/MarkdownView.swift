@@ -100,7 +100,7 @@ struct MarkdownBlockView: View {
                 }
                 .padding(Design.Space.l)
             }
-            .background(Design.tableFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
+            .background(Design.tableFill, in: RoundedRectangle.soft(Design.Radius.card))
         case .rule:
             Divider()
                 .padding(.vertical, Design.Space.xxs)
@@ -165,7 +165,7 @@ struct CodeBlockView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.card))
+        .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.card))
         .onHover { hovering = $0 }
         .onAppear { refreshHighlight() }
         .onChange(of: code) { _, _ in refreshHighlight() }
@@ -185,15 +185,15 @@ struct CodeBlockView: View {
     private func styled(_ token: CodeToken) -> Text {
         switch token.kind {
         case .plain:
-            Text(verbatim: token.text)
+            Text(verbatim: token.text).foregroundStyle(Design.ink)
         case .keyword:
-            Text(verbatim: token.text).fontWeight(.semibold)
+            Text(verbatim: token.text).foregroundStyle(Design.ink).fontWeight(.semibold)
         case .string:
-            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
+            Text(verbatim: token.text).foregroundStyle(Design.added)
         case .comment:
             Text(verbatim: token.text).foregroundStyle(Design.inkFaint)
         case .number:
-            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
+            Text(verbatim: token.text).foregroundStyle(Design.accentText)
         }
     }
 }

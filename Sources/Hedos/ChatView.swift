@@ -48,6 +48,22 @@ final class ChatViewModel {
             case .speak: .speak
             }
         }
+
+        init(_ intent: ChatIntent) {
+            switch intent {
+            case .text: self = .text
+            case .image: self = .image
+            case .speak: self = .speak
+            }
+        }
+
+        var stored: ChatIntent {
+            switch self {
+            case .text: .text
+            case .image: .image
+            case .speak: .speak
+            }
+        }
     }
 
     enum ImagePhase: Equatable {
@@ -112,6 +128,9 @@ final class ChatViewModel {
         self.audio = audio
         self.sessionID = session.id
         self.boundModelID = session.modelID
+        self.intent = Intent(session.intent)
+        self.imageModelID = session.imageModelID
+        self.voiceModelID = session.voiceModelID
     }
 
     func load() async {
@@ -126,6 +145,9 @@ final class ChatViewModel {
 
     private func apply(_ stored: ChatTranscript) {
         boundModelID = stored.session.modelID
+        intent = Intent(stored.session.intent)
+        imageModelID = stored.session.imageModelID
+        voiceModelID = stored.session.voiceModelID
         var retired: [String: [ChatTurn]] = [:]
         for turn in stored.turns {
             if let supersededBy = turn.supersededBy {
@@ -225,6 +247,9 @@ final class ChatViewModel {
             imagePhase = .idle
         }
         intent = next
+        let kernel = kernel
+        let sessionID = sessionID
+        Task { try? await kernel.chats.setIntent(id: sessionID, intent: next.stored) }
     }
 
     func selectVoice(_ candidate: String) {
@@ -277,15 +302,24 @@ final class ChatViewModel {
         }
     }
 
-    func bindImage(to record: ModelRecord) {
+    func bindImage(to record: ModelRecord, persist: Bool = true) {
         guard imageModelID != record.id else { return }
         imageModelID = record.id
         form = ParamForm(schema: record.params)
+        guard persist else { return }
+        let kernel = kernel
+        let sessionID = sessionID
+        let recordID = record.id
+        Task { try? await kernel.chats.bindImageModel(id: sessionID, modelID: recordID) }
     }
 
-    func bindVoice(to record: ModelRecord) async {
+    func bindVoice(to record: ModelRecord, persist: Bool = true) async {
         guard voiceModelID != record.id || voices.isEmpty else { return }
+        let changed = voiceModelID != record.id
         voiceModelID = record.id
+        if persist && changed {
+            try? await kernel.chats.bindVoiceModel(id: sessionID, modelID: record.id)
+        }
         voices = (try? await kernel.voices(for: record.id)) ?? []
         let fallback = await kernel.settings.voice().defaultVoice
         if case .string(let configured)? = record.paramValues["voice"],
@@ -301,28 +335,28 @@ final class ChatViewModel {
 
     func adoptBindings(in records: [ModelRecord]) async {
         let images = imageModels(in: records)
-        if imageModelID == nil || !images.contains(where: { $0.id == imageModelID }) {
-            if let record = images.first {
-                bindImage(to: record)
-            } else {
-                imageModelID = nil
-                form = ParamForm(schema: [])
+        if let wanted = imageModelID, let record = images.first(where: { $0.id == wanted }) {
+            if form.schema.isEmpty {
+                form = ParamForm(schema: record.params)
             }
+        } else if let record = images.first {
+            bindImage(to: record, persist: false)
         }
         let speakers = voiceModels(in: records)
-        if voiceModelID == nil || !speakers.contains(where: { $0.id == voiceModelID }) {
-            if let record = SpeechModels.preferred(in: records) {
-                await bindVoice(to: record)
-            } else {
-                voiceModelID = nil
-                voices = []
+        if let wanted = voiceModelID, let record = speakers.first(where: { $0.id == wanted }) {
+            if voices.isEmpty {
+                await bindVoice(to: record, persist: false)
             }
+        } else if let record = SpeechModels.preferred(in: records) {
+            await bindVoice(to: record, persist: false)
         }
-        if intent == .image && images.isEmpty {
-            intent = .text
-        }
-        if intent == .speak && speakers.isEmpty {
-            intent = .text
+        if !records.isEmpty {
+            if intent == .image && images.isEmpty {
+                intent = .text
+            }
+            if intent == .speak && speakers.isEmpty {
+                intent = .text
+            }
         }
     }
 
@@ -730,11 +764,10 @@ final class ChatViewModel {
 
     private func tickReveal() {
         guard isStreaming else { return }
-        if reveal.tick(), !transcript.isEmpty {
-            transcript[transcript.count - 1].text = reveal.revealed
-        }
-        if liveBalanceThrottle.shouldRefresh() {
-            refreshLiveBalance()
+        if reveal.tick() {
+            if liveBalancedText.isEmpty || liveBalanceThrottle.shouldRefresh() {
+                refreshLiveBalance()
+            }
         }
         let idle = ContinuousClock().now - lastDeltaAt
         let quiet = idle > .milliseconds(150)
@@ -750,8 +783,7 @@ final class ChatViewModel {
     }
 
     private func refreshLiveBalance() {
-        guard let last = transcript.last else { return }
-        liveBalancedText = MarkdownBalancer.balanced(last.text)
+        liveBalancedText = MarkdownBalancer.balanced(reveal.revealed)
     }
 
     private func startTicker() {
@@ -1060,6 +1092,7 @@ struct ChatView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var model: ChatViewModel
     @State private var followsStream = true
+    @State private var scrolledUp = false
     @State private var expandedThinking: Set<String> = []
     @State private var versionSelection: [String: Int] = [:]
     @State private var editingEntryID: String?
@@ -1120,8 +1153,9 @@ struct ChatView: View {
                 kernel: kernel,
                 records: { [weak library] in library?.records ?? [] }),
             transcript: { transcript },
+            header: { composerHeader },
             aux: { composerAux },
-            chip: { modelChip }
+            chip: { EmptyView() }
         )
         .task(id: session.id) {
             model.resumeUI()
@@ -1158,6 +1192,48 @@ struct ChatView: View {
     }
 
     @ViewBuilder
+    private var composerHeader: some View {
+        HStack(spacing: Design.Space.s) {
+            modelChip
+            boundPlaceChip
+        }
+        .padding(.horizontal, Design.Space.xs)
+    }
+
+    @ViewBuilder
+    private var boundPlaceChip: some View {
+        if model.intent == .text, let place = model.place {
+            HStack(spacing: Design.Space.xs) {
+                Image(systemName: "folder")
+                    .font(Design.micro)
+                Text(URL(fileURLWithPath: place).lastPathComponent)
+                    .font(Design.micro)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button {
+                    model.clearPlace()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(Design.micro)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Stop reading this folder")
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, Design.Space.chipX)
+            .frame(height: Design.Control.size)
+            .background(Design.inkWash, in: Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+            .help(
+                "The model can list, read, and search inside \(place). "
+                    + "It cannot touch anything outside it, and it cannot write or run anything."
+            )
+        }
+    }
+
+    @ViewBuilder
     private var composerAux: some View {
         intentControl(
             .image, glyph: "photo", label: "Generate an image",
@@ -1172,42 +1248,12 @@ struct ChatView: View {
 
     @ViewBuilder
     private var placeControl: some View {
-        if model.intent == .text {
-            if let place = model.place {
-                HStack(spacing: Design.Space.xs) {
-                    Image(systemName: "folder")
-                        .font(Design.micro)
-                    Text(URL(fileURLWithPath: place).lastPathComponent)
-                        .font(Design.micro)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Button {
-                        model.clearPlace()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(Design.micro)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Stop reading this folder")
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, Design.Space.chipX)
-                .padding(.vertical, Design.Space.s)
-                .background(Design.inkWash, in: Capsule())
-                .overlay(
-                    Capsule()
-                        .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-                .help(
-                    "The model can list, read, and search inside \(place). "
-                        + "It cannot touch anything outside it, and it cannot write or run anything."
-                )
-            } else {
-                CircleControl(
-                    glyph: "folder",
-                    label: "Let the model read a folder"
-                ) {
-                    pickPlace()
-                }
+        if model.intent == .text, model.place == nil {
+            CircleControl(
+                glyph: "folder",
+                label: "Let the model read a folder"
+            ) {
+                pickPlace()
             }
         }
     }
@@ -1265,7 +1311,7 @@ struct ChatView: View {
     private var voiceLoopControl: some View {
         if VoiceConversationController.participants(in: library.records) != nil {
             if voiceConversation.active, let status = voiceConversation.status {
-                ShimmerText(text: status.uppercased())
+                ShimmerText(text: status, tracked: false)
                     .truncationMode(.tail)
                     .frame(maxWidth: Design.Column.control, alignment: .trailing)
             }
@@ -1319,12 +1365,12 @@ struct ChatView: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: transcriptSpacing) {
+                VStack(alignment: .leading, spacing: transcriptSpacing) {
                     if model.transcript.isEmpty && model.pendingSpeech == nil && !model.imageBusy {
                         emptyTranscript
                     }
-                    ForEach(model.transcript) { entry in
-                        turn(entry)
+                    ForEach(Array(model.transcript.enumerated()), id: \.element.id) { index, entry in
+                        turn(entry, at: index)
                     }
                     if let pending = model.pendingSpeech {
                         pendingSpeechRow(pending)
@@ -1354,6 +1400,10 @@ struct ChatView: View {
                     followsStream = true
                 } else if new.offsetY < old.offsetY - 8 {
                     followsStream = false
+                }
+                let scrollable = new.contentHeight > new.container.height + 8
+                if scrolledUp != (scrollable && !new.nearBottom) {
+                    scrolledUp = scrollable && !new.nearBottom
                 }
                 if followsStream
                     && (new.contentHeight != old.contentHeight || new.container != old.container)
@@ -1385,6 +1435,34 @@ struct ChatView: View {
                 }
             }
             .onAppear { settleAtTail(proxy) }
+            .overlay(alignment: .bottomTrailing) {
+                Group {
+                    if scrolledUp {
+                        Button {
+                            followsStream = true
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("tail", anchor: .bottom)
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(Design.glyphInline.weight(.semibold))
+                                .foregroundStyle(Design.inkSoft)
+                                .frame(width: 30, height: 30)
+                                .background(Design.surface, in: Circle())
+                                .overlay(
+                                    Circle().strokeBorder(
+                                        Design.line, lineWidth: Design.hairlineWidth))
+                                .shade(Design.Elevation.floating)
+                        }
+                        .buttonStyle(PressDipStyle())
+                        .padding(.trailing, Design.Space.xxl)
+                        .padding(.bottom, Design.Space.l)
+                        .transition(.scale.combined(with: .opacity))
+                        .accessibilityLabel("Scroll to bottom")
+                    }
+                }
+                .animation(Design.wash, value: scrolledUp)
+            }
         }
     }
 
@@ -1413,11 +1491,16 @@ struct ChatView: View {
         }
     }
 
+
     @ViewBuilder
-    private func turn(_ entry: ChatViewModel.Entry) -> some View {
+    private func turn(_ entry: ChatViewModel.Entry, at index: Int) -> some View {
         if entry.role == .tool {
-            ToolActionLine(summary: Self.toolActionSummary(entry.text))
-                .padding(.bottom, Design.Space.s)
+            ToolTimelineRow(
+                summary: Self.toolActionSummary(entry.text),
+                connectsUp: index > 0 && model.transcript[index - 1].role == .tool,
+                connectsDown: index + 1 < model.transcript.count
+                    && model.transcript[index + 1].role == .tool,
+                gap: transcriptSpacing)
         } else if entry.role == .user {
             VStack(alignment: .trailing, spacing: 4) {
                 if editingEntryID == entry.id {
@@ -1443,7 +1526,7 @@ struct ChatView: View {
                 if !displayThinking(entry).isEmpty {
                     thinkingBlock(entry)
                 }
-                if !entry.text.isEmpty {
+                if !displayText(entry).isEmpty {
                     MarkdownTurnView(text: displayText(entry), cursor: showsCursor(entry))
                         .contextMenu {
                             Button("Copy") { copy(displayText(entry)) }
@@ -1462,11 +1545,14 @@ struct ChatView: View {
                 } else if model.isStreaming && !entry.persisted && entry.thinking.isEmpty
                     && entry.id == model.transcript.last?.id
                 {
-                    ShimmerText(
-                        text: (model.streamStatus ?? "Streaming…").uppercased(),
-                        font: Design.micro)
+                    HStack(spacing: Design.Space.chipX) {
+                        TypingDots()
+                        if let status = model.streamStatus {
+                            ShimmerText(text: status, font: Design.caption, tracked: false)
+                        }
+                    }
                 }
-                if !entry.text.isEmpty && !(model.isStreaming && !entry.persisted) {
+                if !displayText(entry).isEmpty && !(model.isStreaming && !entry.persisted) {
                     HStack(spacing: Design.Space.m) {
                         ArtifactTray {
                             TrayButton(
@@ -1526,34 +1612,11 @@ struct ChatView: View {
                 PromptBubble(text: prompt)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            VStack(alignment: .leading, spacing: Design.Space.m) {
-                ImageBubble(image: model.imagePreview, caption: nil, isLoading: true)
-                HStack(spacing: Design.Space.l) {
-                    ProgressView(value: model.imageProgress.fraction)
-                        .progressViewStyle(.linear)
-                        .tint(Design.accent)
-                        .controlSize(.small)
-                        .frame(maxWidth: Design.Column.control)
-                    if let step = model.imageProgress.step,
-                        let total = model.imageProgress.totalSteps
-                    {
-                        Text("step \(step) / \(total)")
-                            .font(Design.data(10))
-                            .foregroundStyle(Design.inkSoft)
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .animation(Design.motion(reduceMotion: reduceMotion), value: step)
-                    } else if let status = imageStatusLine {
-                        Text(status)
-                            .font(Design.label)
-                            .foregroundStyle(Design.inkFaint)
-                    }
-                    Button("Cancel") {
-                        model.cancelImage()
-                    }
-                    .buttonStyle(QuietButtonStyle())
-                }
-            }
+            ImageDrawingCanvas(
+                preview: model.imagePreview,
+                progress: model.imageProgress,
+                statusLine: imageStatusLine,
+                onCancel: { model.cancelImage() })
         }
         .padding(.bottom, Design.Space.xl)
     }
@@ -1614,9 +1677,9 @@ struct ChatView: View {
                 .lineLimit(1...8)
                 .padding(.horizontal, Design.Space.l)
                 .padding(.vertical, Design.Space.m)
-                .background(Design.bubbleFill, in: RoundedRectangle(cornerRadius: Design.Radius.bubble))
+                .background(Design.bubbleFill, in: RoundedRectangle.soft(Design.Radius.bubble))
                 .overlay(
-                    RoundedRectangle(cornerRadius: Design.Radius.bubble)
+                    RoundedRectangle.soft(Design.Radius.bubble)
                         .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
             HStack(spacing: 8) {
                 Button("Cancel") { editingEntryID = nil }
@@ -1813,7 +1876,9 @@ struct ChatView: View {
         InkMenu(
             title: chatChipTitle,
             accessibilityName: "Chat model",
-            externalOpen: $modelMenuOpen
+            readyDot: boundRecord != nil ? boundReady : nil,
+            externalOpen: $modelMenuOpen,
+            trigger: .chip
         ) {
             if chatGroups.isEmpty {
                 InkMenuRow(title: "No chat-capable model is ready.", disabled: true) {}
@@ -1843,7 +1908,9 @@ struct ChatView: View {
     private var imageChip: some View {
         InkMenu(
             title: activeRecord?.displayName ?? "Choose model",
-            accessibilityName: "Image model"
+            accessibilityName: "Image model",
+            readyDot: activeRecord != nil ? true : nil,
+            trigger: .chip
         ) {
             let runnable = model.imageModels(in: library.records)
             let waiting = model.waitingImageModels(in: library.records)
@@ -1872,7 +1939,9 @@ struct ChatView: View {
     private var voiceChip: some View {
         InkMenu(
             title: activeRecord?.displayName ?? "Choose model",
-            accessibilityName: "Voice model"
+            accessibilityName: "Voice model",
+            readyDot: activeRecord != nil ? true : nil,
+            trigger: .chip
         ) {
             let runnable = model.voiceModels(in: library.records)
             if runnable.isEmpty {
@@ -1891,7 +1960,7 @@ struct ChatView: View {
     }
 
     private var voicePickerChip: some View {
-        InkMenu(title: model.voice, accessibilityName: "Voice") {
+        InkMenu(title: model.voice, accessibilityName: "Voice", trigger: .chip) {
             ForEach(model.voices, id: \.self) { candidate in
                 InkMenuRow(
                     title: candidate,
