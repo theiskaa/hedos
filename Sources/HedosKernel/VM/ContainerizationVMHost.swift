@@ -148,7 +148,27 @@ actor ContainerizationVMHost: VMHost {
             to: dir.appendingPathComponent(".env-ready"), atomically: true, encoding: .utf8)
     }
 
+    private var busy: Set<String> = []
+    private var waiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    private func acquire(_ runtimeID: String) async {
+        while busy.contains(runtimeID) {
+            await withCheckedContinuation { waiters[runtimeID, default: []].append($0) }
+        }
+        busy.insert(runtimeID)
+    }
+
+    private func release(_ runtimeID: String) {
+        busy.remove(runtimeID)
+        guard var pending = waiters[runtimeID], !pending.isEmpty else { return }
+        let next = pending.removeFirst()
+        waiters[runtimeID] = pending.isEmpty ? nil : pending
+        next.resume()
+    }
+
     func run(_ request: VMRunRequest) async throws -> VMRunResult {
+        await acquire(request.runtimeID)
+        defer { release(request.runtimeID) }
         let id = containerID(request.runtimeID)
         let rootfs = containerDir(request.runtimeID).appendingPathComponent("rootfs.ext4")
         guard FileManager.default.fileExists(atPath: rootfs.path) else {
