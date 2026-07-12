@@ -75,6 +75,11 @@ private func ollamaRecord(name: String = "qwen3.5:9b") -> ModelRecord {
     #expect(!adapter.canServe(ollamaRecord(), .image))
     #expect(!adapter.canServe(Fixtures.flux(), .chat))
     #expect(!adapter.canServe(Fixtures.flux(), .embed))
+    #expect(!adapter.canServe(ollamaRecord(), .see))
+    var visionRecord = ollamaRecord(name: "llava:7b")
+    visionRecord.capabilities = [.chat, .complete, .see]
+    #expect(adapter.canServe(visionRecord, .see))
+    #expect(adapter.canServe(visionRecord, .chat))
 }
 
 @Test func embedOnlyOllamaRecordRefusesChatInvoke() async throws {

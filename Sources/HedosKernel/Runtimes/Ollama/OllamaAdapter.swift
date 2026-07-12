@@ -35,7 +35,12 @@ struct OllamaAdapter: RuntimeAdapter {
     }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
-        guard capability == .chat || capability == .complete || capability == .embed else {
+        guard capability == .chat || capability == .complete || capability == .embed
+            || capability == .see
+        else {
+            return false
+        }
+        if capability == .see, !record.capabilities.contains(.see) {
             return false
         }
         if capability != .embed, !record.capabilities.contains(.chat) {
