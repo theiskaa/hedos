@@ -333,13 +333,14 @@ public actor ChatStore {
                 id: idMap[turn.id] ?? freshID(), sessionID: newSessionID, seq: turn.seq,
                 role: turn.role, content: turn.content, thinking: turn.thinking,
                 modelID: turn.modelID, statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
+                attachmentRefs: turn.attachmentRefs,
                 supersededBy: supersededBy,
                 contentHash: contentHash(
                     content: turn.content, thinking: turn.thinking, modelID: turn.modelID,
                     statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
                     supersededBy: supersededBy, toolCallsJSON: turn.toolCallsJSON,
                     toolCallID: turn.toolCallID, toolName: turn.toolName,
-                    interrupted: turn.interrupted),
+                    interrupted: turn.interrupted, attachmentRefs: turn.attachmentRefs),
                 createdAt: turn.createdAt, updatedAt: turn.updatedAt,
                 toolCallsJSON: turn.toolCallsJSON, toolCallID: turn.toolCallID,
                 toolName: turn.toolName, interrupted: turn.interrupted)

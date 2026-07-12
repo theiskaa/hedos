@@ -28,11 +28,17 @@ public struct AttachmentStore: Sendable {
 
     public func load(_ refs: [String]) -> [ChatAttachment] {
         refs.compactMap { ref in
-            guard let data = try? Data(contentsOf: directory.appendingPathComponent(ref))
+            guard Self.isSafeRef(ref),
+                let data = try? Data(contentsOf: directory.appendingPathComponent(ref))
             else { return nil }
             let ext = (ref as NSString).pathExtension
             return ChatAttachment(kind: .image, data: data, mimeType: Self.mimeType(for: ext))
         }
+    }
+
+    static func isSafeRef(_ ref: String) -> Bool {
+        !ref.isEmpty && ref == (ref as NSString).lastPathComponent && ref != "."
+            && ref != ".." && !ref.hasPrefix(".")
     }
 
     static func fileExtension(for mimeType: String) -> String {

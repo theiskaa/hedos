@@ -21,6 +21,18 @@ private func pngBytes(_ marker: UInt8) -> Data {
     #expect(loaded.first?.mimeType == "image/png")
 }
 
+@Test func attachmentStoreRefusesPathTraversalRefs() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = AttachmentStore(directory: dir.appendingPathComponent("attachments"))
+    #expect(store.load(["../../../etc/passwd"]).isEmpty)
+    #expect(store.load(["sub/evil.png"]).isEmpty)
+    #expect(store.load(["/etc/hosts"]).isEmpty)
+    #expect(!AttachmentStore.isSafeRef("../x"))
+    #expect(!AttachmentStore.isSafeRef("a/b"))
+    #expect(AttachmentStore.isSafeRef("abc123.png"))
+}
+
 @Test func chatMessageEncodesAttachmentsOnlyWhenPresent() throws {
     let plain = ChatMessage(role: .user, content: "hi")
     let plainJSON = String(decoding: try JSONEncoder().encode(plain), as: UTF8.self)
