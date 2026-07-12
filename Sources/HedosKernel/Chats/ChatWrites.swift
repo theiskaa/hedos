@@ -9,6 +9,9 @@ extension ChatStore {
         case renameSession(id: String, title: String, titledBy: String?, at: Date)
         case setPlace(id: String, place: String?, at: Date)
         case rebindSession(id: String, modelID: String?, at: Date)
+        case setIntent(id: String, intent: ChatIntent, at: Date)
+        case bindImageModel(id: String, modelID: String?, at: Date)
+        case bindVoiceModel(id: String, modelID: String?, at: Date)
         case setSystemPrompt(id: String, prompt: String?, at: Date)
         case setPinned(id: String, pinned: Bool, at: Date)
         case setArchived(id: String, archived: Bool, at: Date)
@@ -22,8 +25,9 @@ extension ChatStore {
                 """
                 INSERT OR REPLACE INTO sessions
                     (id, title, created_at, updated_at, model_id, capability_tags,
-                     turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by,
+                     intent, image_model_id, voice_model_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     .text(session.id),
@@ -39,6 +43,9 @@ extension ChatStore {
                     session.place.map(SQLiteValue.text) ?? .null,
                     session.systemPrompt.map(SQLiteValue.text) ?? .null,
                     session.titledBy.map(SQLiteValue.text) ?? .null,
+                    .text(session.intent.rawValue),
+                    session.imageModelID.map(SQLiteValue.text) ?? .null,
+                    session.voiceModelID.map(SQLiteValue.text) ?? .null,
                 ])
         case .insertTurn(let turn, let mergeTags):
             try database.run(
@@ -144,6 +151,26 @@ extension ChatStore {
                     .real(at.timeIntervalSince1970),
                     .text(id),
                 ])
+        case .setIntent(let id, let intent, let at):
+            try database.run(
+                "UPDATE sessions SET intent = ?, updated_at = ? WHERE id = ?",
+                [.text(intent.rawValue), .real(at.timeIntervalSince1970), .text(id)])
+        case .bindImageModel(let id, let modelID, let at):
+            try database.run(
+                "UPDATE sessions SET image_model_id = ?, updated_at = ? WHERE id = ?",
+                [
+                    modelID.map(SQLiteValue.text) ?? .null,
+                    .real(at.timeIntervalSince1970),
+                    .text(id),
+                ])
+        case .bindVoiceModel(let id, let modelID, let at):
+            try database.run(
+                "UPDATE sessions SET voice_model_id = ?, updated_at = ? WHERE id = ?",
+                [
+                    modelID.map(SQLiteValue.text) ?? .null,
+                    .real(at.timeIntervalSince1970),
+                    .text(id),
+                ])
         case .setSystemPrompt(let id, let prompt, let at):
             try database.run(
                 "UPDATE sessions SET system_prompt = ?, updated_at = ? WHERE id = ?",
@@ -181,7 +208,10 @@ extension ChatStore {
             deletedAt: row.optionalReal(9).map(Date.init(timeIntervalSince1970:)),
             place: row.optionalText(10),
             systemPrompt: row.optionalText(11),
-            titledBy: row.optionalText(12))
+            titledBy: row.optionalText(12),
+            intent: ChatIntent(rawValue: row.text(13)) ?? .text,
+            imageModelID: row.optionalText(14),
+            voiceModelID: row.optionalText(15))
     }
 
     static func turn(from row: SQLiteRow) -> ChatTurn {

@@ -85,5 +85,10 @@ extension ChatStore {
         """
         ALTER TABLE turns ADD COLUMN attachment_refs TEXT;
         """,
+        """
+        ALTER TABLE sessions ADD COLUMN intent TEXT NOT NULL DEFAULT 'text';
+        ALTER TABLE sessions ADD COLUMN image_model_id TEXT;
+        ALTER TABLE sessions ADD COLUMN voice_model_id TEXT;
+        """,
     ]
 }

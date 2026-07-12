@@ -74,7 +74,8 @@ public actor ChatStore {
         let rows = try database.rows(
             """
             SELECT id, title, created_at, updated_at, model_id, capability_tags,
-                   turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by
+                   turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by,
+                   intent, image_model_id, voice_model_id
             FROM sessions
             WHERE \(condition)
             ORDER BY updated_at DESC, id
@@ -90,7 +91,7 @@ public actor ChatStore {
                     """
                     SELECT id, title, created_at, updated_at, model_id, capability_tags,
                            turn_count, pinned, archived, deleted_at, place,
-                           system_prompt, titled_by
+                           system_prompt, titled_by, intent, image_model_id, voice_model_id
                     FROM sessions
                     WHERE id = ? AND deleted_at IS NULL
                     """, [.text(id)]
@@ -232,6 +233,33 @@ public actor ChatStore {
         }
     }
 
+    public func setIntent(id: String, intent: ChatIntent) throws {
+        let now = Self.now()
+        try mutateSession(
+            id: id, at: now, write: .setIntent(id: id, intent: intent, at: now)
+        ) {
+            $0.intent = intent
+        }
+    }
+
+    public func bindImageModel(id: String, modelID: String?) throws {
+        let now = Self.now()
+        try mutateSession(
+            id: id, at: now, write: .bindImageModel(id: id, modelID: modelID, at: now)
+        ) {
+            $0.imageModelID = modelID
+        }
+    }
+
+    public func bindVoiceModel(id: String, modelID: String?) throws {
+        let now = Self.now()
+        try mutateSession(
+            id: id, at: now, write: .bindVoiceModel(id: id, modelID: modelID, at: now)
+        ) {
+            $0.voiceModelID = modelID
+        }
+    }
+
     public func setSystemPrompt(id: String, prompt: String?) throws {
         let now = Self.now()
         try mutateSession(
@@ -326,7 +354,8 @@ public actor ChatStore {
             id: newSessionID, title: old.title, createdAt: old.createdAt,
             updatedAt: old.updatedAt, modelID: old.modelID, capabilityTags: old.capabilityTags,
             turnCount: old.turnCount, pinned: old.pinned, archived: old.archived, deletedAt: nil,
-            place: old.place, systemPrompt: old.systemPrompt, titledBy: old.titledBy)
+            place: old.place, systemPrompt: old.systemPrompt, titledBy: old.titledBy,
+            intent: old.intent, imageModelID: old.imageModelID, voiceModelID: old.voiceModelID)
         let turns = transcript.turns.map { turn -> ChatTurn in
             let supersededBy = turn.supersededBy.map { idMap[$0] ?? $0 }
             return ChatTurn(

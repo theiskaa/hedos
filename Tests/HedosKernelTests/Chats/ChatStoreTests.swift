@@ -545,3 +545,71 @@ private func makeStore(in directory: URL) -> ChatStore {
         try await reloaded.setPlace(id: "no-such-session", place: "/tmp/x")
     }
 }
+
+@Test func intentAndModeModelsPersistAndSurviveReopen() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = makeStore(in: dir)
+    let session = try await store.createSession(title: "Modes", modelID: "chat-model")
+    #expect(session.intent == .text)
+    #expect(session.imageModelID == nil)
+    #expect(session.voiceModelID == nil)
+
+    try await store.setIntent(id: session.id, intent: .image)
+    try await store.bindImageModel(id: session.id, modelID: "sdxl")
+    try await store.bindVoiceModel(id: session.id, modelID: "kokoro")
+
+    let reopened = makeStore(in: dir)
+    let restored = try #require(try await reopened.session(id: session.id)).session
+    #expect(restored.intent == .image)
+    #expect(restored.imageModelID == "sdxl")
+    #expect(restored.voiceModelID == "kokoro")
+    #expect(restored.modelID == "chat-model")
+
+    try await reopened.bindImageModel(id: session.id, modelID: nil)
+    let cleared = try #require(try await makeStore(in: dir).session(id: session.id)).session
+    #expect(cleared.imageModelID == nil)
+    #expect(cleared.intent == .image)
+
+    await #expect(throws: ChatStoreError.self) {
+        try await reopened.setIntent(id: "no-such-session", intent: .speak)
+    }
+}
+
+@Test func sessionsFromBeforeIntentColumnDefaultToText() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("chats.sqlite")
+    do {
+        let legacy = try ChatDatabase(url: url)
+        try legacy.execute("PRAGMA journal_mode=WAL")
+        let priorMigrations = Array(ChatStore.migrations.dropLast())
+        for migration in priorMigrations { try legacy.execute(migration) }
+        try legacy.setUserVersion(priorMigrations.count)
+        _ = try legacy.run(
+            "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            [.text("legacy"), .text("Old world"), .real(0), .real(0)])
+    }
+
+    let store = ChatStore(databaseURL: url)
+    let restored = try #require(try await store.session(id: "legacy")).session
+    #expect(restored.intent == .text)
+    #expect(restored.imageModelID == nil)
+    #expect(restored.voiceModelID == nil)
+    #expect(try await store.sessions(filter: .all).contains { $0.id == "legacy" })
+}
+
+@Test func legacySessionJSONDecodesWithModeDefaults() throws {
+    let json = """
+        {"id":"s","title":"t","createdAt":0,"updatedAt":0,"capabilityTags":[],
+         "turnCount":0,"pinned":false,"archived":false}
+        """
+    let decoded = try JSONDecoder().decode(ChatSession.self, from: Data(json.utf8))
+    #expect(decoded.intent == .text)
+    #expect(decoded.imageModelID == nil)
+    #expect(decoded.voiceModelID == nil)
+
+    let roundTripped = try JSONDecoder().decode(
+        ChatSession.self, from: try JSONEncoder().encode(decoded))
+    #expect(roundTripped.intent == .text)
+}

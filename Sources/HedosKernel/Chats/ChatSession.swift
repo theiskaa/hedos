@@ -1,5 +1,11 @@
 import Foundation
 
+public enum ChatIntent: String, Codable, Sendable, Hashable {
+    case text
+    case image
+    case speak
+}
+
 public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
     public let id: String
     public var title: String
@@ -14,6 +20,9 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
     public var place: String?
     public var systemPrompt: String?
     public var titledBy: String?
+    public var intent: ChatIntent
+    public var imageModelID: String?
+    public var voiceModelID: String?
 
     public init(
         id: String,
@@ -28,7 +37,10 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         deletedAt: Date? = nil,
         place: String? = nil,
         systemPrompt: String? = nil,
-        titledBy: String? = nil
+        titledBy: String? = nil,
+        intent: ChatIntent = .text,
+        imageModelID: String? = nil,
+        voiceModelID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -43,6 +55,35 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         self.place = place
         self.systemPrompt = systemPrompt
         self.titledBy = titledBy
+        self.intent = intent
+        self.imageModelID = imageModelID
+        self.voiceModelID = voiceModelID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, createdAt, updatedAt, modelID, capabilityTags, turnCount
+        case pinned, archived, deletedAt, place, systemPrompt, titledBy
+        case intent, imageModelID, voiceModelID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
+        capabilityTags = try container.decodeIfPresent([String].self, forKey: .capabilityTags) ?? []
+        turnCount = try container.decodeIfPresent(Int.self, forKey: .turnCount) ?? 0
+        pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        archived = try container.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+        place = try container.decodeIfPresent(String.self, forKey: .place)
+        systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
+        titledBy = try container.decodeIfPresent(String.self, forKey: .titledBy)
+        intent = try container.decodeIfPresent(ChatIntent.self, forKey: .intent) ?? .text
+        imageModelID = try container.decodeIfPresent(String.self, forKey: .imageModelID)
+        voiceModelID = try container.decodeIfPresent(String.self, forKey: .voiceModelID)
     }
 
     public static let defaultTitle = "New Chat"
