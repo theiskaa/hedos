@@ -1154,65 +1154,37 @@ struct SettingsRoot: View {
     }
 
     private var hfCacheRows: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
-            ForEach(shell.library.hfCacheRoots, id: \.self) { path in
-                FolderRow(path: path) {
-                    let shell = shell
-                    Task {
-                        await shell.library.removeHFRoot(path)
-                    }
-                }
-            }
-            if shell.library.hfCacheRoots.isEmpty {
-                Text("Standard locations and HF_HOME are always scanned.")
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
-            }
-            Button("Add…") {
+        FolderListSection(
+            folders: shell.library.hfCacheRoots,
+            emptyText: "Standard locations and HF_HOME are always scanned.",
+            onRemove: { path in
                 let shell = shell
-                FolderRow.pickFolder { url in
-                    Task {
-                        await shell.library.addHFRoot(url)
-                    }
-                }
-            }
-            .buttonStyle(QuietButtonStyle())
-            .padding(.top, Design.Space.xs)
-        }
-        .padding(.vertical, Design.Space.m)
-        .id("models.hfCache")
-        .background(highlightBackground("models.hfCache"))
+                Task { await shell.library.removeHFRoot(path) }
+            },
+            onAdd: { url in
+                let shell = shell
+                Task { await shell.library.addHFRoot(url) }
+            })
+            .padding(.vertical, Design.Space.m)
+            .id("models.hfCache")
+            .background(highlightBackground("models.hfCache"))
     }
 
     private var foldersRows: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
-            ForEach(shell.library.watchedFolders, id: \.self) { path in
-                FolderRow(path: path) {
-                    let shell = shell
-                    Task {
-                        await shell.library.removeFolder(path)
-                    }
-                }
-            }
-            if shell.library.watchedFolders.isEmpty {
-                Text("Standard locations are always scanned.")
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
-            }
-            Button("Add…") {
+        FolderListSection(
+            folders: shell.library.watchedFolders,
+            emptyText: "Standard locations are always scanned.",
+            onRemove: { path in
                 let shell = shell
-                FolderRow.pickFolder { url in
-                    Task {
-                        await shell.library.addFolder(url)
-                    }
-                }
-            }
-            .buttonStyle(QuietButtonStyle())
-            .padding(.top, Design.Space.xs)
-        }
-        .padding(.vertical, Design.Space.m)
-        .id("models.folders")
-        .background(highlightBackground("models.folders"))
+                Task { await shell.library.removeFolder(path) }
+            },
+            onAdd: { url in
+                let shell = shell
+                Task { await shell.library.addFolder(url) }
+            })
+            .padding(.vertical, Design.Space.m)
+            .id("models.folders")
+            .background(highlightBackground("models.folders"))
     }
 
     private var chatSection: some View {
@@ -2015,6 +1987,31 @@ private struct PromptSheet: View {
             .keyboardShortcut(.defaultAction)
             .disabled(draft.title.isEmpty && draft.body.isEmpty)
             .accessibilityIdentifier("prompt-save")
+        }
+    }
+}
+
+private struct FolderListSection: View {
+    let folders: [String]
+    let emptyText: String
+    let onRemove: (String) -> Void
+    let onAdd: (URL) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            ForEach(folders, id: \.self) { path in
+                FolderRow(path: path) { onRemove(path) }
+            }
+            if folders.isEmpty {
+                Text(emptyText)
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+            Button("Add…") {
+                FolderRow.pickFolder { onAdd($0) }
+            }
+            .buttonStyle(QuietButtonStyle())
+            .padding(.top, Design.Space.xs)
         }
     }
 }
