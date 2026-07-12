@@ -153,7 +153,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     #expect(turns.map(\.role) == [.user, .assistant, .tool])
     #expect(turns[1].toolCalls == [timeCall()])
     #expect(turns[2].toolCallID == timeCall().id)
-    #expect(turns[2].content.contains("cancelled before this tool ran"))
+    #expect(turns[2].content == "result for get_time")
 
     let followup = ScriptedStreams(passes: [[.text("still works"), .done(nil)]])
     let plainFlow = loopFlow(

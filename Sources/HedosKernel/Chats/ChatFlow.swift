@@ -294,7 +294,6 @@ struct ChatFlow: Sendable {
                                         "step \(executedCalls + 1) of \(toolCallCap): "
                                         + Harness.actionSummary(call)))
                                 result = await execute(sessionID, call)
-                                try Task.checkCancellation()
                                 result = Self.truncatedToolResult(result)
                                 executedCalls += 1
                                 if executedCalls >= toolCallCap {
@@ -321,6 +320,7 @@ struct ChatFlow: Sendable {
                             continuation.yield(.status("tool: \(Harness.actionSummary(call))"))
                         }
                         history.append(contentsOf: projections)
+                        try Task.checkCancellation()
                         if executedCalls >= toolCallCap {
                             offeredTools = []
                         }
