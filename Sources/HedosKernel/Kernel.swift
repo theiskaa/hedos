@@ -188,6 +188,8 @@ public actor Kernel {
             MlxAudioAdapter(governor: governor),
             MfluxAdapter(governor: governor),
             DiffusersAdapter(governor: governor),
+            ComfyUIAdapter(),
+            A1111Adapter(),
             MlxSwiftAdapter(governor: governor),
             MlxVlmAdapter(governor: governor),
             MlxLmAdapter(governor: governor),
@@ -237,6 +239,7 @@ public actor Kernel {
         var summary = try await DiscoveryService(
             scanners: scanners, duplicateThreshold: duplicateThreshold
         ).discover(into: registry)
+        await DaemonLiveness.shared.probe()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
         summary.issues.append(contentsOf: manifestIssues)
         lastSummary = summary
@@ -319,6 +322,7 @@ public actor Kernel {
         let affected = Set(scanners.flatMap(\.kinds))
         let resolutionScope: Set<SourceKind>? =
             loadedManifests == manifestsBefore ? affected : nil
+        await DaemonLiveness.shared.probe()
         try? await ResolutionEngine(
             adapters: adapters, identificationCache: identificationCache
         ).resolveAll(in: registry, kinds: resolutionScope)
