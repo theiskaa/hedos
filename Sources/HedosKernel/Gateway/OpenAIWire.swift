@@ -58,33 +58,49 @@ enum OpenAIWire {
             toolChoice: toolChoice)
     }
 
+    static func numberParam(_ body: [String: Any], _ key: String) throws -> Double? {
+        guard let raw = body[key] else { return nil }
+        guard let value = raw as? Double else {
+            throw GatewayError(.badRequest, "\(key) must be a number", code: "invalid_type")
+        }
+        return value
+    }
+
+    static func intParam(_ body: [String: Any], _ key: String) throws -> Int? {
+        guard let raw = body[key] else { return nil }
+        guard let value = raw as? Int else {
+            throw GatewayError(.badRequest, "\(key) must be an integer", code: "invalid_type")
+        }
+        return value
+    }
+
     static func decodeSampling(_ body: [String: Any]) throws -> [String: JSONValue] {
         var sampling: [String: JSONValue] = [:]
-        if let temperature = body["temperature"] as? Double {
+        if let temperature = try numberParam(body, "temperature") {
             sampling["temperature"] = .double(temperature)
         }
-        if let topP = body["top_p"] as? Double {
+        if let topP = try numberParam(body, "top_p") {
             sampling["top_p"] = .double(topP)
         }
-        if let maxTokens = body["max_tokens"] as? Int {
+        if let maxTokens = try intParam(body, "max_tokens") {
             sampling["max_tokens"] = .int(maxTokens)
-        } else if let maxTokens = body["max_completion_tokens"] as? Int {
+        } else if let maxTokens = try intParam(body, "max_completion_tokens") {
             sampling["max_tokens"] = .int(maxTokens)
         }
         if let stop = try WireParamDecoding.stop(body["stop"], maxCount: 4) {
             sampling["stop"] = stop
         }
-        if let seed = body["seed"] as? Int {
+        if let seed = try intParam(body, "seed") {
             sampling["seed"] = .int(seed)
         }
-        if let n = body["n"] as? Int, n != 1 {
+        if let n = try intParam(body, "n"), n != 1 {
             throw GatewayError(
                 .badRequest, "n greater than 1 is not supported", code: "unsupported_parameter")
         }
-        if let frequencyPenalty = body["frequency_penalty"] as? Double {
+        if let frequencyPenalty = try numberParam(body, "frequency_penalty") {
             sampling["frequency_penalty"] = .double(frequencyPenalty)
         }
-        if let presencePenalty = body["presence_penalty"] as? Double {
+        if let presencePenalty = try numberParam(body, "presence_penalty") {
             sampling["presence_penalty"] = .double(presencePenalty)
         }
         return sampling

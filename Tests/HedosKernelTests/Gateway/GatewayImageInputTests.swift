@@ -44,6 +44,18 @@ private func dataURI() -> String {
     }
 }
 
+@Test func openAIRejectsWrongTypedSamplingScalars() {
+    #expect(throws: GatewayError.self) {
+        _ = try OpenAIWire.decodeSampling(["temperature": "hot"])
+    }
+    #expect(throws: GatewayError.self) {
+        _ = try OpenAIWire.decodeSampling(["max_tokens": "lots"])
+    }
+    let ok = try? OpenAIWire.decodeSampling(["temperature": 0.7, "max_tokens": 8])
+    #expect(ok?["temperature"] == .double(0.7))
+    #expect(ok?["max_tokens"] == .int(8))
+}
+
 @Test func ollamaReadsTheImagesArray() throws {
     let encoded = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
     let body: [String: Any] = [
