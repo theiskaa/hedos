@@ -446,10 +446,6 @@ private func serveDirManifest(id: String, network: Bool) -> String {
         command = "\(pythonPath) \(script.path) {prompt}"
         """
     try writeUserManifest(e2eManifest, kernelDir: dir, name: "e2e-runner")
-    defer {
-        try? FileManager.default.removeItem(
-            at: Registry.defaultDirectory().appendingPathComponent("workdirs/e2e-runner"))
-    }
     let record = try darkRecord(in: dir)
     try await kernel.registry.register(record)
     _ = try await kernel.discover()
