@@ -55,7 +55,7 @@ private func embedRecord() -> ModelRecord {
     let record = vlmRecord()
     #expect(adapter.canServe(record, .see))
     #expect(adapter.canServe(record, .chat))
-    #expect(adapter.canServe(record, .complete))
+    #expect(!adapter.canServe(record, .complete))
     #expect(!adapter.canServe(record, .embed))
     #expect(!adapter.canServe(embedRecord(), .see))
 }

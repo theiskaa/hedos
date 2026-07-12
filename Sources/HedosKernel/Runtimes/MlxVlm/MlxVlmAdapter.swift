@@ -24,8 +24,7 @@ struct MlxVlmAdapter: RuntimeAdapter {
     }
 
     func canServe(_ record: ModelRecord, _ capability: Capability) -> Bool {
-        record.runtime.id == id
-            && (capability == .chat || capability == .complete || capability == .see)
+        record.runtime.id == id && (capability == .chat || capability == .see)
     }
 
     func bid(_ record: ModelRecord, _ identified: IdentifiedModel) -> RuntimeBid? {
@@ -37,9 +36,7 @@ struct MlxVlmAdapter: RuntimeAdapter {
     }
 
     func honoredParamKeys(_ record: ModelRecord, _ capability: Capability) -> Set<String> {
-        guard capability == .chat || capability == .complete || capability == .see else {
-            return []
-        }
+        guard capability == .chat || capability == .see else { return [] }
         return ["temperature", "top_p", "max_tokens"]
     }
 
