@@ -198,9 +198,8 @@ struct FoldersPopover: View {
                 .buttonStyle(QuietButtonStyle())
             }
         }
-        .padding(Design.Space.xl)
-        .frame(width: Design.Popover.form.width)
-        .background(Design.paper)
+        .padding(Design.Space.l)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -231,7 +230,7 @@ struct FolderRow: View {
         .padding(.horizontal, Design.Space.m)
         .padding(.vertical, Design.Space.s)
         .background(
-            RoundedRectangle(cornerRadius: Design.Radius.control)
+            RoundedRectangle.soft(Design.Radius.control)
                 .fill(hovering ? Design.inkWash : .clear))
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)

@@ -51,19 +51,24 @@ struct PipelinesPane: View {
     @State private var editDraft: Pipeline?
     @State private var query = ""
 
+    private static let contentWidth: CGFloat = 1080
+
     private var records: [ModelRecord] {
         shell.library.records.filter { $0.state == .ready }
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            pipelinesColumn
-                .frame(width: Design.Rail.columnWidth)
-            ColumnDivider()
-            runPanel
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            if let model, let id = shell.pipelineSelection,
+                let pipeline = model.pipelines.first(where: { $0.id == id })
+            {
+                runScreen(model: model, pipeline: pipeline)
+            } else {
+                dashboard
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(PixelGrid())
         .task {
             if model == nil { model = PipelinesModel(kernel: shell.kernel) }
             await model?.refresh()
@@ -88,23 +93,108 @@ struct PipelinesPane: View {
         }
     }
 
-    private var pipelinesColumn: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Design.Space.s) {
-                InkSearchField(
-                    placeholder: "Search pipelines", query: $query, fill: Design.surface)
-                QuietIconButton(glyph: "plus") {
-                    composing = true
-                }
-                .accessibilityIdentifier("pipelines-new")
-                .help("New pipeline")
-                .accessibilityLabel("New pipeline")
+    private var dashboard: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Design.Space.pane) {
+                hero
+                content
             }
-            .padding(.horizontal, Design.Space.m)
+            .padding(.horizontal, Design.Space.gutter)
             .padding(.top, Design.Space.xxl)
-            .padding(.bottom, Design.Space.s)
-            pipelineList
+            .padding(.bottom, Design.Space.pane)
+            .frame(maxWidth: Self.contentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
+    }
+
+    private var hero: some View {
+        HStack(alignment: .top, spacing: Design.Space.l) {
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                Text("Pipelines")
+                    .font(Design.hero)
+                    .foregroundStyle(Design.ink)
+                Text("Chain your models into repeatable flows.")
+                    .font(Design.readingBody)
+                    .foregroundStyle(Design.inkSoft)
+            }
+            Spacer(minLength: 0)
+            QuietIconButton(glyph: "plus") {
+                composing = true
+            }
+            .accessibilityIdentifier("pipelines-new")
+            .help("New pipeline")
+            .accessibilityLabel("New pipeline")
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let model {
+            if model.pipelines.isEmpty {
+                emptyState
+            } else {
+                let rows = filtered(model)
+                VStack(alignment: .leading, spacing: Design.Space.m) {
+                    if model.pipelines.count > 5 {
+                        HStack(spacing: Design.Space.m) {
+                            MicroHeader(title: "Saved · \(model.pipelines.count)")
+                            Spacer(minLength: 0)
+                            InkSearchField(
+                                placeholder: "Filter by name", query: $query,
+                                fill: Design.surface)
+                                .frame(width: 200)
+                        }
+                    }
+                    if rows.isEmpty {
+                        ModeEmptyState(
+                            eyebrow: "Filtered view",
+                            headline: "Nothing found.",
+                            caption: "No saved pipeline matches that name."
+                        ) {
+                            Button("Clear filter") { query = "" }
+                                .buttonStyle(QuietButtonStyle())
+                        }
+                        .frame(minHeight: 220)
+                    } else {
+                        grid(model: model, rows: rows)
+                    }
+                }
+            }
+        }
+    }
+
+    private func grid(model: PipelinesModel, rows: [Pipeline]) -> some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.adaptive(minimum: 300), spacing: Design.Space.l, alignment: .top)
+            ],
+            spacing: Design.Space.l
+        ) {
+            ForEach(rows) { pipeline in
+                PipelineCard(
+                    pipeline: pipeline,
+                    signature: model.signatures[pipeline.id],
+                    issue: model.issues[pipeline.id],
+                    records: records,
+                    onRun: { shell.pipelineSelection = pipeline.id },
+                    onEdit: { editDraft = pipeline },
+                    onDelete: { model.delete(pipeline) })
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        ModeEmptyState(
+            eyebrow: "Pipelines",
+            headline: "No pipelines yet",
+            caption:
+                "Wire the output of one model into the next — transcribe → chat → speak makes a voice assistant from three models you already have."
+        ) {
+            Button("New pipeline") { composing = true }
+                .buttonStyle(InkButtonStyle())
+        }
+        .frame(minHeight: 320)
+        .surfaceCard(radius: Design.Radius.card)
     }
 
     private func filtered(_ model: PipelinesModel) -> [Pipeline] {
@@ -114,127 +204,173 @@ struct PipelinesPane: View {
     }
 
     @ViewBuilder
-    private var pipelineList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Design.Space.xxs) {
-                if let model {
-                    let rows = filtered(model)
-                    if rows.isEmpty {
-                        Text(
-                            model.pipelines.isEmpty
-                                ? "No pipelines yet." : "Nothing found."
-                        )
-                        .font(Design.caption)
-                        .foregroundStyle(Design.inkFaint)
-                        .padding(Design.Space.m)
-                    } else {
-                        ForEach(rows) { pipeline in
-                            PipelineRow(
-                                pipeline: pipeline,
-                                signature: model.signatures[pipeline.id],
-                                selected: shell.pipelineSelection == pipeline.id,
-                                onSelect: { shell.pipelineSelection = pipeline.id },
-                                onEdit: { editDraft = pipeline },
-                                onDelete: { model.delete(pipeline) })
-                        }
-                    }
+    private func runScreen(model: PipelinesModel, pipeline: Pipeline) -> some View {
+        if let signature = model.signatures[pipeline.id] {
+            PipelineRunScreen(
+                kernel: shell.kernel, pipeline: pipeline, signature: signature,
+                audio: shell.audio,
+                onBack: { shell.pipelineSelection = nil },
+                onEdit: { editDraft = pipeline })
+                .id(pipeline.id)
+        } else {
+            VStack(spacing: 0) {
+                PipelineRunHeader(
+                    name: pipeline.name, stages: pipeline.stages, signature: nil,
+                    onBack: { shell.pipelineSelection = nil },
+                    onEdit: { editDraft = pipeline })
+                ModeEmptyState(
+                    headline: "This pipeline can't run right now",
+                    caption: (model.issues[pipeline.id] ?? "A stage isn't ready.")
+                        + " Edit the pipeline or bring the model back."
+                ) {
+                    Button("Edit pipeline") { editDraft = pipeline }
+                        .buttonStyle(InkButtonStyle())
                 }
             }
-            .padding(.horizontal, Design.Space.m)
-            .padding(.top, Design.Space.s)
-            .padding(.bottom, Design.Space.l)
-        }
-    }
-
-    @ViewBuilder
-    private var runPanel: some View {
-        if let model, model.pipelines.isEmpty {
-            ModeEmptyState(
-                eyebrow: "Pipelines",
-                headline: "Chain a few models into one tool",
-                caption:
-                    "Wire the output of one model into the next — transcribe → chat → speak makes a voice assistant from three models you already have."
-            ) {
-                Button("New pipeline") { composing = true }
-                    .buttonStyle(InkButtonStyle())
-            }
-        } else if let model, let id = shell.pipelineSelection,
-            let pipeline = model.pipelines.first(where: { $0.id == id }),
-            let signature = model.signatures[id]
-        {
-            PipelineRunView(
-                kernel: shell.kernel, pipeline: pipeline, signature: signature,
-                audio: shell.audio)
-                .id(pipeline.id)
-        } else if let model, let id = shell.pipelineSelection,
-            model.pipelines.contains(where: { $0.id == id })
-        {
-            ModeEmptyState(
-                headline: "This pipeline can't run right now",
-                caption: (model.issues[id] ?? "A stage isn't ready.")
-                    + " Edit the pipeline or bring the model back.")
-        } else {
-            ModeEmptyState(
-                headline: "Pick a pipeline",
-                caption: "Select one on the left to run it, or make a new one.")
         }
     }
 }
 
-private struct PipelineRow: View {
+private struct PipelineCard: View {
     let pipeline: Pipeline
     let signature: PipelineSignature?
-    let selected: Bool
-    let onSelect: () -> Void
+    let issue: String?
+    let records: [ModelRecord]
+    let onRun: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
     @State private var hovering = false
 
+    private var modelNames: String {
+        let names = pipeline.stages.compactMap { stage in
+            records.first { $0.id == stage.modelID }?.displayName
+        }
+        return names.isEmpty ? "\(pipeline.stages.count) stages" : names.joined(separator: " · ")
+    }
+
     var body: some View {
-        Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: Design.Space.xs) {
-                Text(pipeline.name)
-                    .font(Design.caption.weight(.medium))
-                    .foregroundStyle(Design.ink)
-                    .lineLimit(1)
-                HStack(spacing: Design.Space.xxs) {
-                    if let signature {
-                        PortChip(port: signature.input)
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 8))
-                            .foregroundStyle(Design.inkFaint)
-                    }
-                    ForEach(Array(pipeline.stages.enumerated()), id: \.offset) { _, stage in
-                        Text(stage.capability.rawValue)
-                            .font(Design.micro)
-                            .tracking(Design.microTracking)
+        Button(action: onRun) {
+            VStack(alignment: .leading, spacing: Design.Space.l) {
+                HStack(alignment: .center, spacing: Design.Space.m) {
+                    IconPlaque(size: 34) {
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .font(Design.glyphInline)
                             .foregroundStyle(Design.inkSoft)
                     }
-                    if let signature {
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(pipeline.name)
+                            .font(Design.title)
+                            .tracking(Design.tightTracking)
+                            .foregroundStyle(Design.ink)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text(modelNames)
+                            .font(Design.label)
                             .foregroundStyle(Design.inkFaint)
-                        PortChip(port: signature.output)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
+                    Spacer(minLength: 0)
+                }
+                PipelineFlow(stages: pipeline.stages, signature: signature)
+                Spacer(minLength: 0)
+                HStack(spacing: Design.Space.s) {
+                    if signature != nil {
+                        TintChip(text: "Runnable", glyph: "play")
+                    } else {
+                        TintChip(text: "Needs attention", glyph: "exclamationmark.triangle", faint: true)
+                    }
+                    Spacer(minLength: 0)
+                    Text("\(pipeline.stages.count) \(pipeline.stages.count == 1 ? "stage" : "stages")")
+                        .font(Design.micro)
+                        .tracking(Design.microTracking)
+                        .foregroundStyle(Design.inkFaint)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Design.Space.m)
-            .background(
-                RoundedRectangle(cornerRadius: Design.Radius.card)
-                    .fill(
-                        selected
-                            ? Design.ink.opacity(0.08)
-                            : hovering ? Design.ink.opacity(0.02) : .clear))
-            .contentShape(Rectangle())
+            .padding(Design.Space.tile)
+            .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.tile)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle.soft(Design.Radius.tile))
+            .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: Design.Space.xs) {
+                QuietIconButton(glyph: "square.and.pencil", action: onEdit)
+                    .help("Edit pipeline")
+                    .accessibilityLabel("Edit \(pipeline.name)")
+                QuietIconButton(glyph: "trash", action: onDelete)
+                    .help("Delete pipeline")
+                    .accessibilityLabel("Delete \(pipeline.name)")
+            }
+            .padding(Design.Space.m)
+            .opacity(hovering ? 1 : 0)
+            .allowsHitTesting(hovering)
+            .animation(Design.wash, value: hovering)
+        }
         .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
         .contextMenu {
+            Button("Run", action: onRun)
             Button("Edit", action: onEdit)
             Button("Delete", role: .destructive, action: onDelete)
         }
+        .help("Run \(pipeline.name)")
         .accessibilityIdentifier("pipeline-row")
+    }
+}
+
+private struct PipelineFlow: View {
+    let stages: [PipelineStage]
+    let signature: PipelineSignature?
+
+    var body: some View {
+        HStack(spacing: Design.Space.xs) {
+            if let signature {
+                PortChip(port: signature.input)
+                connector
+            }
+            ForEach(Array(stages.enumerated()), id: \.element.id) { index, stage in
+                if index > 0 { connector }
+                StageChip(capability: stage.capability)
+            }
+            if let signature {
+                connector
+                PortChip(port: signature.output)
+            }
+        }
+    }
+
+    private var connector: some View {
+        Image(systemName: "chevron.compact.right")
+            .font(Design.glyphSmall)
+            .foregroundStyle(Design.inkFaint)
+    }
+}
+
+private struct StageChip: View {
+    let capability: Capability
+
+    var body: some View {
+        TintChip(text: capability.rawValue.capitalized, glyph: glyph)
+    }
+
+    private var glyph: String {
+        switch capability {
+        case .chat: "message"
+        case .complete: "text.alignleft"
+        case .transcribe: "waveform"
+        case .speak: "speaker.wave.2"
+        case .image: "photo"
+        case .embed: "circle.grid.3x3"
+        case .see: "eye"
+        default: "circle"
+        }
     }
 }
 
@@ -242,22 +378,65 @@ private struct PortChip: View {
     let port: PipelinePort
 
     var body: some View {
-        Text(label.uppercased())
-            .font(Design.micro)
-            .tracking(Design.microTracking)
+        Text(port.rawValue.capitalized)
+            .font(Design.label.weight(.medium))
             .foregroundStyle(Design.inkSoft)
-            .padding(.horizontal, Design.Space.xs)
-            .padding(.vertical, 1)
+            .padding(.horizontal, Design.Space.s)
+            .padding(.vertical, 2)
             .background(
-                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                RoundedRectangle.soft(Design.Radius.control)
+                    .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
     }
+}
 
-    private var label: String {
-        switch port {
-        case .audio: "audio"
-        case .text: "text"
-        case .image: "image"
-        case .vector: "vector"
+private struct PipelineRunHeader: View {
+    let name: String
+    let stages: [PipelineStage]
+    let signature: PipelineSignature?
+    var running = false
+    var status: String? = nil
+    let onBack: () -> Void
+    let onEdit: () -> Void
+
+    private static let contentWidth: CGFloat = 1080
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: Design.Space.l) {
+                QuietIconButton(glyph: "chevron.left", action: onBack)
+                    .help("All pipelines")
+                    .accessibilityLabel("Back to pipelines")
+                VStack(alignment: .leading, spacing: Design.Space.xs) {
+                    Text(name)
+                        .font(Design.paneTitle)
+                        .tracking(Design.tightTracking)
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                    PipelineFlow(stages: stages, signature: signature)
+                }
+                Spacer(minLength: Design.Space.l)
+                if running, let status {
+                    HStack(spacing: Design.Space.s) {
+                        AccentDot(size: 7)
+                        Text(status)
+                            .font(Design.micro)
+                            .tracking(Design.microTracking)
+                            .foregroundStyle(Design.accentText)
+                            .lineLimit(1)
+                    }
+                }
+                QuietIconButton(glyph: "square.and.pencil", action: onEdit)
+                    .help("Edit pipeline")
+                    .accessibilityLabel("Edit pipeline")
+            }
+            .padding(.horizontal, Design.Space.gutter)
+            .padding(.top, Design.Space.xxl)
+            .padding(.bottom, Design.Space.l)
+            .frame(maxWidth: Self.contentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            Rectangle()
+                .fill(Design.hairline)
+                .frame(height: Design.hairlineWidth)
         }
     }
 }
@@ -681,19 +860,36 @@ final class PipelineRunModel {
     }
 }
 
-private struct PipelineRunView: View {
+private struct PipelineRunScreen: View {
     @State private var model: PipelineRunModel
+    let onBack: () -> Void
+    let onEdit: () -> Void
 
-    init(kernel: Kernel, pipeline: Pipeline, signature: PipelineSignature, audio: AudioSession) {
+    init(
+        kernel: Kernel, pipeline: Pipeline, signature: PipelineSignature,
+        audio: AudioSession, onBack: @escaping () -> Void, onEdit: @escaping () -> Void
+    ) {
         _model = State(
             initialValue: PipelineRunModel(
                 kernel: kernel, pipeline: pipeline, signature: signature, audio: audio))
+        self.onBack = onBack
+        self.onEdit = onEdit
     }
 
     var body: some View {
-        PipelineRunContent(model: model)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onDisappear { model.stop() }
+        VStack(spacing: 0) {
+            PipelineRunHeader(
+                name: model.pipeline.name,
+                stages: model.pipeline.stages,
+                signature: model.signature,
+                running: model.running || model.listening,
+                status: model.status,
+                onBack: onBack,
+                onEdit: onEdit)
+            PipelineRunContent(model: model)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onDisappear { model.stop() }
     }
 }
 
@@ -713,6 +909,7 @@ private struct PipelineRunContent: View {
                 onSend: { model.runText() },
                 onStop: { model.stop() },
                 transcript: { transcript },
+                header: {},
                 aux: {},
                 chip: {}
             )
@@ -830,8 +1027,8 @@ private struct PipelineRunContent: View {
                     .font(Design.glyphNav)
                     .foregroundStyle(model.listening ? Design.accent : Design.inkSoft)
                     .frame(width: 52, height: 52)
-                    .background(RoundedRectangle(cornerRadius: Design.Radius.control).fill(Design.surface))
-                    .overlay(RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                    .background(RoundedRectangle.soft(Design.Radius.control).fill(Design.surface))
+                    .overlay(RoundedRectangle.soft(Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
             }
             .buttonStyle(PressDipStyle())
             .accessibilityIdentifier("pipeline-mic")

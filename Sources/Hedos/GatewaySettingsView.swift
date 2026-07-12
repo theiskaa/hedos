@@ -412,7 +412,7 @@ struct GatewaySection: View {
     }
 
     private func highlightBackground(_ id: String) -> some View {
-        RoundedRectangle(cornerRadius: Design.Radius.card)
+        RoundedRectangle.soft(Design.Radius.card)
             .fill(highlighted == id ? Design.ink.opacity(0.08) : .clear)
             .padding(.horizontal, -Design.Space.s)
     }
@@ -457,10 +457,10 @@ struct GatewayCodeBlock: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(Design.Space.tile)
                 .background(
-                    RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    RoundedRectangle.soft(Design.Radius.tile)
                         .fill(Design.surface))
                 .overlay(
-                    RoundedRectangle(cornerRadius: Design.Radius.tile)
+                    RoundedRectangle.soft(Design.Radius.tile)
                         .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         }
         .onAppear { tokens = CodeHighlighter.tokens(code, language: resolvedLanguage) }
@@ -474,6 +474,9 @@ struct GatewayCodeBlock: View {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return "json" }
         if trimmed.contains("curl") || trimmed.hasPrefix("$") { return "bash" }
+        if trimmed.contains("import ") || trimmed.contains("from ") || trimmed.contains("def ") {
+            return "python"
+        }
         return nil
     }
 
@@ -490,7 +493,7 @@ struct GatewayCodeBlock: View {
         case .keyword:
             Text(verbatim: token.text).foregroundStyle(Design.ink).fontWeight(.semibold)
         case .string:
-            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
+            Text(verbatim: token.text).foregroundStyle(Design.added)
         case .comment:
             Text(verbatim: token.text).foregroundStyle(Design.inkFaint)
         case .number:

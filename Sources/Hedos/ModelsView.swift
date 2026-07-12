@@ -80,42 +80,18 @@ struct ModelsPane: View {
     @State private var showFolders = false
     @State private var presented: String?
 
+    private static let contentWidth: CGFloat = 1080
+
     var body: some View {
-        VStack(spacing: 0) {
-            PaneHeader(title: "Models") {
-                if shell.library.isScanning {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                QuietIconButton(glyph: "folder.badge.plus") {
-                    showFolders.toggle()
-                }
-                .help("Watched folders")
-                .accessibilityLabel("Watched folders")
-                .inkPopover(
-                    isPresented: $showFolders,
-                    width: Design.Popover.menuWidth,
-                    maxHeight: Design.Popover.menuMaxHeight
-                ) {
-                    FoldersPopover(model: shell.library) {
-                        showFolders = false
-                        shell.settingsTarget = SettingsDestination(
-                            section: .models, anchor: "models.folders")
-                        SettingsWindowController.shared.show(shell: shell)
-                    }
-                }
-                QuietIconButton(glyph: "arrow.clockwise") {
-                    Task { await shell.library.rescan() }
-                }
-                .disabled(shell.library.isScanning)
-                .help("Scan the machine again")
-                .accessibilityLabel("Rescan")
+        Group {
+            if shell.library.records.isEmpty {
+                emptyPane
+            } else {
+                dashboard
             }
-            filterRow
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
-            grid
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(PixelGrid())
         .onAppear { adoptRequestedFilter() }
         .onChange(of: shell.modelsFilter) { adoptRequestedFilter() }
         .modalScrim(
@@ -128,6 +104,189 @@ struct ModelsPane: View {
                 }
             }
         }
+    }
+
+    private var dashboard: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Design.Space.pane) {
+                hero
+                contextRow
+                filterRow
+                gridContent
+            }
+            .padding(.horizontal, Design.Space.gutter)
+            .padding(.top, Design.Space.xxl)
+            .padding(.bottom, Design.Space.pane)
+            .frame(maxWidth: Self.contentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    private var emptyPane: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Design.Space.s) {
+                Spacer(minLength: 0)
+                controls
+            }
+            .padding(.horizontal, Design.Space.gutter)
+            .padding(.top, Design.Space.xxl)
+            heroEmptyState
+        }
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        if shell.library.isScanning {
+            ProgressView()
+                .controlSize(.small)
+        }
+        QuietIconButton(glyph: "folder.badge.plus") {
+            showFolders.toggle()
+        }
+        .help("Watched folders")
+        .accessibilityLabel("Watched folders")
+        .inkPopover(
+            isPresented: $showFolders,
+            width: Design.Popover.form.width,
+            maxHeight: Design.Popover.menuMaxHeight
+        ) {
+            FoldersPopover(model: shell.library) {
+                showFolders = false
+                shell.settingsTarget = SettingsDestination(
+                    section: .models, anchor: "models.folders")
+                SettingsWindowController.shared.show(shell: shell)
+            }
+        }
+        QuietIconButton(glyph: "arrow.clockwise") {
+            Task { await shell.library.rescan() }
+        }
+        .disabled(shell.library.isScanning)
+        .help("Scan the machine again")
+        .accessibilityLabel("Rescan")
+    }
+
+    private var hero: some View {
+        VStack(alignment: .leading, spacing: Design.Space.gutter) {
+            HStack(alignment: .top, spacing: Design.Space.l) {
+                VStack(alignment: .leading, spacing: Design.Space.s) {
+                    Text("Models")
+                        .font(Design.hero)
+                        .foregroundStyle(Design.ink)
+                    Text("Everything installed on this Mac, ready when you are.")
+                        .font(Design.readingBody)
+                        .foregroundStyle(Design.inkSoft)
+                }
+                Spacer(minLength: 0)
+                HStack(spacing: Design.Space.s) {
+                    controls
+                }
+            }
+            facts
+        }
+        .padding(.bottom, Design.Space.xs)
+    }
+
+    private var facts: some View {
+        HStack(alignment: .bottom, spacing: Design.Space.l) {
+            Group {
+                if let summary = shell.library.summary {
+                    PixelNumber(text: "\(summary.totalCount)", unit: 6, color: Design.ink)
+                } else {
+                    SkeletonPulse(radius: Design.Radius.control)
+                        .frame(width: 48, height: 6 * 7)
+                }
+            }
+            .frame(height: 6 * 7, alignment: .bottomLeading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("models found")
+                    .font(Design.micro)
+                    .foregroundStyle(Design.inkFaint)
+                if let summary = shell.library.summary {
+                    HStack(spacing: Design.Space.s) {
+                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                            .font(Design.data(12))
+                            .foregroundStyle(Design.inkSoft)
+                        if !shell.resident.isEmpty {
+                            Text("· \(shell.resident.count) warm")
+                                .font(Design.data(12))
+                                .foregroundStyle(Design.heatText)
+                            AccentDot(size: 7)
+                        }
+                    }
+                } else {
+                    Text(verbatim: "000 MB")
+                        .font(Design.data(12))
+                        .foregroundStyle(.clear)
+                        .overlay(SkeletonPulse(radius: Design.Radius.control))
+                }
+            }
+            Spacer(minLength: 0)
+            if shell.library.isScanning {
+                ShimmerText(text: "Scanning…", tracked: false)
+            }
+        }
+        .animation(Design.spring, value: shell.library.summary?.totalCount)
+    }
+
+    @ViewBuilder
+    private var contextRow: some View {
+        HStack(alignment: .top, spacing: Design.Space.l) {
+            if let pick = Fit.recommendation(in: shell.library.records),
+                pick.fit?.verdict != .tooLarge
+            {
+                BestFitCard(record: pick) {
+                    presented = pick.id
+                    shell.selectLibrary(pick.id)
+                }
+            }
+            warmCard
+        }
+    }
+
+    private var warmCard: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "Warm now · \(shell.resident.count)")
+            if shell.resident.isEmpty {
+                Text("Nothing warm. Models sleep until you ask.")
+                    .font(Design.readingBody)
+                    .foregroundStyle(Design.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(shell.resident, id: \.self) { entry in
+                    HStack(spacing: Design.Space.chipX) {
+                        AccentDot()
+                        Text(residentName(entry))
+                            .font(Design.body.weight(.medium))
+                            .foregroundStyle(Design.ink)
+                            .lineLimit(1)
+                        Spacer(minLength: Design.Space.m)
+                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                            .font(Design.data(11))
+                            .monospacedDigit()
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                }
+                if shell.residencyBudgetMB > 0 {
+                    SegmentedBar(used: residentFraction, warm: residentFraction, segments: 24)
+                        .animation(Design.spring, value: shell.residentUsedMB)
+                        .padding(.top, Design.Space.xs)
+                }
+            }
+        }
+        .padding(Design.Space.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .surfaceCard(radius: Design.Radius.card)
+    }
+
+    private var residentFraction: Double {
+        min(Double(shell.residentUsedMB) / Double(max(1, shell.residencyBudgetMB)), 1)
+    }
+
+    private func residentName(_ entry: Kernel.ResidentEntry) -> String {
+        if let id = entry.modelID, let record = shell.library.record(id: id) {
+            return record.displayName
+        }
+        return entry.name
     }
 
     private var filterRow: some View {
@@ -181,8 +340,6 @@ struct ModelsPane: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, Design.Space.gutter)
-            .padding(.bottom, Design.Space.l)
         }
     }
 
@@ -272,10 +429,8 @@ struct ModelsPane: View {
     }
 
     @ViewBuilder
-    private var grid: some View {
-        if shell.library.records.isEmpty {
-            heroEmptyState
-        } else if filtered.isEmpty {
+    private var gridContent: some View {
+        if filtered.isEmpty {
             ModeEmptyState(
                 eyebrow: "Filtered view",
                 headline: "No models match.",
@@ -289,37 +444,66 @@ struct ModelsPane: View {
                     .buttonStyle(QuietButtonStyle())
                 }
             }
+            .frame(minHeight: 260)
+        } else if sourceGroups.count <= 1 {
+            modelGrid(filtered)
         } else {
-            ScrollView {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.adaptive(minimum: 280), spacing: Design.Space.l, alignment: .top)
-                    ],
-                    spacing: Design.Space.xxl
-                ) {
-                    ForEach(filtered) { record in
-                        ModelCard(record: record, warm: isWarm(record)) {
-                            presented = record.id
-                            shell.selectLibrary(record.id)
-                        }
+            VStack(alignment: .leading, spacing: Design.Space.xl) {
+                ForEach(sourceGroups, id: \.title) { group in
+                    VStack(alignment: .leading, spacing: Design.Space.m) {
+                        MicroHeader(title: "\(group.title) · \(group.records.count)")
+                        modelGrid(group.records)
                     }
                 }
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.top, Design.Space.xl)
-                .padding(.bottom, Design.Space.gutter)
-                .animation(
-                    Design.motion(
-                        reduceMotion: NSWorkspace.shared
-                            .accessibilityDisplayShouldReduceMotion),
-                    value: filtered.map(\.id))
             }
+        }
+    }
+
+    private func modelGrid(_ records: [ModelRecord]) -> some View {
+        LazyVGrid(
+            columns: [
+                GridItem(.adaptive(minimum: 280), spacing: Design.Space.l, alignment: .top)
+            ],
+            spacing: Design.Space.l
+        ) {
+            ForEach(records) { record in
+                ModelCard(record: record, warm: isWarm(record)) {
+                    presented = record.id
+                    shell.selectLibrary(record.id)
+                }
+            }
+        }
+        .animation(
+            Design.motion(
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion),
+            value: records.map(\.id))
+    }
+
+    private var sourceGroups: [(title: String, records: [ModelRecord])] {
+        var buckets: [String: [ModelRecord]] = [:]
+        var order: [String] = []
+        let canonical: [SourceKind] = [
+            .ollama, .huggingfaceCache, .lmStudio, .builtin, .endpoint, .file, .folder,
+        ]
+        for kind in canonical {
+            let title = Self.storeTitle(kind)
+            if !order.contains(title) { order.append(title) }
+        }
+        for record in filtered {
+            let title = Self.storeTitle(record.source.kind)
+            buckets[title, default: []].append(record)
+            if !order.contains(title) { order.append(title) }
+        }
+        return order.compactMap { title in
+            guard let records = buckets[title], !records.isEmpty else { return nil }
+            return (title: title, records: records)
         }
     }
 
     private var heroEmptyState: some View {
         VStack(spacing: 0) {
             Spacer()
-            HeptagonMark(size: 52, color: Design.ink)
+            HedosLogo(size: 52, color: Design.inkSoft)
                 .padding(.bottom, Design.Space.pane)
             if let failure = shell.library.errorMessage {
                 Text("The scan hit a problem.")
@@ -341,13 +525,9 @@ struct ModelsPane: View {
                     .lineSpacing(5)
                     .frame(maxWidth: 430)
             } else {
-                Text("Looking for models on this Mac…")
-                    .font(Design.paneTitle)
-                    .tracking(Design.tightTracking)
-                    .foregroundStyle(Design.inkSoft)
-                ProgressView()
-                    .controlSize(.small)
-                    .padding(.top, Design.Space.xl)
+                ShimmerText(
+                    text: "Looking for models on this Mac…",
+                    font: Design.paneTitle, tracked: false)
             }
             Spacer()
             Spacer()
@@ -436,15 +616,15 @@ struct ModelCard: View {
             }
             .padding(Design.Space.tile)
             .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                RoundedRectangle.soft(Design.Radius.tile)
                     .strokeBorder(
                         hovering
                             ? AnyShapeStyle(Design.accentEdge)
                             : warm ? AnyShapeStyle(Design.lineBright) : AnyShapeStyle(Design.line),
                         lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .contentShape(RoundedRectangle.soft(Design.Radius.tile))
             .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
@@ -459,6 +639,74 @@ struct ModelCard: View {
         [AppMode.chat, .images, .voice].filter {
             !Launcher.models(in: [record], for: $0).isEmpty
         }
+    }
+}
+
+struct BestFitCard: View {
+    let record: ModelRecord
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                MicroHeader(title: "Best fit")
+                HStack(alignment: .top, spacing: Design.Space.l) {
+                    SourceMark(kind: record.source.kind, size: 18)
+                        .foregroundStyle(Design.inkSoft)
+                        .frame(width: 20, height: 20)
+                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                        Text("\(record.displayName) fits this Mac best.")
+                            .font(Design.title)
+                            .tracking(Design.tightTracking)
+                            .foregroundStyle(Design.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(subtitle)
+                            .font(Design.data(11))
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Spacer(minLength: 0)
+                HStack(spacing: Design.Space.s) {
+                    TintChip(
+                        text: Design.modeTitle(destination),
+                        glyph: Design.modeGlyph(destination))
+                    FitChip(record: record)
+                }
+            }
+            .padding(Design.Space.xl)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.card)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle.soft(Design.Radius.card))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .help("Show details")
+        .accessibilityLabel("\(record.displayName) fits this Mac best")
+        .accessibilityIdentifier("models-best-fit")
+    }
+
+    private var destination: AppMode {
+        Launcher.destination(for: record)
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if let mb = record.footprintMB, mb > 0 {
+            parts.append(DiscoverySummary.formatBytes(Int64(mb) << 20))
+        }
+        if let runtime = record.runtime.id {
+            parts.append(runtime.rawValue)
+        }
+        parts.append("ready")
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -488,12 +736,9 @@ struct ModelDetailSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.top, Design.Space.gutter)
-                .padding(.bottom, Design.Space.xl)
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
+            SheetDivider()
             ScrollView {
-                VStack(alignment: .leading, spacing: Design.Space.xl) {
+                VStack(alignment: .leading, spacing: Design.Space.gutter) {
                     if record.runtime.tier == .recipeNeeded {
                         Text(reason ?? "")
                             .font(Design.body)
@@ -503,16 +748,7 @@ struct ModelDetailSheet: View {
                     }
                     specs
                     if showsRuntimeChoice {
-                        VStack(alignment: .leading, spacing: Design.Space.m) {
-                            MicroHeader(title: "[ Runtime ]")
-                            InkRadioGroup(
-                                options: runtimeOptions, selection: $chosenRuntime)
-                            Text(needsConfirmation
-                                ? "Nothing runs until you open it."
-                                : "Switching takes effect next time you open it.")
-                                .font(Design.label)
-                                .foregroundStyle(Design.inkFaint)
-                        }
+                        runtimeSection
                     }
                     if record.runtime.tier != .recipeNeeded {
                         ModelConfigureSection(record: record, shell: shell)
@@ -521,10 +757,9 @@ struct ModelDetailSheet: View {
                         revokeRow(approvedConsent)
                     }
                 }
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.vertical, Design.Space.xl)
+                .sheetBodyPadding()
             }
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
+            SheetDivider()
             footer
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.vertical, Design.Space.xl)
@@ -546,26 +781,39 @@ struct ModelDetailSheet: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: Design.Space.l) {
-            IconPlaque(size: 44) {
+        SheetHeader(
+            title: record.displayName,
+            onClose: onClose,
+            plaque: {
                 SourceMark(kind: record.source.kind, size: 24)
                     .foregroundStyle(Design.inkSoft)
-            }
-            VStack(alignment: .leading, spacing: Design.Space.s) {
-                Text(record.displayName)
-                    .font(Design.title)
-                    .tracking(Design.tightTracking)
-                    .lineLimit(1)
+            },
+            below: {
                 HStack(spacing: Design.Space.s) {
+                    TintChip(
+                        text: record.modality.rawValue,
+                        glyph: Design.modalityGlyph(record.modality))
                     FitChip(record: record)
                     TintChip(text: MetaGrid.tierWord(record.runtime.tier))
                     if let runtime = record.runtime.id {
                         TintChip(text: runtime.rawValue)
                     }
                 }
-            }
-            Spacer()
-            SheetCloseButton(action: onClose)
+            })
+    }
+
+    private var runtimeSection: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "Runtime")
+            InkRadioGroup(options: runtimeOptions, selection: $chosenRuntime)
+                .padding(.horizontal, Design.Space.s)
+                .padding(.vertical, Design.Space.s)
+                .surfaceCard(radius: Design.Radius.card)
+            Text(needsConfirmation
+                ? "Nothing runs until you open it."
+                : "Switching takes effect next time you open it.")
+                .font(Design.label)
+                .foregroundStyle(Design.inkFaint)
         }
     }
 
@@ -579,60 +827,67 @@ struct ModelDetailSheet: View {
 
     private var specs: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: "[ Specification ]")
-            specRows
-                .padding(.horizontal, Design.Space.tile)
-                .padding(.vertical, Design.Space.s)
-                .surfaceCard(radius: Design.Radius.card)
-        }
-    }
-
-    private var specRows: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if record.displayName != record.name {
-                HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
-                    Text("Source")
-                        .font(Design.caption)
-                        .foregroundStyle(Design.inkFaint)
-                    Spacer(minLength: Design.Space.m)
-                    SourceMark(kind: record.source.kind, size: 12)
-                        .foregroundStyle(Design.inkFaint)
-                    Text(record.name)
-                        .font(Design.data(12))
-                        .foregroundStyle(Design.ink)
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .padding(.vertical, Design.Space.m)
-                .overlay(alignment: .bottom) { DottedRule() }
-            }
-            specRow("Modality", record.modality.rawValue)
-            specRow("Kind", record.source.kind.rawValue)
-            if let repo = record.source.repo {
-                specRow("Repo", repo)
-            }
-            if let mb = record.footprintMB, mb > 0 {
-                specRow("On disk", DiscoverySummary.formatBytes(Int64(mb) << 20), mono: true)
-            }
-            if let fit = Fit.label(record) {
-                specRow("Fit", fit)
-            }
-            if let path = record.primaryWeightPath ?? record.source.path as String? {
-                specRow("Path", (path as NSString).abbreviatingWithTildeInPath)
-            }
+            MicroHeader(title: "Specification")
+            specCard
             if let group = Fit.duplicateInsight(record, in: shell.library.summary) {
                 duplicateCard(group)
             }
         }
     }
 
-    private func duplicateCard(_ group: DuplicateGroup) -> some View {
-        VStack(alignment: .leading, spacing: Design.Space.xs) {
-            Text("Shared weights".uppercased())
-                .font(Design.micro)
-                .tracking(Design.microTracking)
+    private var scalarSpecs: [(String, String, Bool)] {
+        var items: [(String, String, Bool)] = [("Kind", record.source.kind.rawValue, false)]
+        if let repo = record.source.repo {
+            items.append(("Repo", repo, false))
+        }
+        if let mb = record.footprintMB, mb > 0 {
+            items.append(("On disk", DiscoverySummary.formatBytes(Int64(mb) << 20), true))
+        }
+        if let path = record.primaryWeightPath ?? record.source.path as String? {
+            items.append(("Path", (path as NSString).abbreviatingWithTildeInPath, false))
+        }
+        return items
+    }
+
+    private var specCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if record.displayName != record.name {
+                sourceRow
+                if !scalarSpecs.isEmpty { DottedRule() }
+            }
+            ForEach(Array(scalarSpecs.enumerated()), id: \.offset) { index, item in
+                specRow(item.0, item.1, mono: item.2)
+                if index < scalarSpecs.count - 1 { DottedRule() }
+            }
+        }
+        .padding(.horizontal, Design.Space.tile)
+        .padding(.vertical, Design.Space.xs)
+        .surfaceCard(radius: Design.Radius.card)
+    }
+
+    private var sourceRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
+            Text("Source")
+                .font(Design.caption)
                 .foregroundStyle(Design.inkFaint)
+                .fixedSize()
+                .layoutPriority(1)
+            Spacer(minLength: Design.Space.m)
+            SourceMark(kind: record.source.kind, size: 12)
+                .foregroundStyle(Design.inkFaint)
+            Text(record.name)
+                .font(Design.data(12))
+                .foregroundStyle(Design.ink)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.vertical, Design.Space.m)
+    }
+
+    private func duplicateCard(_ group: DuplicateGroup) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            MicroHeader(title: "Shared weights")
             Text(
                 "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")), \(DiscoverySummary.formatBytes(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
             )
@@ -648,7 +903,8 @@ struct ModelDetailSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.vertical, Design.Space.m)
+        .padding(Design.Space.tile)
+        .surfaceCard(radius: Design.Radius.card)
         .accessibilityIdentifier("duplicate-insight")
     }
 
@@ -685,13 +941,12 @@ struct ModelDetailSheet: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(.vertical, Design.Space.m)
-        .overlay(alignment: .bottom) { DottedRule() }
     }
 
     @ViewBuilder
     private func revokeRow(_ consent: ManifestConsentInfo) -> some View {
-        VStack(alignment: .leading, spacing: Design.Space.xs) {
-            MicroHeader(title: "[ Access granted ]")
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            MicroHeader(title: "Access granted")
             Text(
                 consent.network
                     ? "\(consent.id) runs on this Mac with network access."
@@ -715,62 +970,12 @@ struct ModelDetailSheet: View {
     @ViewBuilder
     private var footer: some View {
         if record.runtime.tier == .recipeNeeded {
-            VStack(alignment: .leading, spacing: Design.Space.m) {
+            VStack(alignment: .leading, spacing: Design.Space.l) {
                 if let consent {
-                    VStack(alignment: .leading, spacing: Design.Space.xs) {
-                        Text("A runtime for this model runs its code on this Mac, sandboxed:")
-                            .font(Design.label)
-                            .foregroundStyle(Design.inkSoft)
-                        if consent.network {
-                            Text("Network access — outbound connections allowed")
-                                .font(Design.label)
-                                .foregroundStyle(Design.ink)
-                        }
-                        ForEach(consent.paths, id: \.self) { path in
-                            Text("Files — \(path)")
-                                .font(Design.label)
-                                .foregroundStyle(Design.ink)
-                        }
-                        Button("Approve \(consent.id)") {
-                            let shell = shell
-                            let id = consent.id
-                            Task {
-                                try? await shell.kernel.approveNetworkRuntime(id)
-                                await shell.library.refreshShelf()
-                            }
-                        }
-                        .buttonStyle(InkButtonStyle())
-                        .padding(.top, Design.Space.xs)
-                    }
+                    consentCard(consent)
                 } else if !communityRecipes.isEmpty {
                     ForEach(communityRecipes, id: \.id) { recipe in
-                        VStack(alignment: .leading, spacing: Design.Space.xs) {
-                            Text("A community recipe can run this model, contained:")
-                                .font(Design.label)
-                                .foregroundStyle(Design.inkSoft)
-                            Text("\(recipe.id) — \(recipe.capabilities.joined(separator: ", "))")
-                                .font(Design.label)
-                                .foregroundStyle(Design.ink)
-                            ForEach(recipe.paths, id: \.self) { path in
-                                Text("Files — \(path)")
-                                    .font(Design.label)
-                                    .foregroundStyle(Design.ink)
-                            }
-                            Button(installingRecipe == recipe.id ? "Installing…" : "Install \(recipe.id)") {
-                                let shell = shell
-                                let source = recipe.sourceURL
-                                let id = recipe.id
-                                installingRecipe = id
-                                Task {
-                                    _ = try? await shell.kernel.installRuntime(from: source)
-                                    await shell.library.refreshShelf()
-                                    installingRecipe = nil
-                                }
-                            }
-                            .buttonStyle(InkButtonStyle())
-                            .disabled(installingRecipe != nil)
-                            .padding(.top, Design.Space.xs)
-                        }
+                        recipeCard(recipe)
                     }
                 } else {
                     Text("A runtime recipe can make this model runnable later.")
@@ -796,6 +1001,7 @@ struct ModelDetailSheet: View {
                             [shell.kernel.runtimeCatalog.ensuredDirectory()])
                     }
                     .buttonStyle(QuietButtonStyle())
+                    Spacer(minLength: 0)
                 }
             }
         } else if let title = openTitle {
@@ -819,6 +1025,90 @@ struct ModelDetailSheet: View {
                     .foregroundStyle(Design.inkSoft)
                 }
             }
+        }
+    }
+
+    private func consentCard(_ consent: ManifestConsentInfo) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            Text("Runs its code on this Mac, sandboxed")
+                .font(Design.caption.weight(.medium))
+                .foregroundStyle(Design.ink)
+            grantList(network: consent.network, paths: consent.paths)
+            Button("Approve \(consent.id)") {
+                let shell = shell
+                let id = consent.id
+                Task {
+                    try? await shell.kernel.approveNetworkRuntime(id)
+                    await shell.library.refreshShelf()
+                }
+            }
+            .buttonStyle(InkButtonStyle())
+            .padding(.top, Design.Space.xs)
+        }
+        .padding(Design.Space.tile)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.card)
+    }
+
+    private func recipeCard(_ recipe: RuntimeInstallPreview) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Design.Space.m) {
+                Text(recipe.id)
+                    .font(Design.caption.weight(.semibold))
+                    .foregroundStyle(Design.ink)
+                Spacer(minLength: Design.Space.m)
+                Text("Community recipe")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+            if !recipe.capabilities.isEmpty {
+                Text(recipe.capabilities.joined(separator: ", "))
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkSoft)
+            }
+            grantList(network: false, paths: recipe.paths)
+            Button(installingRecipe == recipe.id ? "Installing…" : "Install \(recipe.id)") {
+                let shell = shell
+                let source = recipe.sourceURL
+                let id = recipe.id
+                installingRecipe = id
+                Task {
+                    _ = try? await shell.kernel.installRuntime(from: source)
+                    await shell.library.refreshShelf()
+                    installingRecipe = nil
+                }
+            }
+            .buttonStyle(InkButtonStyle())
+            .disabled(installingRecipe != nil)
+            .padding(.top, Design.Space.xs)
+        }
+        .padding(Design.Space.tile)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.card)
+    }
+
+    @ViewBuilder
+    private func grantList(network: Bool, paths: [String]) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            if network {
+                grantRow(glyph: "network", text: "Network access — outbound connections allowed")
+            }
+            ForEach(paths, id: \.self) { path in
+                grantRow(glyph: "folder", text: path)
+            }
+        }
+    }
+
+    private func grantRow(glyph: String, text: String) -> some View {
+        HStack(spacing: Design.Space.s) {
+            Image(systemName: glyph)
+                .font(Design.glyphSmall)
+                .foregroundStyle(Design.inkFaint)
+            Text(text)
+                .font(Design.label)
+                .foregroundStyle(Design.inkSoft)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 

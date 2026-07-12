@@ -20,12 +20,9 @@ struct AddGatewayClientSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.top, Design.Space.gutter)
-                .padding(.bottom, Design.Space.xl)
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
+            SheetDivider()
             ScrollView {
-                VStack(alignment: .leading, spacing: Design.Space.xl) {
+                VStack(alignment: .leading, spacing: Design.Space.gutter) {
                     if let creation {
                         tokenSection(creation)
                     } else {
@@ -34,41 +31,30 @@ struct AddGatewayClientSheet: View {
                         capabilitiesSection
                     }
                 }
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.vertical, Design.Space.xl)
+                .sheetBodyPadding()
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
+            SheetDivider()
             footer
                 .padding(.horizontal, Design.Space.gutter)
-                .padding(.vertical, Design.Space.l)
+                .padding(.vertical, Design.Space.xl)
         }
         .frame(width: Design.Sheet.serverWidth)
         .frame(maxHeight: Design.Sheet.serverHeight)
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: Design.Space.l) {
-            IconPlaque(size: 44) {
+        SheetHeader(
+            title: creation == nil ? "Add a client" : "Client token",
+            subtitle: creation == nil
+                ? "A scoped token for one tool or script"
+                : "Copy it now — it is never shown again",
+            onClose: onClose,
+            plaque: {
                 Image(systemName: "key")
                     .font(Design.glyphNav)
                     .foregroundStyle(Design.inkSoft)
-            }
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                Text(creation == nil ? "Add a client" : "Client token")
-                    .font(Design.title)
-                    .tracking(Design.tightTracking)
-                Text(
-                    creation == nil
-                        ? "A scoped token for one tool or script"
-                        : "Copy it now — it is never shown again"
-                )
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
-            }
-            Spacer()
-            SheetCloseButton(action: onClose)
-        }
+            })
     }
 
     private var nameSection: some View {
@@ -87,7 +73,7 @@ struct AddGatewayClientSheet: View {
                 selection: allModels ? "All models" : "Selected",
                 onSelect: { allModels = $0 == "All models" })
             if !allModels {
-                VStack(alignment: .leading, spacing: Design.Space.xs) {
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
                     ForEach(readyModels, id: \.id) { record in
                         choiceRow(
                             title: record.displayName,
@@ -104,6 +90,7 @@ struct AddGatewayClientSheet: View {
                         Text("No ready models on the shelf yet.")
                             .font(Design.label)
                             .foregroundStyle(Design.inkFaint)
+                            .padding(.vertical, Design.Space.xxs)
                     }
                 }
                 .padding(Design.Space.tile)
@@ -133,35 +120,45 @@ struct AddGatewayClientSheet: View {
                             }
                         }
                     }
+                    Spacer(minLength: 0)
                 }
+                .padding(Design.Space.tile)
+                .surfaceCard(radius: Design.Radius.tile)
             }
         }
     }
 
     private func tokenSection(_ creation: GatewayClientCreation) -> some View {
-        VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: "Token for \(creation.client.name)")
-            HStack(spacing: Design.Space.s) {
-                Text(creation.token)
-                    .font(Design.data(12))
-                    .foregroundStyle(Design.ink)
-                    .textSelection(.enabled)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                    .accessibilityIdentifier("gateway-token")
-                Spacer()
-                Button(copied ? "Copied" : "Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(creation.token, forType: .string)
-                    copied = true
+        VStack(alignment: .leading, spacing: Design.Space.gutter) {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                MicroHeader(title: "Token for \(creation.client.name)")
+                HStack(alignment: .top, spacing: Design.Space.m) {
+                    Text(creation.token)
+                        .font(Design.data(12))
+                        .foregroundStyle(Design.ink)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("gateway-token")
+                    Button(copied ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(creation.token, forType: .string)
+                        copied = true
+                        Task {
+                            try? await Task.sleep(for: .seconds(2))
+                            copied = false
+                        }
+                    }
+                    .buttonStyle(InkButtonStyle())
                 }
-                .buttonStyle(InkButtonStyle())
+                .padding(Design.Space.tile)
+                .surfaceCard(radius: Design.Radius.tile)
+                Text("Hedos keeps only a hash. Losing this token means minting a new client.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(Design.Space.tile)
-            .surfaceCard(radius: Design.Radius.tile)
-            Text("Hedos keeps only a hash. Losing this token means minting a new client.")
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
             GatewayCodeBlock(
                 title: "try it",
                 code: GatewayExamples.chatCurl(
@@ -216,8 +213,9 @@ struct AddGatewayClientSheet: View {
                     .font(Design.label)
                     .foregroundStyle(Design.ink)
                     .lineLimit(1)
-                Spacer()
+                Spacer(minLength: 0)
             }
+            .padding(.vertical, Design.Space.xs)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -231,12 +229,12 @@ struct AddGatewayClientSheet: View {
             Text(title)
                 .font(Design.caption.weight(.medium))
                 .foregroundStyle(selected ? Design.paper : Design.ink)
-                .padding(.horizontal, Design.Space.m)
-                .padding(.vertical, Design.Space.xs)
+                .padding(.horizontal, Design.Space.chipX)
+                .padding(.vertical, Design.Space.s)
                 .background(
-                    RoundedRectangle(cornerRadius: Design.Radius.control).fill(selected ? Design.ink : Design.paper))
+                    RoundedRectangle.soft(Design.Radius.control).fill(selected ? Design.ink : Design.paper))
                 .overlay(
-                    RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                    RoundedRectangle.soft(Design.Radius.control).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])
