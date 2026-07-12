@@ -120,16 +120,21 @@ public final class DaemonLiveness: @unchecked Sendable {
     }
 
     static func matches(record: ModelRecord, servedModels: [String]) -> Bool {
-        let candidates = [record.name, record.source.repo, lastComponent(record.source.path)]
-            .compactMap { $0 }
-            .map { $0.lowercased() }
-        return servedModels.contains { served in
-            let lowered = served.lowercased()
-            return candidates.contains { candidate in
-                lowered == candidate || lowered.contains(candidate)
-                    || candidate.contains(lowered)
-            }
-        }
+        !matchingModels(record: record, servedModels: servedModels).isEmpty
+    }
+
+    static func matchingModels(record: ModelRecord, servedModels: [String]) -> [String] {
+        let candidates = Set(
+            [record.name, record.source.repo, lastComponent(record.source.path)]
+                .compactMap { $0 }
+                .map(normalized))
+        return servedModels.filter { candidates.contains(normalized($0)) }
+    }
+
+    static func normalized(_ name: String) -> String {
+        lastComponent(name).lowercased()
+            .replacingOccurrences(of: ".safetensors", with: "")
+            .replacingOccurrences(of: ".ckpt", with: "")
     }
 
     static func lastComponent(_ path: String) -> String {

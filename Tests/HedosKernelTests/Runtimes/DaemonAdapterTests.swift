@@ -102,6 +102,20 @@ private func liveness(_ snapshot: DaemonLiveness.Snapshot) -> DaemonLiveness {
     #expect(threw)
 }
 
+@Test func daemonMatchingDoesNotFireOnShortSubstrings() {
+    let record = daemonRecord(name: "sd", runtimeID: .comfyUI)
+    #expect(!DaemonLiveness.matches(record: record, servedModels: ["sd_xl_base.safetensors"]))
+
+    let exact = daemonRecord(name: "sd_xl_base", runtimeID: .comfyUI)
+    #expect(DaemonLiveness.matches(record: exact, servedModels: ["sd_xl_base.safetensors"]))
+}
+
+@Test func openAIDataURIWithoutMediatypeDefaultsToPNG() throws {
+    let uri = "data:;base64," + Data([0x89, 0x50]).base64EncodedString()
+    let attachment = try OpenAIWire.decodeImageDataURI(uri)
+    #expect(attachment.mimeType == "image/png")
+}
+
 @Test func comfyCheckpointParsingReadsObjectInfo() throws {
     let json = try JSONSerialization.jsonObject(
         with: Data(

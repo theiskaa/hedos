@@ -71,7 +71,7 @@ struct A1111Adapter: RuntimeAdapter, JobRunning {
                     continuation.yield(.result(data: bytes, fileExtension: "png"))
                     continuation.finish()
                 } catch {
-                    liveness.markDead(.a1111)
+                    if error is URLError { liveness.markDead(.a1111) }
                     continuation.finish(throwing: error)
                 }
             }

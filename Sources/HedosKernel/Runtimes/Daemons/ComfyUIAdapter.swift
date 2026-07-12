@@ -35,11 +35,8 @@ struct ComfyUIAdapter: RuntimeAdapter, JobRunning {
     }
 
     static func checkpointName(for record: ModelRecord, servedModels: [String]) -> String {
-        let candidates = [record.name, DaemonLiveness.lastComponent(record.source.path)]
-            .map { $0.lowercased() }
-        return servedModels.first { served in
-            candidates.contains { served.lowercased().contains($0) }
-        } ?? record.name
+        DaemonLiveness.matchingModels(record: record, servedModels: servedModels).first
+            ?? record.name
     }
 
     static func graph(payload: JSONValue, checkpoint: String) -> [String: Any] {
@@ -102,7 +99,7 @@ struct ComfyUIAdapter: RuntimeAdapter, JobRunning {
                     continuation.yield(.result(data: image, fileExtension: "png"))
                     continuation.finish()
                 } catch {
-                    liveness.markDead(.comfyUI)
+                    if error is URLError { liveness.markDead(.comfyUI) }
                     continuation.finish(throwing: error)
                 }
             }
