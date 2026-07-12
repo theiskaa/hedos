@@ -82,5 +82,8 @@ extension ChatStore {
         ALTER TABLE sessions ADD COLUMN system_prompt TEXT;
         ALTER TABLE sessions ADD COLUMN titled_by TEXT;
         """,
+        """
+        ALTER TABLE turns ADD COLUMN attachment_refs TEXT;
+        """,
     ]
 }

@@ -498,10 +498,10 @@ public actor Kernel {
         }
     }
 
-    public func sendChat(sessionID: String, text: String) async throws -> AsyncThrowingStream<
-        CapabilityChunk, Error
-    > {
-        try await chatFlow().send(sessionID: sessionID, text: text)
+    public func sendChat(
+        sessionID: String, text: String, attachments: [ChatAttachment] = []
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        try await chatFlow().send(sessionID: sessionID, text: text, attachments: attachments)
     }
 
     public func continueChat(sessionID: String) async throws -> AsyncThrowingStream<
@@ -619,6 +619,8 @@ public actor Kernel {
                     state: self.harnessActState)
                 return await Harness.execute(call, place: place, context: context)
             },
+            attachments: AttachmentStore(
+                directory: directory.appendingPathComponent("attachments", isDirectory: true)),
             gate: chatSessionGate)
     }
 
@@ -700,6 +702,18 @@ public actor Kernel {
         try await invoke(modelID, capability, payload: payload, systemPromptOverride: nil)
     }
 
+    static func payloadCarriesImages(_ payload: JSONValue) -> Bool {
+        guard case .object(let object) = payload,
+            case .array(let messages)? = object["messages"]
+        else { return false }
+        return messages.contains { message in
+            guard case .object(let fields) = message,
+                case .array(let images)? = fields["images"]
+            else { return false }
+            return !images.isEmpty
+        }
+    }
+
     public func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue,
         systemPromptOverride: String?
@@ -709,6 +723,10 @@ public actor Kernel {
         }
         guard let adapter = adapters.first(where: { $0.canServe(record, capability) }) else {
             throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
+        }
+        if Self.payloadCarriesImages(payload), !adapter.canServe(record, .see) {
+            throw KernelError.runtimeFailed(
+                "\(record.displayName) cannot read images; this runtime has no vision path.")
         }
         let fallback = capability == .chat ? await settings.chat().defaultSystemPrompt : nil
         var configured = ModelConfiguration.merged(

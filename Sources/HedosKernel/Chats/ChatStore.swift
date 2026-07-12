@@ -100,7 +100,7 @@ public actor ChatStore {
                 """
                 SELECT id, session_id, seq, role, content, thinking, model_id, stats_json,
                        artifact_refs, superseded_by, content_hash, created_at, updated_at,
-                       tool_calls_json, tool_call_id, tool_name, interrupted
+                       tool_calls_json, tool_call_id, tool_name, interrupted, attachment_refs
                 FROM turns
                 WHERE session_id = ?
                 ORDER BY seq, created_at, id
@@ -169,7 +169,8 @@ public actor ChatStore {
             statsJSON: turn.statsJSON, artifactRefs: turn.artifactRefs,
             supersededBy: turn.supersededBy,
             toolCallsJSON: turn.toolCallsJSON, toolCallID: turn.toolCallID,
-            toolName: turn.toolName, interrupted: turn.interrupted)
+            toolName: turn.toolName, interrupted: turn.interrupted,
+            attachmentRefs: turn.attachmentRefs)
         if let database = try writableDatabase() {
             return try database.transaction {
                 guard
@@ -288,8 +289,8 @@ public actor ChatStore {
                     INSERT INTO turns
                         (id, session_id, seq, role, content, thinking, model_id, stats_json,
                          artifact_refs, superseded_by, content_hash, created_at, updated_at,
-                         tool_calls_json, tool_call_id, tool_name, interrupted)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         tool_calls_json, tool_call_id, tool_name, interrupted, attachment_refs)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         .text(turn.id),
@@ -309,6 +310,7 @@ public actor ChatStore {
                         turn.toolCallID.map(SQLiteValue.text) ?? .null,
                         turn.toolName.map(SQLiteValue.text) ?? .null,
                         .integer(turn.interrupted ? 1 : 0),
+                        .text(turn.attachmentRefs.joined(separator: ",")),
                     ])
             }
         }

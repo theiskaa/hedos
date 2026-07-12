@@ -62,6 +62,25 @@ public struct GenerationStats: Codable, Sendable, Hashable {
     }
 }
 
+public struct ChatAttachment: Codable, Sendable, Hashable {
+    public struct Kind: RawRepresentable, Codable, Sendable, Hashable, ExpressibleByStringLiteral {
+        public var rawValue: String
+        public init(rawValue: String) { self.rawValue = rawValue }
+        public init(stringLiteral value: String) { self.rawValue = value }
+        public static let image = Kind(rawValue: "image")
+    }
+
+    public var kind: Kind
+    public var data: Data
+    public var mimeType: String
+
+    public init(kind: Kind, data: Data, mimeType: String) {
+        self.kind = kind
+        self.data = data
+        self.mimeType = mimeType
+    }
+}
+
 public struct ChatMessage: Codable, Sendable, Hashable {
     public enum Role: String, Codable, Sendable {
         case system, user, assistant, tool
@@ -72,20 +91,23 @@ public struct ChatMessage: Codable, Sendable, Hashable {
     public var toolCalls: [ToolCall]
     public var toolCallID: String?
     public var toolName: String?
+    public var attachments: [ChatAttachment]
 
     public init(
         role: Role, content: String, toolCalls: [ToolCall] = [],
-        toolCallID: String? = nil, toolName: String? = nil
+        toolCallID: String? = nil, toolName: String? = nil,
+        attachments: [ChatAttachment] = []
     ) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID
         self.toolName = toolName
+        self.attachments = attachments
     }
 
     enum CodingKeys: String, CodingKey {
-        case role, content, toolCalls, toolCallID, toolName
+        case role, content, toolCalls, toolCallID, toolName, attachments
     }
 
     public init(from decoder: any Decoder) throws {
@@ -95,6 +117,8 @@ public struct ChatMessage: Codable, Sendable, Hashable {
         toolCalls = try container.decodeIfPresent([ToolCall].self, forKey: .toolCalls) ?? []
         toolCallID = try container.decodeIfPresent(String.self, forKey: .toolCallID)
         toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
+        attachments =
+            try container.decodeIfPresent([ChatAttachment].self, forKey: .attachments) ?? []
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -104,5 +128,6 @@ public struct ChatMessage: Codable, Sendable, Hashable {
         if !toolCalls.isEmpty { try container.encode(toolCalls, forKey: .toolCalls) }
         try container.encodeIfPresent(toolCallID, forKey: .toolCallID)
         try container.encodeIfPresent(toolName, forKey: .toolName)
+        if !attachments.isEmpty { try container.encode(attachments, forKey: .attachments) }
     }
 }

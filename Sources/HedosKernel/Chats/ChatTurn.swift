@@ -22,6 +22,7 @@ public struct TurnDraft: Sendable, Hashable {
     public var modelID: String?
     var statsJSON: String?
     public var artifactRefs: [String]
+    public var attachmentRefs: [String]
     public var toolCallsJSON: String?
     public var toolCallID: String?
     public var toolName: String?
@@ -33,6 +34,7 @@ public struct TurnDraft: Sendable, Hashable {
         modelID: String? = nil,
         statsJSON: String? = nil,
         artifactRefs: [String] = [],
+        attachmentRefs: [String] = [],
         toolCallsJSON: String? = nil,
         toolCallID: String? = nil,
         toolName: String? = nil
@@ -43,6 +45,7 @@ public struct TurnDraft: Sendable, Hashable {
         self.modelID = modelID
         self.statsJSON = statsJSON
         self.artifactRefs = artifactRefs
+        self.attachmentRefs = attachmentRefs
         self.toolCallsJSON = toolCallsJSON
         self.toolCallID = toolCallID
         self.toolName = toolName
@@ -55,6 +58,7 @@ public struct TurnDraft: Sendable, Hashable {
         modelID: String? = nil,
         stats: GenerationStats?,
         artifactRefs: [String] = [],
+        attachmentRefs: [String] = [],
         toolCalls: [ToolCall] = [],
         toolCallID: String? = nil,
         toolName: String? = nil
@@ -66,6 +70,7 @@ public struct TurnDraft: Sendable, Hashable {
             modelID: modelID,
             statsJSON: stats?.turnStatsJSON,
             artifactRefs: artifactRefs,
+            attachmentRefs: attachmentRefs,
             toolCallsJSON: toolCalls.turnToolCallsJSON,
             toolCallID: toolCallID,
             toolName: toolName)
@@ -109,6 +114,7 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
     public var modelID: String?
     var statsJSON: String?
     public var artifactRefs: [String]
+    public var attachmentRefs: [String]
     public var supersededBy: String?
     public var contentHash: String
     public let createdAt: Date
@@ -128,6 +134,7 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         modelID: String? = nil,
         statsJSON: String? = nil,
         artifactRefs: [String] = [],
+        attachmentRefs: [String] = [],
         supersededBy: String? = nil,
         contentHash: String,
         createdAt: Date,
@@ -146,6 +153,7 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         self.modelID = modelID
         self.statsJSON = statsJSON
         self.artifactRefs = artifactRefs
+        self.attachmentRefs = attachmentRefs
         self.supersededBy = supersededBy
         self.contentHash = contentHash
         self.createdAt = createdAt
@@ -158,6 +166,7 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id, sessionID, seq, role, content, thinking, modelID, statsJSON, artifactRefs
+        case attachmentRefs
         case supersededBy, contentHash, createdAt, updatedAt, toolCallsJSON, toolCallID, toolName
         case interrupted
     }
@@ -173,6 +182,8 @@ public struct ChatTurn: Codable, Sendable, Hashable, Identifiable {
         modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
         statsJSON = try container.decodeIfPresent(String.self, forKey: .statsJSON)
         artifactRefs = try container.decodeIfPresent([String].self, forKey: .artifactRefs) ?? []
+        attachmentRefs =
+            try container.decodeIfPresent([String].self, forKey: .attachmentRefs) ?? []
         supersededBy = try container.decodeIfPresent(String.self, forKey: .supersededBy)
         contentHash = try container.decode(String.self, forKey: .contentHash)
         createdAt = try container.decode(Date.self, forKey: .createdAt)

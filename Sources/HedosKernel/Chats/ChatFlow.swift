@@ -7,6 +7,7 @@ struct ChatFlow: Sendable {
     let shelf: @Sendable () async throws -> [ModelRecord]
     var toolbox: @Sendable (ChatSession) async -> [ToolSpec] = { _ in [] }
     var execute: @Sendable (String, ToolCall) async -> String = { _, _ in "" }
+    var attachments: AttachmentStore?
     var gate = ChatSessionGate()
 
     static let persistCadence: Duration = .milliseconds(250)
@@ -17,27 +18,31 @@ struct ChatFlow: Sendable {
     static let maxMentionReadsPerSend = 4
     static let toolResultContextBudgetBytes = 16_384
 
-    func send(sessionID: String, text: String) async throws -> AsyncThrowingStream<
-        CapabilityChunk, Error
-    > {
+    func send(
+        sessionID: String, text: String, attachments messageAttachments: [ChatAttachment] = []
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         try gate.begin(sessionID)
         do {
-            return try await sendLocked(sessionID: sessionID, text: text)
+            return try await sendLocked(
+                sessionID: sessionID, text: text, attachments: messageAttachments)
         } catch {
             gate.end(sessionID)
             throw error
         }
     }
 
-    private func sendLocked(sessionID: String, text: String) async throws
-        -> AsyncThrowingStream<CapabilityChunk, Error>
-    {
+    private func sendLocked(
+        sessionID: String, text: String, attachments messageAttachments: [ChatAttachment]
+    ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let transcript = try await chats.session(id: sessionID) else {
             throw ChatStoreError.sessionNotFound(sessionID)
         }
-        _ = try await chats.appendTurn(TurnDraft(role: .user, content: text), to: sessionID)
-        var history = Self.messages(from: transcript.turns)
-        history.append(ChatMessage(role: .user, content: text))
+        let attachmentRefs = (try? attachments?.store(messageAttachments)) ?? []
+        _ = try await chats.appendTurn(
+            TurnDraft(role: .user, content: text, attachmentRefs: attachmentRefs), to: sessionID)
+        var history = projected(transcript.turns)
+        history.append(
+            ChatMessage(role: .user, content: text, attachments: messageAttachments))
 
         let mentioned = Self.mentionedFiles(in: text, place: transcript.session.place)
         if !mentioned.isEmpty {
@@ -98,7 +103,7 @@ struct ChatFlow: Sendable {
             guard let transcript = try await chats.session(id: sessionID) else {
                 throw ChatStoreError.sessionNotFound(sessionID)
             }
-            let history = Self.messages(from: transcript.turns)
+            let history = projected(transcript.turns)
             guard history.last?.role == .user else {
                 throw KernelError.runtimeFailed(
                     "Nothing to continue: the conversation already ends with a reply.")
@@ -124,7 +129,7 @@ struct ChatFlow: Sendable {
             else { throw ChatStoreError.turnNotFound(turnID) }
             let replacement = try await chats.appendTurn(
                 TurnDraft(role: .user, content: text), to: sessionID)
-            var history = Self.messages(from: Array(active[..<index]))
+            var history = projected(Array(active[..<index]))
             history.append(ChatMessage(role: .user, content: text))
             return try await run(
                 session: transcript.session, history: history,
@@ -149,7 +154,7 @@ struct ChatFlow: Sendable {
             else { throw ChatStoreError.turnNotFound(turnID) }
             return try await run(
                 session: transcript.session,
-                history: Self.messages(from: Array(active[..<index])),
+                history: projected(Array(active[..<index])),
                 retiring: Array(active[index...]))
         } catch {
             gate.end(sessionID)
@@ -374,7 +379,10 @@ struct ChatFlow: Sendable {
             + kept
     }
 
-    static func messages(from turns: [ChatTurn]) -> [ChatMessage] {
+    static func messages(
+        from turns: [ChatTurn],
+        attachmentLoader: (@Sendable ([String]) -> [ChatAttachment])? = nil
+    ) -> [ChatMessage] {
         let active = turns.filter { $0.supersededBy == nil }
         var messages: [ChatMessage] = []
         var index = 0
@@ -387,6 +395,8 @@ struct ChatFlow: Sendable {
                 continue
             }
             let calls = turn.toolCalls
+            let attachments =
+                turn.attachmentRefs.isEmpty ? [] : (attachmentLoader?(turn.attachmentRefs) ?? [])
             if turn.role == .tool {
                 messages.append(
                     ChatMessage(
@@ -395,7 +405,9 @@ struct ChatFlow: Sendable {
             } else if let role = turn.role.messageRole, !calls.isEmpty {
                 messages.append(
                     ChatMessage(role: role, content: turn.content, toolCalls: calls))
-            } else if let role = turn.role.messageRole, !turn.content.isEmpty {
+            } else if let role = turn.role.messageRole,
+                !turn.content.isEmpty || !attachments.isEmpty
+            {
                 let content =
                     turn.role == .assistant && turn.interrupted
                     ? turn.content + Self.interruptedMarker : turn.content
@@ -403,13 +415,21 @@ struct ChatFlow: Sendable {
                     last.toolCallID == nil
                 {
                     messages[messages.count - 1] = ChatMessage(
-                        role: role, content: last.content + Self.mergeBoundary + content)
+                        role: role, content: last.content + Self.mergeBoundary + content,
+                        attachments: last.attachments + attachments)
                 } else {
-                    messages.append(ChatMessage(role: role, content: content))
+                    messages.append(
+                        ChatMessage(role: role, content: content, attachments: attachments))
                 }
             }
             index += 1
         }
         return messages
+    }
+
+    private func projected(_ turns: [ChatTurn]) -> [ChatMessage] {
+        guard let store = attachments else { return Self.messages(from: turns) }
+        let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+        return Self.messages(from: turns, attachmentLoader: loader)
     }
 }

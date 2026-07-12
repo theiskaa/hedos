@@ -46,8 +46,8 @@ extension ChatStore {
                 INSERT INTO turns
                     (id, session_id, seq, role, content, thinking, model_id, stats_json,
                      artifact_refs, superseded_by, content_hash, created_at, updated_at,
-                     tool_calls_json, tool_call_id, tool_name, interrupted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tool_calls_json, tool_call_id, tool_name, interrupted, attachment_refs)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     .text(turn.id),
@@ -67,6 +67,7 @@ extension ChatStore {
                     turn.toolCallID.map(SQLiteValue.text) ?? .null,
                     turn.toolName.map(SQLiteValue.text) ?? .null,
                     .integer(turn.interrupted ? 1 : 0),
+                    .text(turn.attachmentRefs.joined(separator: ",")),
                 ])
             let storedTags = try database.rows(
                 "SELECT capability_tags FROM sessions WHERE id = ?", [.text(turn.sessionID)]
@@ -88,7 +89,8 @@ extension ChatStore {
                 UPDATE turns
                 SET content = ?, thinking = ?, model_id = ?, stats_json = ?, artifact_refs = ?,
                     superseded_by = ?, content_hash = ?, updated_at = ?,
-                    tool_calls_json = ?, tool_call_id = ?, tool_name = ?, interrupted = ?
+                    tool_calls_json = ?, tool_call_id = ?, tool_name = ?, interrupted = ?,
+                    attachment_refs = ?
                 WHERE id = ?
                 """,
                 [
@@ -104,6 +106,7 @@ extension ChatStore {
                     turn.toolCallID.map(SQLiteValue.text) ?? .null,
                     turn.toolName.map(SQLiteValue.text) ?? .null,
                     .integer(turn.interrupted ? 1 : 0),
+                    .text(turn.attachmentRefs.joined(separator: ",")),
                     .text(turn.id),
                 ])
             let storedTags = try database.rows(
@@ -192,6 +195,7 @@ extension ChatStore {
             modelID: row.optionalText(6),
             statsJSON: row.optionalText(7),
             artifactRefs: splitTags(row.text(8)),
+            attachmentRefs: splitTags(row.text(17)),
             supersededBy: row.optionalText(9),
             contentHash: row.text(10),
             createdAt: Date(timeIntervalSince1970: row.real(11)),
@@ -215,11 +219,12 @@ extension ChatStore {
             modelID: draft.modelID,
             statsJSON: draft.statsJSON,
             artifactRefs: draft.artifactRefs,
+            attachmentRefs: draft.attachmentRefs,
             contentHash: contentHash(
                 content: draft.content, thinking: draft.thinking, modelID: draft.modelID,
                 statsJSON: draft.statsJSON, artifactRefs: draft.artifactRefs, supersededBy: nil,
                 toolCallsJSON: draft.toolCallsJSON, toolCallID: draft.toolCallID,
-                toolName: draft.toolName),
+                toolName: draft.toolName, attachmentRefs: draft.attachmentRefs),
             createdAt: date,
             updatedAt: date,
             toolCallsJSON: draft.toolCallsJSON,
@@ -231,7 +236,7 @@ extension ChatStore {
         content: String, thinking: String?, modelID: String?, statsJSON: String?,
         artifactRefs: [String], supersededBy: String?,
         toolCallsJSON: String?, toolCallID: String?, toolName: String?,
-        interrupted: Bool = false
+        interrupted: Bool = false, attachmentRefs: [String] = []
     ) -> String {
         var fields = [
             content,
@@ -247,6 +252,7 @@ extension ChatStore {
             fields.append(toolName ?? "")
         }
         if interrupted { fields.append("interrupted") }
+        if !attachmentRefs.isEmpty { fields.append(attachmentRefs.joined(separator: ",")) }
         let joined = fields.joined(separator: "\u{1f}")
         return SHA256.hash(data: Data(joined.utf8))
             .map { String(format: "%02x", $0) }

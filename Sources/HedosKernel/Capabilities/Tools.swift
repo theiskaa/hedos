@@ -67,6 +67,10 @@ extension ChatMessage {
         }
         if let toolCallID { object["tool_call_id"] = .string(toolCallID) }
         if let toolName { object["tool_name"] = .string(toolName) }
+        let images = attachments.filter { $0.kind == .image }
+        if !images.isEmpty {
+            object["images"] = .array(images.map { .string($0.data.base64EncodedString()) })
+        }
         return .object(object)
     }
 }
