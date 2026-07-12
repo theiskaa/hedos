@@ -84,10 +84,51 @@ public enum SpeechAudio {
                     index += channelCount
                 }
             }
+        case (1, 8):
+            floats = Self.mixInterleaved(
+                samplesData, bytesPerSample: 1, channels: channelCount) { bytes in
+                (Float(Int(bytes[0]) - 128)) / 128
+            }
+        case (1, 24):
+            floats = Self.mixInterleaved(
+                samplesData, bytesPerSample: 3, channels: channelCount) { bytes in
+                var value = Int32(bytes[0]) | Int32(bytes[1]) << 8 | Int32(bytes[2]) << 16
+                if value & 0x80_0000 != 0 { value |= Int32(bitPattern: 0xFF00_0000) }
+                return Float(value) / 8_388_608
+            }
+        case (1, 32):
+            floats = Self.mixInterleaved(
+                samplesData, bytesPerSample: 4, channels: channelCount) { bytes in
+                let value =
+                    Int32(bytes[0]) | Int32(bytes[1]) << 8 | Int32(bytes[2]) << 16
+                    | Int32(bytes[3]) << 24
+                return Float(value) / 2_147_483_648
+            }
         default:
             return nil
         }
         return (floats.withUnsafeBytes { Data($0) }, Int(sampleRate))
+    }
+
+    static func mixInterleaved(
+        _ data: Data, bytesPerSample: Int, channels: Int, decode: ([UInt8]) -> Float
+    ) -> [Float] {
+        let frameBytes = bytesPerSample * channels
+        guard frameBytes > 0 else { return [] }
+        let bytes = [UInt8](data)
+        var floats: [Float] = []
+        floats.reserveCapacity(bytes.count / frameBytes)
+        var offset = 0
+        while offset + frameBytes <= bytes.count {
+            var sum: Float = 0
+            for channel in 0..<channels {
+                let start = offset + channel * bytesPerSample
+                sum += decode(Array(bytes[start..<start + bytesPerSample]))
+            }
+            floats.append(sum / Float(channels))
+            offset += frameBytes
+        }
+        return floats
     }
 
     private static func readUInt16(_ data: Data, at offset: Int) -> UInt16 {

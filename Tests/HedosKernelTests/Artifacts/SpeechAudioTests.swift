@@ -12,6 +12,45 @@ private func sineWave(samples: Int, amplitude: Float = 0.5) -> Data {
     return values.withUnsafeBytes { Data($0) }
 }
 
+private func wav(format: UInt16, bits: UInt16, sampleRate: UInt32, samples: Data) -> Data {
+    var data = Data()
+    let channels: UInt16 = 1
+    let blockAlign = channels * bits / 8
+    func le<T: FixedWidthInteger>(_ value: T) {
+        var little = value.littleEndian
+        withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+    data.append("RIFF".data(using: .ascii)!)
+    le(UInt32(36 + samples.count))
+    data.append("WAVE".data(using: .ascii)!)
+    data.append("fmt ".data(using: .ascii)!)
+    le(UInt32(16))
+    le(format)
+    le(channels)
+    le(sampleRate)
+    le(sampleRate * UInt32(blockAlign))
+    le(blockAlign)
+    le(bits)
+    data.append("data".data(using: .ascii)!)
+    le(UInt32(samples.count))
+    data.append(samples)
+    return data
+}
+
+@Test func float32PCMDecodesTwentyFourBitAndEightBitWav() {
+    let wav24 = wav(
+        format: 1, bits: 24, sampleRate: 24000,
+        samples: Data([0x00, 0x00, 0x40, 0x00, 0x00, 0xC0]))
+    let decoded24 = SpeechAudio.float32PCM(fromWAV: wav24)
+    #expect(decoded24?.sampleRate == 24000)
+    #expect(decoded24?.pcm.count == 2 * 4)
+
+    let wav8 = wav(format: 1, bits: 8, sampleRate: 16000, samples: Data([255, 0, 128]))
+    let decoded8 = SpeechAudio.float32PCM(fromWAV: wav8)
+    #expect(decoded8?.sampleRate == 16000)
+    #expect(decoded8?.pcm.count == 3 * 4)
+}
+
 @Test func wavEncodingProducesValidHeaderAndSampleCount() {
     let pcm = sineWave(samples: 2400)
     let wav = SpeechAudio.wavData(fromFloat32: pcm, sampleRate: 24000)
