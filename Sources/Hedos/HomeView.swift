@@ -4,7 +4,9 @@ import SwiftUI
 struct HomePane: View {
     @Bindable var shell: ShellModel
     @State private var chatDraft = ""
+    @State private var denyCount = 0
     @FocusState private var chatFieldFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var subtitle = HomePane.subtitles.randomElement() ?? HomePane.subtitles[0]
 
     private static let subtitles = [
@@ -22,14 +24,19 @@ struct HomePane: View {
                 topStrip
                 if let summary, summary.totalCount == 0 {
                     FirstRunDiscovery(shell: shell)
+                        .transition(.opacity)
                 } else if summary == nil, let failure = shell.library.errorMessage {
                     scanFailure(failure)
+                        .transition(.opacity)
                 } else {
-                    centeredHero
-                    board
-                    if !readyModels.isEmpty {
-                        readySection
+                    Group {
+                        centeredHero
+                        board
+                        if !readyModels.isEmpty {
+                            readySection
+                        }
                     }
+                    .transition(.opacity)
                 }
                 hints
             }
@@ -38,6 +45,8 @@ struct HomePane: View {
             .padding(.bottom, Design.Space.pane)
             .frame(maxWidth: Design.Column.hero, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
+            .animation(Design.motion(reduceMotion: reduceMotion), value: summary?.totalCount)
+            .animation(Design.motion(reduceMotion: reduceMotion), value: summary == nil)
         }
         .background(alignment: .topTrailing) {
             HedosLogo(size: 360, color: Design.ink)
@@ -70,6 +79,7 @@ struct HomePane: View {
             if shell.library.isScanning {
                 ProgressView()
                     .controlSize(.small)
+                    .transition(.opacity)
             }
             QuietIconButton(glyph: "arrow.clockwise") {
                 Task { await shell.library.rescan() }
@@ -78,6 +88,7 @@ struct HomePane: View {
             .help("Scan the machine again")
             .accessibilityLabel("Rescan")
         }
+        .animation(Design.motion(reduceMotion: reduceMotion), value: shell.library.isScanning)
     }
 
     private var temperatureBadge: some View {
@@ -130,23 +141,20 @@ struct HomePane: View {
                 .font(Design.body)
                 .focused($chatFieldFocused)
                 .onSubmit(launchChat)
-            Button(action: launchChat) {
-                Image(systemName: "arrow.up")
-                    .font(Design.caption.weight(.semibold))
-                    .foregroundStyle(Design.paper)
-                    .frame(width: 28, height: 28)
-                    .background(Design.ink, in: Circle())
-            }
-            .buttonStyle(PressDipStyle())
-            .disabled(
-                chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || defaultChatName == nil)
-            .accessibilityLabel("Start chat")
+            CircleControl(
+                glyph: "arrow.up",
+                prominent: !chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && defaultChatName != nil,
+                label: "Start chat",
+                action: launchChat
+            )
+            .disabled(defaultChatName == nil)
         }
         .padding(.leading, Design.Space.xl)
         .padding(.trailing, Design.Space.s)
         .padding(.vertical, Design.Space.s)
         .surfaceCard(radius: Design.Radius.bubble)
+        .denyShake(on: denyCount, in: RoundedRectangle.soft(Design.Radius.bubble))
         .onTapGesture { chatFieldFocused = true }
     }
 
@@ -168,9 +176,13 @@ struct HomePane: View {
 
     private func launchChat() {
         let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty,
-            let record = Launcher.defaultChatModel(
-                in: shell.library.records, preferring: shell.preferredChatModelID)
+        guard !text.isEmpty else {
+            denyCount += 1
+            chatFieldFocused = true
+            return
+        }
+        guard let record = Launcher.defaultChatModel(
+            in: shell.library.records, preferring: shell.preferredChatModelID)
         else { return }
         shell.startChat(bound: record, seed: text)
         chatDraft = ""
@@ -193,7 +205,9 @@ struct HomePane: View {
     private var board: some View {
         HStack(alignment: .top, spacing: Design.Space.l) {
             statCard
+                .staggeredArrival(0)
             warmNowCard
+                .staggeredArrival(1)
         }
     }
 
@@ -211,12 +225,15 @@ struct HomePane: View {
                 Group {
                     if let summary {
                         PixelNumber(text: "\(summary.totalCount)", unit: 6, color: Design.ink)
+                            .transition(.opacity)
                     } else {
                         SkeletonPulse(radius: Design.Radius.control)
                             .frame(width: 48, height: 6 * 7)
+                            .transition(.opacity)
                     }
                 }
                 .frame(width: 84, height: 6 * 7, alignment: .bottomLeading)
+                .animation(Design.motion(reduceMotion: reduceMotion), value: summary == nil)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("models found")
                         .font(Design.micro)
@@ -656,7 +673,7 @@ struct ReadyModelCard: View {
             .contentShape(RoundedRectangle.soft(Design.Radius.tile))
             .lifts(hovering: hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
         .help("Open \(record.displayName) in \(Design.modeTitle(destination))")

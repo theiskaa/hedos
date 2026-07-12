@@ -8,6 +8,7 @@ final class ShellModel {
     struct PendingLaunch: Hashable {
         var modelID: String
         var intent: ChatViewModel.Intent
+        var seed: String = ""
     }
 
     let library: LibraryViewModel
@@ -346,18 +347,8 @@ final class ShellModel {
             chatSelection = session.id
             librarySelection = nil
             let trimmed = seed.trimmingCharacters(in: .whitespacesAndNewlines)
-            switch intent {
-            case .text:
-                if !trimmed.isEmpty {
-                    let chat = chatModel(for: session)
-                    chat.draft = trimmed
-                    chat.send()
-                }
-            case .image, .speak:
-                pendingLaunch = PendingLaunch(modelID: record.id, intent: intent)
-                if !trimmed.isEmpty {
-                    chatModel(for: session).draft = trimmed
-                }
+            if intent != .text || !trimmed.isEmpty {
+                pendingLaunch = PendingLaunch(modelID: record.id, intent: intent, seed: trimmed)
             }
             let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
             withAnimation(Design.motion(reduceMotion: reduceMotion)) {
@@ -385,6 +376,7 @@ final class ShellModel {
 
 struct ShellView: View {
     @Bindable var shell: ShellModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var nowPlayingClearance: CGFloat {
         shell.isFullscreen ? Design.Space.l : Design.Space.pane + Design.Space.l
@@ -406,9 +398,7 @@ struct ShellView: View {
                         .padding(.top, nowPlayingClearance)
                         .padding(.trailing, Design.Space.l)
                         .animation(
-                            Design.motion(
-                                reduceMotion: NSWorkspace.shared
-                                    .accessibilityDisplayShouldReduceMotion),
+                            Design.motion(reduceMotion: reduceMotion),
                             value: shell.audio.track)
                 }
         }
@@ -674,6 +664,7 @@ struct ChatPane: View {
                 ColumnDivider()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(.easeOut(duration: 0.15), value: shell.chatSelection)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -741,8 +732,10 @@ struct ChatPane: View {
                 }
             )
             .id(session.id)
+            .transition(.opacity)
         } else {
             ChatStartHero(shell: shell)
+                .transition(.opacity)
         }
     }
 }
@@ -751,6 +744,7 @@ struct ChatStartHero: View {
     @Bindable var shell: ShellModel
     @State private var draft = ""
     @State private var selectedModelID: String?
+    @State private var denyCount = 0
     @FocusState private var fieldFocused: Bool
 
     private var defaultModel: ModelRecord? {
@@ -801,14 +795,18 @@ struct ChatStartHero: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 440)
             }
+            .staggeredArrival(0)
             if !startableGroups.isEmpty {
                 modelPicker
+                    .staggeredArrival(1)
             }
             startChatField
+                .staggeredArrival(2)
             Text(caption)
                 .font(Design.caption)
                 .foregroundStyle(Design.inkFaint)
                 .multilineTextAlignment(.center)
+                .staggeredArrival(3)
             Button("Import a conversation…") {
                 let panel = NSOpenPanel()
                 panel.allowedContentTypes = [.json]
@@ -821,6 +819,7 @@ struct ChatStartHero: View {
             .font(Design.label)
             .foregroundStyle(Design.inkSoft)
             .padding(.top, Design.Space.s)
+            .staggeredArrival(4)
         }
         .frame(maxWidth: 540)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -856,21 +855,19 @@ struct ChatStartHero: View {
                 .focused($fieldFocused)
                 .onSubmit(launchChat)
                 .disabled(activeModel == nil)
-            Button(action: launchChat) {
-                Image(systemName: "arrow.up")
-                    .font(Design.caption.weight(.semibold))
-                    .foregroundStyle(Design.paper)
-                    .frame(width: 28, height: 28)
-                    .background(Design.ink, in: Circle())
-            }
-            .buttonStyle(PressDipStyle())
-            .disabled(sendDisabled)
-            .accessibilityLabel("Start chat")
+            CircleControl(
+                glyph: "arrow.up",
+                prominent: !sendDisabled,
+                label: "Start chat",
+                action: launchChat
+            )
+            .disabled(activeModel == nil)
         }
         .padding(.leading, Design.Space.xl)
         .padding(.trailing, Design.Space.s)
         .padding(.vertical, Design.Space.s)
         .surfaceCard(radius: Design.Radius.bubble)
+        .denyShake(on: denyCount, in: RoundedRectangle.soft(Design.Radius.bubble))
         .onTapGesture { fieldFocused = true }
     }
 
@@ -911,8 +908,13 @@ struct ChatStartHero: View {
     }
 
     private func launchChat() {
+        guard let record = activeModel else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let record = activeModel else { return }
+        guard !text.isEmpty else {
+            denyCount += 1
+            fieldFocused = true
+            return
+        }
         shell.startChat(bound: record, intent: activeIntent, seed: text)
         draft = ""
     }
@@ -921,6 +923,7 @@ struct ChatStartHero: View {
 struct ChatSessionsColumn: View {
     @Bindable var shell: ShellModel
     @Binding var query: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var renaming: ChatSession?
     @State private var renameTitle = ""
     @State private var deleting: ChatSession?
@@ -1013,9 +1016,7 @@ struct ChatSessionsColumn: View {
                 .padding(.top, Design.Space.s)
                 .padding(.bottom, Design.Space.l)
                 .animation(
-                    Design.motion(
-                        reduceMotion: NSWorkspace.shared
-                            .accessibilityDisplayShouldReduceMotion),
+                    Design.motion(reduceMotion: reduceMotion),
                     value: shell.filteredSessions.map(\.id))
             }
         }
@@ -1202,8 +1203,10 @@ private struct ChatSessionRow: View {
                     : hovering ? Design.ink.opacity(0.04) : .clear,
                 in: RoundedRectangle.soft(Design.Radius.control))
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
+            .animation(Design.wash, value: selected)
+            .animation(Design.wash, value: hovering)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
         .onHover { inside in
             if inside {
                 hovered = session.id
@@ -1366,7 +1369,7 @@ struct GallerySheet: View {
             .frame(maxWidth: .infinity)
             .tile(hovering: hovered)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
         .overlay(alignment: .topTrailing) {
             if hovered {
                 actions(artifact)
