@@ -56,6 +56,21 @@ private func dataURI() -> String {
     #expect(ok?["max_tokens"] == .int(8))
 }
 
+@Test func openAIRejectsANonStringOrObjectToolChoice() {
+    let body: [String: Any] = [
+        "model": "m",
+        "messages": [["role": "user", "content": "hi"]],
+        "tool_choice": 5,
+    ]
+    #expect(throws: GatewayError.self) {
+        _ = try OpenAIWire.decodeChatRequest(body)
+    }
+    let ok: [String: Any] = [
+        "model": "m", "messages": [["role": "user", "content": "hi"]], "tool_choice": "auto",
+    ]
+    #expect((try? OpenAIWire.decodeChatRequest(ok)) != nil)
+}
+
 @Test func ollamaReadsTheImagesArray() throws {
     let encoded = Data([0x89, 0x50, 0x4E, 0x47]).base64EncodedString()
     let body: [String: Any] = [

@@ -46,7 +46,12 @@ enum OpenAIWire {
             guard let choice = JSONValue.fromAny(rawChoice) else {
                 throw GatewayError(.badRequest, "tool_choice must be a string or object")
             }
-            toolChoice = choice
+            switch choice {
+            case .string, .object:
+                toolChoice = choice
+            default:
+                throw GatewayError(.badRequest, "tool_choice must be a string or object")
+            }
         }
         return ChatRequest(
             model: model,
