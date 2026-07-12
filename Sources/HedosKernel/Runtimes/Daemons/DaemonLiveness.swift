@@ -24,6 +24,7 @@ public final class DaemonLiveness: @unchecked Sendable {
 
     private let lock = NSLock()
     private var snapshot = Snapshot()
+    private var epoch = 0
     private let session: URLSession
     let comfyURL: URL
     let a1111URL: URL
@@ -53,6 +54,7 @@ public final class DaemonLiveness: @unchecked Sendable {
     public func markDead(_ daemon: Daemon) {
         lock.lock()
         defer { lock.unlock() }
+        epoch += 1
         switch daemon {
         case .comfyUI: snapshot.comfyUI = State()
         case .a1111: snapshot.a1111 = State()
@@ -60,9 +62,13 @@ public final class DaemonLiveness: @unchecked Sendable {
     }
 
     public func probe() async {
+        let startEpoch = lock.withLock { epoch }
         async let comfy = probeComfyUI()
         async let auto = probeA1111()
-        store(Snapshot(comfyUI: await comfy, a1111: await auto))
+        let fresh = Snapshot(comfyUI: await comfy, a1111: await auto)
+        lock.withLock {
+            if epoch == startEpoch { snapshot = fresh }
+        }
     }
 
     func probeComfyUI() async -> State {
