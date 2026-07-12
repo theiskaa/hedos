@@ -60,48 +60,54 @@ final class ConsentCoordinator {
     }
 }
 
-struct ConsentSheet: View {
+struct ConsentCard: View {
     let pending: ConsentCoordinator.Pending
     let onDecide: (ConsentDecision) -> Void
     @State private var dontAskAgain = false
+    @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: Design.Space.l) {
             header
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
-            ScrollView {
-                detail
-                    .padding(.horizontal, Design.Space.gutter)
-                    .padding(.vertical, Design.Space.xl)
+            if expanded {
+                ScrollView {
+                    detail
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, Design.Space.xs)
+                }
+                .frame(maxHeight: 220)
             }
-            Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             footer
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.vertical, Design.Space.l)
         }
-        .frame(width: 640, height: 560)
-        .interactiveDismissDisabled()
+        .padding(Design.Space.xl)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: Design.Space.l) {
-            IconPlaque(size: 44) {
-                Image(systemName: glyph)
-                    .font(Design.glyphNav)
-                    .foregroundStyle(Design.inkSoft)
+        HStack(spacing: Design.Space.m) {
+            Image(systemName: glyph)
+                .font(Design.glyphNav)
+                .foregroundStyle(Design.inkSoft)
+                .frame(width: 22)
+            Text(intent)
+                .font(Design.body.weight(.medium))
+                .foregroundStyle(Design.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: Design.Space.m)
+            Button {
+                withAnimation(Design.spring) { expanded.toggle() }
+            } label: {
+                HStack(spacing: Design.Space.xs) {
+                    Text(expanded ? "Hide details" : "Show details")
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(Design.glyphSmall)
+                }
+                .font(Design.label.weight(.medium))
+                .foregroundStyle(Design.inkFaint)
             }
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                Text(title)
-                    .font(Design.title)
-                    .tracking(Design.tightTracking)
-                Text(subtitle)
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
-            }
-            Spacer()
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, Design.Space.gutter)
-        .padding(.vertical, Design.Space.l)
     }
 
     @ViewBuilder
@@ -119,7 +125,7 @@ struct ConsentSheet: View {
                         .font(Design.caption)
                         .foregroundStyle(Design.heat)
                 }
-                codeBlock(diff)
+                diffBlock(diff)
             }
         case .command(let argv, let timeoutSeconds):
             VStack(alignment: .leading, spacing: Design.Space.m) {
@@ -139,7 +145,31 @@ struct ConsentSheet: View {
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Design.Space.l)
-            .background(Design.inkWash, in: RoundedRectangle(cornerRadius: Design.Radius.surface))
+            .background(Design.inkWash, in: RoundedRectangle.soft(Design.Radius.surface))
+    }
+
+    private func diffBlock(_ diff: String) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, raw in
+                let line = String(raw)
+                Text(line.isEmpty ? " " : line)
+                    .font(Design.data(12))
+                    .foregroundStyle(diffColor(line))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .textSelection(.enabled)
+        .padding(Design.Space.l)
+        .background(Design.inkWash, in: RoundedRectangle.soft(Design.Radius.surface))
+    }
+
+    private func diffColor(_ line: String) -> Color {
+        if line.hasPrefix("+++") || line.hasPrefix("---") || line.hasPrefix("@@") {
+            return Design.inkFaint
+        }
+        if line.hasPrefix("+") { return Design.added }
+        if line.hasPrefix("-") { return Design.danger }
+        return Design.inkSoft
     }
 
     private var footer: some View {
@@ -151,10 +181,12 @@ struct ConsentSheet: View {
             }
             .toggleStyle(.checkbox)
             Spacer()
-            Button("Decline") { onDecide(.declined) }
+            Button("Deny") { onDecide(.declined) }
                 .buttonStyle(QuietButtonStyle())
+                .keyboardShortcut(.cancelAction)
             Button("Approve") { onDecide(.approved(dontAskAgain: dontAskAgain)) }
                 .buttonStyle(InkButtonStyle())
+                .keyboardShortcut(.defaultAction)
         }
     }
 
@@ -165,14 +197,10 @@ struct ConsentSheet: View {
         }
     }
 
-    private var title: String {
+    private var intent: String {
         switch pending.request.kind {
-        case .write: "Write to a file"
-        case .command: "Run a command"
+        case .write(let path, _, _): "Write to \(path)"
+        case .command(let argv, _): "Run \(argv.joined(separator: " "))"
         }
-    }
-
-    private var subtitle: String {
-        "The model is asking to change your machine — approve the exact action below"
     }
 }

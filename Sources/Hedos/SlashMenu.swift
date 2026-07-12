@@ -67,6 +67,11 @@ struct SlashEntry: Identifiable {
         case .file(let path): path
         }
     }
+
+    var isFile: Bool {
+        if case .file = kind { return true }
+        return false
+    }
 }
 
 enum SlashMenu {
@@ -102,20 +107,53 @@ struct SlashMenuPanel: View {
     let onAccept: (SlashEntry) -> Void
     let onHighlight: (Int) -> Void
 
+    private var allFiles: Bool {
+        !entries.isEmpty && entries.allSatisfy(\.isFile)
+    }
+
+    private var rowHeight: CGFloat {
+        allFiles ? 30 : 40
+    }
+
+    private var listHeight: CGFloat {
+        CGFloat(min(entries.count, 6)) * rowHeight + Design.Space.s * 2
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.Space.xxs) {
-            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                row(entry, index: index)
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Rectangle()
+                .fill(Design.line)
+                .frame(height: Design.hairlineWidth)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                            row(entry, index: index).id(index)
+                        }
+                    }
+                    .padding(Design.Space.s)
+                }
+                .frame(height: listHeight)
+                .scrollDisabled(entries.count <= 6)
+                .onChange(of: highlighted) { _, new in
+                    withAnimation(.easeOut(duration: 0.1)) {
+                        proxy.scrollTo(new, anchor: .center)
+                    }
+                }
             }
         }
-        .padding(Design.Space.s)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Design.paper, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
-        .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.tile)
-                .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .shade(Design.Elevation.floating)
         .accessibilityIdentifier("slash-menu")
+    }
+
+    private var header: some View {
+        Text(verbatim: "↑↓ navigate · ↵ select · esc dismiss")
+            .font(Design.label)
+            .foregroundStyle(Design.inkFaint)
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.s)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func row(_ entry: SlashEntry, index: Int) -> some View {
@@ -125,26 +163,38 @@ struct SlashMenuPanel: View {
             HStack(spacing: Design.Space.m) {
                 Image(systemName: entry.glyph)
                     .font(Design.glyphInline)
-                    .foregroundStyle(Design.inkSoft)
-                    .frame(width: 18, alignment: .leading)
-                Text(entry.title)
-                    .font(Design.caption.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(Design.ink)
-                Spacer(minLength: Design.Space.m)
-                Text(entry.subtitle.uppercased())
-                    .font(Design.micro)
-                    .tracking(Design.microTracking)
-                    .lineLimit(1)
-                    .foregroundStyle(Design.inkFaint)
+                    .foregroundStyle(index == highlighted ? Design.ink : Design.inkSoft)
+                    .frame(width: 16, alignment: .leading)
+                if entry.isFile {
+                    Text(entry.title)
+                        .font(Design.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(Design.ink)
+                } else {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(entry.title)
+                            .font(Design.caption.weight(.medium))
+                            .lineLimit(1)
+                            .foregroundStyle(Design.ink)
+                        if !entry.subtitle.isEmpty {
+                            Text(entry.subtitle)
+                                .font(Design.label)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(Design.inkSoft)
+                        }
+                    }
+                }
+                Spacer(minLength: Design.Space.s)
             }
             .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.s)
+            .padding(.vertical, entry.isFile ? Design.Space.xs : Design.Space.s)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 index == highlighted ? Design.inkWash : .clear,
-                in: RoundedRectangle(cornerRadius: Design.Radius.card))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+                in: RoundedRectangle.soft(Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
         .buttonStyle(.plain)
         .onHover { hovering in

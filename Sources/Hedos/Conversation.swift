@@ -8,7 +8,9 @@ struct MentionSetup {
     let files: () async -> [String]
 }
 
-struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
+private let composerCornerRadius: CGFloat = 22
+
+struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: View>: View {
     let placeholder: String
     @Binding var draft: String
     let isWorking: Bool
@@ -22,6 +24,7 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
     var mentions: MentionSetup? = nil
     var dictation: DictationSetup? = nil
     @ViewBuilder let transcript: () -> Transcript
+    @ViewBuilder let header: () -> Header
     @ViewBuilder let aux: () -> Aux
     @ViewBuilder let chip: () -> Chip
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -69,74 +72,78 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            ZStack(alignment: .topLeading) {
-                if draft.isEmpty {
-                    Text(placeholder)
-                        .font(Design.body)
-                        .foregroundStyle(Design.inkFaint)
-                        .padding(.leading, 3)
-                        .padding(.top, 2)
-                        .allowsHitTesting(false)
+            header()
+                .padding(.horizontal, Design.Space.s)
+            VStack(alignment: .leading, spacing: 0) {
+                if accessoryActive {
+                    composerAccessory
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Design.Space.s)
+                        .transition(.opacity)
+                    Rectangle()
+                        .fill(Design.line)
+                        .frame(height: Design.hairlineWidth)
+                        .transition(.opacity)
                 }
-                ComposerTextView(
-                    text: $draft,
-                    sendWithEnter: sendWithEnter,
-                    measuredHeight: $composerHeight,
-                    onCommand: interceptCommand,
-                    focusToken: composerFocusToken,
-                    mentionPaths: mentionIndex
-                ) {
-                    if canSend && !isWorking {
-                        onSend()
+                VStack(alignment: .leading, spacing: Design.Space.m) {
+                    ZStack(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text(placeholder)
+                                .font(Design.body)
+                                .foregroundStyle(Design.inkFaint)
+                                .padding(.leading, 3)
+                                .padding(.top, 2)
+                                .allowsHitTesting(false)
+                        }
+                        ComposerTextView(
+                            text: $draft,
+                            sendWithEnter: sendWithEnter,
+                            measuredHeight: $composerHeight,
+                            onCommand: interceptCommand,
+                            focusToken: composerFocusToken,
+                            mentionPaths: mentionIndex
+                        ) {
+                            if canSend && !isWorking {
+                                onSend()
+                            }
+                        }
+                        .frame(height: composerHeight)
+                        .accessibilityLabel(placeholder)
+                    }
+                    .padding(.top, Design.Space.xs)
+                    .padding(.horizontal, Design.Space.xs)
+                    HStack(spacing: Design.Space.m) {
+                        if let notice = dictationController.notice {
+                            Text(notice)
+                                .font(Design.label)
+                                .foregroundStyle(Design.inkSoft)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        Spacer(minLength: 0)
+                        micControl
+                        aux()
+                        chip()
+                        if isWorking {
+                            CircleControl(
+                                glyph: "stop.fill", prominent: true, label: "Stop", action: onStop
+                            )
+                            .keyboardShortcut(.cancelAction)
+                        } else {
+                            CircleControl(
+                                glyph: "arrow.up", prominent: true, label: "Send", action: onSend
+                            )
+                            .disabled(!canSend)
+                        }
                     }
                 }
-                .frame(height: composerHeight)
-                .accessibilityLabel(placeholder)
+                .padding(Design.Space.l)
             }
-            .padding(.top, Design.Space.xs)
-            .padding(.horizontal, Design.Space.xs)
-            HStack(spacing: Design.Space.m) {
-                if let notice = dictationController.notice {
-                    Text(notice)
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkSoft)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                Spacer(minLength: 0)
-                micControl
-                aux()
-                chip()
-                if isWorking {
-                    CircleControl(
-                        glyph: "stop.fill", prominent: true, label: "Stop", action: onStop
-                    )
-                    .keyboardShortcut(.cancelAction)
-                } else {
-                    CircleControl(
-                        glyph: "arrow.up", prominent: true, label: "Send", action: onSend
-                    )
-                    .disabled(!canSend)
-                }
-            }
-        }
-        .padding(Design.Space.l)
-        .surfaceCard()
-        .shade(Design.Elevation.lift)
-        .overlay(alignment: .top) {
-            Color.clear
-                .frame(height: 1)
-                .overlay(alignment: .bottom) {
-                    if menuActive && !menuEntries.isEmpty {
-                        SlashMenuPanel(
-                            entries: menuEntries,
-                            highlighted: slashHighlight,
-                            onAccept: acceptSlash,
-                            onHighlight: { slashHighlight = $0 }
-                        )
-                        .offset(y: -Design.Space.s)
-                    }
-                }
+            .surfaceCard(radius: composerCornerRadius)
+            .clipShape(RoundedRectangle.soft(composerCornerRadius))
+            .shade(Design.Elevation.raised)
+            .animation(Design.spring, value: menuActive)
+            .animation(Design.spring, value: ConsentCoordinator.shared.pending?.id)
         }
         .frame(maxWidth: conversationWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -224,6 +231,10 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
         slashActive || mentionActive
     }
 
+    private var accessoryActive: Bool {
+        ConsentCoordinator.shared.pending != nil || (menuActive && !menuEntries.isEmpty)
+    }
+
     private var slashEntries: [SlashEntry] {
         guard let slash, let query = slashQuery, !slashSuppressed else { return [] }
         return SlashMenu.entries(
@@ -239,6 +250,22 @@ struct ConversationScaffold<Transcript: View, Aux: View, Chip: View>: View {
 
     private var menuEntries: [SlashEntry] {
         mentionActive ? mentionEntries : slashEntries
+    }
+
+    @ViewBuilder
+    private var composerAccessory: some View {
+        if let pending = ConsentCoordinator.shared.pending {
+            ConsentCard(pending: pending) { decision in
+                ConsentCoordinator.shared.decide(pending, decision)
+            }
+        } else if menuActive && !menuEntries.isEmpty {
+            SlashMenuPanel(
+                entries: menuEntries,
+                highlighted: slashHighlight,
+                onAccept: acceptSlash,
+                onHighlight: { slashHighlight = $0 }
+            )
+        }
     }
 
     private func acceptSlash(_ entry: SlashEntry) {
@@ -286,24 +313,28 @@ struct TranscriptEmptyState: View {
     let caption: String
 
     var body: some View {
-        VStack(spacing: Design.Space.m) {
-            Text(eyebrow.uppercased())
-                .font(Design.micro)
-                .tracking(Design.microTracking)
-                .foregroundStyle(Design.inkFaint)
-            Text(headline)
-                .font(Design.title)
-                .tracking(Design.tightTracking)
-                .foregroundStyle(Design.ink)
-            Text(caption)
-                .font(Design.caption)
-                .foregroundStyle(Design.inkSoft)
-                .multilineTextAlignment(.center)
-                .lineSpacing(2.5)
-                .frame(maxWidth: Design.Column.emptyCaption)
+        VStack(spacing: Design.Space.l) {
+            HedosLogo(size: 52, color: Design.inkSoft)
+                .opacity(0.9)
+                .padding(.bottom, Design.Space.xs)
+            VStack(spacing: Design.Space.m) {
+                Text(eyebrow)
+                    .font(Design.micro)
+                    .foregroundStyle(Design.inkFaint)
+                Text(headline)
+                    .font(Design.title)
+                    .tracking(Design.tightTracking)
+                    .foregroundStyle(Design.ink)
+                Text(caption)
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(2.5)
+                    .frame(maxWidth: Design.Column.emptyCaption)
+            }
         }
         .frame(maxWidth: .infinity)
-        .padding(.top, 120)
+        .padding(.top, 96)
         .accessibilityElement(children: .combine)
     }
 }
@@ -329,10 +360,10 @@ struct CircleControl: View {
                     live
                         ? AnyShapeStyle(Design.accent)
                         : prominent ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface),
-                    in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                    in: Circle())
                 .overlay {
                     if prominent || live {
-                        RoundedRectangle(cornerRadius: Design.Radius.control)
+                        Circle()
                             .strokeBorder(
                                 LinearGradient(
                                     colors: [
@@ -342,16 +373,16 @@ struct CircleControl: View {
                                     startPoint: .top, endPoint: .center),
                                 lineWidth: Design.hairlineWidth)
                     } else {
-                        RoundedRectangle(cornerRadius: Design.Radius.control)
+                        Circle()
                             .strokeBorder(Design.line, lineWidth: Design.hairlineWidth)
                     }
                 }
-                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                .contentShape(Circle())
                 .opacity(isEnabled ? 1 : 0.4)
         }
         .buttonStyle(CirclePressStyle(prominent: prominent, hovering: hovering))
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(Circle())
         .help(label)
         .accessibilityLabel(label)
     }
@@ -395,6 +426,7 @@ struct ArtifactExchangeView: View {
     @State private var image: NSImage?
     @State private var resolved = false
     @State private var saveNotice: String?
+    @State private var copiedImage = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.xs) {
@@ -467,8 +499,16 @@ struct ArtifactExchangeView: View {
                                 TrayButton(label: "Save .png", glyph: "arrow.down.to.line") {
                                     saveImage()
                                 }
-                                TrayButton(label: "Copy", glyph: "doc.on.doc") {
+                                TrayButton(
+                                    label: copiedImage ? "Copied" : "Copy",
+                                    glyph: copiedImage ? "checkmark" : "doc.on.doc"
+                                ) {
                                     copyImage()
+                                    copiedImage = true
+                                    Task {
+                                        try? await Task.sleep(for: .seconds(1.5))
+                                        copiedImage = false
+                                    }
                                 }
                             }
                         }
@@ -482,7 +522,7 @@ struct ArtifactExchangeView: View {
                 SkeletonPulse()
                     .frame(width: Design.Bubble.artifactPlaceholder.width,
                         height: Design.Bubble.artifactPlaceholder.height)
-                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.artifact))
+                    .clipShape(RoundedRectangle.soft(Design.Radius.artifact))
             }
         }
     }
@@ -552,8 +592,20 @@ struct ArtifactExchangeView: View {
 
     private func copyImage() {
         guard let image else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([image])
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        let png = Self.pngData(image)
+        let tiff = image.tiffRepresentation
+        var types: [NSPasteboard.PasteboardType] = []
+        if png != nil { types.append(.png) }
+        if tiff != nil { types.append(.tiff) }
+        guard !types.isEmpty else {
+            pasteboard.writeObjects([image])
+            return
+        }
+        pasteboard.declareTypes(types, owner: nil)
+        if let png { pasteboard.setData(png, forType: .png) }
+        if let tiff { pasteboard.setData(tiff, forType: .tiff) }
     }
 
     private static func pngData(_ image: NSImage) -> Data? {
@@ -585,26 +637,23 @@ struct TrayButton: View {
             HStack(spacing: Design.Space.xs) {
                 Image(systemName: glyph)
                     .font(Design.glyphSmall)
+                    .contentTransition(.symbolEffect(.replace))
                 Text(label)
-                    .font(Design.micro)
-                    .tracking(0.4)
+                    .font(Design.caption.weight(.medium))
                     .lineLimit(1)
                     .fixedSize()
+                    .contentTransition(.opacity)
             }
             .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.xs + 1)
-            .background(Design.panel, in: RoundedRectangle(cornerRadius: Design.Radius.control))
-            .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
-                    .strokeBorder(
-                        hovering ? Design.lineBright : Design.line,
-                        lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .padding(.horizontal, Design.Space.s)
+            .padding(.vertical, Design.Space.xxs + 1)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
+        .animation(Design.spring, value: glyph)
+        .animation(Design.spring, value: label)
         .accessibilityLabel(label)
     }
 }
