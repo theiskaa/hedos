@@ -149,7 +149,7 @@ struct FirstRunDiscovery: View {
                 .padding(.horizontal, Design.Space.l)
                 .padding(.vertical, Design.Space.s)
                 .overlay(
-                    RoundedRectangle(cornerRadius: Design.Radius.control)
+                    RoundedRectangle.soft(Design.Radius.control)
                         .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
             HStack(spacing: Design.Space.m) {
                 Button("Scan this Mac") {
@@ -215,13 +215,13 @@ struct FirstRunDiscovery: View {
                         .padding(.vertical, Design.Space.xs + 1)
                         .background(
                             selected ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.panel),
-                            in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                            in: RoundedRectangle.soft(Design.Radius.control))
                         .overlay(
-                            RoundedRectangle(cornerRadius: Design.Radius.control)
+                            RoundedRectangle.soft(Design.Radius.control)
                                 .strokeBorder(
                                     selected ? Color.clear : Design.line,
                                     lineWidth: Design.hairlineWidth))
-                        .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                        .contentShape(RoundedRectangle.soft(Design.Radius.control))
                 }
                 .buttonStyle(PressDipStyle())
                 .accessibilityLabel(item.rawValue)
@@ -246,7 +246,7 @@ struct SuggestionCard: View {
                     .foregroundStyle(Design.accentText)
                     .frame(width: 26, height: 24)
                     .overlay(
-                        RoundedRectangle(cornerRadius: Design.Radius.control)
+                        RoundedRectangle.soft(Design.Radius.control)
                             .strokeBorder(Design.lineBright, lineWidth: Design.hairlineWidth))
                 Spacer(minLength: 0)
                 Text((recommended ? "best for you" : fit.label).uppercased())
@@ -278,22 +278,22 @@ struct SuggestionCard: View {
                         .padding(.vertical, Design.Space.s)
                         .background(
                             recommended ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.clear),
-                            in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                            in: RoundedRectangle.soft(Design.Radius.control))
                         .overlay(
-                            RoundedRectangle(cornerRadius: Design.Radius.control)
+                            RoundedRectangle.soft(Design.Radius.control)
                                 .strokeBorder(
                                     recommended ? Color.clear : Design.lineBright,
                                     lineWidth: Design.hairlineWidth))
-                        .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                        .contentShape(RoundedRectangle.soft(Design.Radius.control))
                 }
                 .buttonStyle(PressDipStyle())
             }
         }
         .padding(Design.Space.xl)
         .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-        .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.card))
+        .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.card)
+            RoundedRectangle.soft(Design.Radius.card)
                 .strokeBorder(
                     hovering
                         ? Design.accentEdge

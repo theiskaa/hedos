@@ -148,15 +148,17 @@ struct HedosApp: App {
             }
             CommandGroup(before: .toolbar) {
                 ForEach(
-                    AppMode.allCases.filter {
-                        $0 != .settings && ShellModel.surfaced($0) == $0
-                    }, id: \.self
-                ) { mode in
+                    Array(
+                        AppMode.allCases
+                            .filter { $0 != .settings && ShellModel.surfaced($0) == $0 }
+                            .enumerated()),
+                    id: \.element
+                ) { index, mode in
                     Button(Design.modeTitle(mode)) {
                         shell.setMode(mode)
                     }
                     .keyboardShortcut(
-                        KeyEquivalent(Character("\(mode.ordinal)")), modifiers: .command)
+                        KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                 }
                 Divider()
                 Button(shell.sidebarCollapsed ? "Expand Sidebar" : "Collapse Sidebar") {

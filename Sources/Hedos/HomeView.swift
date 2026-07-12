@@ -3,26 +3,32 @@ import SwiftUI
 
 struct HomePane: View {
     @Bindable var shell: ShellModel
-    @State private var artifacts: [Artifact] = []
-    @State private var artifactOwners: [String: String] = [:]
+    @State private var chatDraft = ""
+    @FocusState private var chatFieldFocused: Bool
+    @State private var subtitle = HomePane.subtitles.randomElement() ?? HomePane.subtitles[0]
+
+    private static let subtitles = [
+        "Control isn't an illusion here — every model runs on your machine, and nothing leaves it.",
+        "No cloud, no watchers — just you and the machines you own.",
+        "Every model runs local. Nothing you say leaves this Mac.",
+        "Private by design. Everything happens right here, on your metal.",
+        "Your machine, your models, your rules.",
+        "The only server here is the one on your desk.",
+    ]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Design.Space.pane) {
-                hero
+                topStrip
                 if let failure = shell.library.errorMessage {
                     scanFailure(failure)
                 } else if let summary, summary.totalCount == 0 {
                     FirstRunDiscovery(shell: shell)
-                } else if summary == nil {
-                    lookingLine
                 } else {
+                    centeredHero
                     board
                     if !readyModels.isEmpty {
                         readySection
-                    }
-                    if !riverItems.isEmpty {
-                        continueRiver
                     }
                 }
                 hints
@@ -31,7 +37,7 @@ struct HomePane: View {
             .padding(.top, Design.Space.pane + Design.Space.l)
             .padding(.bottom, Design.Space.pane)
             .frame(maxWidth: Design.Column.hero, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(alignment: .topTrailing) {
             HedosLogo(size: 360, color: Design.ink)
@@ -48,10 +54,6 @@ struct HomePane: View {
             if shell.library.summary == nil {
                 await shell.library.rescan()
             }
-            await loadArtifacts()
-        }
-        .task(id: shell.sessions.map(\.updatedAt)) {
-            await loadArtifacts()
         }
     }
 
@@ -59,15 +61,12 @@ struct HomePane: View {
         shell.library.summary
     }
 
-    private var hero: some View {
-        HStack(alignment: .top, spacing: Design.Space.l) {
-            VStack(alignment: .leading, spacing: Design.Space.m) {
-                HedosWordmark(unit: 9, color: Design.ink)
-                Text("A home for every local model on your machine.")
-                    .font(Design.readingBody)
-                    .foregroundStyle(Design.inkSoft)
-            }
+    private var topStrip: some View {
+        HStack(alignment: .center, spacing: Design.Space.l) {
             Spacer(minLength: 0)
+            if summary != nil {
+                temperatureBadge
+            }
             if shell.library.isScanning {
                 ProgressView()
                     .controlSize(.small)
@@ -81,93 +80,181 @@ struct HomePane: View {
         }
     }
 
+    private var temperatureBadge: some View {
+        HStack(spacing: Design.Space.s) {
+            Image(systemName: "thermometer.medium")
+                .font(Design.glyphInline)
+            Text(temperatureText)
+                .font(Design.caption.weight(.medium))
+                .monospacedDigit()
+        }
+        .foregroundStyle(temperatureColor)
+        .padding(.horizontal, Design.Space.chipX)
+        .padding(.vertical, Design.Space.s)
+        .background(Design.surface, in: Capsule())
+        .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .help("System temperature · \(shell.system.thermalLabel)")
+    }
+
+    private var centeredHero: some View {
+        VStack(spacing: Design.Space.l) {
+            VStack(spacing: Design.Space.s) {
+                Text(greeting)
+                    .font(Design.hero)
+                    .foregroundStyle(Design.ink)
+                    .multilineTextAlignment(.center)
+                Text(subtitle)
+                    .font(Design.readingBody)
+                    .foregroundStyle(Design.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+            }
+            startChatField
+            Text(
+                defaultChatName.map { "New chats use \($0) · runs local, stays private" }
+                    ?? "Runs local · stays private"
+            )
+            .font(Design.caption)
+            .foregroundStyle(Design.inkFaint)
+        }
+        .frame(maxWidth: 560)
+        .frame(maxWidth: .infinity)
+        .padding(.top, Design.Space.l)
+        .padding(.bottom, Design.Space.m)
+    }
+
+    private var startChatField: some View {
+        HStack(alignment: .center, spacing: Design.Space.m) {
+            TextField("Start a chat…", text: $chatDraft)
+                .textFieldStyle(.plain)
+                .font(Design.body)
+                .focused($chatFieldFocused)
+                .onSubmit(launchChat)
+            Button(action: launchChat) {
+                Image(systemName: "arrow.up")
+                    .font(Design.caption.weight(.semibold))
+                    .foregroundStyle(Design.paper)
+                    .frame(width: 28, height: 28)
+                    .background(Design.ink, in: Circle())
+            }
+            .buttonStyle(PressDipStyle())
+            .disabled(chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityLabel("Start chat")
+        }
+        .padding(.leading, Design.Space.xl)
+        .padding(.trailing, Design.Space.s)
+        .padding(.vertical, Design.Space.s)
+        .surfaceCard(radius: Design.Radius.bubble)
+        .onTapGesture { chatFieldFocused = true }
+    }
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12: return "Good morning."
+        case 12..<17: return "Good afternoon."
+        case 17..<22: return "Good evening."
+        default: return "Hello, friend."
+        }
+    }
+
+    private var defaultChatName: String? {
+        Launcher.defaultChatModel(
+            in: shell.library.records, preferring: shell.preferredChatModelID
+        )?.displayName
+    }
+
+    private func launchChat() {
+        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+            let record = Launcher.defaultChatModel(
+                in: shell.library.records, preferring: shell.preferredChatModelID)
+        else { return }
+        shell.startChat(bound: record, seed: text)
+        chatDraft = ""
+    }
+
     private var hints: some View {
-        Text(hintLine.uppercased())
+        Text(hintLine)
             .font(Design.micro)
-            .tracking(Design.microTracking)
             .foregroundStyle(Design.inkFaint)
     }
 
     private var hintLine: String {
-        (ShellModel.surfaces + [.library])
-            .map { "\(Design.modeTitle($0)) ⌘\($0.ordinal)" }
-            .joined(separator: " · ")
-    }
-
-    private var lookingLine: some View {
-        Text("Looking around this Mac…")
-            .font(Design.title)
-            .foregroundStyle(Design.inkSoft)
+        let paged = AppMode.allCases
+            .filter { $0 != .settings && ShellModel.surfaced($0) == $0 }
+            .enumerated()
+            .map { "\(Design.modeTitle($1)) ⌘\($0 + 1)" }
+        return (paged + ["Settings ⌘,"]).joined(separator: " · ")
     }
 
     private var board: some View {
         HStack(alignment: .top, spacing: Design.Space.l) {
             statCard
-            VStack(alignment: .leading, spacing: Design.Space.l) {
-                temperatureCard
-                warmNowCard
-            }
+            warmNowCard
         }
     }
 
     @ViewBuilder
     private var statCard: some View {
-        if let summary {
-            VStack(alignment: .leading, spacing: Design.Space.xl) {
-                HStack {
-                    MicroHeader(title: "On this machine")
-                    Spacer(minLength: 0)
-                    if shell.library.isScanning {
-                        ShimmerText(text: "Scanning…".uppercased())
+        VStack(alignment: .leading, spacing: Design.Space.xl) {
+            HStack {
+                MicroHeader(title: "On this machine")
+                Spacer(minLength: 0)
+                if shell.library.isScanning {
+                    ShimmerText(text: "Scanning…", tracked: false)
+                }
+            }
+            HStack(alignment: .bottom, spacing: Design.Space.l) {
+                Group {
+                    if let summary {
+                        PixelNumber(text: "\(summary.totalCount)", unit: 6, color: Design.ink)
+                    } else {
+                        SkeletonPulse(radius: Design.Radius.control)
+                            .frame(width: 48, height: 6 * 7)
                     }
                 }
-                HStack(alignment: .bottom, spacing: Design.Space.l) {
-                    PixelNumber(text: "\(summary.totalCount)", unit: 6, color: Design.ink)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("models found".uppercased())
-                            .font(Design.micro)
-                            .tracking(Design.microTracking)
-                            .foregroundStyle(Design.inkFaint)
+                .frame(width: 84, height: 6 * 7, alignment: .bottomLeading)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("models found")
+                        .font(Design.micro)
+                        .foregroundStyle(Design.inkFaint)
+                    if let summary {
                         Text(DiscoverySummary.formatBytes(summary.totalBytes))
                             .font(Design.data(12))
                             .foregroundStyle(Design.inkSoft)
+                    } else {
+                        Text(verbatim: "000 MB")
+                            .font(Design.data(12))
+                            .foregroundStyle(.clear)
+                            .overlay(SkeletonPulse(radius: Design.Radius.control))
                     }
-                    Spacer(minLength: 0)
                 }
-                if shell.residencyBudgetMB > 0 {
-                    VStack(alignment: .leading, spacing: Design.Space.s) {
-                        HStack {
-                            Text("memory budget".uppercased())
-                                .font(Design.label)
-                                .tracking(Design.microTracking)
-                                .foregroundStyle(Design.inkFaint)
-                            Spacer(minLength: 0)
-                            Text(
-                                "\(DiscoverySummary.formatBytes(Int64(shell.residentUsedMB) << 20)) / \(DiscoverySummary.formatBytes(Int64(shell.residencyBudgetMB) << 20))"
-                            )
-                            .font(Design.data(10))
-                            .monospacedDigit()
+                Spacer(minLength: 0)
+            }
+            if shell.residencyBudgetMB > 0 {
+                VStack(alignment: .leading, spacing: Design.Space.s) {
+                    HStack {
+                        Text("memory budget")
+                            .font(Design.label)
                             .foregroundStyle(Design.inkFaint)
-                        }
-                        SegmentedBar(used: residentFraction, warm: residentFraction, segments: 24)
-                            .animation(Design.spring, value: shell.residentUsedMB)
+                        Spacer(minLength: 0)
+                        Text(
+                            "\(DiscoverySummary.formatBytes(Int64(shell.residentUsedMB) << 20)) / \(DiscoverySummary.formatBytes(Int64(shell.residencyBudgetMB) << 20))"
+                        )
+                        .font(Design.data(10))
+                        .monospacedDigit()
+                        .foregroundStyle(Design.inkFaint)
                     }
-                }
-                systemStats
-                if let pick = Fit.recommendation(in: shell.library.records),
-                    pick.fit?.verdict != .tooLarge
-                {
-                    Button("Start chat") {
-                        shell.startChat(bound: pick)
-                    }
-                    .buttonStyle(InkButtonStyle())
-                    .accessibilityIdentifier("home-recommendation")
+                    SegmentedBar(used: residentFraction, warm: residentFraction, segments: 24)
+                        .animation(Design.spring, value: shell.residentUsedMB)
                 }
             }
-            .padding(Design.Space.xl)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .surfaceCard(radius: Design.Radius.card)
+            systemStats
         }
+        .padding(Design.Space.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .surfaceCard(radius: Design.Radius.card)
     }
 
     private var warmNowCard: some View {
@@ -196,37 +283,7 @@ struct HomePane: View {
             }
         }
         .padding(Design.Space.xl)
-        .frame(width: 288, alignment: .leading)
-        .surfaceCard(radius: Design.Radius.card)
-    }
-
-    private var temperatureCard: some View {
-        VStack(alignment: .leading, spacing: Design.Space.m) {
-            HStack {
-                MicroHeader(title: "Temperature")
-                Spacer(minLength: 0)
-                Text(shell.system.thermalLabel.uppercased())
-                    .font(Design.label)
-                    .tracking(Design.microTracking)
-                    .foregroundStyle(temperatureColor)
-            }
-            HStack(alignment: .center, spacing: Design.Space.m) {
-                Text(temperatureText)
-                    .font(Design.paneTitle)
-                    .monospacedDigit()
-                    .foregroundStyle(temperatureColor)
-                Spacer(minLength: 0)
-                HStack(spacing: 3) {
-                    ForEach(0..<3, id: \.self) { index in
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(temperatureSegment(index))
-                            .frame(width: 10, height: 10)
-                    }
-                }
-            }
-        }
-        .padding(Design.Space.xl)
-        .frame(width: 288, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .surfaceCard(radius: Design.Radius.card)
     }
 
@@ -248,15 +305,6 @@ struct HomePane: View {
         case 2: Design.danger
         case 1: Design.heat
         default: Design.accentText
-        }
-    }
-
-    private func temperatureSegment(_ index: Int) -> Color {
-        guard index <= temperatureLevel else { return Design.line }
-        switch index {
-        case 0: return Design.accentText
-        case 1: return Design.heat
-        default: return Design.danger
         }
     }
 
@@ -547,143 +595,6 @@ struct HomePane: View {
     private func isWarm(_ record: ModelRecord) -> Bool {
         shell.resident.contains { $0.modelID == record.id || $0.name == record.name }
     }
-
-    private enum RiverItem: Identifiable {
-        case chat(ChatSession)
-        case artifact(Artifact)
-
-        var id: String {
-            switch self {
-            case .chat(let session): "chat-\(session.id)"
-            case .artifact(let artifact): "artifact-\(artifact.id)"
-            }
-        }
-
-        var date: Date {
-            switch self {
-            case .chat(let session): session.updatedAt
-            case .artifact(let artifact): artifact.createdAt
-            }
-        }
-    }
-
-    private static let riverPerKind = 4
-    private static let riverLimit = 8
-
-    private func loadArtifacts() async {
-        artifactOwners = (try? await shell.kernel.chats.artifactOwners()) ?? [:]
-        artifacts = (try? await shell.kernel.artifactStore.list()) ?? []
-    }
-
-    private func livingArtifacts(_ capability: Capability) -> [RiverItem] {
-        artifacts
-            .filter { $0.capability == capability && artifactOwners[$0.id] != nil }
-            .map(RiverItem.artifact)
-    }
-
-    private var riverItems: [RiverItem] {
-        func newest(_ items: [RiverItem]) -> [RiverItem] {
-            items.sorted { $0.date > $1.date }.prefix(Self.riverPerKind).map { $0 }
-        }
-        let chats = newest(shell.filteredSessions.map(RiverItem.chat))
-        let images = newest(livingArtifacts(.image))
-        let spoken = newest(livingArtifacts(.speak))
-        return (chats + images + spoken)
-            .sorted { $0.date > $1.date }
-            .prefix(Self.riverLimit)
-            .map { $0 }
-    }
-
-    private var continueRiver: some View {
-        VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: "Continue")
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                ForEach(riverItems) { item in
-                    riverRow(item)
-                }
-            }
-        }
-    }
-
-    private func riverRow(_ item: RiverItem) -> some View {
-        Button {
-            open(item)
-        } label: {
-            HStack(spacing: Design.Space.chipX) {
-                Image(systemName: riverGlyph(item))
-                    .font(Design.glyphInline)
-                    .foregroundStyle(Design.inkSoft)
-                    .frame(width: 18, alignment: .leading)
-                Text(riverTitle(item))
-                    .font(Design.body)
-                    .foregroundStyle(Design.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: Design.Space.l)
-                Text(item.date.formatted(.relative(presentation: .named)))
-                    .font(Design.data(10))
-                    .foregroundStyle(Design.inkFaint)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.s + 1)
-            .background(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
-                    .fill(hoveredRiverItem == item.id ? Design.inkWash : .clear))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
-        }
-        .buttonStyle(PressDipStyle())
-        .onHover { inside in
-            if inside {
-                hoveredRiverItem = item.id
-            } else if hoveredRiverItem == item.id {
-                hoveredRiverItem = nil
-            }
-        }
-        .animation(Design.wash, value: hoveredRiverItem)
-        .accessibilityLabel(riverTitle(item))
-    }
-
-    @State private var hoveredRiverItem: String?
-
-    private func riverGlyph(_ item: RiverItem) -> String {
-        switch item {
-        case .chat: "message"
-        case .artifact(let artifact):
-            artifact.capability == .speak ? "waveform" : "photo"
-        }
-    }
-
-    private func riverTitle(_ item: RiverItem) -> String {
-        switch item {
-        case .chat(let session):
-            return session.title.isEmpty ? "Untitled chat" : session.title
-        case .artifact(let artifact):
-            if artifact.capability == .speak {
-                let text = SpeechArtifact.text(of: artifact)
-                return text.isEmpty ? "Narration" : text
-            }
-            return Provenance.prompt(of: artifact.params) ?? "Untitled image"
-        }
-    }
-
-    private func open(_ item: RiverItem) {
-        switch item {
-        case .chat(let session):
-            shell.selectChat(session.id)
-            shell.setMode(.chat)
-        case .artifact(let artifact):
-            if artifact.capability == .speak {
-                let owner = artifact.sessionID ?? artifactOwners[artifact.id]
-                if let owner, shell.session(id: owner) != nil {
-                    shell.selectChat(owner)
-                }
-                shell.setMode(.chat)
-            } else {
-                shell.showArtifact(artifact.id)
-            }
-        }
-    }
 }
 
 struct ReadyModelCard: View {
@@ -732,15 +643,15 @@ struct ReadyModelCard: View {
             }
             .padding(Design.Space.l)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                RoundedRectangle.soft(Design.Radius.tile)
                     .strokeBorder(
                         hovering
                             ? AnyShapeStyle(Design.accentEdge)
                             : warm ? AnyShapeStyle(Design.lineBright) : AnyShapeStyle(Design.line),
                         lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .contentShape(RoundedRectangle.soft(Design.Radius.tile))
             .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
