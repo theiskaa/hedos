@@ -126,14 +126,8 @@ final class LibraryViewModel {
 
     static func grouped(_ records: [ModelRecord]) -> [(section: String, records: [ModelRecord])] {
         let sections: [(SourceKind, String)] = [
-            (.ollama, "Ollama"),
-            (.huggingfaceCache, "Hugging Face"),
-            (.lmStudio, "LM Studio"),
-            (.builtin, "Built in"),
-            (.endpoint, "Servers"),
-            (.file, "Loose"),
-            (.folder, "Loose"),
-        ]
+            .ollama, .huggingfaceCache, .lmStudio, .builtin, .endpoint, .file, .folder,
+        ].map { ($0, $0.storeTitle) }
         var grouped: [String: [ModelRecord]] = [:]
         var order: [String] = []
         for (kind, title) in sections {

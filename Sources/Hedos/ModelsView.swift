@@ -356,8 +356,12 @@ struct ModelsPane: View {
         .padding(Design.Space.pane)
     }
 
-    static func storeTitle(_ kind: SourceKind) -> String {
-        switch kind {
+    static func storeTitle(_ kind: SourceKind) -> String { kind.storeTitle }
+}
+
+extension SourceKind {
+    var storeTitle: String {
+        switch self {
         case .ollama: "Ollama"
         case .huggingfaceCache: "Hugging Face"
         case .lmStudio: "LM Studio"
