@@ -101,6 +101,8 @@ public struct HFCacheScanner: StoreScanner {
                 {
                     hint = configHint
                 }
+            } else if fileNames.contains(where: { $0.lowercased().hasSuffix(".gguf") }) {
+                hint = ModalityHints.gguf
             } else {
                 diagnostics.append("no config.json or model_index.json in snapshot")
             }
