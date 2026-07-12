@@ -465,6 +465,8 @@ struct ModelDetailSheet: View {
     @State private var reason: String?
     @State private var consent: ManifestConsentInfo?
     @State private var approvedConsent: ManifestConsentInfo?
+    @State private var communityRecipes: [RuntimeInstallPreview] = []
+    @State private var installingRecipe: String?
     @State private var copiedTemplate = false
     @State private var chosenRuntime: String
 
@@ -535,6 +537,7 @@ struct ModelDetailSheet: View {
             }.value
             consent = try? await shell.kernel.pendingHostConsent(for: record.id)
             approvedConsent = try? await shell.kernel.approvedHostConsent(for: record.id)
+            communityRecipes = await shell.kernel.communityRecipes(for: record.id)
         }
     }
 
@@ -734,6 +737,36 @@ struct ModelDetailSheet: View {
                         }
                         .buttonStyle(InkButtonStyle())
                         .padding(.top, Design.Space.xs)
+                    }
+                } else if !communityRecipes.isEmpty {
+                    ForEach(communityRecipes, id: \.id) { recipe in
+                        VStack(alignment: .leading, spacing: Design.Space.xs) {
+                            Text("A community recipe can run this model, contained:")
+                                .font(Design.label)
+                                .foregroundStyle(Design.inkSoft)
+                            Text("\(recipe.id) — \(recipe.capabilities.joined(separator: ", "))")
+                                .font(Design.label)
+                                .foregroundStyle(Design.ink)
+                            ForEach(recipe.paths, id: \.self) { path in
+                                Text("Files — \(path)")
+                                    .font(Design.label)
+                                    .foregroundStyle(Design.ink)
+                            }
+                            Button(installingRecipe == recipe.id ? "Installing…" : "Install \(recipe.id)") {
+                                let shell = shell
+                                let source = recipe.sourceURL
+                                let id = recipe.id
+                                installingRecipe = id
+                                Task {
+                                    _ = try? await shell.kernel.installRuntime(from: source)
+                                    await shell.library.refreshShelf()
+                                    installingRecipe = nil
+                                }
+                            }
+                            .buttonStyle(InkButtonStyle())
+                            .disabled(installingRecipe != nil)
+                            .padding(.top, Design.Space.xs)
+                        }
                     }
                 } else {
                     Text("A runtime recipe can make this model runnable later.")

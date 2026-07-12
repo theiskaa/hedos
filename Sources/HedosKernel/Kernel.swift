@@ -449,6 +449,15 @@ public actor Kernel {
         try manifestInstaller.preview(from: source, vmAssetState: await vmHost.assetState())
     }
 
+    public func communityRecipes(for modelID: String) async -> [RuntimeInstallPreview] {
+        guard let record = try? await registry.get(id: modelID) else { return [] }
+        let installer = manifestInstaller
+        let assetState = await vmHost.assetState()
+        return CommunityLibrary().matches(record: record).compactMap { recipe in
+            try? installer.preview(from: recipe.directory, vmAssetState: assetState)
+        }
+    }
+
     public func installRuntime(from source: URL) async throws -> String {
         let id = try manifestInstaller.install(from: source)
         _ = await reloadUserRuntimes()
