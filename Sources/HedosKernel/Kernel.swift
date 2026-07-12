@@ -719,14 +719,11 @@ public actor Kernel {
 
     static func payloadCarriesImages(_ payload: JSONValue) -> Bool {
         guard case .object(let object) = payload,
-            case .array(let messages)? = object["messages"]
+            case .array(let messages)? = object["messages"],
+            case .object(let fields) = messages.last,
+            case .array(let images)? = fields["images"]
         else { return false }
-        return messages.contains { message in
-            guard case .object(let fields) = message,
-                case .array(let images)? = fields["images"]
-            else { return false }
-            return !images.isEmpty
-        }
+        return !images.isEmpty
     }
 
     public func invoke(
@@ -740,7 +737,7 @@ public actor Kernel {
             throw KernelError.capabilityUnsupported(model: record.name, capability: capability)
         }
         if Self.payloadCarriesImages(payload), !adapter.canServe(record, .see) {
-            throw KernelError.runtimeFailed(
+            throw KernelError.payloadInvalid(
                 "\(record.displayName) cannot read images; this runtime has no vision path.")
         }
         let fallback = capability == .chat ? await settings.chat().defaultSystemPrompt : nil

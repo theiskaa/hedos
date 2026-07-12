@@ -37,7 +37,7 @@ struct ChatFlow: Sendable {
         guard let transcript = try await chats.session(id: sessionID) else {
             throw ChatStoreError.sessionNotFound(sessionID)
         }
-        let attachmentRefs = (try? attachments?.store(messageAttachments)) ?? []
+        let attachmentRefs = try attachments?.store(messageAttachments) ?? []
         _ = try await chats.appendTurn(
             TurnDraft(role: .user, content: text, attachmentRefs: attachmentRefs), to: sessionID)
         var history = projected(transcript.turns)
@@ -406,7 +406,7 @@ struct ChatFlow: Sendable {
                 messages.append(
                     ChatMessage(role: role, content: turn.content, toolCalls: calls))
             } else if let role = turn.role.messageRole,
-                !turn.content.isEmpty || !attachments.isEmpty
+                !turn.content.isEmpty || !turn.attachmentRefs.isEmpty
             {
                 let content =
                     turn.role == .assistant && turn.interrupted

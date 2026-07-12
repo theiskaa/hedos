@@ -100,6 +100,15 @@ private func pngBytes(_ marker: UInt8) -> Data {
         "messages": .array([ChatMessage(role: .user, content: "x").payloadValue])
     ])
     #expect(!Kernel.payloadCarriesImages(textOnly))
+
+    let historicalImageThenText = JSONValue.object([
+        "messages": .array([
+            withImage.payloadValue,
+            ChatMessage(role: .assistant, content: "a cat").payloadValue,
+            ChatMessage(role: .user, content: "and now in words?").payloadValue,
+        ])
+    ])
+    #expect(!Kernel.payloadCarriesImages(historicalImageThenText))
 }
 
 @Test func imageBearingTurnPersistsAndReloadsThroughTheStore() async throws {
