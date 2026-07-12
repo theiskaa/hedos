@@ -1,4 +1,23 @@
+import AppKit
 import SwiftUI
+
+struct VisualEffectBackground: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+    var blending: NSVisualEffectView.BlendingMode = .behindWindow
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blending
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blending
+    }
+}
 
 struct InkSearchField: View {
     let placeholder: String
@@ -34,9 +53,9 @@ struct InkSearchField: View {
         }
         .padding(.horizontal, Design.Space.chipX)
         .padding(.vertical, Design.Space.s)
-        .background(fill, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+        .background(fill, in: Capsule())
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.control)
+            Capsule()
                 .strokeBorder(
                     focused
                         ? AnyShapeStyle(Design.accent.opacity(0.55))
@@ -64,9 +83,9 @@ struct InkSidebarRow<ID: Hashable>: View {
     var body: some View {
         Group {
             if collapsed {
-                button.inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+                button.inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
             } else {
-                button.inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+                button.inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
             }
         }
         .accessibilityLabel(title)
@@ -108,9 +127,9 @@ struct InkSidebarRow<ID: Hashable>: View {
             .foregroundStyle(lit ? Design.ink : Design.inkSoft)
             .frame(width: 44, height: 36)
             .background(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(washColor))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .animation(Design.wash, value: selected)
             .animation(Design.wash, value: hovered == id)
             .help(title)
@@ -129,16 +148,15 @@ struct InkSidebarRow<ID: Hashable>: View {
                 .foregroundStyle(lit ? Design.ink : Design.inkSoft)
             Spacer(minLength: 0)
             if let annotation {
-                Text(annotation.uppercased())
-                    .font(Design.micro)
-                    .tracking(Design.microTracking)
+                Text(annotation)
+                    .font(Design.label.weight(.medium))
                     .foregroundStyle(liveAnnotation ? Design.accentText : Design.inkFaint)
             }
         }
         .padding(.horizontal, Design.Space.l)
         .padding(.vertical, Design.Space.s + 1)
-        .background(RoundedRectangle(cornerRadius: Design.Radius.control).fill(washColor))
-        .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .background(RoundedRectangle.soft(Design.Radius.control).fill(washColor))
+        .contentShape(RoundedRectangle.soft(Design.Radius.control))
         .animation(Design.wash, value: selected)
         .animation(Design.wash, value: hovered == id)
     }
@@ -155,13 +173,13 @@ struct SidebarCollapseToggle: View {
                 .font(Design.glyphPrimary)
                 .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
                 .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: Design.Radius.control).fill(Design.ink.opacity(hovering ? 0.06 : 0.04)))
-                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                .background(RoundedRectangle.soft(Design.Radius.control).fill(Design.ink.opacity(hovering ? 0.06 : 0.04)))
+                .contentShape(RoundedRectangle.soft(Design.Radius.control))
                 .animation(Design.wash, value: hovering)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .help(collapsed ? "Expand the sidebar" : "Collapse the sidebar")
         .accessibilityLabel(collapsed ? "Expand the sidebar" : "Collapse the sidebar")
     }
@@ -182,14 +200,14 @@ struct QuietIconButton: View {
                 .foregroundStyle(hovering && enabled ? Design.ink : Design.inkSoft)
                 .frame(width: 28, height: 28)
                 .background(
-                    RoundedRectangle(cornerRadius: Design.Radius.control).fill(Design.ink.opacity(hovering && enabled ? 0.06 : 0.04)))
-                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                    Circle().fill(Design.ink.opacity(hovering && enabled ? 0.06 : 0.04)))
+                .contentShape(Circle())
                 .opacity(enabled ? 1 : 0.4)
                 .animation(Design.wash, value: hovering)
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(Circle())
     }
 }
 
@@ -241,6 +259,10 @@ struct CollapsingSidebar<Expanded: View, Collapsed: View>: View {
         .frame(width: collapsed ? Design.Rail.collapsedWidth : Design.Rail.expandedWidth, alignment: .leading)
         .clipped()
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Design.surface.ignoresSafeArea())
+        .background {
+            VisualEffectBackground(material: .sidebar, blending: .behindWindow)
+                .overlay(Design.surface.opacity(0.35))
+                .ignoresSafeArea()
+        }
     }
 }

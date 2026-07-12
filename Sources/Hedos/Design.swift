@@ -37,12 +37,14 @@ enum Design {
     }
 
     enum Elevation {
-        static let lift = Shade(opacity: 0.12, radius: 24, y: 10)
-        static let liftHover = Shade(opacity: 0.18, radius: 30, y: 14)
+        static let raised = Shade(opacity: 0.05, radius: 10, y: 6)
+        static let lift = Shade(opacity: 0.10, radius: 16, y: 7)
+        static let liftHover = Shade(opacity: 0.14, radius: 20, y: 9)
         static let floating = Shade(opacity: 0.18, radius: 24, y: 10)
         static let button = Shade(opacity: 0.22, radius: 12, y: 6)
         static let buttonHover = Shade(opacity: 0.30, radius: 18, y: 9)
         static let modal = Shade(opacity: 0.30, radius: 40, y: 18)
+        static let sheet = Shade(opacity: 0.22, radius: 52, y: 22)
     }
 
     enum Rail {
@@ -59,8 +61,8 @@ enum Design {
     }
 
     enum Sheet {
-        static let gallery = CGSize(width: 640, height: 520)
-        static let modelDetailWidth: CGFloat = 600
+        static let gallery = CGSize(width: 720, height: 560)
+        static let modelDetailWidth: CGFloat = 620
         static let modelDetailHeight: CGFloat = 680
         static let modelRecipeHeight: CGFloat = 560
         static let promptWidth: CGFloat = 500
@@ -116,7 +118,7 @@ enum Design {
     ) -> Font {
         guard let family = fontBook.uiFamily else {
             return .system(
-                size: scaledSize(size, relativeTo: style), weight: weight, design: .monospaced)
+                size: scaledSize(size, relativeTo: style), weight: weight, design: .default)
         }
         return .custom(family, size: size, relativeTo: style).weight(weight)
     }
@@ -126,7 +128,7 @@ enum Design {
     ) -> Font {
         guard let family = fontBook.uiFamily else {
             return .system(
-                size: scaledSize(size, relativeTo: style), weight: weight, design: .monospaced)
+                size: scaledSize(size, relativeTo: style), weight: weight, design: .default)
         }
         return .custom(family, size: size, relativeTo: style).weight(weight)
     }
@@ -238,6 +240,7 @@ enum Design {
     static let heatWash = heat.opacity(0.16)
     static let heatEdge = heat.opacity(0.32)
     static let danger = adaptive { $0.error }
+    static let added = fixed(0x2EA043)
 
     enum PreviewPalette {
         static let lightPaper = fixed(Theme.paper.palette.ground)
@@ -340,6 +343,12 @@ enum Design {
     }
 }
 
+extension RoundedRectangle {
+    static func soft(_ radius: CGFloat) -> RoundedRectangle {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+    }
+}
+
 struct ModalScrim<Modal: View>: ViewModifier {
     let isPresented: Bool
     let onDismiss: () -> Void
@@ -350,19 +359,19 @@ struct ModalScrim<Modal: View>: ViewModifier {
             Group {
                 if isPresented {
                     ZStack {
-                        Design.shadowColor.opacity(0.22)
+                        Design.shadowColor.opacity(0.24)
                             .ignoresSafeArea()
                             .onTapGesture(perform: onDismiss)
                             .accessibilityLabel("Dismiss")
                         modal()
                             .background(
                                 Design.paper,
-                                in: RoundedRectangle(cornerRadius: Design.Radius.surface))
-                            .clipShape(RoundedRectangle(cornerRadius: Design.Radius.surface))
+                                in: RoundedRectangle.soft(Design.Radius.bubble))
+                            .clipShape(RoundedRectangle.soft(Design.Radius.bubble))
                             .overlay(
-                                RoundedRectangle(cornerRadius: Design.Radius.surface)
+                                RoundedRectangle.soft(Design.Radius.bubble)
                                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-                            .shade(Design.Elevation.modal)
+                            .shade(Design.Elevation.sheet)
                             .padding(Design.Space.xxl)
                     }
                     .onExitCommand(perform: onDismiss)
@@ -388,11 +397,11 @@ struct SurfaceCard: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: radius))
+            .background(Design.surface, in: RoundedRectangle.soft(radius))
             .overlay(
-                RoundedRectangle(cornerRadius: radius)
+                RoundedRectangle.soft(radius)
                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: radius))
+            .contentShape(RoundedRectangle.soft(radius))
     }
 }
 
@@ -457,6 +466,12 @@ struct InkButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
     @State private var hovering = false
 
+    private var shape: AnyInsettableShape {
+        circle
+            ? AnyInsettableShape(Circle())
+            : AnyInsettableShape(RoundedRectangle.soft(Design.Radius.control))
+    }
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Design.body.weight(.medium))
@@ -464,9 +479,9 @@ struct InkButtonStyle: ButtonStyle {
             .padding(.horizontal, circle ? 0 : Design.Space.xl)
             .padding(.vertical, circle ? 0 : Design.Space.s + 1)
             .frame(width: circle ? 28 : nil, height: circle ? 28 : nil)
-            .background(Design.ink, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .background(Design.ink, in: shape)
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                shape
                     .strokeBorder(
                         LinearGradient(
                             colors: [
@@ -490,9 +505,9 @@ struct InkButtonStyle: ButtonStyle {
                     : hovering ? Design.Elevation.buttonHover.y : Design.Elevation.button.y)
             .offset(y: configuration.isPressed ? 0 : hovering ? -1 : 0)
             .opacity(isEnabled ? 1 : 0.4)
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(shape)
             .onHover { hovering = $0 }
-            .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .inkFocusRing(shape)
             .animation(.easeOut(duration: 0.2), value: hovering)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
@@ -546,19 +561,19 @@ struct FilterChip: View {
                 isOn
                     ? AnyShapeStyle(Design.ink)
                     : hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.surface),
-                in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                in: RoundedRectangle.soft(Design.Radius.control))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .strokeBorder(
                         isOn ? AnyShapeStyle(.clear) : Design.hairline,
                         lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .opacity(isDisabled ? 0.45 : 1)
         }
         .buttonStyle(PressDipStyle())
         .disabled(isDisabled)
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .animation(Design.wash, value: hovering)
         .accessibilityLabel(count.map { "\(label), \($0)" } ?? label)
         .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -586,9 +601,8 @@ struct MicroHeader: View {
     let title: String
 
     var body: some View {
-        Text(title.uppercased())
-            .font(Design.micro)
-            .tracking(Design.microTracking)
+        Text(title)
+            .font(Design.label.weight(.semibold))
             .foregroundStyle(Design.inkFaint)
     }
 }
@@ -605,9 +619,8 @@ struct TintChip: View {
                 Image(systemName: glyph)
                     .font(Design.glyphSmall)
             }
-            Text(text.uppercased())
-                .font(Design.micro)
-                .tracking(Design.microTracking)
+            Text(text)
+                .font(Design.label.weight(.medium))
                 .lineLimit(1)
         }
         .foregroundStyle(
@@ -617,9 +630,9 @@ struct TintChip: View {
         .padding(.vertical, Design.Space.xxs + 1.5)
         .background(
             live ? AnyShapeStyle(Design.accentWash) : AnyShapeStyle(Design.inkWash),
-            in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            in: RoundedRectangle.soft(Design.Radius.control))
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
+            RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                 live ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
                 lineWidth: Design.hairlineWidth))
         .accessibilityLabel(text)
@@ -646,8 +659,69 @@ struct IconPlaque<Content: View>: View {
     var body: some View {
         content()
             .frame(width: size, height: size)
-            .background(
-                Design.cardFill, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.card))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.card)
+                    .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+    }
+}
+
+struct SheetDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Design.hairline)
+            .frame(height: Design.hairlineWidth)
+            .accessibilityHidden(true)
+    }
+}
+
+struct SheetHeader<Plaque: View, Below: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    let onClose: () -> Void
+    @ViewBuilder var plaque: () -> Plaque
+    @ViewBuilder var below: () -> Below
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Design.Space.l) {
+            IconPlaque(size: 44, content: plaque)
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                Text(title)
+                    .font(Design.title)
+                    .tracking(Design.tightTracking)
+                    .lineLimit(1)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                below()
+            }
+            Spacer(minLength: Design.Space.l)
+            SheetCloseButton(action: onClose)
+        }
+        .padding(.horizontal, Design.Space.gutter)
+        .padding(.top, Design.Space.gutter)
+        .padding(.bottom, Design.Space.xl)
+    }
+}
+
+extension SheetHeader where Below == EmptyView {
+    init(
+        title: String, subtitle: String? = nil, onClose: @escaping () -> Void,
+        @ViewBuilder plaque: @escaping () -> Plaque
+    ) {
+        self.init(
+            title: title, subtitle: subtitle, onClose: onClose, plaque: plaque,
+            below: { EmptyView() })
+    }
+}
+
+extension View {
+    func sheetBodyPadding() -> some View {
+        padding(.horizontal, Design.Space.gutter).padding(.vertical, Design.Space.xl)
     }
 }
 
@@ -698,13 +772,13 @@ private struct InkRadioRow: View {
             .padding(.horizontal, Design.Space.m)
             .padding(.vertical, Design.Space.s)
             .background(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(hovering ? Design.inkWash : .clear))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .animation(Design.wash, value: hovering)
         .accessibilityLabel(label)
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -752,12 +826,12 @@ struct AccentDot: View {
     var body: some View {
         ZStack {
             if !reduceMotion {
-                RoundedRectangle(cornerRadius: 1)
+                Circle()
                     .stroke(Design.heat, lineWidth: Design.hairlineWidth)
                     .scaleEffect(pulsing ? 2.4 : 1)
                     .opacity(pulsing ? 0 : 0.8)
             }
-            RoundedRectangle(cornerRadius: 1)
+            Circle()
                 .fill(Design.heat)
         }
         .frame(width: size, height: size)
@@ -800,7 +874,7 @@ struct SkeletonPulse: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        RoundedRectangle(cornerRadius: radius)
+        RoundedRectangle.soft(radius)
             .fill(Design.ink.opacity(bright ? 0.09 : 0.04))
             .onAppear {
                 guard !reduceMotion else { return }
@@ -824,13 +898,13 @@ struct SheetCloseButton: View {
                 .frame(width: 24, height: 24)
                 .background(
                     hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.cardFill),
-                    in: RoundedRectangle(cornerRadius: Design.Radius.control))
-                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                    in: Circle())
+                .contentShape(Circle())
                 .animation(Design.wash, value: hovering)
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(Circle())
         .keyboardShortcut(.cancelAction)
         .accessibilityLabel("Close")
     }
@@ -937,6 +1011,32 @@ struct HeptagonShape: Shape {
     }
 }
 
+struct TypingDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var bounce = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(Design.inkSoft)
+                    .frame(width: 5, height: 5)
+                    .opacity(bounce ? 1 : 0.3)
+                    .animation(
+                        reduceMotion
+                            ? nil
+                            : .easeInOut(duration: 0.5)
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(index) * 0.16),
+                        value: bounce)
+            }
+        }
+        .frame(height: 16)
+        .onAppear { bounce = true }
+        .accessibilityLabel("Working")
+    }
+}
+
 struct SpeakingIndicator: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase = false
@@ -944,7 +1044,7 @@ struct SpeakingIndicator: View {
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<5, id: \.self) { index in
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                Capsule()
                     .fill(Design.accent)
                     .frame(width: 2.5, height: phase ? barHeight(index) : 4)
                     .animation(

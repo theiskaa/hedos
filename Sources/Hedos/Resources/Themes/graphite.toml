@@ -5,30 +5,31 @@ name = "Graphite"
 appearance = "dark"
 
 [surface]
-ground = "#141210"
-panel = "#1A1815"
-card = "#211E1E"
-card2 = "#26221F"
-line = "#322E2A"
-line_bright = "#4A443E"
+ground = "#0F0F11"
+panel = "#161618"
+card = "#1C1C1F"
+card2 = "#232327"
+line = "#2A2A2E"
+line_bright = "#3A3A40"
 
 [ink]
-text = "#F1ECEC"
-muted = "#A39C94"
-faint = "#6E655D"
+text = "#F5F5F7"
+muted = "#9A9AA0"
+faint = "#6A6A70"
 
 [accent]
-value = "#EDE8E3"
-dim = "#CFCECD"
-on = "#17140F"
+value = "#F5F5F7"
+dim = "#C9C9CF"
+on = "#0F0F11"
 
 [heat]
-warm = "#C99A4E"
-error = "#C06A4E"
+warm = "#E0A64B"
+error = "#E5544B"
 
 [shape]
-radius_control = 2
-radius_card = 3
-radius_artifact = 10
+radius_control = 8
+radius_card = 12
+radius_bubble = 16
+radius_artifact = 14
 unit = 16
 hairline = 1

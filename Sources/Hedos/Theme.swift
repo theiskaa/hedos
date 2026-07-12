@@ -18,15 +18,15 @@ struct ThemePalette: Sendable {
 }
 
 struct ThemeShape: Sendable {
-    var control: CGFloat = 2
-    var card: CGFloat = 3
-    var artifact: CGFloat = 10
+    var control: CGFloat = 8
+    var card: CGFloat = 12
+    var artifact: CGFloat = 14
+    var bubble: CGFloat = 16
     var unit: CGFloat = 16
     var hairline: CGFloat = 1
 
     var tile: CGFloat { card }
     var surface: CGFloat { card }
-    var bubble: CGFloat { artifact }
 }
 
 struct Theme: Sendable {
@@ -39,22 +39,22 @@ struct Theme: Sendable {
         name: "Graphite",
         isDark: true,
         palette: ThemePalette(
-            ground: 0x141210, panel: 0x1A1815, card: 0x211E1E, card2: 0x26221F,
-            line: 0x322E2A, lineBright: 0x4A443E,
-            text: 0xF1ECEC, muted: 0xA39C94, faint: 0x6E655D,
-            accent: 0xEDE8E3, accentDim: 0xCFCECD, onAccent: 0x17140F,
-            heat: 0xC99A4E, error: 0xC06A4E),
+            ground: 0x0F0F11, panel: 0x161618, card: 0x1C1C1F, card2: 0x232327,
+            line: 0x2A2A2E, lineBright: 0x3A3A40,
+            text: 0xF5F5F7, muted: 0x9A9AA0, faint: 0x6A6A70,
+            accent: 0xF5F5F7, accentDim: 0xC9C9CF, onAccent: 0x0F0F11,
+            heat: 0xE0A64B, error: 0xE5544B),
         shape: ThemeShape())
 
     static let paper = Theme(
-        name: "Paper",
+        name: "White",
         isDark: false,
         palette: ThemePalette(
-            ground: 0xE9E5DE, panel: 0xF1EDE7, card: 0xFBF9F5, card2: 0xF5F1EB,
-            line: 0xDBD5CB, lineBright: 0xC4BDB1,
-            text: 0x211E1E, muted: 0x6E655D, faint: 0x9C948A,
-            accent: 0x211E1E, accentDim: 0x4B4646, onAccent: 0xF5F1EB,
-            heat: 0x9A6E22, error: 0xA24A30),
+            ground: 0xF4F4F5, panel: 0xFAFAFB, card: 0xFFFFFF, card2: 0xF7F7F8,
+            line: 0xE4E4E7, lineBright: 0xD4D4D8,
+            text: 0x18181B, muted: 0x6B6B70, faint: 0xA1A1A6,
+            accent: 0x18181B, accentDim: 0x3F3F46, onAccent: 0xFFFFFF,
+            heat: 0xB4791F, error: 0xDC2626),
         shape: ThemeShape())
 }
 
@@ -128,6 +128,7 @@ enum ThemeTOML {
 
         if let v = num("shape.radius_control") { theme.shape.control = v }
         if let v = num("shape.radius_card") { theme.shape.card = v }
+        if let v = num("shape.radius_bubble") { theme.shape.bubble = v }
         if let v = num("shape.radius_artifact") { theme.shape.artifact = v }
         if let v = num("shape.unit") { theme.shape.unit = v }
         if let v = num("shape.hairline") { theme.shape.hairline = v }

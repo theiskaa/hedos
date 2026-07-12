@@ -21,10 +21,10 @@ struct InkSlider: View {
             let width = proxy.size.width
             let thumbX = fraction * (width - 14)
             ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(Design.line)
                     .frame(height: 4)
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(isSet ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.inkFaint))
                     .frame(width: max(7, thumbX + 7), height: 4)
                 Circle()
@@ -59,7 +59,7 @@ struct InkSlider: View {
         .focusEffectDisabled()
         .overlay {
             if focused {
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .inset(by: -3)
                     .stroke(Design.ink.opacity(0.35), lineWidth: Design.hairlineWidth)
             }
@@ -103,11 +103,11 @@ struct InkToggle: View {
             onToggle(!isOn)
         } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(
                         isOn && isSet
                             ? AnyShapeStyle(Design.ink) : AnyShapeStyle(Design.surface))
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth)
                 Circle()
                     .fill(
@@ -120,12 +120,12 @@ struct InkToggle: View {
                     .padding(3)
             }
             .frame(width: 34, height: 20)
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .animation(
                 reduceMotion ? nil : .easeOut(duration: 0.15), value: isOn)
         }
         .buttonStyle(TogglePressStyle(reduceMotion: reduceMotion))
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .accessibilityLabel(label)
         .accessibilityValue(isSet ? (isOn ? "on" : "off") : "auto")
         .accessibilityAddTraits(.isToggle)
@@ -171,12 +171,12 @@ struct InkSegmented: View {
                                 : hoveredValue == candidate
                                     ? AnyShapeStyle(Design.inkWash)
                                     : AnyShapeStyle(Design.surface),
-                            in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                            in: RoundedRectangle.soft(Design.Radius.control))
                         .overlay(
-                            RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
+                            RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                                 selection == candidate ? .clear : Design.line,
                                 lineWidth: Design.hairlineWidth))
-                        .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                        .contentShape(RoundedRectangle.soft(Design.Radius.control))
                 }
                 .buttonStyle(PressDipStyle())
                 .onHover { inside in
@@ -186,7 +186,7 @@ struct InkSegmented: View {
                         hoveredValue = nil
                     }
                 }
-                .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+                .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
                 .animation(Design.wash, value: hoveredValue)
                 .accessibilityLabel(candidate)
                 .accessibilityAddTraits(selection == candidate ? .isSelected : [])
@@ -230,8 +230,8 @@ struct InkField: View {
 
     private var fieldShape: AnyInsettableShape {
         switch shape {
-        case .rounded: AnyInsettableShape(RoundedRectangle(cornerRadius: Design.Radius.control))
-        case .capsule: AnyInsettableShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+        case .rounded: AnyInsettableShape(RoundedRectangle.soft(Design.Radius.control))
+        case .capsule: AnyInsettableShape(Capsule())
         }
     }
 }
@@ -292,9 +292,9 @@ struct InkTextArea: View {
                 .padding(.vertical, Design.Space.s)
             }
         }
-        .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+        .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.control)
+            RoundedRectangle.soft(Design.Radius.control)
                 .strokeBorder(
                     focused ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
@@ -328,15 +328,45 @@ extension EnvironmentValues {
 }
 
 struct InkMenu<Content: View>: View {
+    enum Trigger {
+        case standard
+        case chip
+    }
+
     let title: String
     var accessibilityName: String = "menu"
+    var readyDot: Bool? = nil
     var externalOpen: Binding<Bool>? = nil
+    var trigger: Trigger = .standard
     @ViewBuilder let content: () -> Content
     @State private var localOpen = false
-    @State private var anchor: NSView?
 
     private var open: Binding<Bool> {
         externalOpen ?? $localOpen
+    }
+
+    private var triggerShape: AnyInsettableShape {
+        switch trigger {
+        case .standard: AnyInsettableShape(RoundedRectangle.soft(Design.Radius.control))
+        case .chip: AnyInsettableShape(Capsule())
+        }
+    }
+
+    private var triggerFill: Color {
+        switch trigger {
+        case .standard: Design.surface
+        case .chip: Design.inkWash
+        }
+    }
+
+    private var triggerBorder: AnyShapeStyle {
+        switch trigger {
+        case .standard:
+            open.wrappedValue
+                ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line)
+        case .chip:
+            AnyShapeStyle(Design.line)
+        }
     }
 
     var body: some View {
@@ -344,6 +374,14 @@ struct InkMenu<Content: View>: View {
             open.wrappedValue = true
         } label: {
             HStack(spacing: Design.Space.xs) {
+                if let readyDot {
+                    Circle()
+                        .fill(
+                            readyDot
+                                ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.inkFaint)
+                        )
+                        .frame(width: 6, height: 6)
+                }
                 Text(title)
                     .font(Design.label)
                     .lineLimit(1)
@@ -354,32 +392,22 @@ struct InkMenu<Content: View>: View {
             }
             .padding(.horizontal, Design.Space.chipX)
             .frame(height: Design.Control.size)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .background(triggerFill, in: triggerShape)
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
-                    open.wrappedValue
-                        ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
-                    lineWidth: Design.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                triggerShape.strokeBorder(triggerBorder, lineWidth: Design.hairlineWidth))
+            .contentShape(triggerShape)
         }
         .buttonStyle(.plain)
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
+        .inkFocusRing(triggerShape)
         .fixedSize()
-        .background(AnchorReader { anchor = $0 })
-        .onChange(of: open.wrappedValue) { _, isOpen in
-            if isOpen { present() }
+        .popover(isPresented: open, arrowEdge: .top) {
+            InkPopoverBody(
+                width: Design.Popover.menuWidth, maxHeight: Design.Popover.menuMaxHeight
+            ) {
+                menu
+            }
         }
         .accessibilityLabel(accessibilityName)
-    }
-
-    private func present() {
-        guard let anchor else { return }
-        InkPopup.shared.present(
-            anchor: anchor,
-            width: Design.Popover.menuWidth,
-            maxHeight: Design.Popover.menuMaxHeight,
-            content: menu,
-            onDismiss: { open.wrappedValue = false })
     }
 
     private var menu: some View {
@@ -387,7 +415,7 @@ struct InkMenu<Content: View>: View {
             content()
         }
         .padding(Design.Space.s)
-        .environment(\.inkMenuDismiss) { InkPopup.shared.dismiss() }
+        .environment(\.inkMenuDismiss) { open.wrappedValue = false }
     }
 }
 
@@ -447,8 +475,8 @@ struct InkMenuRow: View {
                 selected
                     ? Design.ink.opacity(0.08)
                     : hovering && !disabled ? Design.ink.opacity(0.04) : .clear,
-                in: RoundedRectangle(cornerRadius: Design.Radius.card))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+                in: RoundedRectangle.soft(Design.Radius.card))
+            .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -488,11 +516,10 @@ struct InkDropdown: View {
     var onPreview: ((String) -> Void)? = nil
     let onSelect: (String?) -> Void
     @State private var open = false
-    @State private var anchor: NSView?
 
     var body: some View {
         Button {
-            present()
+            open = true
         } label: {
             HStack(spacing: Design.Space.s) {
                 Text(selection ?? placeholder)
@@ -506,30 +533,25 @@ struct InkDropdown: View {
             }
             .padding(.horizontal, Design.Space.chipX)
             .padding(.vertical, Design.Space.s)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
+                RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                     open ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .frame(width: width)
             .fixedSize(horizontal: width == nil, vertical: true)
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
         .buttonStyle(.plain)
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.control))
-        .background(AnchorReader { anchor = $0 })
+        .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
+        .popover(isPresented: $open, arrowEdge: .top) {
+            InkPopoverBody(
+                width: Design.Popover.dropdownWidth, maxHeight: Design.Popover.dropdownMaxHeight
+            ) {
+                rows
+            }
+        }
         .accessibilityLabel("Choose \(accessibilityName)")
-    }
-
-    private func present() {
-        guard let anchor else { return }
-        open = true
-        InkPopup.shared.present(
-            anchor: anchor,
-            width: Design.Popover.dropdownWidth,
-            maxHeight: Design.Popover.dropdownMaxHeight,
-            content: rows,
-            onDismiss: { open = false })
     }
 
     private var rows: some View {
@@ -558,7 +580,7 @@ struct InkDropdown: View {
             }
         ) {
             onSelect(value)
-            InkPopup.shared.dismiss()
+            open = false
         }
     }
 }
@@ -603,8 +625,8 @@ private struct DropdownRow: View {
                 selected
                     ? Design.ink.opacity(0.08)
                     : hovering ? Design.ink.opacity(0.04) : .clear,
-                in: RoundedRectangle(cornerRadius: Design.Radius.card))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+                in: RoundedRectangle.soft(Design.Radius.card))
+            .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -625,13 +647,13 @@ struct QuietButtonStyle: ButtonStyle {
             .padding(.vertical, Design.Space.xs + 1)
             .background(
                 hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.surface),
-                in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                in: RoundedRectangle.soft(Design.Radius.control))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
+                RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                     hovering ? AnyShapeStyle(Design.inkFaint) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
             .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.15), value: hovering)
     }
@@ -683,23 +705,23 @@ struct InkChoiceCard<Preview: View>: View {
             VStack(spacing: Design.Space.s) {
                 preview()
                     .frame(width: 96, height: 62)
-                    .clipShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                    .clipShape(RoundedRectangle.soft(Design.Radius.control))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Design.Radius.control)
+                        RoundedRectangle.soft(Design.Radius.control)
                             .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
                 Text(label)
                     .font(Design.label.weight(selected ? .semibold : .regular))
                     .foregroundStyle(selected ? Design.ink : Design.inkSoft)
             }
             .padding(Design.Space.s)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .strokeBorder(
                         selected ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.line),
                         lineWidth: selected ? 1.5 : Design.hairlineWidth))
             .offset(y: hovering && !reduceMotion ? -2 : 0)
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .animation(.easeOut(duration: 0.15), value: hovering)
         }
         .buttonStyle(.plain)
@@ -769,7 +791,7 @@ struct ThemePreview: View {
                     RoundedRectangle(cornerRadius: 2).fill(surface))
                 .padding(.vertical, 4)
                 VStack(alignment: .leading, spacing: 4) {
-                    RoundedRectangle(cornerRadius: Design.Radius.control)
+                    RoundedRectangle.soft(Design.Radius.control)
                         .fill(ink.opacity(0.85))
                         .frame(width: 26, height: 6)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -782,9 +804,9 @@ struct ThemePreview: View {
                             .frame(width: 28, height: 3)
                     }
                     Spacer()
-                    RoundedRectangle(cornerRadius: Design.Radius.control)
+                    RoundedRectangle.soft(Design.Radius.control)
                         .fill(surface)
-                        .overlay(RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(soft.opacity(0.3), lineWidth: 0.5))
+                        .overlay(RoundedRectangle.soft(Design.Radius.control).strokeBorder(soft.opacity(0.3), lineWidth: 0.5))
                         .frame(height: 8)
                         .overlay(alignment: .trailing) {
                             Circle()
