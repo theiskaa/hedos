@@ -131,15 +131,20 @@ actor MlxSwiftEngine {
         var sawToolCall = false
         var stopMatcher = StopMatcher(params.stop)
         var stoppedByMatch = false
+        var emittedCharacters = 0
 
         func emitText(_ text: String) {
             guard !text.isEmpty else { return }
             guard stopMatcher.isActive else {
                 continuation.yield(.text(text))
+                emittedCharacters += text.count
                 return
             }
             let safe = stopMatcher.feed(text)
-            if !safe.isEmpty { continuation.yield(.text(safe)) }
+            if !safe.isEmpty {
+                continuation.yield(.text(safe))
+                emittedCharacters += safe.count
+            }
             if stopMatcher.stopped { stoppedByMatch = true }
         }
 
@@ -216,16 +221,19 @@ actor MlxSwiftEngine {
         }
 
         let elapsed = clock.now - started
+        let missedTerminalInfo = completionTokenCount == 0 && stoppedByMatch
         continuation.yield(
             .done(
                 GenerationStats(
-                    promptTokens: promptTokenCount,
-                    completionTokens: completionTokenCount,
+                    promptTokens: promptTokenCount == 0 ? nil : promptTokenCount,
+                    completionTokens: missedTerminalInfo
+                        ? max(1, emittedCharacters / 4) : completionTokenCount,
                     durationMs: Int(elapsed.components.seconds) * 1000
                         + Int(elapsed.components.attoseconds / 1_000_000_000_000_000),
                     loadMs: loadMs,
                     finishReason: sawToolCall
-                        ? "tool_calls" : (stoppedByMatch ? "stop" : nil))))
+                        ? "tool_calls" : (stoppedByMatch ? "stop" : nil),
+                    tokenCountsEstimated: missedTerminalInfo)))
     }
 
     private func stampLoad(since start: ContinuousClock.Instant) {
