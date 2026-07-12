@@ -37,6 +37,23 @@ private struct ScopedHandler: GatewayHandling {
     await stack.stop()
 }
 
+@Test func unauthenticatedOversizedBodyIsCappedNotBuffered() async throws {
+    let stack = try await GatewayHarness.stack(
+        routes: [GatewayRoute("POST", "/v1/chat/completions", EchoHandler())])
+    let big = Data(repeating: 0x61, count: 100 * 1024)
+
+    let (_, noAuth) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/chat/completions"), body: big))
+    #expect((noAuth as! HTTPURLResponse).statusCode == 413)
+
+    let (_, authed) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/chat/completions"), token: stack.token, body: big))
+    #expect((authed as! HTTPURLResponse).statusCode == 200)
+    await stack.stop()
+}
+
 @Test func invalidTokenAnswers401OnBothDialects() async throws {
     let stack = try await GatewayHarness.stack(
         routes: [

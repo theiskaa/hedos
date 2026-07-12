@@ -152,7 +152,11 @@ public actor GatewayServer {
                 deadline.cancel()
                 guard let head else { break }
 
-                let limit = router.bodyLimit(for: head.uri, default: maxBodyBytes)
+                let headers = head.headers.map { ($0.name, $0.value) }
+                let routeLimit = router.bodyLimit(for: head.uri, default: maxBodyBytes)
+                let limit =
+                    await router.preauthorized(headers: headers)
+                    ? routeLimit : min(routeLimit, Self.unauthenticatedBodyLimit)
                 var body = Data()
                 var tooLarge = false
                 deadline = armDeadline(seconds: readIdleTimeout, channel: channel)
@@ -188,6 +192,8 @@ public actor GatewayServer {
             }
         }
     }
+
+    static let unauthenticatedBodyLimit = 64 * 1024
 
     private static func armDeadline(seconds: Int, channel: Channel) -> Task<Void, Never> {
         Task {

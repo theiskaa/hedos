@@ -106,6 +106,11 @@ public struct GatewayRouter: Sendable {
         ]
     }
 
+    func preauthorized(headers: [(String, String)]) async -> Bool {
+        let probe = GatewayRequest(method: "GET", uri: "/", headers: headers, body: Data())
+        return (try? await auth.authenticate(probe)) != nil
+    }
+
     func dispatch(_ request: GatewayRequest, responder: GatewayResponder) async throws {
         let started = Date()
         let surface = Self.surface(for: request.path)
