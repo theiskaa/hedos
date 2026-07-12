@@ -44,6 +44,11 @@ struct OllamaEmbedHandler: GatewayHandling {
             guard !vectors.isEmpty else {
                 throw GatewayError(.serverError, "\(record.name) produced no embeddings")
             }
+            guard vectors.count == inputs.count else {
+                throw GatewayError(
+                    .serverError,
+                    "\(record.name) returned \(vectors.count) embeddings for \(inputs.count) inputs")
+            }
             if legacy {
                 try await responder.respond(
                     status: 200,
