@@ -369,6 +369,21 @@ public enum ConformanceMatrix {
         -> Outcome
     {
         let capability = primaryCapability(record)
+        if record.execution == .job {
+            do {
+                let jobID = try await kernel.submit(
+                    record.id, capability, payload: probePayload(for: capability))
+                await kernel.cancel(jobID: jobID)
+                return Outcome(status: .pass, reason: nil)
+            } catch KernelError.capabilityUnsupported {
+                return Outcome(
+                    status: .fail, reason: "ready record cannot serve \(capability.rawValue)")
+            } catch KernelError.runtimeUnavailable(let hint) {
+                return Outcome(status: .fail, reason: "ready record has no runtime: \(hint)")
+            } catch {
+                return Outcome(status: .pass, reason: nil)
+            }
+        }
         do {
             let stream = try await kernel.invoke(
                 record.id, capability, payload: probePayload(for: capability))

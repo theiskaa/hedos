@@ -175,6 +175,19 @@ private let healthyInvoke: Result<[CapabilityChunk], KernelError> = .success([
     #expect(applicable.allSatisfy { $0.reason == "engine crashed" })
 }
 
+@Test func jobBasedImageModelPassesStateHonestViaTheJobPath() async {
+    let image = ModelRecord(
+        name: "sdxl", modality: .image, capabilities: [.image],
+        source: ModelSource(kind: .huggingfaceCache, path: "/models/sdxl"),
+        runtime: RuntimeRef(id: "python:diffusers", resolved: .auto, tier: .managed),
+        execution: .job, state: .ready,
+        registeredAt: Date(timeIntervalSince1970: 1_750_000_000))
+    let kernel = MatrixKernel(records: [image])
+    let cells = await ConformanceMatrix.run(kernel)
+    let state = cells.first { $0.contract == .stateHonest }
+    #expect(state?.status == .pass)
+}
+
 @Test func notApplicableContractsAreSkippedNotAbsent() async {
     let kernel = MatrixKernel(records: [matrixRecord(name: "tts", capabilities: [.speak])])
     let cells = await ConformanceMatrix.run(kernel)
