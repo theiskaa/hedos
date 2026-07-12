@@ -56,6 +56,20 @@ final class GalleryModel {
         }
     }
 
+    func fullImage(_ artifact: Artifact) async -> NSImage? {
+        if let url = try? await kernel.artifactStore.url(id: artifact.id) {
+            let full = await Task.detached(priority: .userInitiated) {
+                NSImage(contentsOf: url)
+            }.value
+            if let full { return full }
+        }
+        guard let data = try? await kernel.artifactStore.previewData(id: artifact.id) else {
+            return thumbnails[artifact.id]
+        }
+        let fallback = await Task.detached(priority: .userInitiated) { NSImage(data: data) }.value
+        return fallback ?? thumbnails[artifact.id]
+    }
+
     func delete(_ artifact: Artifact) async {
         do {
             try await kernel.artifactStore.delete(id: artifact.id)

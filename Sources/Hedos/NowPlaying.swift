@@ -64,8 +64,8 @@ struct NowPlayingCard: View {
                 .font(Design.glyphMicro.weight(.semibold))
                 .foregroundStyle(Design.paper)
                 .frame(width: 24, height: 24)
-                .background(Design.ink, in: RoundedRectangle(cornerRadius: Design.Radius.control))
-                .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                .background(Design.ink, in: RoundedRectangle.soft(Design.Radius.control))
+                .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
         .buttonStyle(PressDipStyle())
         .help(session.phase == .live ? "Stop" : session.isPaused ? "Play" : "Pause")

@@ -135,14 +135,14 @@ struct HotkeyRecorder: View {
                             ? Design.inkSoft : hotkey == nil ? Design.inkFaint : Design.ink)
                     .padding(.horizontal, Design.Space.chipX)
                     .padding(.vertical, Design.Space.xs + 1)
-                    .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.control))
+                    .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Design.Radius.control).strokeBorder(
+                        RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                             recording
                                 ? AnyShapeStyle(Design.ink.opacity(0.35))
                                 : AnyShapeStyle(Design.line),
                             lineWidth: Design.hairlineWidth))
-                    .contentShape(RoundedRectangle(cornerRadius: Design.Radius.control))
+                    .contentShape(RoundedRectangle.soft(Design.Radius.control))
             }
             .buttonStyle(.plain)
             .accessibilityLabel(
@@ -204,7 +204,7 @@ final class QuickAskModel {
     func ask(kernel: Kernel, records: [ModelRecord]) {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !isStreaming else { return }
-        guard let record = Launcher.defaultChatModel(in: records) else {
+        guard Launcher.defaultChatModel(in: records) != nil else {
             notice = "No chat-capable model is ready."
             return
         }
@@ -214,6 +214,9 @@ final class QuickAskModel {
         isStreaming = true
         task = Task { [weak self] in
             guard let self else { return }
+            let preferred = await kernel.settings.defaultChatModelID()
+            guard let record = Launcher.defaultChatModel(in: records, preferring: preferred)
+            else { return }
             do {
                 if sessionID == nil {
                     sessionID = try await kernel.createChatSession(modelID: record.id).id
@@ -394,9 +397,9 @@ private struct QuickAskView: View {
         }
         .padding(Design.Space.xxl)
         .frame(width: 560)
-        .background(Design.paper, in: RoundedRectangle(cornerRadius: Design.Radius.surface))
+        .background(Design.paper, in: RoundedRectangle.soft(Design.Radius.surface))
         .overlay(
-            RoundedRectangle(cornerRadius: Design.Radius.surface)
+            RoundedRectangle.soft(Design.Radius.surface)
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         .shade(Design.Elevation.modal)
         .onAppear { focused = true }

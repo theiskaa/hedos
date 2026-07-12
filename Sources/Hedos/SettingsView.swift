@@ -486,11 +486,12 @@ struct SettingRow<Control: View>: View {
         .padding(.vertical, Design.Space.l)
         .padding(.horizontal, Design.Space.s)
         .background(
-            RoundedRectangle(cornerRadius: Design.Radius.card)
+            RoundedRectangle.soft(Design.Radius.control)
                 .fill(
                     highlighted
                         ? Design.ink.opacity(0.08)
-                        : hovering ? Design.ink.opacity(0.02) : .clear))
+                        : hovering ? Design.ink.opacity(0.02) : .clear)
+                .padding(.vertical, Design.Space.xs))
         .padding(.horizontal, -Design.Space.s)
         .onHover { hovering = $0 }
         .id(id)
@@ -1356,7 +1357,7 @@ struct SettingsRoot: View {
                         ThemePreview(variant: .dark)
                     }
                     InkChoiceCard(
-                        label: "Paper",
+                        label: "White",
                         selected: model.appearance.theme == .light,
                         action: {
                             model.appearance.theme = .light
@@ -1596,7 +1597,7 @@ struct SettingsRoot: View {
     }
 
     private func highlightBackground(_ id: String) -> some View {
-        RoundedRectangle(cornerRadius: Design.Radius.card)
+        RoundedRectangle.soft(Design.Radius.card)
             .fill(highlighted == id ? Design.ink.opacity(0.08) : .clear)
             .padding(.horizontal, -Design.Space.s)
             .animation(
@@ -1705,10 +1706,10 @@ private struct BudgetBar: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(Design.line)
                     .frame(height: 8)
-                RoundedRectangle(cornerRadius: Design.Radius.control)
+                RoundedRectangle.soft(Design.Radius.control)
                     .fill(Design.accent)
                     .frame(
                         width: min(max(0, width * CGFloat(usedMB) / CGFloat(totalMB)), width),
@@ -1796,10 +1797,10 @@ private struct PromptCard: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(Design.surface, in: RoundedRectangle(cornerRadius: Design.Radius.card))
-            .clipShape(RoundedRectangle(cornerRadius: Design.Radius.card))
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
+            .clipShape(RoundedRectangle.soft(Design.Radius.card))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.card)
+                RoundedRectangle.soft(Design.Radius.card)
                     .strokeBorder(
                         hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
                         lineWidth: Design.hairlineWidth))
@@ -1850,18 +1851,18 @@ private struct NewPromptCard: View {
             }
             .frame(maxWidth: .infinity, minHeight: 132, maxHeight: .infinity)
             .background(
-                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                RoundedRectangle.soft(Design.Radius.tile)
                     .fill(hovering ? Design.inkWash : .clear))
             .overlay(
-                RoundedRectangle(cornerRadius: Design.Radius.tile)
+                RoundedRectangle.soft(Design.Radius.tile)
                     .strokeBorder(
                         hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
                         style: StrokeStyle(lineWidth: Design.hairlineWidth, dash: [5, 4])))
-            .contentShape(RoundedRectangle(cornerRadius: Design.Radius.tile))
+            .contentShape(RoundedRectangle.soft(Design.Radius.tile))
         }
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
-        .inkFocusRing(RoundedRectangle(cornerRadius: Design.Radius.tile))
+        .inkFocusRing(RoundedRectangle.soft(Design.Radius.tile))
         .animation(Design.wash, value: hovering)
         .accessibilityLabel("New prompt")
         .accessibilityIdentifier("prompts-new")
