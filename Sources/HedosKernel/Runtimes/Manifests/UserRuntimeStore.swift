@@ -114,17 +114,23 @@ struct UserRuntimeStore: Sendable {
                 path: env.lockfile,
                 content: try? Data(contentsOf: directory.appendingPathComponent(env.lockfile)))
         }
-        let siblings =
-            ((try? FileManager.default.contentsOfDirectory(
-                at: directory, includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles])) ?? [])
-            .filter { $0.pathExtension.lowercased() == "py" }
-            .filter {
-                ((try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) ?? false)
+        let base = directory.standardizedFileURL.path
+        var files: [(String, URL)] = []
+        if let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles])
+        {
+            for case let url as URL in enumerator {
+                guard
+                    (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                else { continue }
+                let relative = String(url.standardizedFileURL.path.dropFirst(base.count + 1))
+                if relative == "manifest.toml" { continue }
+                files.append((relative, url))
             }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for sibling in siblings {
-            absorb(path: sibling.lastPathComponent, content: try? Data(contentsOf: sibling))
+        }
+        for (relative, url) in files.sorted(by: { $0.0 < $1.0 }) {
+            absorb(path: relative, content: try? Data(contentsOf: url))
         }
 
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
