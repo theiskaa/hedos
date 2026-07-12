@@ -83,6 +83,12 @@ extension SidecarSupervisor {
                     }
                 case "thinking":
                     continuation.yield(.thinking(value.objectValue?["text"]?.stringValue ?? ""))
+                case "vector":
+                    var values: [Double] = []
+                    if case .array(let entries)? = value.objectValue?["values"] {
+                        values = entries.compactMap { $0.doubleValue }
+                    }
+                    continuation.yield(.vector(values))
                 case "status":
                     continuation.yield(.status(value.objectValue?["message"]?.stringValue ?? ""))
                 case "done":

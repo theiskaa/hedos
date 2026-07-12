@@ -236,6 +236,22 @@ private func fakeSidecarSpec(
         cancelGraceTimeout: grace)
 }
 
+@Test func supervisorStreamsVectorFromFakeSidecar() async throws {
+    let spec = fakeSidecarSpec()
+    let supervisor = SidecarSupervisor()
+    try await supervisor.ensureRunning(spec)
+
+    var vectors: [[Double]] = []
+    let stream = await supervisor.request(
+        spec, .object(["op": .string("embed"), "input": .string("hedos")]))
+    for try await chunk in stream {
+        if case .vector(let values) = chunk { vectors.append(values) }
+    }
+    #expect(vectors.count == 1)
+    #expect(vectors.first?.first == 5.0)
+    await supervisor.shutdownAll()
+}
+
 @Test func supervisorStreamsAudioFromFakeSidecar() async throws {
     let spec = fakeSidecarSpec()
     let supervisor = SidecarSupervisor()

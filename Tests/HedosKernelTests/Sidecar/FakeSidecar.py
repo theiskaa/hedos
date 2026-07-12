@@ -162,6 +162,14 @@ while True:
                 "completion_tokens": 3,
             }
         )
+    if op == "embed":
+        inputs = request.get("input", "")
+        if isinstance(inputs, str):
+            inputs = [inputs]
+        for text in inputs:
+            send_json({"event": "vector", "values": [float(len(text)), 0.5, -0.25]})
+        send_json({"event": "done", "seconds": 0.05, "prompt_tokens": len(inputs)})
+        continue
     if op == "image":
         if request.get("prompt") == "fail":
             send_json({"event": "error", "message": "the pipeline exploded"})
