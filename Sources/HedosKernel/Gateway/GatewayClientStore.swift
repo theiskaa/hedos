@@ -83,8 +83,8 @@ public actor GatewayClientStore {
     public func revoke(id: String) throws {
         loadIfNeeded()
         clients.removeAll { $0.id == id }
-        try secrets.delete(account: Self.secretAccount(id))
         try persist()
+        try? secrets.delete(account: Self.secretAccount(id))
     }
 
     public func verify(token: String) -> GatewayIdentity? {

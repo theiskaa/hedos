@@ -1,6 +1,8 @@
 import Foundation
 
 struct OpenAIImagesHandler: GatewayHandling {
+    static let runTimeoutSeconds = 600
+
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -28,20 +30,33 @@ struct OpenAIImagesHandler: GatewayHandling {
 
         let events = await port.jobEvents(id: jobID)
         let artifactIDs = try await withTaskCancellationHandler {
-            var result: [String] = []
-            for await event in events {
-                switch event {
-                case .done(let artifacts):
-                    result = artifacts
-                case .failed(let message):
-                    throw GatewayError(.serverError, message)
-                case .cancelled:
-                    throw GatewayError(.serverError, "generation was cancelled")
-                default:
-                    continue
+            try await withThrowingTaskGroup(of: [String].self) { group in
+                group.addTask {
+                    var result: [String] = []
+                    for await event in events {
+                        switch event {
+                        case .done(let artifacts):
+                            result = artifacts
+                        case .failed(let message):
+                            throw GatewayError(.serverError, message)
+                        case .cancelled:
+                            throw GatewayError(.serverError, "generation was cancelled")
+                        default:
+                            continue
+                        }
+                    }
+                    return result
                 }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(Self.runTimeoutSeconds))
+                    await port.cancel(jobID: jobID)
+                    throw GatewayError(
+                        .timeout, "image generation ran longer than \(Self.runTimeoutSeconds)s")
+                }
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
             }
-            return result
         } onCancel: {
             Task { await port.cancel(jobID: jobID) }
         }
