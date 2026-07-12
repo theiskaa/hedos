@@ -19,13 +19,14 @@ public protocol ShelfSweepKernel: Sendable {
 extension Kernel: ShelfSweepKernel {}
 
 public enum ShelfSweep {
-    static let priority: [Capability] = [.chat, .image, .speak, .transcribe]
+    static let priority: [Capability] = [.chat, .see, .embed, .image, .speak, .transcribe]
 
     public static func run(
         _ kernel: any ShelfSweepKernel,
         includeEndpoints: Bool = false,
         includeImage: Bool = false,
         transcribeFixture: URL? = transcribeFixtureURL(),
+        seeFixture: URL? = seeFixtureURL(),
         perModelTimeout: Duration = .seconds(120)
     ) async -> [SweepResult] {
         let records: [ModelRecord]
@@ -40,11 +41,27 @@ public enum ShelfSweep {
         }
         var results: [SweepResult] = []
         for record in records {
-            results.append(
-                await sweepWithTimeout(
-                    record, kernel: kernel, includeEndpoints: includeEndpoints,
-                    includeImage: includeImage, transcribeFixture: transcribeFixture,
-                    timeout: perModelTimeout))
+            if record.state != .ready {
+                results.append(skipped(record, capability: nil, reason: "not ready"))
+                continue
+            }
+            if record.source.kind == .endpoint, !includeEndpoints {
+                results.append(skipped(record, capability: nil, reason: "endpoint runtime"))
+                continue
+            }
+            let capabilities = priority.filter { record.capabilities.contains($0) }
+            guard !capabilities.isEmpty else {
+                results.append(
+                    skipped(record, capability: nil, reason: "no sweepable capability"))
+                continue
+            }
+            for capability in capabilities {
+                results.append(
+                    await sweepWithTimeout(
+                        record, capability: capability, kernel: kernel,
+                        includeImage: includeImage, transcribeFixture: transcribeFixture,
+                        seeFixture: seeFixture, timeout: perModelTimeout))
+            }
         }
         return results
     }
@@ -53,10 +70,11 @@ public enum ShelfSweep {
 
     static func sweepWithTimeout(
         _ record: ModelRecord,
+        capability: Capability,
         kernel: any ShelfSweepKernel,
-        includeEndpoints: Bool,
         includeImage: Bool,
         transcribeFixture: URL?,
+        seeFixture: URL?,
         timeout: Duration
     ) async -> SweepResult {
         let start = Date()
@@ -64,8 +82,9 @@ public enum ShelfSweep {
             return try await withThrowingTaskGroup(of: SweepResult.self) { group in
                 group.addTask {
                     await sweep(
-                        record, kernel: kernel, includeEndpoints: includeEndpoints,
-                        includeImage: includeImage, transcribeFixture: transcribeFixture)
+                        record, capability: capability, kernel: kernel,
+                        includeImage: includeImage, transcribeFixture: transcribeFixture,
+                        seeFixture: seeFixture)
                 }
                 group.addTask {
                     try await Task.sleep(for: timeout)
@@ -76,7 +95,6 @@ public enum ShelfSweep {
                 return result
             }
         } catch is SweepTimeout {
-            let capability = priority.first(where: { record.capabilities.contains($0) })
             return SweepResult(
                 model: record.displayName, capability: capability, status: .fail,
                 durationMs: elapsedMs(since: start),
@@ -95,20 +113,12 @@ public enum ShelfSweep {
 
     static func sweep(
         _ record: ModelRecord,
+        capability: Capability,
         kernel: any ShelfSweepKernel,
-        includeEndpoints: Bool,
         includeImage: Bool,
-        transcribeFixture: URL?
+        transcribeFixture: URL?,
+        seeFixture: URL?
     ) async -> SweepResult {
-        guard record.state == .ready else {
-            return skipped(record, capability: nil, reason: "not ready")
-        }
-        if record.source.kind == .endpoint, !includeEndpoints {
-            return skipped(record, capability: nil, reason: "endpoint runtime")
-        }
-        guard let capability = priority.first(where: { record.capabilities.contains($0) }) else {
-            return skipped(record, capability: nil, reason: "no sweepable capability")
-        }
         if capability == .image, !includeImage {
             return skipped(
                 record, capability: capability,
@@ -119,7 +129,8 @@ public enum ShelfSweep {
         let parity: SweepParity?
         do {
             parity = try await dispatch(
-                capability, record: record, kernel: kernel, transcribeFixture: transcribeFixture)
+                capability, record: record, kernel: kernel,
+                transcribeFixture: transcribeFixture, seeFixture: seeFixture)
         } catch {
             if let kernelError = error as? KernelError, isOllamaDaemonDown(record, kernelError) {
                 return skipped(
@@ -141,11 +152,32 @@ public enum ShelfSweep {
         _ capability: Capability,
         record: ModelRecord,
         kernel: any ShelfSweepKernel,
-        transcribeFixture: URL?
+        transcribeFixture: URL?,
+        seeFixture: URL?
     ) async throws -> SweepParity? {
         switch capability {
         case .chat:
             return try await sweepChat(record, kernel: kernel)
+        case .see:
+            guard let seeFixture, let imageData = try? Data(contentsOf: seeFixture) else {
+                throw KernelError.runtimeFailed("no see fixture available")
+            }
+            let message = ChatMessage(
+                role: .user, content: "What is in this image?",
+                attachments: [
+                    ChatAttachment(kind: .image, data: imageData, mimeType: "image/png")
+                ])
+            let stream = try await kernel.invoke(
+                record.id, .chat, payload: .object(["messages": .array([message.payloadValue])]))
+            try await drain(stream)
+            return nil
+        case .embed:
+            let stream = try await kernel.invoke(
+                record.id, .embed, payload: .object(["input": .string("hedos sweep")]))
+            guard try await drainRequiringVector(stream) else {
+                throw KernelError.runtimeFailed("embedding returned no vector")
+            }
+            return nil
         case .speak:
             let stream = try await kernel.invoke(
                 record.id, .speak, payload: .object(["text": .string("Hedos shelf sweep check.")]))
@@ -214,6 +246,16 @@ public enum ShelfSweep {
         for try await _ in stream {}
     }
 
+    static func drainRequiringVector(
+        _ stream: AsyncThrowingStream<CapabilityChunk, Error>
+    ) async throws -> Bool {
+        var sawVector = false
+        for try await chunk in stream {
+            if case .vector(let values) = chunk, !values.isEmpty { sawVector = true }
+        }
+        return sawVector
+    }
+
     static func runImageJob(_ record: ModelRecord, kernel: any ShelfSweepKernel) async throws {
         let jobID = try await kernel.submit(
             record.id, .image, payload: .object(["prompt": .string("hedos shelf sweep check")]))
@@ -256,12 +298,20 @@ public enum ShelfSweep {
     }
 
     public static func transcribeFixtureURL() -> URL? {
+        fixtureURL(named: "sweep-probe.wav")
+    }
+
+    public static func seeFixtureURL() -> URL? {
+        fixtureURL(named: "sweep-probe.png")
+    }
+
+    static func fixtureURL(named name: String) -> URL? {
         guard let root = Bundle.module.resourceURL else { return nil }
         let candidates = [
-            root.appendingPathComponent("Resources/Fixtures/sweep-probe.wav"),
-            root.appendingPathComponent("Fixtures/sweep-probe.wav"),
+            root.appendingPathComponent("Resources/Fixtures/\(name)"),
+            root.appendingPathComponent("Fixtures/\(name)"),
             root.deletingLastPathComponent()
-                .appendingPathComponent("Resources/Fixtures/sweep-probe.wav"),
+                .appendingPathComponent("Resources/Fixtures/\(name)"),
         ]
         return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
     }

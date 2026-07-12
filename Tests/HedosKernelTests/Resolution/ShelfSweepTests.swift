@@ -191,12 +191,13 @@ private actor FakeSweepKernel: ShelfSweepKernel {
         name: "not-ready-model", capabilities: [.chat], state: .unresolved)
     let ollamaDown = sweepRecord(
         name: "ollama-down", capabilities: [.chat], runtimeID: "ollama")
-    let noCapability = sweepRecord(name: "embed-only", capabilities: [.embed])
+    let noCapability = sweepRecord(name: "no-capability", capabilities: [.complete])
+    let embedOk = sweepRecord(name: "embed-ok", capabilities: [.embed])
 
     let kernel = FakeSweepKernel(
         records: [
             chatOk, chatFail, imageOk, imageFail, speakOk, transcribeOk, endpointModel,
-            notReadyModel, ollamaDown, noCapability,
+            notReadyModel, ollamaDown, noCapability, embedOk,
         ],
         chatOutcomes: [
             chatOk.id: .init(chunks: [.text("hi"), .done(nil)]),
@@ -206,6 +207,7 @@ private actor FakeSweepKernel: ShelfSweepKernel {
         invokeOutcomes: [
             speakOk.id: .init(chunks: [.done(nil)]),
             transcribeOk.id: .init(chunks: [.text("hello"), .done(nil)]),
+            embedOk.id: .init(chunks: [.vector([0.1, 0.2, 0.3]), .done(nil)]),
         ],
         jobOutcomes: [
             imageOk.id: .init(events: [.running, .done(result: ["artifact-1"])]),
@@ -259,11 +261,56 @@ private actor FakeSweepKernel: ShelfSweepKernel {
     #expect(ollamaDownResult.status == .skip)
     #expect(ollamaDownResult.reason == "ollama isn't running")
 
-    let noCapabilityResult = try #require(byModel["embed-only"])
+    let noCapabilityResult = try #require(byModel["no-capability"])
     #expect(noCapabilityResult.status == .skip)
     #expect(noCapabilityResult.reason == "no sweepable capability")
 
+    let embedOkResult = try #require(byModel["embed-ok"])
+    #expect(embedOkResult.status == .pass)
+    #expect(embedOkResult.capability == .embed)
+
     #expect(await kernel.shelfCallCount == 1)
+}
+
+@Test func shelfSweepEmitsARowPerCarriedCapability() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let png = dir.appendingPathComponent("probe.png")
+    try Data([0x89, 0x50, 0x4E, 0x47]).write(to: png)
+    let visionChat = sweepRecord(name: "vision", capabilities: [.chat, .see])
+
+    let kernel = FakeSweepKernel(
+        records: [visionChat],
+        chatOutcomes: [visionChat.id: .init(chunks: [.text("a cat"), .done(nil)])],
+        invokeOutcomes: [visionChat.id: .init(chunks: [.text("a cat"), .done(nil)])])
+
+    let results = await ShelfSweep.run(kernel, seeFixture: png)
+    #expect(results.count == 2)
+    #expect(Set(results.compactMap(\.capability)) == [.chat, .see])
+    #expect(results.allSatisfy { $0.status == .pass })
+}
+
+@Test func shelfSweepFailsEmbedWithoutAVectorChunk() async throws {
+    let embed = sweepRecord(name: "empty-embed", capabilities: [.embed])
+    let kernel = FakeSweepKernel(
+        records: [embed],
+        invokeOutcomes: [embed.id: .init(chunks: [.done(nil)])])
+    let results = await ShelfSweep.run(kernel)
+    let result = try #require(results.first)
+    #expect(result.status == .fail)
+    #expect(result.capability == .embed)
+}
+
+@Test func shelfSweepFailsSeeWhenTheFixtureIsMissing() async throws {
+    let vision = sweepRecord(name: "vision", capabilities: [.see])
+    let kernel = FakeSweepKernel(
+        records: [vision],
+        invokeOutcomes: [vision.id: .init(chunks: [.text("x"), .done(nil)])])
+    let results = await ShelfSweep.run(
+        kernel, seeFixture: URL(fileURLWithPath: "/tmp/hedos-missing-\(UUID().uuidString).png"))
+    let result = try #require(results.first)
+    #expect(result.status == .fail)
+    #expect(result.capability == .see)
 }
 
 @Test func shelfSweepIncludesEndpointsWhenRequested() async throws {
