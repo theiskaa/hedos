@@ -227,8 +227,10 @@ extension ChatMessage {
     public var inlinedToolTranscript: ChatMessage {
         guard role == .assistant, !toolCalls.isEmpty else { return self }
         let blocks = toolCalls.map { call in
-            "<tool_call>{\"name\": \"\(call.name)\", "
-                + "\"arguments\": \(call.arguments.jsonString)}</tool_call>"
+            let object = JSONValue.object([
+                "name": .string(call.name), "arguments": call.arguments,
+            ])
+            return "<tool_call>\(object.jsonString)</tool_call>"
         }
         let joined = ([content] + blocks).filter { !$0.isEmpty }.joined(separator: "\n")
         return ChatMessage(role: .assistant, content: joined)

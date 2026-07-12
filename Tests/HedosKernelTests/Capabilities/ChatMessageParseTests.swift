@@ -1,6 +1,24 @@
+import Foundation
 import Testing
 
 @testable import HedosKernel
+
+@Test func inlinedToolTranscriptEscapesNamesWithSpecialCharacters() throws {
+    let message = ChatMessage(
+        role: .assistant, content: "",
+        toolCalls: [
+            ToolCall(name: "weird\"na\\me", arguments: .object(["p": .string("v")]))
+        ])
+    let text = message.inlinedToolTranscript.content
+    let inner = try #require(
+        text.range(of: "<tool_call>").flatMap { open in
+            text.range(of: "</tool_call>").map { close in
+                String(text[open.upperBound..<close.lowerBound])
+            }
+        })
+    let parsed = try JSONSerialization.jsonObject(with: Data(inner.utf8)) as? [String: Any]
+    #expect(parsed?["name"] as? String == "weird\"na\\me")
+}
 
 @Test func parseAllWrapsBarePromptAsUserMessage() throws {
     let messages = try ChatMessage.parseAll(from: ["prompt": .string("hello")])
