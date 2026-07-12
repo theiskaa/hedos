@@ -10,7 +10,10 @@ struct GatewaySection: View {
     var onShowAllRequests: (() -> Void)? = nil
     var showsControlHeader = true
     @State private var portText = ""
-    @State private var copiedAddress = false
+    @State private var portDenyCount = 0
+    @State private var portError = false
+    @State private var portRevert: Task<Void, Never>?
+    @State private var hoveredClient: String?
 
     private var model: SettingsModel { shell.settings }
 
@@ -44,16 +47,34 @@ struct GatewaySection: View {
                     }
                     .padding(.vertical, Design.Space.s)
                 }
-                Divider()
+                RowRule()
                 SettingRow(
                     id: "gateway.port", label: "Port",
                     caption: "Loopback only, always. Press Return to apply.",
                     highlighted: highlighted == "gateway.port"
                 ) {
-                    InkField(placeholder: "43367", text: $portText)
-                        .frame(width: 96)
-                        .onSubmit { applyPort() }
-                        .accessibilityIdentifier("gateway-port")
+                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                        InkField(placeholder: "43367", text: $portText)
+                            .frame(width: 96)
+                            .onSubmit { applyPort() }
+                            .denyShake(
+                                on: portDenyCount,
+                                in: RoundedRectangle.soft(Design.Radius.control))
+                            .accessibilityIdentifier("gateway-port")
+                        if portError {
+                            Text("1024–65535")
+                                .font(Design.label)
+                                .foregroundStyle(Design.heatText)
+                                .transition(.arrive(from: .top))
+                        }
+                    }
+                    .animation(Design.wash, value: portError)
+                    .onChange(of: portText) {
+                        if portError {
+                            portError = false
+                            portRevert?.cancel()
+                        }
+                    }
                 }
             }
             group("Endpoints") {
@@ -86,7 +107,7 @@ struct GatewaySection: View {
                             .font(Design.micro)
                             .tracking(Design.microTracking)
                             .foregroundStyle(Design.inkSoft)
-                            .frame(width: 40, alignment: .leading)
+                            .frame(width: 56, alignment: .leading)
                         Text(endpoint.path)
                             .font(Design.data(12))
                             .foregroundStyle(Design.ink)
@@ -136,7 +157,7 @@ struct GatewaySection: View {
                 Text(running ? "LIVE · :\(String(port))" : "OFFLINE")
                     .font(Design.micro)
                     .tracking(Design.microTracking)
-                    .foregroundStyle(running ? Design.heatText : Design.inkFaint)
+                    .foregroundStyle(running ? Design.accentText : Design.inkFaint)
             }
             .padding(.horizontal, Design.Space.tile)
             .padding(.vertical, Design.Space.l)
@@ -171,21 +192,12 @@ struct GatewaySection: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: Design.Space.m)
-            Button {
+            ConfirmingButton(
+                label: "COPY", confirmedLabel: "COPIED", appearance: .micro
+            ) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(address, forType: .string)
-                copiedAddress = true
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    copiedAddress = false
-                }
-            } label: {
-                Text(copiedAddress ? "COPIED" : "COPY")
-                    .font(Design.micro)
-                    .tracking(Design.microTracking)
-                    .foregroundStyle(copiedAddress ? Design.heatText : Design.inkSoft)
             }
-            .buttonStyle(PressDipStyle())
             .accessibilityLabel("Copy gateway address")
         }
         .padding(.horizontal, Design.Space.tile)
@@ -278,23 +290,32 @@ struct GatewaySection: View {
                 .foregroundStyle(Design.inkFaint)
                 .lineLimit(1)
                 .frame(width: 116, alignment: .trailing)
-            Button {
+            ConfirmableIconButton(
+                label: "Revoke \(client.name)", confirmLabel: "Revoke?"
+            ) {
                 model.revokeGatewayClient(id: client.id)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(Design.glyphInline)
-                    .foregroundStyle(Design.inkFaint)
             }
-            .buttonStyle(PressDipStyle())
-            .frame(width: 18)
-            .accessibilityLabel("Revoke \(client.name)")
+            .fixedSize()
         }
         .padding(.vertical, Design.Space.s)
+        .padding(.horizontal, Design.Space.s)
+        .background(
+            RoundedRectangle.soft(Design.Radius.control)
+                .fill(hoveredClient == client.id ? Design.inkWash : .clear))
+        .padding(.horizontal, -Design.Space.s)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(Design.line)
                 .frame(height: Design.hairlineWidth)
         }
+        .onHover { inside in
+            if inside {
+                hoveredClient = client.id
+            } else if hoveredClient == client.id {
+                hoveredClient = nil
+            }
+        }
+        .animation(Design.wash, value: hoveredClient == client.id)
     }
 
     private var auditRows: some View {
@@ -365,9 +386,19 @@ struct GatewaySection: View {
 
     private func applyPort() {
         guard let port = Int(portText), (1024...65535).contains(port) else {
-            portText = String(model.gateway.port)
+            portDenyCount += 1
+            portError = true
+            portRevert?.cancel()
+            portRevert = Task {
+                try? await Task.sleep(for: .milliseconds(600))
+                guard !Task.isCancelled else { return }
+                portText = String(model.gateway.port)
+                portError = false
+            }
             return
         }
+        portRevert?.cancel()
+        portError = false
         model.gateway.port = port
         model.applyGatewayPort()
     }
@@ -398,17 +429,9 @@ struct GatewaySection: View {
     private static let relative = RelativeDateTimeFormatter()
 
     private func group(
-        _ header: String, @ViewBuilder content: () -> some View
+        _ header: String, @ViewBuilder content: @escaping () -> some View
     ) -> some View {
-        VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: header)
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .padding(.horizontal, Design.Space.tile)
-            .padding(.vertical, Design.Space.xs)
-            .surfaceCard(radius: Design.Radius.tile)
-        }
+        SettingsGroup(header: header, content: content)
     }
 
     private func highlightBackground(_ id: String) -> some View {

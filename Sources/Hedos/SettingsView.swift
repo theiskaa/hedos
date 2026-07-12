@@ -9,10 +9,17 @@ struct SettingsEntry: Identifiable {
     let keywords: [String]
 
     func matches(_ query: String) -> Bool {
+        rank(query) != nil
+    }
+
+    func rank(_ query: String) -> Int? {
         let needle = query.lowercased()
-        return title.lowercased().contains(needle)
-            || section.lowercased().contains(needle)
-            || keywords.contains { $0.lowercased().contains(needle) }
+        let name = title.lowercased()
+        if name.hasPrefix(needle) { return 0 }
+        if name.contains(needle) { return 1 }
+        if section.lowercased().contains(needle) { return 2 }
+        if keywords.contains(where: { $0.lowercased().contains(needle) }) { return 3 }
+        return nil
     }
 }
 
@@ -149,6 +156,7 @@ final class SettingsModel {
     private var saveTasks: [String: Task<Void, Never>] = [:]
     private var previewTask: Task<Void, Never>?
     var audio: AudioSession?
+    var saveNotice: String?
 
     var general = GeneralSettings()
     var models = ModelsSettings()
@@ -202,7 +210,7 @@ final class SettingsModel {
         let value = prompt
         persist("prompt-\(prompt.id)") { kernel in
             guard !value.title.isEmpty || !value.body.isEmpty else { return }
-            _ = try? await kernel.promptStore.save(value)
+            _ = try await kernel.promptStore.save(value)
         }
     }
 
@@ -245,28 +253,28 @@ final class SettingsModel {
         applyShellIntegrations()
         let value = general
         persist("general") { kernel in
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
         }
     }
 
     func saveModels() {
         let value = models
         persist("models") { kernel in
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
         }
     }
 
     func saveChat() {
         let value = chat
         persist("chat") { kernel in
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
         }
     }
 
     func saveVoice() {
         let value = voice
         persist("voice") { kernel in
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
         }
     }
 
@@ -276,14 +284,20 @@ final class SettingsModel {
         let kernel = kernel
         saveTasks["appearance"]?.cancel()
         saveTasks["appearance"] = Task {
-            try? await kernel.settings.save(value)
+            do {
+                try await kernel.settings.save(value)
+                saveNotice = nil
+            } catch is CancellationError {
+            } catch {
+                saveNotice = "Couldn't save this change: \(error.localizedDescription)"
+            }
         }
     }
 
     func saveAdvanced() {
         let value = advanced
         persist("advanced") { kernel in
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
         }
     }
 
@@ -302,7 +316,7 @@ final class SettingsModel {
         let kernel = kernel
         Task {
             defer { gatewayBusy = false }
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
             if enabled {
                 do {
                     _ = try await kernel.startGateway()
@@ -322,7 +336,7 @@ final class SettingsModel {
         let value = gateway
         let kernel = kernel
         Task {
-            try? await kernel.settings.save(value)
+            try await kernel.settings.save(value)
             if await kernel.gatewayStatus().running {
                 await kernel.stopGateway()
                 do {
@@ -463,13 +477,19 @@ final class SettingsModel {
         try? await kernel.settings.save(gateway)
     }
 
-    private func persist(_ key: String, _ operation: @escaping (Kernel) async -> Void) {
+    private func persist(_ key: String, _ operation: @escaping (Kernel) async throws -> Void) {
         saveTasks[key]?.cancel()
         let kernel = kernel
         saveTasks[key] = Task {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            await operation(kernel)
+            do {
+                try await operation(kernel)
+                saveNotice = nil
+            } catch is CancellationError {
+            } catch {
+                saveNotice = "Couldn't save this change: \(error.localizedDescription)"
+            }
         }
     }
 }
@@ -480,7 +500,6 @@ struct SettingRow<Control: View>: View {
     var caption: String? = nil
     let highlighted: Bool
     @ViewBuilder let control: () -> Control
-    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .center) {
@@ -503,13 +522,10 @@ struct SettingRow<Control: View>: View {
         .padding(.horizontal, Design.Space.s)
         .background(
             RoundedRectangle.soft(Design.Radius.control)
-                .fill(
-                    highlighted
-                        ? Design.ink.opacity(0.08)
-                        : hovering ? Design.ink.opacity(0.02) : .clear)
+                .fill(highlighted ? Design.ink.opacity(0.08) : .clear)
                 .padding(.vertical, Design.Space.xs))
         .padding(.horizontal, -Design.Space.s)
-        .onHover { hovering = $0 }
+        .animation(Design.wash, value: highlighted)
         .id(id)
     }
 }
@@ -678,12 +694,13 @@ struct SettingsRoot: View {
         }
         .modalScrim(
             isPresented: promptDraft != nil,
-            onDismiss: { promptDraft = nil }
+            onDismiss: { promptDismissAttempts += 1 }
         ) {
             if let draft = promptDraft {
                 PromptSheet(
                     prompt: draft,
                     isNew: promptDraftIsNew,
+                    dismissAttempts: promptDismissAttempts,
                     onSave: { updated in
                         shell.settings.updatePrompt(updated)
                         promptDraft = nil
@@ -733,7 +750,7 @@ struct SettingsRoot: View {
                     expandedGroup("App", [.general, .appearance])
                     expandedGroup("Surfaces", [.chat, .voice])
                     expandedGroup("Library", [.models, .prompts])
-                    expandedGroup("System", [.advanced])
+                    expandedGroup("System", [.gateway, .advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -754,7 +771,7 @@ struct SettingsRoot: View {
                     collapsedGroup([.general, .appearance], first: true)
                     collapsedGroup([.chat, .voice])
                     collapsedGroup([.models, .prompts])
-                    collapsedGroup([.advanced])
+                    collapsedGroup([.gateway, .advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity)
@@ -847,11 +864,25 @@ struct SettingsRoot: View {
     @State private var showingGatewayConnect = false
     @State private var installCandidate: URL?
     @State private var promptDraftIsNew = false
+    @State private var promptDismissAttempts = 0
 
     private var detail: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xxl) {
+                    if let notice = model.saveNotice {
+                        HStack(spacing: Design.Space.s) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(Design.glyphInline)
+                                .foregroundStyle(Design.heat)
+                            Text(notice)
+                                .font(Design.caption.weight(.medium))
+                                .foregroundStyle(Design.inkSoft)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.arrive(from: .top))
+                    }
                     if !query.isEmpty {
                         searchResults(proxy: proxy)
                     } else {
@@ -871,25 +902,31 @@ struct SettingsRoot: View {
                                     .foregroundStyle(Design.inkSoft)
                             }
                         }
-                        switch selected {
-                        case .general: generalSection
-                        case .models: modelsSection
-                        case .chat: chatSection
-                        case .voice: voiceSection
-                        case .appearance: appearanceSection
-                        case .prompts: promptsSection
-                        case .gateway:
-                            GatewaySection(
-                                shell: shell, highlighted: highlighted,
-                                onAddClient: { showingAddGatewayClient = true },
-                                onConnect: { showingGatewayConnect = true })
-                        case .advanced: advancedSection
+                        Group {
+                            switch selected {
+                            case .general: generalSection
+                            case .models: modelsSection
+                            case .chat: chatSection
+                            case .voice: voiceSection
+                            case .appearance: appearanceSection
+                            case .prompts: promptsSection
+                            case .gateway:
+                                GatewaySection(
+                                    shell: shell, highlighted: highlighted,
+                                    onAddClient: { showingAddGatewayClient = true },
+                                    onConnect: { showingGatewayConnect = true })
+                            case .advanced: advancedSection
+                            }
                         }
+                        .id(selected)
+                        .transition(.opacity)
                     }
                 }
                 .padding(.horizontal, Design.Space.gutter)
                 .padding(.top, Design.Space.pane)
                 .padding(.bottom, Design.Space.xxl)
+                .animation(Design.motion(reduceMotion: reduceMotion), value: selected)
+                .animation(Design.wash, value: model.saveNotice)
                 .frame(maxWidth: Design.Column.settingsDetail, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -908,7 +945,10 @@ struct SettingsRoot: View {
     }
 
     private func searchResults(proxy: ScrollViewProxy) -> some View {
-        let matches = SettingsIndex.entries.filter { $0.matches(query) }
+        let matches = SettingsIndex.entries
+            .compactMap { entry in entry.rank(query).map { (entry, $0) } }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
         return VStack(alignment: .leading, spacing: Design.Space.xxs) {
             MicroHeader(title: "Results")
                 .padding(.bottom, Design.Space.xxs)
@@ -961,7 +1001,7 @@ struct SettingsRoot: View {
                     },
                     label: "Restore last session")
             }
-            Divider()
+            RowRule()
             settingRow("general.startMode", "Start in") {
                 InkDropdown(
                     options: AppMode.allCases.filter {
@@ -1009,7 +1049,7 @@ struct SettingsRoot: View {
                         model.saveGeneral()
                     }
                 }
-                Divider()
+                RowRule()
                 settingRow(
                     "general.menuBar", "Menu bar item",
                     caption: "A quiet bear in the menu bar; the dot means work is running.") {
@@ -1031,11 +1071,7 @@ struct SettingsRoot: View {
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
             group("Memory") {
                 warmRows
-                if model.models.eviction == .budgeted {
-                    budgetBar
-                        .transition(.opacity)
-                }
-                Divider()
+                RowRule()
                 settingRow(
                 "models.keepWarm", "Keep models warm",
                 caption: "How long a model stays in memory after its last reply.") {
@@ -1047,7 +1083,7 @@ struct SettingsRoot: View {
                             model.saveModels()
                         })
                 }
-                Divider()
+                RowRule()
                 settingRow(
                 "models.eviction", "Eviction",
                 caption: "Single keeps one model warm; Budgeted packs what fits.") {
@@ -1061,7 +1097,7 @@ struct SettingsRoot: View {
                             model.saveModels()
                         })
                 }
-                Divider()
+                RowRule()
                 settingRow(
                 "models.budget", "RAM budget",
                 caption: "The ceiling for warm models under Budgeted eviction.") {
@@ -1084,14 +1120,32 @@ struct SettingsRoot: View {
                         .foregroundStyle(
                             model.models.ramBudgetMB == nil ? Design.inkFaint : Design.ink)
                         .frame(minWidth: 44, alignment: .trailing)
+                        if model.models.ramBudgetMB != nil {
+                            Button {
+                                model.models.ramBudgetMB = nil
+                                model.saveModels()
+                            } label: {
+                                Text("auto")
+                                    .font(Design.label)
+                                    .foregroundStyle(Design.inkFaint)
+                            }
+                            .buttonStyle(PressDipStyle())
+                            .transition(.arrive(from: .trailing))
+                            .accessibilityLabel("Reset RAM budget to auto")
+                        }
                     }
                     .frame(width: Design.Column.control)
+                    .animation(Design.wash, value: model.models.ramBudgetMB == nil)
                 }
                 .disabled(model.models.eviction != .budgeted)
                 .opacity(model.models.eviction == .budgeted ? 1 : 0.4)
                 .animation(
                     Design.motion(reduceMotion: reduceMotion),
                     value: model.models.eviction)
+                if model.models.eviction == .budgeted {
+                    budgetBar
+                        .transition(.opacity)
+                }
             }
             group("Watched folders") {
                 foldersRows
@@ -1124,15 +1178,12 @@ struct SettingsRoot: View {
                         .tracking(Design.microTracking)
                         .foregroundStyle(Design.inkFaint)
                     Spacer()
-                    Button {
+                    ConfirmableIconButton(
+                        label: "Uninstall \(manifest.id)", confirmLabel: "Remove?"
+                    ) {
                         shell.settings.uninstallRuntime(id: manifest.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(Design.glyphInline)
-                            .foregroundStyle(Design.inkFaint)
                     }
-                    .buttonStyle(PressDipStyle())
-                    .accessibilityLabel("Uninstall \(manifest.id)")
+                    .fixedSize()
                 }
             }
             if shell.settings.installedRuntimes.isEmpty {
@@ -1171,17 +1222,14 @@ struct SettingsRoot: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Button {
+                    ConfirmableIconButton(
+                        label: "Remove \(record.displayName)", confirmLabel: "Remove?"
+                    ) {
                         let shell = shell
                         let id = record.id
                         Task { await shell.library.removeEndpoint(id: id) }
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(Design.glyphInline)
-                            .foregroundStyle(Design.inkFaint)
                     }
-                    .buttonStyle(PressDipStyle())
-                    .accessibilityLabel("Remove \(record.displayName)")
+                    .fixedSize()
                 }
             }
             if shell.library.endpointRecords.isEmpty {
@@ -1271,7 +1319,7 @@ struct SettingsRoot: View {
                         },
                         label: "Send with Return")
                 }
-                Divider()
+                RowRule()
                 settingRow(
                 "chat.stats", "Show generation stats",
                 caption: "Time to first token and speed under each reply.") {
@@ -1292,7 +1340,7 @@ struct SettingsRoot: View {
                         .padding(.bottom, Design.Space.m)
                         .transition(.opacity)
                 }
-                Divider()
+                RowRule()
                 settingRow("chat.export", "Default export format") {
                     InkSegmented(
                         values: ["Markdown", "JSON"],
@@ -1352,7 +1400,7 @@ struct SettingsRoot: View {
                         .lineLimit(2)
                 }
             }
-            Divider()
+            RowRule()
             settingRow(
                 "voice.autoSpeak", "Speak replies and narrations aloud",
                 caption: "Replies and narrations play as soon as they finish.") {
@@ -1365,7 +1413,7 @@ struct SettingsRoot: View {
                     },
                     label: "Speak replies and narrations aloud")
             }
-            Divider()
+            RowRule()
             settingRow(
                 "voice.speed", "Speed",
                 caption: "Playback rate for every voice.") {
@@ -1445,6 +1493,7 @@ struct SettingsRoot: View {
                         placeholder: "San Francisco",
                         accessibilityName: "app font",
                         width: 220,
+                        rowFont: { .custom($0, size: 12) },
                         onSelect: { family in
                             model.appearance.uiFont = family
                             model.saveAppearance()
@@ -1457,6 +1506,7 @@ struct SettingsRoot: View {
                         placeholder: "SF Mono",
                         accessibilityName: "mono font",
                         width: 220,
+                        rowFont: { .custom($0, size: 12) },
                         onSelect: { family in
                             model.appearance.monoFont = family
                             model.saveAppearance()
@@ -1643,17 +1693,9 @@ struct SettingsRoot: View {
     }
 
     private func group(
-        _ header: String, @ViewBuilder content: () -> some View
+        _ header: String, @ViewBuilder content: @escaping () -> some View
     ) -> some View {
-        VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: header)
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .padding(.horizontal, Design.Space.tile)
-            .padding(.vertical, Design.Space.xs)
-            .surfaceCard(radius: Design.Radius.tile)
-        }
+        SettingsGroup(header: header, content: content)
     }
 
     private func settingRow<Control: View>(
@@ -1772,6 +1814,7 @@ private struct BudgetBar: View {
             ? shell.residencyBudgetMB : Int(ProcessInfo.processInfo.physicalMemory >> 20)
         let budgetMB = shell.settings.models.ramBudgetMB ?? fallbackMB
         let usedMB = shell.residentUsedMB
+        let overBudget = usedMB > budgetMB
         GeometryReader { proxy in
             let width = proxy.size.width
             ZStack(alignment: .leading) {
@@ -1779,7 +1822,7 @@ private struct BudgetBar: View {
                     .fill(Design.line)
                     .frame(height: 8)
                 RoundedRectangle.soft(Design.Radius.control)
-                    .fill(Design.accent)
+                    .fill(overBudget ? Design.heat : Design.accent)
                     .frame(
                         width: min(max(0, width * CGFloat(usedMB) / CGFloat(totalMB)), width),
                         height: 8)
@@ -1789,6 +1832,8 @@ private struct BudgetBar: View {
                     .offset(
                         x: min(width * CGFloat(budgetMB) / CGFloat(totalMB), width) - 1)
             }
+            .animation(Design.spring, value: usedMB)
+            .animation(Design.spring, value: budgetMB)
         }
         .frame(height: 11)
         .padding(.bottom, Design.Space.m)
@@ -1828,6 +1873,7 @@ private struct PromptCard: View {
                     Text(verbatim: "▸")
                         .font(Design.body.weight(.semibold))
                         .foregroundStyle(Design.accent)
+                        .help("Appears in the / menu")
                     Text(prompt.title.isEmpty ? "Untitled" : prompt.title)
                         .font(Design.title)
                         .lineLimit(1)
@@ -1876,6 +1922,19 @@ private struct PromptCard: View {
             .lifts(hovering: hovering)
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .topTrailing) {
+            if hovering {
+                ConfirmableIconButton(
+                    glyph: "trash",
+                    label: "Delete \(prompt.title.isEmpty ? "prompt" : prompt.title)",
+                    confirmLabel: "Delete?"
+                ) {
+                    onDelete()
+                }
+                .padding(Design.Space.m)
+                .transition(.opacity)
+            }
+        }
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
         .contextMenu {
@@ -1940,21 +1999,29 @@ private struct NewPromptCard: View {
 
 private struct PromptSheet: View {
     let isNew: Bool
+    let dismissAttempts: Int
     let onSave: (Prompt) -> Void
     let onDelete: (() -> Void)?
     let onClose: () -> Void
+    private let original: Prompt
     @State private var draft: Prompt
+    @State private var confirmingDiscard = false
 
     init(
-        prompt: Prompt, isNew: Bool, onSave: @escaping (Prompt) -> Void,
+        prompt: Prompt, isNew: Bool, dismissAttempts: Int,
+        onSave: @escaping (Prompt) -> Void,
         onDelete: (() -> Void)?, onClose: @escaping () -> Void
     ) {
         self.isNew = isNew
+        self.dismissAttempts = dismissAttempts
         self.onSave = onSave
         self.onDelete = onDelete
         self.onClose = onClose
+        self.original = prompt
         _draft = State(initialValue: prompt)
     }
+
+    private var isDirty: Bool { draft != original }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -2001,6 +2068,16 @@ private struct PromptSheet: View {
         .frame(width: Design.Sheet.promptWidth)
         .frame(maxHeight: Design.Sheet.promptHeight)
         .accessibilityIdentifier("prompt-sheet")
+        .onChange(of: dismissAttempts) {
+            if isDirty {
+                confirmingDiscard = true
+            } else {
+                onClose()
+            }
+        }
+        .onChange(of: draft) {
+            if confirmingDiscard { confirmingDiscard = false }
+        }
     }
 
     private var scopeOptions: [(value: String, label: String)] {
@@ -2045,7 +2122,13 @@ private struct PromptSheet: View {
 
     private var footer: some View {
         HStack(spacing: Design.Space.m) {
-            if let onDelete {
+            if confirmingDiscard {
+                Button("Discard changes") { onClose() }
+                    .buttonStyle(PressDipStyle())
+                    .font(Design.caption.weight(.medium))
+                    .foregroundStyle(Design.heatText)
+                    .transition(.arrive(from: .leading))
+            } else if let onDelete {
                 Button("Delete", action: onDelete)
                     .buttonStyle(QuietButtonStyle())
             }
@@ -2058,6 +2141,7 @@ private struct PromptSheet: View {
             .disabled(draft.title.isEmpty && draft.body.isEmpty)
             .accessibilityIdentifier("prompt-save")
         }
+        .animation(Design.wash, value: confirmingDiscard)
     }
 }
 

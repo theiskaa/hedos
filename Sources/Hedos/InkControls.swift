@@ -8,6 +8,7 @@ struct InkSlider: View {
     let onChange: (Double) -> Void
     var label: String = "Value"
     @State private var hovering = false
+    @State private var grabOffset: CGFloat?
     @FocusState private var focused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -48,10 +49,20 @@ struct InkSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { gesture in
                         let usable = max(1, width - 14)
-                        let raw = ((gesture.location.x - 7) / usable).clamped(to: 0...1)
+                        let offset: CGFloat
+                        if let grabOffset {
+                            offset = grabOffset
+                        } else {
+                            let delta = gesture.location.x - (thumbX + 7)
+                            offset = abs(delta) <= 9 ? delta : 0
+                            grabOffset = offset
+                        }
+                        let raw = ((gesture.location.x - offset - 7) / usable)
+                            .clamped(to: 0...1)
                         onChange(
                             range.lowerBound + raw * (range.upperBound - range.lowerBound))
-                    })
+                    }
+                    .onEnded { _ in grabOffset = nil })
             .onHover { hovering = $0 }
         }
         .frame(height: 18)
@@ -123,7 +134,7 @@ struct InkToggle: View {
             .frame(width: 34, height: 20)
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .animation(
-                reduceMotion ? nil : .easeOut(duration: 0.15), value: isOn)
+                reduceMotion ? .easeOut(duration: 0.15) : Design.snap, value: isOn)
         }
         .buttonStyle(TogglePressStyle(reduceMotion: reduceMotion))
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
@@ -149,88 +160,33 @@ private struct FlatButtonStyle: ButtonStyle {
     }
 }
 
-struct InkSegmented: View {
-    let values: [String]
-    let selection: String?
-    let onSelect: (String) -> Void
-
-    @State private var hoveredValue: String?
-
-    var body: some View {
-        HStack(spacing: Design.Space.xs) {
-            ForEach(values, id: \.self) { candidate in
-                Button {
-                    onSelect(candidate)
-                } label: {
-                    Text(candidate)
-                        .font(Design.label.weight(selection == candidate ? .semibold : .regular))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(
-                            selection == candidate
-                                ? Design.paper
-                                : hoveredValue == candidate ? Design.ink : Design.inkSoft)
-                        .padding(.horizontal, Design.Space.m)
-                        .padding(.vertical, Design.Space.xs)
-                        .background(
-                            selection == candidate
-                                ? AnyShapeStyle(Design.ink)
-                                : hoveredValue == candidate
-                                    ? AnyShapeStyle(Design.inkWash)
-                                    : AnyShapeStyle(Design.surface),
-                            in: RoundedRectangle.soft(Design.Radius.control))
-                        .overlay(
-                            RoundedRectangle.soft(Design.Radius.control).strokeBorder(
-                                selection == candidate ? .clear : Design.line,
-                                lineWidth: Design.hairlineWidth))
-                        .contentShape(RoundedRectangle.soft(Design.Radius.control))
-                }
-                .buttonStyle(PressDipStyle())
-                .onHover { inside in
-                    if inside {
-                        hoveredValue = candidate
-                    } else if hoveredValue == candidate {
-                        hoveredValue = nil
-                    }
-                }
-                .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
-                .animation(Design.wash, value: hoveredValue)
-                .accessibilityLabel(candidate)
-                .accessibilityAddTraits(selection == candidate ? .isSelected : [])
-            }
-        }
-    }
-}
-
-struct AppearanceModeToggle: View {
-    let selection: AppearanceSettings.Theme
-    let onSelect: (AppearanceSettings.Theme) -> Void
+struct InkSegmented<Value: Hashable>: View {
+    let segments: [(value: Value, label: String, icon: String?)]
+    let selection: Value?
+    let onSelect: (Value) -> Void
     @Namespace private var thumb
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let modes: [(mode: AppearanceSettings.Theme, label: String, icon: String)] = [
-        (.system, "System", "circle.lefthalf.filled"),
-        (.light, "Light", "sun.max"),
-        (.dark, "Dark", "moon.stars"),
-    ]
-
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(modes, id: \.mode) { entry in
-                let isOn = selection == entry.mode
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                let isOn = selection == segment.value
                 Button {
-                    onSelect(entry.mode)
+                    onSelect(segment.value)
                 } label: {
                     HStack(spacing: Design.Space.xxs) {
-                        Image(systemName: entry.icon)
-                            .font(.system(size: 11, weight: .medium))
-                        Text(entry.label)
+                        if let icon = segment.icon {
+                            Image(systemName: icon)
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        Text(segment.label)
                             .font(Design.label.weight(isOn ? .semibold : .regular))
+                            .lineLimit(1)
+                            .fixedSize()
                     }
                     .foregroundStyle(isOn ? Design.ink : Design.inkSoft)
-                    .lineLimit(1)
+                    .padding(.horizontal, Design.Space.m)
                     .padding(.vertical, Design.Space.xs + 2)
-                    .frame(maxWidth: .infinity)
                     .background {
                         if isOn {
                             Capsule(style: .continuous)
@@ -244,7 +200,7 @@ struct AppearanceModeToggle: View {
                     .contentShape(Capsule(style: .continuous))
                 }
                 .buttonStyle(FlatButtonStyle())
-                .accessibilityLabel(entry.label)
+                .accessibilityLabel(segment.label)
                 .accessibilityAddTraits(isOn ? .isSelected : [])
             }
         }
@@ -253,8 +209,30 @@ struct AppearanceModeToggle: View {
         .overlay(
             Capsule(style: .continuous)
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .frame(width: 288)
-        .animation(reduceMotion ? nil : Design.wash, value: selection)
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : Design.snap, value: selection)
+    }
+}
+
+extension InkSegmented where Value == String {
+    init(values: [String], selection: String?, onSelect: @escaping (String) -> Void) {
+        self.init(
+            segments: values.map { (value: $0, label: $0, icon: nil) },
+            selection: selection, onSelect: onSelect)
+    }
+}
+
+struct AppearanceModeToggle: View {
+    let selection: AppearanceSettings.Theme
+    let onSelect: (AppearanceSettings.Theme) -> Void
+
+    private static let modes: [(value: AppearanceSettings.Theme, label: String, icon: String?)] = [
+        (.system, "System", "circle.lefthalf.filled"),
+        (.light, "Light", "sun.max"),
+        (.dark, "Dark", "moon.stars"),
+    ]
+
+    var body: some View {
+        InkSegmented(segments: Self.modes, selection: selection, onSelect: onSelect)
     }
 }
 
@@ -401,8 +379,10 @@ struct InkMenu<Content: View>: View {
     var readyDot: Bool? = nil
     var externalOpen: Binding<Bool>? = nil
     var trigger: Trigger = .standard
+    var help: String? = nil
     @ViewBuilder let content: () -> Content
     @State private var localOpen = false
+    @State private var hovering = false
 
     private var open: Binding<Bool> {
         externalOpen ?? $localOpen
@@ -417,8 +397,8 @@ struct InkMenu<Content: View>: View {
 
     private var triggerFill: Color {
         switch trigger {
-        case .standard: Design.surface
-        case .chip: Design.inkWash
+        case .standard: hovering ? Design.inkWash : Design.surface
+        case .chip: hovering ? Design.ink.opacity(0.10) : Design.inkWash
         }
     }
 
@@ -448,8 +428,8 @@ struct InkMenu<Content: View>: View {
                 Text(title)
                     .font(Design.label)
                     .lineLimit(1)
-                    .foregroundStyle(Design.inkSoft)
-                Text(verbatim: "▾")
+                    .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                Image(systemName: "chevron.up.chevron.down")
                     .font(Design.glyphSmall)
                     .foregroundStyle(Design.inkFaint)
             }
@@ -460,9 +440,12 @@ struct InkMenu<Content: View>: View {
                 triggerShape.strokeBorder(triggerBorder, lineWidth: Design.hairlineWidth))
             .contentShape(triggerShape)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressDipStyle())
+        .onHover { hovering = $0 }
         .inkFocusRing(triggerShape)
         .fixedSize()
+        .animation(Design.wash, value: hovering)
+        .help(help ?? "")
         .popover(isPresented: open, arrowEdge: .top) {
             InkPopoverBody(
                 width: Design.Popover.menuWidth, maxHeight: Design.Popover.menuMaxHeight
@@ -529,6 +512,7 @@ struct InkMenuRow: View {
                     Image(systemName: "checkmark")
                         .font(Design.glyphSmall.weight(.bold))
                         .foregroundStyle(Design.ink)
+                        .symbolEffect(.bounce, value: selected)
                 }
             }
             .padding(.horizontal, Design.Space.chipX)
@@ -576,9 +560,11 @@ struct InkDropdown: View {
     var allowsAuto = true
     var accessibilityName: String = "option"
     var width: CGFloat? = nil
+    var rowFont: ((String) -> Font)? = nil
     var onPreview: ((String) -> Void)? = nil
     let onSelect: (String?) -> Void
     @State private var open = false
+    @State private var hovering = false
 
     var body: some View {
         Button {
@@ -590,13 +576,15 @@ struct InkDropdown: View {
                     .lineLimit(1)
                     .foregroundStyle(selection == nil ? Design.inkFaint : Design.ink)
                 Spacer(minLength: Design.Space.m)
-                Text(verbatim: "▾")
-                    .font(Design.caption)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(Design.glyphSmall)
                     .foregroundStyle(Design.inkFaint)
             }
             .padding(.horizontal, Design.Space.chipX)
             .padding(.vertical, Design.Space.s)
-            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.control))
+            .background(
+                hovering ? Design.inkWash : Design.surface,
+                in: RoundedRectangle.soft(Design.Radius.control))
             .overlay(
                 RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                     open ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
@@ -606,6 +594,8 @@ struct InkDropdown: View {
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .popover(isPresented: $open, arrowEdge: .top) {
             InkPopoverBody(
@@ -618,19 +608,25 @@ struct InkDropdown: View {
     }
 
     private var rows: some View {
-        VStack(alignment: .leading, spacing: Design.Space.xxs) {
-            if allowsAuto {
-                dropdownRow(title: placeholder, value: nil, faint: true)
-                Rectangle()
-                    .fill(Design.line)
-                    .frame(height: Design.hairlineWidth)
-                    .padding(.vertical, Design.Space.xxs)
+        ScrollViewReader { proxy in
+            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                if allowsAuto {
+                    dropdownRow(title: placeholder, value: nil, faint: true)
+                    Rectangle()
+                        .fill(Design.line)
+                        .frame(height: Design.hairlineWidth)
+                        .padding(.vertical, Design.Space.xxs)
+                }
+                ForEach(options, id: \.self) { candidate in
+                    dropdownRow(title: candidate, value: candidate, faint: false)
+                        .id(candidate)
+                }
             }
-            ForEach(options, id: \.self) { candidate in
-                dropdownRow(title: candidate, value: candidate, faint: false)
+            .padding(Design.Space.s)
+            .onAppear {
+                if let selection { proxy.scrollTo(selection, anchor: .center) }
             }
         }
-        .padding(Design.Space.s)
     }
 
     private func dropdownRow(title: String, value: String?, faint: Bool) -> some View {
@@ -638,6 +634,7 @@ struct InkDropdown: View {
             title: title,
             selected: selection == value,
             faint: faint,
+            font: value.flatMap { rowFont?($0) } ?? Design.caption,
             onPreview: value.flatMap { candidate in
                 onPreview.map { preview in { preview(candidate) } }
             }
@@ -652,6 +649,7 @@ private struct DropdownRow: View {
     let title: String
     let selected: Bool
     let faint: Bool
+    var font: Font = Design.caption
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @State private var hovering = false
@@ -660,7 +658,7 @@ private struct DropdownRow: View {
         Button(action: action) {
             HStack(spacing: Design.Space.s) {
                 Text(title)
-                    .font(Design.caption)
+                    .font(font)
                     .lineLimit(1)
                     .foregroundStyle(faint ? Design.inkSoft : Design.ink)
                 Spacer(minLength: Design.Space.s)
@@ -679,6 +677,7 @@ private struct DropdownRow: View {
                     Image(systemName: "checkmark")
                         .font(Design.glyphSmall.weight(.bold))
                         .foregroundStyle(Design.ink)
+                        .symbolEffect(.bounce, value: selected)
                 }
             }
             .padding(.horizontal, Design.Space.chipX)
@@ -786,6 +785,7 @@ struct InkChoiceCard<Preview: View>: View {
             .offset(y: hovering && !reduceMotion ? -2 : 0)
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .animation(.easeOut(duration: 0.15), value: hovering)
+            .animation(Design.wash, value: selected)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -832,6 +832,7 @@ struct ThemeFamilyCard: View {
             .offset(y: hovering && !reduceMotion ? -2 : 0)
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
             .animation(.easeOut(duration: 0.15), value: hovering)
+            .animation(Design.wash, value: selected)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

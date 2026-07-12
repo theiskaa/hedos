@@ -75,6 +75,7 @@ struct ModelChip<Value: Hashable>: Identifiable {
 
 struct ModelsPane: View {
     @Bindable var shell: ShellModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var filter = ModelFilter()
     @State private var query = ""
     @State private var showFolders = false
@@ -474,8 +475,7 @@ struct ModelsPane: View {
             }
         }
         .animation(
-            Design.motion(
-                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion),
+            Design.motion(reduceMotion: reduceMotion),
             value: records.map(\.id))
     }
 
@@ -719,7 +719,6 @@ struct ModelDetailSheet: View {
     @State private var approvedConsent: ManifestConsentInfo?
     @State private var communityRecipes: [RuntimeInstallPreview] = []
     @State private var installingRecipe: String?
-    @State private var copiedTemplate = false
     @State private var chosenRuntime: String
 
     init(record: ModelRecord, shell: ShellModel, onClose: @escaping () -> Void) {
@@ -986,19 +985,15 @@ struct ModelDetailSheet: View {
                         .foregroundStyle(Design.inkFaint)
                 }
                 HStack(spacing: Design.Space.m) {
-                    Button(copiedTemplate ? "Copied" : "Copy manifest template") {
-                        let record = record
-                        Task { @MainActor in
-                            let template = ManifestTemplate.template(for: record)
-                            let pasteboard = NSPasteboard.general
-                            pasteboard.clearContents()
-                            pasteboard.setString(template, forType: .string)
-                            copiedTemplate = true
-                            try? await Task.sleep(for: .seconds(2))
-                            copiedTemplate = false
-                        }
+                    ConfirmingButton(
+                        label: "Copy manifest template", confirmedLabel: "Copied",
+                        appearance: .plain
+                    ) {
+                        let template = ManifestTemplate.template(for: record)
+                        let pasteboard = NSPasteboard.general
+                        pasteboard.clearContents()
+                        pasteboard.setString(template, forType: .string)
                     }
-                    .buttonStyle(QuietButtonStyle())
                     Button("Open runtimes.d…") {
                         NSWorkspace.shared.activateFileViewerSelecting(
                             [shell.kernel.runtimeCatalog.ensuredDirectory()])
@@ -1070,7 +1065,7 @@ struct ModelDetailSheet: View {
                     .foregroundStyle(Design.inkSoft)
             }
             grantList(network: false, paths: recipe.paths)
-            Button(installingRecipe == recipe.id ? "Installing…" : "Install \(recipe.id)") {
+            Button {
                 let shell = shell
                 let source = recipe.sourceURL
                 let id = recipe.id
@@ -1080,9 +1075,13 @@ struct ModelDetailSheet: View {
                     await shell.library.refreshShelf()
                     installingRecipe = nil
                 }
+            } label: {
+                Text(installingRecipe == recipe.id ? "Installing…" : "Install \(recipe.id)")
+                    .contentTransition(.opacity)
             }
             .buttonStyle(InkButtonStyle())
             .disabled(installingRecipe != nil)
+            .animation(Design.wash, value: installingRecipe)
             .padding(.top, Design.Space.xs)
         }
         .padding(Design.Space.tile)

@@ -7,7 +7,6 @@ struct GatewayPane: View {
     @State private var showingAddClient = false
     @State private var showingConnect = false
     @State private var portText = ""
-    @State private var copiedAddress = false
 
     private static let contentWidth: CGFloat = 1080
 
@@ -40,18 +39,21 @@ struct GatewayPane: View {
         }
         .modalScrim(
             isPresented: showingAddClient,
+            anchor: .topTrailing,
             onDismiss: { showingAddClient = false }
         ) {
             AddGatewayClientSheet(shell: shell) { showingAddClient = false }
         }
         .modalScrim(
             isPresented: showingConnect,
+            anchor: .topTrailing,
             onDismiss: { showingConnect = false }
         ) {
             GatewayConnectSheet(shell: shell) { showingConnect = false }
         }
         .modalScrim(
             isPresented: shell.showingGatewayLog,
+            anchor: .topTrailing,
             onDismiss: { shell.showingGatewayLog = false }
         ) {
             GatewayLogModal(shell: shell) { shell.showingGatewayLog = false }
@@ -108,11 +110,20 @@ struct GatewayPane: View {
                         .fill(Design.inkFaint)
                         .frame(width: 10, height: 10)
                 }
-                Text(running ? "Running" : "Stopped")
-                    .font(Design.display)
-                    .foregroundStyle(Design.ink)
+                if model.gatewayBusy {
+                    ShimmerText(
+                        text: running ? "Stopping…" : "Starting…",
+                        font: Design.display, tracked: false)
+                } else {
+                    Text(running ? "Running" : "Stopped")
+                        .font(Design.display)
+                        .foregroundStyle(Design.ink)
+                        .contentTransition(.opacity)
+                }
                 Spacer(minLength: 0)
             }
+            .animation(Design.wash, value: running)
+            .animation(Design.wash, value: model.gatewayBusy)
             Text(
                 running
                     ? "Listening on loopback · port \(port)"
@@ -127,12 +138,13 @@ struct GatewayPane: View {
                 HStack(spacing: Design.Space.s) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(Design.glyphInline)
-                        .foregroundStyle(Design.inkSoft)
+                        .foregroundStyle(Design.heat)
                     Text(notice)
                         .font(Design.caption.weight(.medium))
                         .foregroundStyle(Design.inkSoft)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .transition(.arrive(from: .top))
             }
             Spacer(minLength: 0)
             HStack(spacing: Design.Space.l) {
@@ -157,6 +169,7 @@ struct GatewayPane: View {
         .padding(Design.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .surfaceCard(radius: Design.Radius.card)
+        .animation(Design.wash, value: model.gatewayNotice)
         .accessibilityIdentifier("gateway-status")
     }
 
@@ -172,21 +185,12 @@ struct GatewayPane: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: Design.Space.m)
-            Button {
+            ConfirmingButton(
+                label: "Copy", confirmedLabel: "Copied", appearance: .micro
+            ) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(address, forType: .string)
-                copiedAddress = true
-                Task {
-                    try? await Task.sleep(for: .seconds(2))
-                    copiedAddress = false
-                }
-            } label: {
-                Text(copiedAddress ? "Copied" : "Copy")
-                    .font(Design.micro)
-                    .tracking(Design.microTracking)
-                    .foregroundStyle(copiedAddress ? Design.heatText : Design.inkSoft)
             }
-            .buttonStyle(PressDipStyle())
             .accessibilityLabel("Copy gateway address")
         }
         .padding(.horizontal, Design.Space.tile)
