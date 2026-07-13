@@ -140,6 +140,7 @@ struct GatewayPane: View {
                     model.setGatewayEnabled(!running)
                 }
                 .buttonStyle(InkButtonStyle())
+                .disabled(model.gatewayBusy)
                 .accessibilityIdentifier("gateway-enable")
                 HStack(spacing: Design.Space.s) {
                     Text("Port")

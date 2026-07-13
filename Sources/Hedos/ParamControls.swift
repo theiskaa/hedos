@@ -177,6 +177,10 @@ private struct StringControl: View {
             draft = stringValue(get()) ?? ""
             seeded = true
         }
+        .onChange(of: stringValue(get())) { _, fresh in
+            let value = fresh ?? ""
+            if value != draft { draft = value }
+        }
         .accessibilityLabel(spec.key)
     }
 

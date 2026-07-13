@@ -158,6 +158,7 @@ final class SettingsModel {
     var advanced = AdvancedSettings()
     var gateway = GatewaySettings()
     var gatewayStatus = GatewayStatus(running: false)
+    var gatewayBusy = false
     var gatewayClients: [GatewayClient] = []
     var gatewayAuditEntries: [GatewayAuditEntry] = []
     var gatewayNotice: String?
@@ -182,6 +183,7 @@ final class SettingsModel {
         chat = await kernel.settings.chat()
         voice = await kernel.settings.voice()
         appearance = await kernel.settings.appearance()
+        ThemeBootstrap.reconcile(&appearance)
         advanced = await kernel.settings.advanced()
         gateway = await kernel.settings.gateway()
         prompts = await kernel.promptStore.list()
@@ -271,7 +273,9 @@ final class SettingsModel {
     func saveAppearance() {
         applyTheme()
         let value = appearance
-        persist("appearance") { kernel in
+        let kernel = kernel
+        saveTasks["appearance"]?.cancel()
+        saveTasks["appearance"] = Task {
             try? await kernel.settings.save(value)
         }
     }
@@ -290,11 +294,14 @@ final class SettingsModel {
     }
 
     func setGatewayEnabled(_ enabled: Bool) {
+        guard !gatewayBusy else { return }
+        gatewayBusy = true
         gateway.enabled = enabled
         gatewayNotice = nil
         let value = gateway
         let kernel = kernel
         Task {
+            defer { gatewayBusy = false }
             try? await kernel.settings.save(value)
             if enabled {
                 do {
@@ -594,6 +601,17 @@ enum ThemeBootstrap {
             let mode = AppearanceSettings.Theme(rawValue: raw)
         {
             NSApp.appearance = mode.nsAppearance
+        }
+    }
+
+    static func reconcile(_ appearance: inout AppearanceSettings) {
+        if let family = UserDefaults.standard.string(forKey: familyKey) {
+            appearance.family = family
+        }
+        if let raw = UserDefaults.standard.string(forKey: modeKey),
+            let mode = AppearanceSettings.Theme(rawValue: raw)
+        {
+            appearance.theme = mode
         }
     }
 }

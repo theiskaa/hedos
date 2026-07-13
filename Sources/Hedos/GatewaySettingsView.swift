@@ -473,10 +473,10 @@ struct GatewayCodeBlock: View {
         if let language { return language }
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return "json" }
-        if trimmed.contains("curl") || trimmed.hasPrefix("$") { return "bash" }
         if trimmed.contains("import ") || trimmed.contains("from ") || trimmed.contains("def ") {
             return "python"
         }
+        if trimmed.contains("curl") || trimmed.hasPrefix("$") { return "bash" }
         return nil
     }
 
