@@ -143,6 +143,12 @@ private struct TogglePressStyle: ButtonStyle {
     }
 }
 
+private struct FlatButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
+}
+
 struct InkSegmented: View {
     let values: [String]
     let selection: String?
@@ -212,33 +218,34 @@ struct AppearanceModeToggle: View {
         HStack(spacing: 2) {
             ForEach(modes, id: \.mode) { entry in
                 let isOn = selection == entry.mode
-                HStack(spacing: Design.Space.xxs) {
-                    Image(systemName: entry.icon)
-                        .font(.system(size: 11, weight: .medium))
-                    Text(entry.label)
-                        .font(Design.label.weight(isOn ? .semibold : .regular))
-                }
-                .foregroundStyle(isOn ? Design.ink : Design.inkSoft)
-                .lineLimit(1)
-                .padding(.vertical, Design.Space.xs + 2)
-                .frame(maxWidth: .infinity)
-                .background {
-                    if isOn {
-                        Capsule(style: .continuous)
-                            .fill(Design.surface)
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .strokeBorder(Design.line.opacity(0.7), lineWidth: 0.5))
-                            .matchedGeometryEffect(id: "thumb", in: thumb)
-                    }
-                }
-                .contentShape(Capsule(style: .continuous))
-                .onTapGesture {
+                Button {
                     onSelect(entry.mode)
+                } label: {
+                    HStack(spacing: Design.Space.xxs) {
+                        Image(systemName: entry.icon)
+                            .font(.system(size: 11, weight: .medium))
+                        Text(entry.label)
+                            .font(Design.label.weight(isOn ? .semibold : .regular))
+                    }
+                    .foregroundStyle(isOn ? Design.ink : Design.inkSoft)
+                    .lineLimit(1)
+                    .padding(.vertical, Design.Space.xs + 2)
+                    .frame(maxWidth: .infinity)
+                    .background {
+                        if isOn {
+                            Capsule(style: .continuous)
+                                .fill(Design.surface)
+                                .overlay(
+                                    Capsule(style: .continuous)
+                                        .strokeBorder(Design.line.opacity(0.7), lineWidth: 0.5))
+                                .matchedGeometryEffect(id: "thumb", in: thumb)
+                        }
+                    }
+                    .contentShape(Capsule(style: .continuous))
                 }
-                .accessibilityElement(children: .combine)
+                .buttonStyle(FlatButtonStyle())
                 .accessibilityLabel(entry.label)
-                .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
+                .accessibilityAddTraits(isOn ? .isSelected : [])
             }
         }
         .padding(3)
