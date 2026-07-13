@@ -1374,3 +1374,11 @@ extension EnvironmentValues {
         set { self[SendWithEnterKey.self] = newValue }
     }
 }
+
+enum Haptics {
+    @MainActor
+    static func completion() {
+        NSHapticFeedbackManager.defaultPerformer.perform(
+            .levelChange, performanceTime: .drawCompleted)
+    }
+}

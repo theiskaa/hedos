@@ -2,18 +2,6 @@ import HedosKernel
 import SwiftUI
 
 enum Fit {
-    static func label(_ record: ModelRecord) -> String? {
-        guard let assessment = record.fit else { return nil }
-        switch assessment.verdict {
-        case .runsWell:
-            return "Runs well"
-        case .tightFit:
-            return "Tight fit"
-        case .tooLarge:
-            return "Too large · needs ~\(DiscoverySummary.formatBytes(assessment.requiredBytes))"
-        }
-    }
-
     static func short(_ record: ModelRecord) -> String? {
         guard let assessment = record.fit else { return nil }
         switch assessment.verdict {
@@ -32,16 +20,18 @@ enum Fit {
         }
     }
 
+    static func prefers(_ first: ModelRecord, over second: ModelRecord) -> Bool {
+        if rank(first) != rank(second) {
+            return rank(first) < rank(second)
+        }
+        return (first.footprintMB ?? 0) > (second.footprintMB ?? 0)
+    }
+
     static func recommendation(in records: [ModelRecord]) -> ModelRecord? {
         let ready = records.filter {
             $0.state == .ready && Launcher.destination(for: $0) == .chat
         }
-        return ready.min { first, second in
-            if rank(first) != rank(second) {
-                return rank(first) < rank(second)
-            }
-            return (first.footprintMB ?? 0) > (second.footprintMB ?? 0)
-        }
+        return ready.min(by: prefers)
     }
 
     static func duplicateInsight(
