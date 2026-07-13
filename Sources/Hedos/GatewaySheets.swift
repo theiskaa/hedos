@@ -14,6 +14,7 @@ struct AddGatewayClientSheet: View {
     @State private var creation: GatewayClientCreation?
     @State private var creating = false
     @State private var copied = false
+    @State private var failed = false
 
     private static let capabilityChoices = ["chat", "speak", "image"]
 
@@ -29,6 +30,12 @@ struct AddGatewayClientSheet: View {
                         nameSection
                         modelsSection
                         capabilitiesSection
+                        if failed {
+                            Text("Couldn't create the client. Check Keychain access and try again.")
+                                .font(Design.label)
+                                .foregroundStyle(Design.danger)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .sheetBodyPadding()
@@ -143,7 +150,8 @@ struct AddGatewayClientSheet: View {
                         .accessibilityIdentifier("gateway-token")
                     Button(copied ? "Copied" : "Copy") {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(creation.token, forType: .string)
+                        guard NSPasteboard.general.setString(creation.token, forType: .string)
+                        else { return }
                         copied = true
                         Task {
                             try? await Task.sleep(for: .seconds(2))
@@ -185,7 +193,10 @@ struct AddGatewayClientSheet: View {
                 }
                 .buttonStyle(InkButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || creating)
+                .disabled(
+                    name.trimmingCharacters(in: .whitespaces).isEmpty || creating
+                        || (!allModels && pickedModels.isEmpty)
+                        || (!allCapabilities && pickedCapabilities.isEmpty))
                 .accessibilityIdentifier("gateway-client-create")
             } else {
                 Button("Done") {
@@ -242,13 +253,16 @@ struct AddGatewayClientSheet: View {
 
     private func create() {
         creating = true
+        failed = false
         let scopes = GatewayScopes(
             models: allModels ? nil : Array(pickedModels).sorted(),
             capabilities: allCapabilities ? nil : Array(pickedCapabilities).sorted())
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         let shell = shell
         Task { @MainActor in
-            creation = await shell.settings.createGatewayClient(name: trimmed, scopes: scopes)
+            let result = await shell.settings.createGatewayClient(name: trimmed, scopes: scopes)
+            creation = result
+            failed = result == nil
             creating = false
         }
     }
