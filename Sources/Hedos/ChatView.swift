@@ -119,6 +119,8 @@ final class ChatViewModel {
     var onSessionsChanged: (() -> Void)?
     var recordsProvider: (() -> [ModelRecord])?
     private var reveal = PacedReveal()
+    private var revealDirty = false
+    var reduceMotion = false
     private var lastDeltaAt = ContinuousClock().now
     private var tickerTask: Task<Void, Never>?
     private(set) var liveBalancedText = ""
@@ -780,10 +782,14 @@ final class ChatViewModel {
 
     private func tickReveal() {
         guard isStreaming else { return }
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if reduceMotion {
             if reveal.backlog > 0 {
                 reveal.finish()
+                revealDirty = true
+            }
+            if revealDirty && (liveBalancedText.isEmpty || liveBalanceThrottle.shouldRefresh()) {
                 refreshLiveBalance()
+                revealDirty = false
             }
         } else if reveal.tick() {
             if liveBalancedText.isEmpty || liveBalanceThrottle.shouldRefresh() {
@@ -837,6 +843,7 @@ final class ChatViewModel {
         transcript.append(Entry(role: .assistant, text: ""))
         isStreaming = true
         reveal.reset()
+        revealDirty = false
         liveBalancedText = ""
         liveBalanceThrottle = RefreshThrottle(everyTicks: Self.liveBalanceThrottleTicks)
         lastDeltaAt = ContinuousClock().now
@@ -892,6 +899,7 @@ final class ChatViewModel {
                             Entry(role: .tool, text: Harness.actionSummary(call)))
                         transcript.append(Entry(role: .assistant, text: ""))
                         reveal.reset()
+                        revealDirty = false
                         liveBalancedText = ""
                         streamStatus = "running \(call.name)"
                     case .done(let stats):
@@ -1184,6 +1192,8 @@ struct ChatView: View {
         }
         .task(id: library.shelfSignature) { await model.adoptBindings(in: library.records) }
         .task(id: launch) { await applyLaunch() }
+        .onAppear { model.reduceMotion = reduceMotion }
+        .onChange(of: reduceMotion) { _, motion in model.reduceMotion = motion }
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
             model.transcribeDropped(url, records: library.records)

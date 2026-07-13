@@ -516,7 +516,7 @@ struct GatewayCodeBlock: View {
         case .keyword:
             Text(verbatim: token.text).foregroundStyle(Design.ink).fontWeight(.semibold)
         case .string:
-            Text(verbatim: token.text).foregroundStyle(Design.added)
+            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
         case .comment:
             Text(verbatim: token.text).foregroundStyle(Design.inkFaint)
         case .number:
