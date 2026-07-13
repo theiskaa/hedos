@@ -372,11 +372,11 @@ final class ChatViewModel {
             await bindVoice(to: record, persist: false)
         }
         if !records.isEmpty {
-            if intent == .image && images.isEmpty {
+            let strandedImage = intent == .image && images.isEmpty
+            let strandedVoice = intent == .speak && speakers.isEmpty
+            if strandedImage || strandedVoice {
                 intent = .text
-            }
-            if intent == .speak && speakers.isEmpty {
-                intent = .text
+                try? await kernel.chats.setIntent(id: sessionID, intent: Intent.text.stored)
             }
         }
     }
