@@ -88,6 +88,7 @@ public actor Kernel {
     public nonisolated let gatewayClientStore: GatewayClientStore
     public nonisolated let gatewayAuditLog: GatewayAuditLog
     var gateway: GatewayServer?
+    var gatewayStartTask: Task<GatewayStatus, Error>?
     let vmHost: any VMHost
     private var shelfWatcher: ShelfWatcher?
     private var watcherTask: Task<Void, Never>?

@@ -205,9 +205,9 @@ struct ManifestCommandAdapter: RuntimeAdapter, JobRunning, ManifestBacked {
             }
             return (String(decoding: outputData, as: UTF8.self), outputs)
         } onCancel: {
+            ProcessContainment.terminateProcessTree(process)
             timeoutTask.cancel()
             drain.cancel()
-            ProcessContainment.terminateProcessTree(process)
         }
     }
 

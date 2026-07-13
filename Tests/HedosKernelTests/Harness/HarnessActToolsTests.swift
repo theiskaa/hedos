@@ -168,3 +168,40 @@ private actor ConsentBox {
     private(set) var request: ConsentRequest?
     func set(_ request: ConsentRequest) { self.request = request }
 }
+
+@Test func writeFileRefusesWhenTheFileChangesDuringConsent() async throws {
+    let (place, dir) = try actPlace()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let target = place + "/existing.txt"
+    let result = await HarnessActTools.execute(
+        actCall(
+            "write_file",
+            ["path": .string("existing.txt"), "content": .string("replacement\n")]),
+        place: place,
+        context: context(ask: { _ in
+            try? Data("concurrent edit\n".utf8).write(to: URL(fileURLWithPath: target))
+            return .approved(dontAskAgain: false)
+        }))
+    #expect(result.contains("changed while waiting for approval"))
+    #expect((try? String(contentsOfFile: target, encoding: .utf8)) == "concurrent edit\n")
+}
+
+@Test func editFileRefusesWhenTheFileChangesDuringConsent() async throws {
+    let (place, dir) = try actPlace()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let target = place + "/existing.txt"
+    let result = await HarnessActTools.execute(
+        actCall(
+            "edit_file",
+            ["path": .string("existing.txt"), "old": .string("original"), "new": .string("updated")]),
+        place: place,
+        context: context(ask: { _ in
+            try? Data("original\ncontent\nplus a concurrent line\n".utf8)
+                .write(to: URL(fileURLWithPath: target))
+            return .approved(dontAskAgain: false)
+        }))
+    #expect(result.contains("changed while waiting for approval"))
+    #expect(
+        (try? String(contentsOfFile: target, encoding: .utf8))
+            == "original\ncontent\nplus a concurrent line\n")
+}

@@ -54,7 +54,7 @@ public actor SidecarSupervisor {
 
     public func ensureRunning(_ spec: SidecarSpec) async throws {
         if let existing = sidecars[spec.runtimeID], existing.process.isRunning { return }
-        sidecars[spec.runtimeID] = nil
+        if sidecars[spec.runtimeID] != nil { kill(spec.runtimeID) }
 
         let process = Process()
         process.executableURL = spec.executable
@@ -86,11 +86,12 @@ public actor SidecarSupervisor {
             }
             chunkContinuation.yield(data)
         }
+        let generation = ObjectIdentifier(sidecar)
         Task {
             for await chunk in chunks {
-                self.ingest(chunk, for: id)
+                self.ingest(chunk, for: id, expecting: generation)
             }
-            self.markEOF(id)
+            self.markEOF(id, expecting: generation)
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -98,7 +99,10 @@ public actor SidecarSupervisor {
                 handle.readabilityHandler = nil
                 return
             }
-            Task { await self.appendStderr(String(decoding: data, as: UTF8.self), for: id) }
+            Task {
+                await self.appendStderr(
+                    String(decoding: data, as: UTF8.self), for: id, expecting: generation)
+            }
         }
 
         try process.run()
@@ -289,8 +293,8 @@ public actor SidecarSupervisor {
         }
     }
 
-    private func ingest(_ data: Data, for id: String) {
-        guard let sidecar = sidecars[id] else { return }
+    private func ingest(_ data: Data, for id: String, expecting expected: ObjectIdentifier) {
+        guard let sidecar = sidecars[id], ObjectIdentifier(sidecar) == expected else { return }
         do {
             let frames = try sidecar.decoder.append(data)
             for frame in frames {
@@ -307,8 +311,8 @@ public actor SidecarSupervisor {
         }
     }
 
-    private func markEOF(_ id: String) {
-        guard let sidecar = sidecars[id] else { return }
+    private func markEOF(_ id: String, expecting expected: ObjectIdentifier) {
+        guard let sidecar = sidecars[id], ObjectIdentifier(sidecar) == expected else { return }
         sidecar.eof = true
         if let waiter = sidecar.waiter {
             sidecar.waiter = nil
@@ -373,8 +377,9 @@ public actor SidecarSupervisor {
         frameWatchdogs[id] = nil
     }
 
-    private func appendStderr(_ text: String, for id: String) {
-        guard let sidecar = sidecars[id] else { return }
+    private func appendStderr(_ text: String, for id: String, expecting expected: ObjectIdentifier)
+    {
+        guard let sidecar = sidecars[id], ObjectIdentifier(sidecar) == expected else { return }
         sidecar.stderrTail = String((sidecar.stderrTail + text).suffix(2000))
     }
 
@@ -408,7 +413,7 @@ public actor SidecarSupervisor {
             }
             if sidecar.process.isRunning { sidecar.process.terminate() }
         }
-        markEOF(id)
+        markEOF(id, expecting: ObjectIdentifier(sidecar))
         sidecars[id] = nil
     }
 

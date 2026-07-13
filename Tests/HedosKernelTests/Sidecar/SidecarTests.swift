@@ -775,3 +775,22 @@ private func processAlive(_ pid: Int32) -> Bool {
     #expect(profile.contains("(deny network*)"))
     #expect(profile.contains("system.sb"))
 }
+
+@Test func restartAfterShutdownSurvivesTheOldGenerationsLateEOF() async throws {
+    let spec = fakeSidecarSpec()
+    let supervisor = SidecarSupervisor()
+    for _ in 0..<3 {
+        try await supervisor.ensureRunning(spec)
+        await supervisor.shutdown(spec.runtimeID)
+        try await supervisor.ensureRunning(spec)
+        let stream = await supervisor.request(
+            spec, .object(["op": .string("embed"), "input": .string("hedos")]))
+        var vectors = 0
+        for try await chunk in stream {
+            if case .vector = chunk { vectors += 1 }
+        }
+        #expect(vectors == 1)
+        await supervisor.shutdown(spec.runtimeID)
+    }
+    await supervisor.shutdownAll()
+}

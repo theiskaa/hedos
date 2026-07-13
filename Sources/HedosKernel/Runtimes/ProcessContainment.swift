@@ -38,11 +38,11 @@ enum ProcessContainment {
             if process.isRunning { process.terminate() }
             return
         }
-        let descendants = descendantPIDs(of: pid)
-        kill(pid, SIGTERM)
-        for child in descendants { kill(child, SIGTERM) }
-        if process.isRunning { process.terminate() }
-        Task {
+        Task.detached {
+            let descendants = descendantPIDs(of: pid)
+            kill(pid, SIGTERM)
+            for child in descendants { kill(child, SIGTERM) }
+            if process.isRunning { process.terminate() }
             try? await Task.sleep(for: grace)
             for _ in 0..<2 {
                 for child in descendantPIDs(of: pid) where kill(child, 0) == 0 {
@@ -102,8 +102,22 @@ final class PipeDrain: @unchecked Sendable {
     func cancel() {
         stdout.fileHandleForReading.readabilityHandler = nil
         stderr.fileHandleForReading.readabilityHandler = nil
-        append((try? stdout.fileHandleForReading.read(upToCount: 1 << 20)) ?? Data(), isStdout: true)
-        append((try? stderr.fileHandleForReading.read(upToCount: 1 << 20)) ?? Data(), isStdout: false)
+        append(Self.drainWithoutBlocking(stdout.fileHandleForReading), isStdout: true)
+        append(Self.drainWithoutBlocking(stderr.fileHandleForReading), isStdout: false)
+    }
+
+    private static func drainWithoutBlocking(_ handle: FileHandle) -> Data {
+        let fd = handle.fileDescriptor
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0 else { return Data() }
+        var collected = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while collected.count < 1 << 20 {
+            let count = read(fd, &buffer, buffer.count)
+            guard count > 0 else { break }
+            collected.append(contentsOf: buffer[0..<count])
+        }
+        return collected
     }
 
     private func append(_ data: Data, isStdout: Bool) {

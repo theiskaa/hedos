@@ -183,6 +183,11 @@ public enum HarnessActTools {
         if Task.isCancelled {
             return "This write to \(shown) was cancelled before it ran."
         }
+        let currentContent = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let existsNow = FileManager.default.fileExists(atPath: path)
+        if currentContent != before || existsNow != existed {
+            return "\(shown) changed while waiting for approval; nothing was written. Read it again and retry."
+        }
         let directory = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(
             atPath: directory, withIntermediateDirectories: true)
@@ -253,6 +258,9 @@ public enum HarnessActTools {
         }
         if Task.isCancelled {
             return "This edit to \(shown) was cancelled before it ran."
+        }
+        if (try? String(contentsOfFile: path, encoding: .utf8)) != before {
+            return "\(shown) changed while waiting for approval; nothing was written. Read it again and retry."
         }
         do {
             try after.write(toFile: path, atomically: true, encoding: .utf8)
@@ -330,9 +338,9 @@ public enum HarnessActTools {
         let (outData, errData) = await withTaskCancellationHandler {
             await drain.collect(process: process)
         } onCancel: {
+            ProcessContainment.terminateProcessTree(process)
             timeoutTask.cancel()
             drain.cancel()
-            ProcessContainment.terminateProcessTree(process)
         }
         timeoutTask.cancel()
 

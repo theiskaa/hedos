@@ -138,3 +138,24 @@ import Testing
     #expect((response as! HTTPURLResponse).statusCode == 413)
     await stack.stop()
 }
+
+@Test func concurrentStartGatewayCallsShareOneServer() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir, adapters: [], secrets: InMemorySecretStore())
+
+    async let first = kernel.startGateway(portOverride: 0)
+    async let second = kernel.startGateway(portOverride: 0)
+    let statuses = try await [first, second]
+    #expect(statuses[0].running)
+    #expect(statuses[1].running)
+    #expect(statuses[0].port == statuses[1].port)
+
+    let port = statuses[0].port!
+    await kernel.stopGateway()
+    #expect(await kernel.gatewayStatus().running == false)
+    let rebound = try await kernel.startGateway(portOverride: port)
+    #expect(rebound.running)
+    #expect(rebound.port == port)
+    await kernel.stopGateway()
+}

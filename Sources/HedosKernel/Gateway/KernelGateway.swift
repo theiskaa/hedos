@@ -46,28 +46,39 @@ extension Kernel: GatewayPort {
 extension Kernel {
     @discardableResult
     public func startGateway(portOverride: Int? = nil) async throws -> GatewayStatus {
+        if let inFlight = gatewayStartTask {
+            return try await inFlight.value
+        }
         if let gateway, await gateway.status.running {
             return await gateway.status
         }
-        let stored = await settings.gateway()
-        let configuration = GatewayServer.Configuration(
-            port: portOverride ?? stored.port,
-            maxConnections: stored.maxConnections)
-        let router = GatewayRouter(
-            port: self,
-            auth: GatewayAuth(clients: gatewayClientStore),
-            audit: gatewayAuditLog,
-            routes: GatewayRouter.standardRoutes(),
-            maxConcurrentInference: stored.maxConcurrentInference)
-        let server = GatewayServer(configuration: configuration, router: router)
-        gateway = server
-        do {
-            _ = try await server.start()
-        } catch {
-            gateway = nil
-            throw error
+        if let inFlight = gatewayStartTask {
+            return try await inFlight.value
         }
-        return await server.status
+        let start = Task {
+            let stored = await settings.gateway()
+            let configuration = GatewayServer.Configuration(
+                port: portOverride ?? stored.port,
+                maxConnections: stored.maxConnections)
+            let router = GatewayRouter(
+                port: self,
+                auth: GatewayAuth(clients: gatewayClientStore),
+                audit: gatewayAuditLog,
+                routes: GatewayRouter.standardRoutes(),
+                maxConcurrentInference: stored.maxConcurrentInference)
+            let server = GatewayServer(configuration: configuration, router: router)
+            gateway = server
+            do {
+                _ = try await server.start()
+            } catch {
+                gateway = nil
+                throw error
+            }
+            return await server.status
+        }
+        gatewayStartTask = start
+        defer { gatewayStartTask = nil }
+        return try await start.value
     }
 
     public func startGatewayIfEnabled() async {
@@ -76,6 +87,9 @@ extension Kernel {
     }
 
     public func stopGateway() async {
+        if let inFlight = gatewayStartTask {
+            _ = try? await inFlight.value
+        }
         await gateway?.stop()
         gateway = nil
     }
