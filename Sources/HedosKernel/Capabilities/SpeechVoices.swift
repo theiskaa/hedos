@@ -1,6 +1,7 @@
 import Foundation
 
 public enum SpeechVoices {
+    public static let fallback = "af_heart"
     static let weightExtensions: Set<String> = ["safetensors", "pt", "bin", "npz"]
 
     public static func available(_ record: ModelRecord) -> [String] {

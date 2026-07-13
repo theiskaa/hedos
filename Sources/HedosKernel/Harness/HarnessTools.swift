@@ -113,13 +113,13 @@ public enum HarnessTools {
         guard FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory),
             isDirectory.boolValue
         else {
-            return "\(relative(root, place: place)) is not a directory that exists."
+            return "\(PlacePaths.relative(root, place: place)) is not a directory that exists."
         }
         var lines: [String] = []
         var truncated = 0
         walk(root, depth: depth, place: place, lines: &lines, truncated: &truncated)
         if lines.isEmpty {
-            return "\(relative(root, place: place)) is empty."
+            return "\(PlacePaths.relative(root, place: place)) is empty."
         }
         if truncated > 0 {
             lines.append("\(truncated) more entries omitted.")
@@ -143,7 +143,7 @@ public enum HarnessTools {
             let kind = entryKind(path)
             let size = fileSize(path)
             let sizeText = kind == "file" ? " — \(byteText(size))" : ""
-            lines.append("\(kind) \(relative(path, place: place))\(sizeText)")
+            lines.append("\(kind) \(PlacePaths.relative(path, place: place))\(sizeText)")
             if kind == "directory" {
                 walk(path, depth: depth - 1, place: place, lines: &lines, truncated: &truncated)
             }
@@ -156,7 +156,7 @@ public enum HarnessTools {
         }
         let path = try PlaceBoundary.resolve(requested, in: place)
         guard let handle = FileHandle(forReadingAtPath: path) else {
-            return "\(relative(path, place: place)) does not exist or cannot be opened."
+            return "\(PlacePaths.relative(path, place: place)) does not exist or cannot be opened."
         }
         defer { try? handle.close() }
         let total = fileSize(path)
@@ -169,12 +169,12 @@ public enum HarnessTools {
         let sniff = data.prefix(8192)
         if sniff.contains(0) {
             return
-                "\(relative(path, place: place)) looks like a binary file "
+                "\(PlacePaths.relative(path, place: place)) looks like a binary file "
                 + "(\(byteText(total)) total); its bytes are not shown."
         }
         let text = String(decoding: data, as: UTF8.self)
         let header =
-            "\(relative(path, place: place)) — bytes \(offset)..<\(offset + data.count) "
+            "\(PlacePaths.relative(path, place: place)) — bytes \(offset)..<\(offset + data.count) "
             + "of \(total) total"
         return header + "\n" + text
     }
@@ -219,7 +219,7 @@ public enum HarnessTools {
             else { continue }
             let name = entry.lastPathComponent
             if let glob, fnmatch(glob, name, 0) != 0 { continue }
-            let relativePath = relative(entry.path, place: place)
+            let relativePath = PlacePaths.relative(entry.path, place: place)
             if kind == "filename" {
                 if name.range(of: query, options: .caseInsensitive) != nil {
                     matches.append(relativePath)
@@ -265,14 +265,6 @@ public enum HarnessTools {
     private static func fileSize(_ path: String) -> Int {
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
         return (attributes?[.size] as? NSNumber)?.intValue ?? 0
-    }
-
-    private static func relative(_ path: String, place: String) -> String {
-        if path == place { return "." }
-        if path.hasPrefix(place + "/") {
-            return String(path.dropFirst(place.count + 1))
-        }
-        return path
     }
 
     static func byteText(_ bytes: Int) -> String {

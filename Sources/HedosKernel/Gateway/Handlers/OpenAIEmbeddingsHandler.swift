@@ -24,57 +24,25 @@ struct OpenAIEmbeddingsHandler: GatewayHandling {
         let record = try await GatewayModelResolver.resolveAuthorized(
             model, capability: .embed, kind: .stream, port: port, identity: identity)
 
-        let inputPayload: JSONValue =
-            inputs.count == 1 ? .string(inputs[0]) : .array(inputs.map(JSONValue.string))
-
-        do {
-            let stream = try await port.invoke(
-                record.id, .embed, payload: .object(["input": inputPayload]))
-
-            var vectors: [[Double]] = []
-            var finalStats: GenerationStats?
-            for try await chunk in stream {
-                switch chunk {
-                case .vector(let vector):
-                    vectors.append(vector)
-                case .done(let stats):
-                    finalStats = stats
-                case .text, .thinking, .audio, .status, .toolCall, .segment:
-                    break
-                }
-            }
-            guard !vectors.isEmpty else {
-                throw GatewayError(.serverError, "\(record.name) produced no embeddings")
-            }
-            guard vectors.count == inputs.count else {
-                throw GatewayError(
-                    .serverError,
-                    "\(record.name) returned \(vectors.count) embeddings for \(inputs.count) inputs"
-                )
-            }
-
-            let data = vectors.enumerated().map { index, vector -> [String: Any] in
-                let embedding: Any = format == "base64" ? Self.base64(vector) : vector
-                return ["object": "embedding", "embedding": embedding, "index": index]
-            }
-            let promptTokens = finalStats?.promptTokens ?? 0
-            try await responder.respond(
-                status: 200,
-                body: WireJSON.serialize([
-                    "object": "list",
-                    "data": data,
-                    "model": model,
-                    "usage": [
-                        "prompt_tokens": promptTokens,
-                        "total_tokens": promptTokens,
-                    ],
-                ]))
-            return .ok(model: record.id, capability: .embed)
-        } catch KernelError.capabilityUnsupported {
-            throw GatewayError(
-                .notSupported, "\(record.name) has no embeddings runtime on this machine",
-                code: "capability_unsupported")
+        let (vectors, finalStats) = try await EmbeddingCollector.collect(
+            record: record, inputs: inputs, port: port)
+        let data = vectors.enumerated().map { index, vector -> [String: Any] in
+            let embedding: Any = format == "base64" ? Self.base64(vector) : vector
+            return ["object": "embedding", "embedding": embedding, "index": index]
         }
+        let promptTokens = finalStats?.promptTokens ?? 0
+        try await responder.respond(
+            status: 200,
+            body: WireJSON.serialize([
+                "object": "list",
+                "data": data,
+                "model": model,
+                "usage": [
+                    "prompt_tokens": promptTokens,
+                    "total_tokens": promptTokens,
+                ],
+            ]))
+        return .ok(model: record.id, capability: .embed)
     }
 
     private static func inputs(from body: [String: Any]) throws -> [String] {

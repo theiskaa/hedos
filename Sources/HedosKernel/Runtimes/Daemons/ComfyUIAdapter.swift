@@ -25,15 +25,6 @@ struct ComfyUIAdapter: RuntimeAdapter, JobRunning {
         return RuntimeBid(tier: .native, preference: BidPreference.comfyUI)
     }
 
-    func invoke(
-        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
-    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        AsyncThrowingStream {
-            $0.finish(
-                throwing: KernelError.wrongExecutionMode(runtimeID: .comfyUI, expected: .job))
-        }
-    }
-
     static func checkpointName(for record: ModelRecord, servedModels: [String]) -> String {
         DaemonLiveness.matchingModels(record: record, servedModels: servedModels).first
             ?? record.name

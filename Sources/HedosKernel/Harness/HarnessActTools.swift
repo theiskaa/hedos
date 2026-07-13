@@ -140,12 +140,6 @@ public enum HarnessActTools {
         }
     }
 
-    private static func relative(_ path: String, place: String) -> String {
-        if path == place { return "." }
-        if path.hasPrefix(place + "/") { return String(path.dropFirst(place.count + 1)) }
-        return path
-    }
-
     static func writeFile(
         _ arguments: [String: JSONValue], place: String, context: HarnessActContext
     ) async -> String {
@@ -163,7 +157,7 @@ public enum HarnessActTools {
         case .success(let resolved): path = resolved
         case .failure(let refusal): return refusal.message
         }
-        let shown = relative(path, place: place)
+        let shown = PlacePaths.relative(path, place: place)
         let before = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
         let existed = FileManager.default.fileExists(atPath: path)
         let foreign: String?
@@ -217,7 +211,7 @@ public enum HarnessActTools {
         case .success(let resolved): path = resolved
         case .failure(let refusal): return refusal.message
         }
-        let shown = relative(path, place: place)
+        let shown = PlacePaths.relative(path, place: place)
         guard let before = try? String(contentsOfFile: path, encoding: .utf8) else {
             return "\(shown) does not exist or cannot be read as text."
         }
@@ -358,9 +352,8 @@ public enum HarnessActTools {
     }
 
     static func truncated(_ text: String, cap: Int) -> String {
-        guard text.utf8.count > cap else { return text }
-        var kept = text.prefix(cap)
-        while kept.utf8.count > cap { kept = kept.dropLast() }
-        return String(kept) + "\n[output truncated at \(cap) bytes]"
+        let clip = TextBudget.clip(text, to: cap)
+        guard clip.overflowed else { return text }
+        return String(clip.kept) + "\n[output truncated at \(cap) bytes]"
     }
 }

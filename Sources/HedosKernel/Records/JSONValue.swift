@@ -84,3 +84,31 @@ extension JSONValue: Codable {
         }
     }
 }
+
+extension JSONValue {
+    var objectValue: [String: JSONValue]? {
+        guard case .object(let fields) = self else { return nil }
+        return fields
+    }
+
+    var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
+        return value
+    }
+
+    var intValue: Int? {
+        switch self {
+        case .int(let value): return value
+        case .double(let value): return Int(value)
+        default: return nil
+        }
+    }
+
+    var doubleValue: Double? {
+        switch self {
+        case .double(let value): return value
+        case .int(let value): return Double(value)
+        default: return nil
+        }
+    }
+}

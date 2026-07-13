@@ -1,14 +1,14 @@
 import CryptoKit
 import Foundation
 
-public struct AttachmentStore: Sendable {
+struct AttachmentStore: Sendable {
     let directory: URL
 
-    public init(directory: URL) {
+    init(directory: URL) {
         self.directory = directory
     }
 
-    public func store(_ attachments: [ChatAttachment]) throws -> [String] {
+    func store(_ attachments: [ChatAttachment]) throws -> [String] {
         guard !attachments.isEmpty else { return [] }
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
@@ -26,7 +26,7 @@ public struct AttachmentStore: Sendable {
         return refs
     }
 
-    public func load(_ refs: [String]) -> [ChatAttachment] {
+    func load(_ refs: [String]) -> [ChatAttachment] {
         refs.compactMap { ref in
             guard Self.isSafeRef(ref),
                 let data = try? Data(contentsOf: directory.appendingPathComponent(ref))

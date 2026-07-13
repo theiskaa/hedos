@@ -25,14 +25,6 @@ struct A1111Adapter: RuntimeAdapter, JobRunning {
         return RuntimeBid(tier: .native, preference: BidPreference.a1111)
     }
 
-    func invoke(
-        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
-    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        AsyncThrowingStream {
-            $0.finish(throwing: KernelError.wrongExecutionMode(runtimeID: .a1111, expected: .job))
-        }
-    }
-
     static func requestBody(payload: JSONValue) -> [String: Any] {
         let object = payload.objectValue ?? [:]
         let (width, height) = DaemonLiveness.dimensions(object)

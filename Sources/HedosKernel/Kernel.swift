@@ -98,6 +98,8 @@ public actor Kernel {
     private let duplicateThreshold: Int64
     private let identificationCache = IdentificationCache()
     private var loadedManifests: [RuntimeManifest] = []
+    private let daemonLiveness: DaemonLiveness
+    private let communityLibrary: CommunityLibrary
     private nonisolated(unsafe) var settingsReaction: Task<Void, Never>?
     private var knownWatchedFolders: [String]?
     private var knownHFCacheRoots: [String]?
@@ -109,10 +111,14 @@ public actor Kernel {
         secrets: any SecretStore = KeychainStore(),
         habitat: ModelHabitat = ModelHabitat(),
         vmHost: (any VMHost)? = nil,
+        daemonLiveness: DaemonLiveness = .shared,
+        communityLibrary: CommunityLibrary = CommunityLibrary(),
         duplicateThreshold: Int64 = DuplicateDetector.defaultThreshold
     ) {
         self.habitat = habitat
         self.directory = directory
+        self.daemonLiveness = daemonLiveness
+        self.communityLibrary = communityLibrary
         self.duplicateThreshold = duplicateThreshold
         let registry = Registry(directory: directory)
         let artifactStore = ArtifactStore(
@@ -240,7 +246,7 @@ public actor Kernel {
         var summary = try await DiscoveryService(
             scanners: scanners, duplicateThreshold: duplicateThreshold
         ).discover(into: registry)
-        await DaemonLiveness.shared.probe()
+        await daemonLiveness.probe()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
         summary.issues.append(contentsOf: manifestIssues)
         lastSummary = summary
@@ -323,7 +329,7 @@ public actor Kernel {
         let affected = Set(scanners.flatMap(\.kinds))
         let resolutionScope: Set<SourceKind>? =
             loadedManifests == manifestsBefore ? affected : nil
-        await DaemonLiveness.shared.probe()
+        await daemonLiveness.probe()
         try? await ResolutionEngine(
             adapters: adapters, identificationCache: identificationCache
         ).resolveAll(in: registry, kinds: resolutionScope)
@@ -454,7 +460,7 @@ public actor Kernel {
         guard let record = try? await registry.get(id: modelID) else { return [] }
         let installer = manifestInstaller
         let assetState = await vmHost.assetState()
-        return CommunityLibrary().matches(record: record).compactMap { recipe in
+        return communityLibrary.matches(record: record).compactMap { recipe in
             try? installer.preview(from: recipe.directory, vmAssetState: assetState)
         }
     }

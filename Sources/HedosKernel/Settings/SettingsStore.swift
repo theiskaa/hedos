@@ -124,12 +124,12 @@ public actor SettingsStore {
     }
 
     static func rejectIfTooBroad(_ path: String) throws {
-        let resolved = ManifestSupport.canonicalPath(URL(fileURLWithPath: path)).lowercased()
+        let resolved = CanonicalPath.of(path).lowercased()
         if resolved == "/" {
             throw KernelError.runtimeFailed(
                 "watching / would expose the entire filesystem to discovery")
         }
-        let home = ManifestSupport.canonicalPath(
+        let home = CanonicalPath.of(
             FileManager.default.homeDirectoryForCurrentUser
         ).lowercased()
         if resolved == home || home.hasPrefix(resolved + "/") {

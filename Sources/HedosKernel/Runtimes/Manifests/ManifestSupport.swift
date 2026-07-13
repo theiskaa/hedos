@@ -49,11 +49,7 @@ enum ManifestSupport {
     }
 
     static func canonicalPath(_ url: URL) -> String {
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard let real = realpath(url.path, &buffer) else {
-            return url.resolvingSymlinksInPath().path
-        }
-        return String(cString: real)
+        CanonicalPath.of(url)
     }
 
     static func sandboxArguments(

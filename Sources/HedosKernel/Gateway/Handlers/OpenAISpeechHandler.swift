@@ -39,7 +39,7 @@ struct OpenAISpeechHandler: GatewayHandling {
             group in
             group.addTask {
                 var pcm = Data()
-                var sampleRate = 24000
+                var sampleRate = SidecarSpec.defaultSampleRate
                 for try await chunk in stream {
                     if case .audio(let frame) = chunk {
                         if pcm.isEmpty { sampleRate = frame.sampleRate }

@@ -161,7 +161,7 @@ struct PipelineRunHandler: GatewayHandling {
         typealias Collected = (pcm: Data, sampleRate: Int, failure: String?)
         let collected: Collected = try await withRunTimeout {
             var pcm = Data()
-            var sampleRate = 24000
+            var sampleRate = SidecarSpec.defaultSampleRate
             var failure: String?
             for await event in stream {
                 switch event {

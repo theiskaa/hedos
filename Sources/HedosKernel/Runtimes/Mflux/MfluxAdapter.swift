@@ -35,15 +35,6 @@ struct MfluxAdapter: RuntimeAdapter, JobRunning {
         return RuntimeBid(tier: .managed, preference: BidPreference.mflux, alternatives: [.diffusers])
     }
 
-    func invoke(
-        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
-    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        AsyncThrowingStream {
-            $0.finish(
-                throwing: KernelError.wrongExecutionMode(runtimeID: .mflux, expected: .job))
-        }
-    }
-
     func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {

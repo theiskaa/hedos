@@ -16,10 +16,6 @@ public final class DaemonLiveness: @unchecked Sendable {
     public struct Snapshot: Sendable, Hashable {
         public var comfyUI = State()
         public var a1111 = State()
-
-        public func state(for daemon: Daemon) -> State {
-            daemon == .comfyUI ? comfyUI : a1111
-        }
     }
 
     private let lock = NSLock()
@@ -82,7 +78,7 @@ public final class DaemonLiveness: @unchecked Sendable {
 
     func probeA1111() async -> State {
         guard
-            let json = await fetchJSON(comfyPath: a1111URL, "sdapi/v1/sd-models")
+            let json = await fetchJSON(a1111URL.appendingPathComponent("sdapi/v1/sd-models"))
         else { return State() }
         return State(alive: true, models: Self.a1111Checkpoints(json))
     }
@@ -103,10 +99,6 @@ public final class DaemonLiveness: @unchecked Sendable {
             let http = response as? HTTPURLResponse, http.statusCode == 200
         else { return nil }
         return try? JSONSerialization.jsonObject(with: data)
-    }
-
-    private func fetchJSON(comfyPath base: URL, _ path: String) async -> Any? {
-        await fetchJSON(base.appendingPathComponent(path))
     }
 
     static func comfyCheckpoints(_ objectInfo: Any) -> [String] {

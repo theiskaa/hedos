@@ -201,19 +201,11 @@ struct OpenAIEndpointAdapter: RuntimeAdapter {
     }
 
     private static func markUnreachable(_ id: String, registry: Registry?) async {
-        guard let registry else { return }
-        guard let record = try? await registry.get(id: id), record.source.kind == .endpoint,
-            record.state != .missing
-        else { return }
-        _ = try? await registry.setStateIfPresent(id: id, to: .missing)
+        await ReachabilityMark.unreachable(id, kind: .endpoint, registry: registry)
     }
 
     private static func markReachable(_ id: String, registry: Registry?) async {
-        guard let registry else { return }
-        guard let record = try? await registry.get(id: id), record.source.kind == .endpoint,
-            record.state != .ready
-        else { return }
-        _ = try? await registry.setStateIfPresent(id: id, to: .ready)
+        await ReachabilityMark.reachable(id, kind: .endpoint, registry: registry)
     }
 
     static let optionKeys = [

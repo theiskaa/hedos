@@ -30,6 +30,14 @@ public enum Harness {
         return header + "\n" + result
     }
 
+    public static func summary(fromFramed text: String) -> String {
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
+        guard firstLine.hasPrefix("["),
+            let dash = firstLine.range(of: " — data from the user's disk")
+        else { return firstLine }
+        return String(firstLine[firstLine.index(after: firstLine.startIndex)..<dash.lowerBound])
+    }
+
     static func sanitizedForHeader(_ text: String) -> String {
         String(
             text.map { character in

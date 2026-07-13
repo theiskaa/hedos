@@ -131,18 +131,10 @@ struct AppleFoundationAdapter: RuntimeAdapter {
     }
 
     private static func markUnreachable(_ id: String, registry: Registry?) async {
-        guard let registry else { return }
-        guard let record = try? await registry.get(id: id), record.source.kind == .builtin,
-            record.state != .missing
-        else { return }
-        _ = try? await registry.setStateIfPresent(id: id, to: .missing)
+        await ReachabilityMark.unreachable(id, kind: .builtin, registry: registry)
     }
 
     private static func markReachable(_ id: String, registry: Registry?) async {
-        guard let registry else { return }
-        guard let record = try? await registry.get(id: id), record.source.kind == .builtin,
-            record.state != .ready
-        else { return }
-        _ = try? await registry.setStateIfPresent(id: id, to: .ready)
+        await ReachabilityMark.reachable(id, kind: .builtin, registry: registry)
     }
 }

@@ -369,14 +369,10 @@ struct ChatFlow: Sendable {
     }
 
     static func truncatedToolResult(_ result: String) -> String {
-        let bytes = result.utf8.count
-        guard bytes > toolResultContextBudgetBytes else { return result }
-        var kept = result.prefix(toolResultContextBudgetBytes)
-        while kept.utf8.count > toolResultContextBudgetBytes {
-            kept = kept.dropLast()
-        }
-        return "[truncated: showing first \(toolResultContextBudgetBytes) of \(bytes) bytes]\n"
-            + kept
+        let clip = TextBudget.clip(result, to: toolResultContextBudgetBytes)
+        guard clip.overflowed else { return result }
+        return "[truncated: showing first \(toolResultContextBudgetBytes) of \(clip.total) bytes]\n"
+            + clip.kept
     }
 
     static func messages(

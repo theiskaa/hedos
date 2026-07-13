@@ -31,15 +31,6 @@ struct DiffusersAdapter: RuntimeAdapter, JobRunning {
         return RuntimeBid(tier: .managed, preference: BidPreference.diffusers)
     }
 
-    func invoke(
-        _ record: ModelRecord, _ capability: Capability, payload: JSONValue
-    ) -> AsyncThrowingStream<CapabilityChunk, Error> {
-        AsyncThrowingStream {
-            $0.finish(
-                throwing: KernelError.wrongExecutionMode(runtimeID: .diffusers, expected: .job))
-        }
-    }
-
     func run(
         _ record: ModelRecord, _ capability: Capability, payload: JSONValue
     ) -> AsyncThrowingStream<JobRuntimeEvent, Error> {

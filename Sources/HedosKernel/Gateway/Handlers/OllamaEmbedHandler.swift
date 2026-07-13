@@ -24,48 +24,20 @@ struct OllamaEmbedHandler: GatewayHandling {
         let record = try await GatewayModelResolver.resolveAuthorized(
             model, capability: .embed, kind: .stream, port: port, identity: identity)
 
-        let inputPayload: JSONValue =
-            inputs.count == 1 ? .string(inputs[0]) : .array(inputs.map(JSONValue.string))
-        do {
-            let stream = try await port.invoke(
-                record.id, .embed, payload: .object(["input": inputPayload]))
-            var vectors: [[Double]] = []
-            var finalStats: GenerationStats?
-            for try await chunk in stream {
-                switch chunk {
-                case .vector(let vector):
-                    vectors.append(vector)
-                case .done(let stats):
-                    finalStats = stats
-                case .text, .thinking, .audio, .status, .toolCall, .segment:
-                    break
-                }
+        let (vectors, finalStats) = try await EmbeddingCollector.collect(
+            record: record, inputs: inputs, port: port)
+        if legacy {
+            try await responder.respond(
+                status: 200,
+                body: WireJSON.serialize(["embedding": vectors[0]]))
+        } else {
+            var object: [String: Any] = ["model": model, "embeddings": vectors]
+            if let promptTokens = finalStats?.promptTokens {
+                object["prompt_eval_count"] = promptTokens
             }
-            guard !vectors.isEmpty else {
-                throw GatewayError(.serverError, "\(record.name) produced no embeddings")
-            }
-            guard vectors.count == inputs.count else {
-                throw GatewayError(
-                    .serverError,
-                    "\(record.name) returned \(vectors.count) embeddings for \(inputs.count) inputs")
-            }
-            if legacy {
-                try await responder.respond(
-                    status: 200,
-                    body: WireJSON.serialize(["embedding": vectors[0]]))
-            } else {
-                var object: [String: Any] = ["model": model, "embeddings": vectors]
-                if let promptTokens = finalStats?.promptTokens {
-                    object["prompt_eval_count"] = promptTokens
-                }
-                try await responder.respond(status: 200, body: WireJSON.serialize(object))
-            }
-            return .ok(model: record.id, capability: .embed)
-        } catch KernelError.capabilityUnsupported {
-            throw GatewayError(
-                .notSupported, "\(record.name) has no embeddings runtime on this machine",
-                code: "capability_unsupported")
+            try await responder.respond(status: 200, body: WireJSON.serialize(object))
         }
+        return .ok(model: record.id, capability: .embed)
     }
 
     static func inputs(from body: [String: Any], legacy: Bool) throws -> [String] {

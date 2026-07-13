@@ -543,12 +543,12 @@ private func chatControl(_ content: String) -> JSONValue {
         "PYTHONHOME": "/Users/someone/leaked-home",
         "PATH": "/usr/bin:/bin",
     ]
-    let scrubbed = SidecarSupervisor.scrubbedEnvironment(base: base, overrides: [:])
+    let scrubbed = EnvironmentManager.scrubbedEnvironment(base: base, overrides: [:])
     #expect(scrubbed["PYTHONPATH"] == nil)
     #expect(scrubbed["PYTHONHOME"] == nil)
     #expect(scrubbed["PATH"] == "/usr/bin:/bin")
 
-    let withOverride = SidecarSupervisor.scrubbedEnvironment(
+    let withOverride = EnvironmentManager.scrubbedEnvironment(
         base: base, overrides: ["PYTHONDONTWRITEBYTECODE": "1"])
     #expect(withOverride["PYTHONPATH"] == nil)
     #expect(withOverride["PYTHONDONTWRITEBYTECODE"] == "1")

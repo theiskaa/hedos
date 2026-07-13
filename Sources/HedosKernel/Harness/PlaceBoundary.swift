@@ -14,13 +14,19 @@ public enum HarnessError: Error, Sendable, Equatable, LocalizedError {
     }
 }
 
+enum PlacePaths {
+    static func relative(_ path: String, place: String) -> String {
+        if path == place { return "." }
+        if path.hasPrefix(place + "/") {
+            return String(path.dropFirst(place.count + 1))
+        }
+        return path
+    }
+}
+
 public enum PlaceBoundary {
     public static func canonical(_ path: String) -> String {
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard let real = realpath(path, &buffer) else {
-            return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-        }
-        return String(cString: real)
+        CanonicalPath.of(path)
     }
 
     public static func resolve(_ requested: String, in place: String) throws -> String {
