@@ -134,7 +134,9 @@ final class ChatViewModel {
     }
 
     func load() async {
-        if !isStreaming, let stored = try? await kernel.chats.session(id: sessionID) {
+        if !isStreaming, let stored = try? await kernel.chats.session(id: sessionID),
+            !isStreaming
+        {
             apply(stored)
         }
         defaultModelID = await kernel.settings.defaultChatModelID()
@@ -612,6 +614,7 @@ final class ChatViewModel {
             if speakLiveID == liveID {
                 speakLiveID = nil
             }
+            speakTask = nil
             streamStatus = nil
             pendingSpeech = nil
             isSpeaking = false
@@ -714,8 +717,10 @@ final class ChatViewModel {
 
     func teardown() {
         streamTask?.cancel()
+        speakTask?.cancel()
+        speakTask = nil
         isStreaming = false
-        suspend()
+        stopTicker()
     }
 
     func suspend() {

@@ -81,3 +81,23 @@ import HedosKernel
         MarkdownBalancer.balanced("~~~\ncode\n~~~\nafter **hey")
             == "~~~\ncode\n~~~\nafter **hey**")
 }
+
+@Test func pacedRevealRevealsTheFullTextAcrossChunkedAppends() {
+    var reveal = PacedReveal(baseChars: 12, drainDivisor: 24)
+    let chunks = ["Hello ", "🌍👨‍👩‍👧‍👦", " done ", String(repeating: "x", count: 100), "🇺🇸 end"]
+    let full = chunks.joined()
+    for chunk in chunks { reveal.append(chunk) }
+
+    var ticks = 0
+    while reveal.tick(), ticks < 10_000 {
+        ticks += 1
+        #expect(full.hasPrefix(reveal.revealed))
+    }
+    #expect(reveal.backlog == 0)
+    #expect(reveal.revealed == full)
+
+    reveal.reset()
+    #expect(reveal.target.isEmpty)
+    #expect(reveal.backlog == 0)
+    #expect(reveal.revealed.isEmpty)
+}

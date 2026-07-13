@@ -3,6 +3,7 @@ import Foundation
 struct PacedReveal: Sendable {
     private(set) var target = ""
     private(set) var revealedCount = 0
+    private var targetCount = 0
     private let baseChars: Int
     private let drainDivisor: Int
 
@@ -12,32 +13,41 @@ struct PacedReveal: Sendable {
     }
 
     var backlog: Int {
-        max(0, target.count - revealedCount)
+        max(0, targetCount - revealedCount)
     }
 
     var revealed: String {
-        String(target.prefix(revealedCount))
+        revealedCount >= targetCount ? target : String(target.prefix(revealedCount))
     }
 
     mutating func append(_ delta: String) {
-        target += delta
+        guard !delta.isEmpty else { return }
+        if target.isEmpty {
+            target = delta
+            targetCount = delta.count
+        } else {
+            let boundary = String(target.suffix(1))
+            target += delta
+            targetCount += (boundary + delta).count - 1
+        }
     }
 
     mutating func tick() -> Bool {
         let pending = backlog
         guard pending > 0 else { return false }
         let step = max(baseChars, pending / drainDivisor)
-        revealedCount = min(target.count, revealedCount + step)
+        revealedCount = min(targetCount, revealedCount + step)
         return true
     }
 
     mutating func finish() {
-        revealedCount = target.count
+        revealedCount = targetCount
     }
 
     mutating func reset() {
         target = ""
         revealedCount = 0
+        targetCount = 0
     }
 }
 

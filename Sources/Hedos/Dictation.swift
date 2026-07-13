@@ -3,22 +3,32 @@ import HedosKernel
 import SwiftUI
 
 private final class SampleSink: @unchecked Sendable {
+    static let maxSamples = WhisperEngine.expectedSampleRate * 60 * 10
+
     private let lock = NSLock()
     private var storage: [Float] = []
+    private var overflowed = false
 
     func append(_ new: [Float]) {
         lock.lock()
-        storage.append(contentsOf: new)
+        let room = Self.maxSamples - storage.count
+        if room >= new.count {
+            storage.append(contentsOf: new)
+        } else {
+            if room > 0 { storage.append(contentsOf: new.prefix(room)) }
+            overflowed = true
+        }
         lock.unlock()
     }
 
-    func drain() -> [Float] {
+    func drain() -> (samples: [Float], overflowed: Bool) {
         lock.lock()
         defer {
             storage = []
+            overflowed = false
             lock.unlock()
         }
-        return storage
+        return (storage, overflowed)
     }
 }
 
@@ -100,6 +110,7 @@ final class DictationController {
     private let capture = MicCapture()
     private let sink = SampleSink()
     private var task: Task<Void, Never>?
+    private var generation = 0
 
     static func transcriber(in records: [ModelRecord]) -> ModelRecord? {
         records.first { $0.state == .ready && $0.capabilities.contains(.transcribe) }
@@ -112,6 +123,7 @@ final class DictationController {
         case .transcribing:
             task?.cancel()
             task = nil
+            generation += 1
             phase = .idle
         case .idle:
             startRecording()
@@ -139,6 +151,7 @@ final class DictationController {
                 sink.append(chunk)
             }
             _ = sink.drain()
+            generation += 1
             phase = .recording
         } catch {
             notice = "The microphone could not be started: \(error.localizedDescription)"
@@ -147,17 +160,24 @@ final class DictationController {
 
     private func finishRecording(setup: DictationSetup, append: @escaping (String) -> Void) {
         capture.stop()
-        let samples = sink.drain()
+        let (samples, overflowed) = sink.drain()
         guard let transcriber = Self.transcriber(in: setup.records()) else {
+            generation += 1
             phase = .idle
             notice = "No transcription model is ready."
             return
         }
         guard samples.count >= WhisperEngine.expectedSampleRate / 4 else {
+            generation += 1
             phase = .idle
             return
         }
+        if overflowed {
+            notice = "Dictation is capped at 10 minutes; the recording was trimmed."
+        }
+        generation += 1
         phase = .transcribing
+        let current = generation
         let kernel = setup.kernel
         task = Task { [weak self] in
             do {
@@ -180,8 +200,9 @@ final class DictationController {
             } catch {
                 self?.notice = error.localizedDescription
             }
-            self?.task = nil
-            self?.phase = .idle
+            guard let self, self.generation == current else { return }
+            self.task = nil
+            self.phase = .idle
         }
     }
 }
