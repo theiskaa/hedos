@@ -780,7 +780,12 @@ final class ChatViewModel {
 
     private func tickReveal() {
         guard isStreaming else { return }
-        if reveal.tick() {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if reveal.backlog > 0 {
+                reveal.finish()
+                refreshLiveBalance()
+            }
+        } else if reveal.tick() {
             if liveBalancedText.isEmpty || liveBalanceThrottle.shouldRefresh() {
                 refreshLiveBalance()
             }
@@ -1239,10 +1244,8 @@ struct ChatView: View {
             .padding(.trailing, Design.Space.xs)
             .frame(height: Design.Control.size)
             .background(Design.inkWash, in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-            .transition(.arrive(from: .leading))
+            .hairlineBorder(Capsule())
+            .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
             .help(
                 "The model can list, read, and search inside \(place). "
                     + "It cannot touch anything outside it, and it cannot write or run anything."
@@ -1389,7 +1392,10 @@ struct ChatView: View {
                     }
                     ForEach(Array(model.transcript.enumerated()), id: \.element.id) { index, entry in
                         turn(entry, at: index)
-                            .transition(.opacity.combined(with: .offset(y: 3)))
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .opacity.combined(with: .offset(y: 3)))
                     }
                     if let pending = model.pendingSpeech {
                         pendingSpeechRow(pending)
@@ -1511,110 +1517,127 @@ struct ChatView: View {
 
     @ViewBuilder
     private func turn(_ entry: ChatViewModel.Entry, at index: Int) -> some View {
-        if entry.role == .tool {
-            ToolTimelineRow(
-                summary: Harness.summary(fromFramed: entry.text),
-                connectsUp: index > 0 && model.transcript[index - 1].role == .tool,
-                connectsDown: index + 1 < model.transcript.count
-                    && model.transcript[index + 1].role == .tool,
-                gap: transcriptSpacing)
-        } else if entry.role == .user {
-            VStack(alignment: .trailing, spacing: 4) {
-                if editingEntryID == entry.id {
-                    editField(entry)
-                } else {
-                    PromptBubble(text: entry.text)
-                        .contextMenu {
-                            Button("Copy") { copy(entry.text) }
-                            if entry.persisted && !model.isStreaming && !entry.generatesArtifact {
-                                Button("Edit…") {
-                                    editText = entry.text
-                                    editingEntryID = entry.id
-                                }
-                            }
-                        }
-                }
-                versionSwitcher(entry)
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.bottom, Design.Space.m)
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                if !displayThinking(entry).isEmpty {
-                    thinkingBlock(entry)
-                }
-                if !displayText(entry).isEmpty {
-                    MarkdownTurnView(text: displayText(entry), cursor: showsCursor(entry))
-                        .contextMenu {
-                            Button("Copy") { copy(displayText(entry)) }
-                            if canReadAloud(entry) {
-                                Button(
-                                    model.speakingEntryID == entry.id
-                                        ? "Stop Reading" : "Narrate"
-                                ) {
-                                    narrate(entry)
-                                }
-                            }
-                            if entry.persisted && !model.isStreaming {
-                                Button("Regenerate") { model.regenerate(entry) }
-                            }
-                        }
-                } else if model.isStreaming && !entry.persisted && entry.thinking.isEmpty
-                    && entry.id == model.transcript.last?.id
-                {
-                    HStack(spacing: Design.Space.chipX) {
-                        TypingDots()
-                        if let status = model.streamStatus {
-                            ShimmerText(text: status, font: Design.caption, tracked: false)
-                        }
-                    }
-                }
-                if !displayText(entry).isEmpty && !(model.isStreaming && !entry.persisted) {
-                    HStack(spacing: Design.Space.m) {
-                        ArtifactTray {
-                            ConfirmingButton(
-                                label: "Copy", confirmedLabel: "Copied"
-                            ) {
-                                copy(displayText(entry))
-                            }
-                            if entry.persisted && !model.isStreaming {
-                                TrayButton(label: "Regenerate", glyph: "arrow.clockwise") {
-                                    model.regenerate(entry)
-                                }
-                            }
-                            if canReadAloud(entry) {
-                                TrayButton(
-                                    label: model.speakingEntryID == entry.id ? "Stop" : "Speak",
-                                    glyph: model.speakingEntryID == entry.id
-                                        ? "stop.fill" : "speaker.wave.2"
-                                ) {
-                                    narrate(entry)
-                                }
-                            }
-                        }
-                        versionSwitcher(entry)
-                        if model.speakingEntryID == entry.id {
-                            SpeakingIndicator()
-                        }
-                        Spacer(minLength: 0)
-                        if entry.interrupted {
-                            Text("interrupted")
-                                .font(Design.micro)
-                                .tracking(Design.microTracking)
-                                .foregroundStyle(Design.inkFaint)
-                        }
-                        if showsStats, let stats = displayStats(entry) {
-                            statsLine(stats)
-                        }
-                    }
-                }
-                ForEach(displayArtifacts(entry), id: \.self) { reference in
-                    artifactCard(reference)
-                }
-            }
-            .frame(maxWidth: Design.Column.transcriptProse, alignment: .leading)
-            .padding(.bottom, Design.Space.xl)
+        switch entry.role {
+        case .tool:
+            toolTurn(entry, at: index)
+        case .user:
+            userTurn(entry)
+        default:
+            assistantTurn(entry)
         }
+    }
+
+    private func toolTurn(_ entry: ChatViewModel.Entry, at index: Int) -> some View {
+        ToolTimelineRow(
+            summary: Harness.summary(fromFramed: entry.text),
+            connectsUp: index > 0 && model.transcript[index - 1].role == .tool,
+            connectsDown: index + 1 < model.transcript.count
+                && model.transcript[index + 1].role == .tool,
+            gap: transcriptSpacing)
+    }
+
+    private func userTurn(_ entry: ChatViewModel.Entry) -> some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            if editingEntryID == entry.id {
+                editField(entry)
+            } else {
+                PromptBubble(text: entry.text)
+                    .contextMenu {
+                        Button("Copy") { copy(entry.text) }
+                        if entry.persisted && !model.isStreaming && !entry.generatesArtifact {
+                            Button("Edit…") {
+                                editText = entry.text
+                                editingEntryID = entry.id
+                            }
+                        }
+                    }
+            }
+            versionSwitcher(entry)
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.bottom, Design.Space.m)
+    }
+
+    @ViewBuilder
+    private func assistantTurn(_ entry: ChatViewModel.Entry) -> some View {
+        let text = displayText(entry)
+        let thinkingText = displayThinking(entry)
+        let streamingPlaceholder =
+            model.isStreaming && !entry.persisted && entry.thinking.isEmpty
+            && entry.id == model.transcript.last?.id
+        VStack(alignment: .leading, spacing: 8) {
+            if !thinkingText.isEmpty {
+                thinkingBlock(entry)
+            }
+            if !text.isEmpty {
+                MarkdownTurnView(text: text, cursor: showsCursor(entry))
+                    .contextMenu {
+                        Button("Copy") { copy(text) }
+                        if canReadAloud(entry) {
+                            Button(
+                                model.speakingEntryID == entry.id
+                                    ? "Stop Reading" : "Narrate"
+                            ) {
+                                narrate(entry)
+                            }
+                        }
+                        if entry.persisted && !model.isStreaming {
+                            Button("Regenerate") { model.regenerate(entry) }
+                        }
+                    }
+            } else if streamingPlaceholder {
+                HStack(spacing: Design.Space.chipX) {
+                    TypingDots()
+                    if let status = model.streamStatus {
+                        ShimmerText(text: status, font: Design.caption, tracked: false)
+                    }
+                }
+            }
+            if !text.isEmpty && !(model.isStreaming && !entry.persisted) {
+                HStack(spacing: Design.Space.m) {
+                    ArtifactTray {
+                        ConfirmingButton(
+                            label: "Copy", confirmedLabel: "Copied"
+                        ) {
+                            copy(text)
+                        }
+                        if entry.persisted && !model.isStreaming {
+                            TrayButton(label: "Regenerate", glyph: "arrow.clockwise") {
+                                model.regenerate(entry)
+                            }
+                        }
+                        if canReadAloud(entry) {
+                            TrayButton(
+                                label: model.speakingEntryID == entry.id ? "Stop" : "Speak",
+                                glyph: model.speakingEntryID == entry.id
+                                    ? "stop.fill" : "speaker.wave.2"
+                            ) {
+                                narrate(entry)
+                            }
+                        }
+                    }
+                    versionSwitcher(entry)
+                    if model.speakingEntryID == entry.id {
+                        SpeakingIndicator()
+                    }
+                    Spacer(minLength: 0)
+                    if entry.interrupted {
+                        Text("interrupted")
+                            .font(Design.micro)
+                            .tracking(Design.microTracking)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    if showsStats, let stats = displayStats(entry) {
+                        statsLine(stats)
+                    }
+                }
+            }
+            ForEach(displayArtifacts(entry), id: \.self) { reference in
+                artifactCard(reference)
+            }
+        }
+        .frame(maxWidth: Design.Column.transcriptProse, alignment: .leading)
+        .padding(.bottom, Design.Space.xl)
     }
 
     private var liveImageRow: some View {

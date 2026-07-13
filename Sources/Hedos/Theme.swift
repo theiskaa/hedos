@@ -22,6 +22,7 @@ struct ThemeShape: Sendable {
     var card: CGFloat = 12
     var artifact: CGFloat = 14
     var bubble: CGFloat = 16
+    var composer: CGFloat = 22
     var unit: CGFloat = 16
     var hairline: CGFloat = 1
 
@@ -203,6 +204,7 @@ enum ThemeTOML {
         if let v = num("shape.radius_control") { shape.control = v }
         if let v = num("shape.radius_card") { shape.card = v }
         if let v = num("shape.radius_bubble") { shape.bubble = v }
+        if let v = num("shape.radius_composer") { shape.composer = v }
         if let v = num("shape.radius_artifact") { shape.artifact = v }
         if let v = num("shape.unit") { shape.unit = v }
         if let v = num("shape.hairline") { shape.hairline = v }

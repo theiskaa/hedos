@@ -27,6 +27,7 @@ enum Design {
         static var tile: CGFloat { ThemeStore.shape.tile }
         static var surface: CGFloat { ThemeStore.shape.surface }
         static var bubble: CGFloat { ThemeStore.shape.bubble }
+        static var composer: CGFloat { ThemeStore.shape.composer }
         static var artifact: CGFloat { ThemeStore.shape.artifact }
     }
 
@@ -216,6 +217,7 @@ enum Design {
 
     static let spring = Animation.spring(response: 0.4, dampingFraction: 0.8)
     static let snap = Animation.spring(response: 0.25, dampingFraction: 0.9)
+    static let press = Animation.easeOut(duration: 0.12)
 
     static func motion(reduceMotion: Bool) -> Animation? {
         reduceMotion ? .easeOut(duration: 0.15) : spring
@@ -473,6 +475,10 @@ extension View {
             radius: shade.radius, x: 0, y: shade.y)
     }
 
+    func hairlineBorder<S: InsettableShape>(_ shape: S, color: Color = Design.line) -> some View {
+        overlay(shape.strokeBorder(color, lineWidth: Design.hairlineWidth))
+    }
+
     func inkFocusRing<S: InsettableShape>(_ shape: S) -> some View {
         modifier(InkFocusRing(shape: shape))
     }
@@ -613,7 +619,7 @@ struct InkButtonStyle: ButtonStyle {
             .onHover { hovering = $0 }
             .inkFocusRing(shape)
             .animation(.easeOut(duration: 0.2), value: hovering)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(Design.press, value: configuration.isPressed)
     }
 }
 
@@ -699,7 +705,7 @@ struct PressDipStyle: ButtonStyle {
         configuration.label
             .opacity(configuration.isPressed ? 0.72 : 1)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(Design.press, value: configuration.isPressed)
     }
 }
 

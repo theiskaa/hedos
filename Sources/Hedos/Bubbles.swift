@@ -27,9 +27,7 @@ struct ResponseShell: ViewModifier {
             .padding(.horizontal, Design.Space.l)
             .padding(.vertical, Design.Space.m)
             .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.bubble))
-            .overlay(
-                RoundedRectangle.soft(Design.Radius.bubble)
-                    .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
+            .hairlineBorder(RoundedRectangle.soft(Design.Radius.bubble))
     }
 }
 
@@ -76,7 +74,7 @@ struct VoiceBubble: View {
         .padding(.vertical, Design.Space.m)
         .padding(.horizontal, Design.Space.l)
         .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.artifact))
-        .overlay(RoundedRectangle.soft(Design.Radius.artifact).strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .hairlineBorder(RoundedRectangle.soft(Design.Radius.artifact))
         .frame(maxWidth: 340)
         .help(SpeechArtifact.voiceName(of: artifact).map { "Voice: \($0)" } ?? "Narration")
         .contextMenu {
@@ -251,9 +249,7 @@ struct ImageBubble: View {
         }
         .padding(Design.Space.m)
         .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.bubble))
-        .overlay(
-            RoundedRectangle.soft(Design.Radius.bubble)
-                .strokeBorder(Design.hairline, lineWidth: Design.hairlineWidth))
+        .hairlineBorder(RoundedRectangle.soft(Design.Radius.bubble))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             isLoading

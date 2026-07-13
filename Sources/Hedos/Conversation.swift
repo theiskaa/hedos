@@ -8,8 +8,6 @@ struct MentionSetup {
     let files: () async -> [String]
 }
 
-private let composerCornerRadius: CGFloat = 22
-
 struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: View>: View {
     let placeholder: String
     @Binding var draft: String
@@ -49,7 +47,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if let notice {
                 noticeBar(notice)
-                    .transition(.arrive(from: .bottom))
+                    .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
             }
             composer
         }
@@ -156,17 +154,17 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                 }
                 .padding(Design.Space.l)
             }
-            .surfaceCard(radius: composerCornerRadius)
-            .clipShape(RoundedRectangle.soft(composerCornerRadius))
+            .surfaceCard(radius: Design.Radius.composer)
+            .clipShape(RoundedRectangle.soft(Design.Radius.composer))
             .overlay(
-                RoundedRectangle.soft(composerCornerRadius)
+                RoundedRectangle.soft(Design.Radius.composer)
                     .strokeBorder(
-                        composerFocused ? Design.accent.opacity(0.35) : .clear,
+                        composerFocused ? Design.accent.opacity(0.55) : .clear,
                         lineWidth: Design.hairlineWidth))
             .shade(Design.Elevation.raised)
             .animation(Design.wash, value: composerFocused)
             .denyShake(
-                on: denyCount, in: RoundedRectangle.soft(composerCornerRadius), amplitude: 4)
+                on: denyCount, in: RoundedRectangle.soft(Design.Radius.composer), amplitude: 4)
             .animation(Design.motion(reduceMotion: reduceMotion), value: menuActive)
             .animation(
                 Design.motion(reduceMotion: reduceMotion),
@@ -473,7 +471,7 @@ private struct CirclePressStyle: ButtonStyle {
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .offset(y: configuration.isPressed ? 0 : hovering && prominent ? -1 : 0)
             .animation(.easeOut(duration: 0.2), value: hovering)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(Design.press, value: configuration.isPressed)
     }
 }
 

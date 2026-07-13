@@ -101,6 +101,7 @@ struct MarkdownBlockView: View {
                 .padding(Design.Space.l)
             }
             .background(Design.tableFill, in: RoundedRectangle.soft(Design.Radius.card))
+            .hairlineBorder(RoundedRectangle.soft(Design.Radius.card))
         case .rule:
             Divider()
                 .padding(.vertical, Design.Space.xxs)
@@ -166,6 +167,7 @@ struct CodeBlockView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.card))
+        .hairlineBorder(RoundedRectangle.soft(Design.Radius.card))
         .onHover { hovering = $0 }
         .onAppear { refreshHighlight() }
         .onChange(of: code) { _, _ in refreshHighlight() }
@@ -189,7 +191,7 @@ struct CodeBlockView: View {
         case .keyword:
             Text(verbatim: token.text).foregroundStyle(Design.ink).fontWeight(.semibold)
         case .string:
-            Text(verbatim: token.text).foregroundStyle(Design.added)
+            Text(verbatim: token.text).foregroundStyle(Design.inkSoft)
         case .comment:
             Text(verbatim: token.text).foregroundStyle(Design.inkFaint)
         case .number:
