@@ -21,36 +21,40 @@ final class FullScreenPresentationProxy: NSObject, NSWindowDelegate {
     }
 }
 
+@MainActor
 final class HedosAppDelegate: NSObject, NSApplicationDelegate {
     private var proxies: [ObjectIdentifier: FullScreenPresentationProxy] = [:]
-    private var keyObserver: (any NSObjectProtocol)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        keyObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            guard let self, let window = notification.object as? NSWindow,
-                window.styleMask.contains(.fullSizeContentView) || window.toolbar != nil
-            else { return }
-            let key = ObjectIdentifier(window)
-            if let proxy = self.proxies[key] {
-                if window.delegate !== proxy {
-                    proxy.base = window.delegate
-                    window.delegate = proxy
-                }
-                return
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowBecameKey(_:)),
+            name: NSWindow.didBecomeKeyNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(windowWillClose(_:)),
+            name: NSWindow.willCloseNotification, object: nil)
+    }
+
+    @objc private func windowBecameKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+            window.styleMask.contains(.fullSizeContentView) || window.toolbar != nil
+        else { return }
+        let key = ObjectIdentifier(window)
+        if let proxy = proxies[key] {
+            if window.delegate !== proxy {
+                proxy.base = window.delegate
+                window.delegate = proxy
             }
-            let proxy = FullScreenPresentationProxy()
-            proxy.base = window.delegate
-            window.delegate = proxy
-            self.proxies[key] = proxy
+            return
         }
-        _ = NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            guard let self, let window = notification.object as? NSWindow else { return }
-            self.proxies.removeValue(forKey: ObjectIdentifier(window))
-        }
+        let proxy = FullScreenPresentationProxy()
+        proxy.base = window.delegate
+        window.delegate = proxy
+        proxies[key] = proxy
+    }
+
+    @objc private func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        proxies.removeValue(forKey: ObjectIdentifier(window))
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

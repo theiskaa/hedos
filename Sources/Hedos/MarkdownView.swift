@@ -178,7 +178,7 @@ struct CodeBlockView: View {
 
     private var highlighted: Text {
         highlightedTokens.reduce(Text(verbatim: "")) { result, token in
-            result + styled(token)
+            Text("\(result)\(styled(token))")
         }
     }
 

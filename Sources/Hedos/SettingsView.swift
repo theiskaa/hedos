@@ -202,7 +202,7 @@ final class SettingsModel {
         let value = prompt
         persist("prompt-\(prompt.id)") { kernel in
             guard !value.title.isEmpty || !value.body.isEmpty else { return }
-            try? await kernel.promptStore.save(value)
+            _ = try? await kernel.promptStore.save(value)
         }
     }
 
@@ -357,7 +357,7 @@ final class SettingsModel {
     }
 
     func refreshInstalledRuntimes() async {
-        installedRuntimes = await kernel.runtimeCatalog.installedCommunity()
+        installedRuntimes = kernel.runtimeCatalog.installedCommunity()
     }
 
     func previewRuntimeInstall(from url: URL) async throws -> RuntimeInstallPreview {
@@ -452,7 +452,7 @@ final class SettingsModel {
             guard let prompt = prompts.first(where: { $0.id == id }),
                 !prompt.title.isEmpty || !prompt.body.isEmpty
             else { continue }
-            try? await kernel.promptStore.save(prompt)
+            _ = try? await kernel.promptStore.save(prompt)
         }
         try? await kernel.settings.save(general)
         try? await kernel.settings.save(models)
@@ -594,6 +594,7 @@ enum ThemeBootstrap {
         UserDefaults.standard.set(mode.rawValue, forKey: modeKey)
     }
 
+    @MainActor
     static func apply() {
         let family = UserDefaults.standard.string(forKey: familyKey) ?? ThemeFamily.defaultID
         ThemeStore.select(family)

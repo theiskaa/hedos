@@ -88,9 +88,9 @@ public actor SidecarSupervisor {
         }
         Task {
             for await chunk in chunks {
-                await self.ingest(chunk, for: id)
+                self.ingest(chunk, for: id)
             }
-            await self.markEOF(id)
+            self.markEOF(id)
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
@@ -131,7 +131,7 @@ public actor SidecarSupervisor {
                 } catch {
                     continuation.finish(throwing: error)
                 }
-                await self.settleStream(spec.runtimeID, session: session)
+                self.settleStream(spec.runtimeID, session: session)
             }
             continuation.onTermination = { termination in
                 if case .cancelled = termination {
@@ -174,7 +174,7 @@ public actor SidecarSupervisor {
             session,
             Task {
                 try? await Task.sleep(for: grace)
-                await self.expireCancelWatchdog(id, session: session)
+                self.expireCancelWatchdog(id, session: session)
             }
         )
     }
@@ -213,7 +213,7 @@ public actor SidecarSupervisor {
                 } catch {
                     continuation.finish(throwing: error)
                 }
-                await self.settleStream(spec.runtimeID, session: session)
+                self.settleStream(spec.runtimeID, session: session)
             }
             continuation.onTermination = { termination in
                 guard case .cancelled = termination else { return }
@@ -252,7 +252,7 @@ public actor SidecarSupervisor {
             session,
             Task {
                 try? await Task.sleep(for: grace)
-                await self.expireCancelWatchdog(id, session: session)
+                self.expireCancelWatchdog(id, session: session)
             }
         )
     }

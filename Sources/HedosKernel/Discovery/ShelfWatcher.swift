@@ -10,16 +10,16 @@ struct HabitatMap: Sendable {
 
     static func canonicalRootPath(_ url: URL) -> String {
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        if realpath(url.path, &buffer) != nil {
-            return String(cString: buffer)
+        if let real = realpath(url.path, &buffer) {
+            return String(cString: real)
         }
         var missing: [String] = []
         var current = url
         while current.pathComponents.count > 1 {
             missing.insert(current.lastPathComponent, at: 0)
             current = current.deletingLastPathComponent()
-            if realpath(current.path, &buffer) != nil {
-                var resolved = URL(fileURLWithPath: String(cString: buffer))
+            if let real = realpath(current.path, &buffer) {
+                var resolved = URL(fileURLWithPath: String(cString: real))
                 for component in missing {
                     resolved = resolved.appendingPathComponent(component)
                 }

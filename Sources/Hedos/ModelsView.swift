@@ -536,7 +536,7 @@ struct ModelsPane: View {
         .padding(Design.Space.pane)
     }
 
-    static func storeTitle(_ kind: SourceKind) -> String { kind.storeTitle }
+    nonisolated static func storeTitle(_ kind: SourceKind) -> String { kind.storeTitle }
 }
 
 extension SourceKind {

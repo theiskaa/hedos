@@ -17,10 +17,10 @@ public enum HarnessError: Error, Sendable, Equatable, LocalizedError {
 public enum PlaceBoundary {
     public static func canonical(_ path: String) -> String {
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        guard realpath(path, &buffer) != nil else {
+        guard let real = realpath(path, &buffer) else {
             return URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         }
-        return String(cString: buffer)
+        return String(cString: real)
     }
 
     public static func resolve(_ requested: String, in place: String) throws -> String {

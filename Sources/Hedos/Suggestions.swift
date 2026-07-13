@@ -117,7 +117,7 @@ struct HardwareProfile {
         guard size > 0 else { return "Apple Silicon" }
         var buffer = [CChar](repeating: 0, count: size)
         sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
-        let value = String(cString: buffer)
+        let value = buffer.withUnsafeBufferPointer { $0.baseAddress.map { String(cString: $0) } } ?? ""
         return value.isEmpty ? "Apple Silicon" : value
     }
 }

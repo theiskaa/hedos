@@ -56,22 +56,22 @@ final class LibraryViewModel {
     }
 
     func addFolder(_ url: URL) async {
-        try? await kernel.settings.addWatchedFolder(url.path)
+        _ = try? await kernel.settings.addWatchedFolder(url.path)
         await rescan()
     }
 
     func removeFolder(_ path: String) async {
-        try? await kernel.settings.removeWatchedFolder(path)
+        _ = try? await kernel.settings.removeWatchedFolder(path)
         await rescan()
     }
 
     func addHFRoot(_ url: URL) async {
-        try? await kernel.settings.addHFCacheRoot(url.path)
+        _ = try? await kernel.settings.addHFCacheRoot(url.path)
         await rescan()
     }
 
     func removeHFRoot(_ path: String) async {
-        try? await kernel.settings.removeHFCacheRoot(path)
+        _ = try? await kernel.settings.removeHFCacheRoot(path)
         await rescan()
     }
 

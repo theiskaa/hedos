@@ -3,6 +3,7 @@ import HedosKernel
 import SwiftUI
 
 enum RuntimePicker {
+    @MainActor
     static func pick(_ onPick: @escaping (URL) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true

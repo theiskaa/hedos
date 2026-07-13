@@ -482,7 +482,7 @@ struct GatewayCodeBlock: View {
 
     private var highlighted: Text {
         tokens.reduce(Text(verbatim: "")) { result, token in
-            result + styled(token)
+            Text("\(result)\(styled(token))")
         }
     }
 

@@ -1744,7 +1744,6 @@ struct ChatView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    @ViewBuilder
     private func thinkingBlock(_ entry: ChatViewModel.Entry) -> some View {
         let streaming =
             entry.text.isEmpty && model.isStreaming && !entry.persisted
