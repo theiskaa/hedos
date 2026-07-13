@@ -1,3 +1,4 @@
+import HedosKernel
 import SwiftUI
 
 struct InkSlider: View {
@@ -192,6 +193,61 @@ struct InkSegmented: View {
                 .accessibilityAddTraits(selection == candidate ? .isSelected : [])
             }
         }
+    }
+}
+
+struct AppearanceModeToggle: View {
+    let selection: AppearanceSettings.Theme
+    let onSelect: (AppearanceSettings.Theme) -> Void
+    @Namespace private var thumb
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let modes: [(mode: AppearanceSettings.Theme, label: String, icon: String)] = [
+        (.system, "System", "circle.lefthalf.filled"),
+        (.light, "Light", "sun.max"),
+        (.dark, "Dark", "moon.stars"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(modes, id: \.mode) { entry in
+                let isOn = selection == entry.mode
+                HStack(spacing: Design.Space.xxs) {
+                    Image(systemName: entry.icon)
+                        .font(.system(size: 11, weight: .medium))
+                    Text(entry.label)
+                        .font(Design.label.weight(isOn ? .semibold : .regular))
+                }
+                .foregroundStyle(isOn ? Design.ink : Design.inkSoft)
+                .lineLimit(1)
+                .padding(.vertical, Design.Space.xs + 2)
+                .frame(maxWidth: .infinity)
+                .background {
+                    if isOn {
+                        Capsule(style: .continuous)
+                            .fill(Design.surface)
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Design.line.opacity(0.7), lineWidth: 0.5))
+                            .matchedGeometryEffect(id: "thumb", in: thumb)
+                    }
+                }
+                .contentShape(Capsule(style: .continuous))
+                .onTapGesture {
+                    onSelect(entry.mode)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(entry.label)
+                .accessibilityAddTraits(isOn ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(3)
+        .background(Design.inkWash, in: Capsule(style: .continuous))
+        .overlay(
+            Capsule(style: .continuous)
+                .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .frame(width: 288)
+        .animation(reduceMotion ? nil : Design.wash, value: selection)
     }
 }
 
@@ -731,6 +787,52 @@ struct InkChoiceCard<Preview: View>: View {
     }
 }
 
+struct ThemeFamilyCard: View {
+    let family: ThemeFamily
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: Design.Space.s) {
+                ThemePreview(family: family, variant: .system)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 108)
+                    .clipShape(RoundedRectangle.soft(Design.Radius.card))
+                    .overlay(
+                        RoundedRectangle.soft(Design.Radius.card)
+                            .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                HStack(spacing: Design.Space.xs) {
+                    Text(family.name)
+                        .font(Design.body.weight(selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? Design.ink : Design.inkSoft)
+                    Spacer()
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(selected ? Design.accent : Design.inkFaint)
+                }
+                .padding(.horizontal, Design.Space.xxs)
+            }
+            .padding(Design.Space.s)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.card)
+                    .strokeBorder(
+                        selected ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.line),
+                        lineWidth: selected ? 1.5 : Design.hairlineWidth))
+            .offset(y: hovering && !reduceMotion ? -2 : 0)
+            .contentShape(RoundedRectangle.soft(Design.Radius.card))
+            .animation(.easeOut(duration: 0.15), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel(family.name)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
 struct ThemePreview: View {
     enum Variant {
         case system
@@ -738,31 +840,29 @@ struct ThemePreview: View {
         case dark
     }
 
+    var family: ThemeFamily = .standard
     let variant: Variant
 
+    private func swatch(_ palette: ThemePalette) -> (Color, Color, Color, Color, Color) {
+        (
+            Design.fixed(palette.ground), Design.fixed(palette.card), Design.fixed(palette.text),
+            Design.fixed(palette.muted), Design.fixed(palette.accentDim)
+        )
+    }
+
     var body: some View {
+        let l = swatch(family.light)
+        let d = swatch(family.dark)
         switch variant {
         case .light:
-            mock(
-                paper: Design.PreviewPalette.lightPaper, surface: Design.PreviewPalette.lightSurface,
-                ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft,
-                accent: Design.PreviewPalette.lightAccent)
+            mock(paper: l.0, surface: l.1, ink: l.2, soft: l.3, accent: l.4)
         case .dark:
-            mock(
-                paper: Design.PreviewPalette.darkPaper, surface: Design.PreviewPalette.darkSurface,
-                ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft,
-                accent: Design.PreviewPalette.darkAccent)
+            mock(paper: d.0, surface: d.1, ink: d.2, soft: d.3, accent: d.4)
         case .system:
             ZStack {
-                mock(
-                    paper: Design.PreviewPalette.lightPaper, surface: Design.PreviewPalette.lightSurface,
-                    ink: Design.PreviewPalette.lightInk, soft: Design.PreviewPalette.lightSoft,
-                    accent: Design.PreviewPalette.lightAccent)
-                mock(
-                    paper: Design.PreviewPalette.darkPaper, surface: Design.PreviewPalette.darkSurface,
-                    ink: Design.PreviewPalette.darkInk, soft: Design.PreviewPalette.darkSoft,
-                    accent: Design.PreviewPalette.darkAccent)
-                .clipShape(DiagonalHalf())
+                mock(paper: l.0, surface: l.1, ink: l.2, soft: l.3, accent: l.4)
+                mock(paper: d.0, surface: d.1, ink: d.2, soft: d.3, accent: d.4)
+                    .clipShape(DiagonalHalf())
             }
         }
     }

@@ -79,8 +79,11 @@ enum SettingsIndex {
             id: "voice.autoSpeak", section: "Voice", title: "Speak replies and narrations aloud",
             keywords: ["auto", "speak", "read", "aloud", "voice", "reply"]),
         .init(
-            id: "appearance.theme", section: "Appearance", title: "Theme",
-            keywords: ["dark", "light", "system", "appearance"]),
+            id: "appearance.family", section: "Appearance", title: "Theme",
+            keywords: ["theme", "palette", "default", "gruvbox", "color"]),
+        .init(
+            id: "appearance.theme", section: "Appearance", title: "Appearance",
+            keywords: ["dark", "light", "system", "mode", "appearance"]),
         .init(
             id: "appearance.width", section: "Appearance", title: "Chat width",
             keywords: ["wide", "comfortable", "layout"]),
@@ -212,9 +215,15 @@ final class SettingsModel {
     }
 
     func applyTheme() {
-        NSApp.appearance = appearance.theme.nsAppearance
+        ThemeStore.select(appearance.family)
+        let resolved = appearance.theme.nsAppearance
+        NSApp.appearance = resolved
+        for window in NSApp.windows {
+            window.appearance = resolved
+        }
         Design.fontBook = Design.FontBook(
             uiFamily: appearance.uiFont, monoFamily: appearance.monoFont)
+        ThemeBootstrap.remember(family: appearance.family, mode: appearance.theme)
     }
 
     func applyShellIntegrations() {
@@ -556,9 +565,35 @@ struct SettingsDestination: Equatable {
 extension AppearanceSettings.Theme {
     var nsAppearance: NSAppearance? {
         switch self {
-        case .system: NSAppearance(named: .darkAqua)
+        case .system: nil
         case .light: NSAppearance(named: .aqua)
         case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+extension AppearanceSettings {
+    var themeIdentity: String {
+        "\(Design.fontBook.identity)/\(family)"
+    }
+}
+
+enum ThemeBootstrap {
+    private static let familyKey = "hedos.appearance.family"
+    private static let modeKey = "hedos.appearance.mode"
+
+    static func remember(family: String, mode: AppearanceSettings.Theme) {
+        UserDefaults.standard.set(family, forKey: familyKey)
+        UserDefaults.standard.set(mode.rawValue, forKey: modeKey)
+    }
+
+    static func apply() {
+        let family = UserDefaults.standard.string(forKey: familyKey) ?? ThemeFamily.defaultID
+        ThemeStore.select(family)
+        if let raw = UserDefaults.standard.string(forKey: modeKey),
+            let mode = AppearanceSettings.Theme(rawValue: raw)
+        {
+            NSApp.appearance = mode.nsAppearance
         }
     }
 }
@@ -583,11 +618,11 @@ struct SettingsRoot: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .id(Design.fontBook.identity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.container, edges: .top)
         .scrollEdgeEffectStyle(.none, for: .top)
         .background(Design.paper.ignoresSafeArea())
+        .id(model.appearance.themeIdentity)
         .modalScrim(
             isPresented: showingAddServer,
             onDismiss: { showingAddServer = false }
@@ -1343,30 +1378,45 @@ struct SettingsRoot: View {
     private var appearanceSection: some View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
+            group("Appearance") {
+                HStack(alignment: .center) {
+                    Text("Mode")
+                        .font(Design.caption.weight(.medium))
+                        .foregroundStyle(Design.ink)
+                    Spacer(minLength: Design.Space.l)
+                    AppearanceModeToggle(
+                        selection: model.appearance.theme,
+                        onSelect: { mode in
+                            model.appearance.theme = mode
+                            model.saveAppearance()
+                        })
+                }
+                .padding(.vertical, Design.Space.l)
+                .padding(.horizontal, Design.Space.s)
+                .id("appearance.theme")
+                .background(highlightBackground("appearance.theme"))
+            }
             group("Theme") {
-                cardChoiceRow("appearance.theme", "Theme") {
-                    InkChoiceCard(
-                        label: "Graphite",
-                        selected: model.appearance.theme == .system
-                            || model.appearance.theme == .dark,
-                        action: {
-                            model.appearance.theme = .dark
-                            model.saveAppearance()
-                        }
-                    ) {
-                        ThemePreview(variant: .dark)
-                    }
-                    InkChoiceCard(
-                        label: "White",
-                        selected: model.appearance.theme == .light,
-                        action: {
-                            model.appearance.theme = .light
-                            model.saveAppearance()
-                        }
-                    ) {
-                        ThemePreview(variant: .light)
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), spacing: Design.Space.m),
+                        GridItem(.flexible(), spacing: Design.Space.m),
+                    ],
+                    spacing: Design.Space.m
+                ) {
+                    ForEach(ThemeFamily.all) { family in
+                        ThemeFamilyCard(
+                            family: family,
+                            selected: model.appearance.family == family.id,
+                            action: {
+                                model.appearance.family = family.id
+                                model.saveAppearance()
+                            })
                     }
                 }
+                .padding(.vertical, Design.Space.chipX)
+                .id("appearance.family")
+                .background(highlightBackground("appearance.family"))
             }
             group("Type") {
                 settingRow("appearance.fontUI", "App font") {

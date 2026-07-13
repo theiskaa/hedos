@@ -86,6 +86,7 @@ struct HedosApp: App {
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
+        ThemeBootstrap.apply()
     }
 
     var body: some Scene {

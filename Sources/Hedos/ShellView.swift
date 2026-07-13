@@ -404,7 +404,6 @@ struct ShellView: View {
                             value: shell.audio.track)
                 }
         }
-        .id(Design.fontBook.identity)
         .ignoresSafeArea(.container, edges: .top)
         .scrollEdgeEffectStyle(.none, for: .top)
         .frame(minWidth: Design.Window.mainMin.width, minHeight: Design.Window.mainMin.height)
@@ -422,6 +421,7 @@ struct ShellView: View {
         .environment(\.chatShowsStats, shell.settings.chat.showStats)
         .environment(\.sendWithEnter, shell.settings.chat.sendWithEnter)
         .tint(Design.ink)
+        .id(shell.settings.appearance.themeIdentity)
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSWindow.willEnterFullScreenNotification)
