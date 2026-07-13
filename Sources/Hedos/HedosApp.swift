@@ -152,6 +152,11 @@ struct HedosApp: App {
                 }
             }
             CommandGroup(before: .toolbar) {
+                Button("Command Palette") {
+                    shell.toggleCommandPalette()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                Divider()
                 ForEach(
                     Array(
                         AppMode.allCases

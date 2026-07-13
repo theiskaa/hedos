@@ -21,6 +21,7 @@ final class ShellModel {
     var chatSelection: String?
     var imagesSelection: String?
     var showingGallery = false
+    var commandPaletteOpen = false
     var galleryFocusID: String?
     var pendingLaunch: PendingLaunch?
     var voiceSelection: String?
@@ -445,6 +446,7 @@ struct ShellView: View {
             }
         }
         .task { await shell.start() }
+        .commandPalette(isPresented: $shell.commandPaletteOpen, shell: shell)
     }
 
     @ViewBuilder
@@ -585,8 +587,17 @@ struct HedosSidebar: View {
             railQuery = ""
             shell.setMode(mode)
         }
-        .help("\(Design.modeTitle(mode)) — ⌘\(mode.ordinal)")
+        .help(
+            shortcutNumber(mode).map { "\(Design.modeTitle(mode)) — ⌘\($0)" }
+                ?? Design.modeTitle(mode))
         .accessibilityIdentifier("rail-\(mode.rawValue)")
+    }
+
+    private func shortcutNumber(_ mode: AppMode) -> Int? {
+        let visible = AppMode.allCases.filter {
+            $0 != .settings && ShellModel.surfaced($0) == $0
+        }
+        return visible.firstIndex(of: mode).map { $0 + 1 }
     }
 
     private func rowMatches(_ title: String) -> Bool {
