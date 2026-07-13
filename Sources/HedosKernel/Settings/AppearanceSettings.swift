@@ -15,13 +15,17 @@ public struct AppearanceSettings: SettingsDomain {
         case relaxed, compact
     }
 
+    public var family: String
     public var theme: Theme
     public var chatWidth: ChatWidth
     public var density: Density
     public var uiFont: String?
     public var monoFont: String?
 
+    public static let defaultFamily = "default"
+
     public init() {
+        family = Self.defaultFamily
         theme = .system
         chatWidth = .comfortable
         density = .relaxed
@@ -30,12 +34,14 @@ public struct AppearanceSettings: SettingsDomain {
     }
 
     public init(
+        family: String = defaultFamily,
         theme: Theme = .system,
         chatWidth: ChatWidth = .comfortable,
         density: Density = .relaxed,
         uiFont: String? = nil,
         monoFont: String? = nil
     ) {
+        self.family = family
         self.theme = theme
         self.chatWidth = chatWidth
         self.density = density
@@ -44,7 +50,7 @@ public struct AppearanceSettings: SettingsDomain {
     }
 
     enum CodingKeys: String, CodingKey {
-        case theme, chatWidth, density, uiFont, monoFont
+        case family, theme, chatWidth, density, uiFont, monoFont
     }
 
     public init(from decoder: any Decoder) throws {
@@ -53,6 +59,7 @@ public struct AppearanceSettings: SettingsDomain {
             self = defaults
             return
         }
+        family = container.lenient(String.self, .family, fallback: defaults.family)
         theme = container.lenient(Theme.self, .theme, fallback: defaults.theme)
         chatWidth = container.lenient(ChatWidth.self, .chatWidth, fallback: defaults.chatWidth)
         density = container.lenient(Density.self, .density, fallback: defaults.density)

@@ -304,14 +304,17 @@ private func waitUntil(
     let store = SettingsStore(directory: dir)
     let appearance = await store.appearance()
     #expect(appearance.theme == .dark)
+    #expect(appearance.family == "default")
     #expect(appearance.uiFont == nil)
     #expect(appearance.monoFont == nil)
 
     var chosen = appearance
     chosen.uiFont = "Charter"
+    chosen.family = "gruvbox"
     try await store.save(chosen)
     let reloaded = await SettingsStore(directory: dir).appearance()
     #expect(reloaded.uiFont == "Charter")
+    #expect(reloaded.family == "gruvbox")
     #expect(reloaded.monoFont == nil)
 }
 
