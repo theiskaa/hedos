@@ -22,12 +22,12 @@ enum Design {
     }
 
     enum Radius {
-        static var control: CGFloat { ThemeStore.shared.shape.control }
-        static var card: CGFloat { ThemeStore.shared.shape.card }
-        static var tile: CGFloat { ThemeStore.shared.shape.tile }
-        static var surface: CGFloat { ThemeStore.shared.shape.surface }
-        static var bubble: CGFloat { ThemeStore.shared.shape.bubble }
-        static var artifact: CGFloat { ThemeStore.shared.shape.artifact }
+        static var control: CGFloat { ThemeStore.shape.control }
+        static var card: CGFloat { ThemeStore.shape.card }
+        static var tile: CGFloat { ThemeStore.shape.tile }
+        static var surface: CGFloat { ThemeStore.shape.surface }
+        static var bubble: CGFloat { ThemeStore.shape.bubble }
+        static var artifact: CGFloat { ThemeStore.shape.artifact }
     }
 
     struct Shade {
@@ -243,19 +243,19 @@ enum Design {
     static let added = fixed(0x2EA043)
 
     enum PreviewPalette {
-        static let lightPaper = fixed(Theme.paper.palette.ground)
-        static let lightSurface = fixed(Theme.paper.palette.card)
-        static let lightInk = fixed(Theme.paper.palette.text)
-        static let lightSoft = fixed(Theme.paper.palette.muted)
-        static let lightAccent = fixed(Theme.paper.palette.accentDim)
-        static let darkPaper = fixed(Theme.graphite.palette.ground)
-        static let darkSurface = fixed(Theme.graphite.palette.card)
-        static let darkInk = fixed(Theme.graphite.palette.text)
-        static let darkSoft = fixed(Theme.graphite.palette.muted)
-        static let darkAccent = fixed(Theme.graphite.palette.accentDim)
+        static let lightPaper = fixed(ThemeFamily.standard.light.ground)
+        static let lightSurface = fixed(ThemeFamily.standard.light.card)
+        static let lightInk = fixed(ThemeFamily.standard.light.text)
+        static let lightSoft = fixed(ThemeFamily.standard.light.muted)
+        static let lightAccent = fixed(ThemeFamily.standard.light.accentDim)
+        static let darkPaper = fixed(ThemeFamily.standard.dark.ground)
+        static let darkSurface = fixed(ThemeFamily.standard.dark.card)
+        static let darkInk = fixed(ThemeFamily.standard.dark.text)
+        static let darkSoft = fixed(ThemeFamily.standard.dark.muted)
+        static let darkAccent = fixed(ThemeFamily.standard.dark.accentDim)
     }
 
-    private static func fixed(_ hex: Int) -> Color {
+    static func fixed(_ hex: Int) -> Color {
         Color(
             red: Double((hex >> 16) & 0xFF) / 255,
             green: Double((hex >> 8) & 0xFF) / 255,
@@ -269,7 +269,7 @@ enum Design {
                 dynamicProvider: { appearance in
                     let palette =
                         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                        ? ThemeStore.shared.dark : ThemeStore.shared.light
+                        ? ThemeStore.dark : ThemeStore.light
                     let hex = pick(palette)
                     return NSColor(
                         srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,

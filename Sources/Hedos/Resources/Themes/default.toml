@@ -1,0 +1,56 @@
+# Default — neutral white light + true-dark.
+
+[meta]
+name = "Default"
+
+[light.surface]
+ground = "#F4F4F5"
+panel = "#FAFAFB"
+card = "#FFFFFF"
+card2 = "#F7F7F8"
+line = "#E4E4E7"
+line_bright = "#D4D4D8"
+
+[light.ink]
+text = "#18181B"
+muted = "#6B6B70"
+faint = "#A1A1A6"
+
+[light.accent]
+value = "#18181B"
+dim = "#3F3F46"
+on = "#FFFFFF"
+
+[light.heat]
+warm = "#B4791F"
+error = "#DC2626"
+
+[dark.surface]
+ground = "#0A0A0B"
+panel = "#121214"
+card = "#171719"
+card2 = "#1E1E21"
+line = "#262629"
+line_bright = "#37373C"
+
+[dark.ink]
+text = "#FAFAFA"
+muted = "#A0A0A6"
+faint = "#6E6E74"
+
+[dark.accent]
+value = "#FAFAFA"
+dim = "#D0D0D6"
+on = "#0A0A0B"
+
+[dark.heat]
+warm = "#E0A64B"
+error = "#E5544B"
+
+[shape]
+radius_control = 8
+radius_card = 12
+radius_bubble = 16
+radius_artifact = 14
+unit = 16
+hairline = 1
