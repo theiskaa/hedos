@@ -261,7 +261,7 @@ struct CollapsingSidebar<Expanded: View, Collapsed: View>: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background {
             VisualEffectBackground(material: .sidebar, blending: .behindWindow)
-                .overlay(Design.surface.opacity(0.35))
+                .overlay(Design.panel.opacity(0.94))
                 .ignoresSafeArea()
         }
     }
