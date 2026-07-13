@@ -292,6 +292,9 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
             slashHighlight = (slashHighlight + 1) % entries.count
             return true
         case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                return false
+            }
             acceptSlash(entries[min(slashHighlight, entries.count - 1)])
             return true
         case #selector(NSResponder.cancelOperation(_:)):
