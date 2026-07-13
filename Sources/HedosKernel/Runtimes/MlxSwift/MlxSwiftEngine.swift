@@ -11,6 +11,17 @@ actor MlxSwiftEngine {
     private var loadedModelID: String?
     private var container: ModelContainer?
     private let generationSlot = GenerationSlot()
+    private var cacheBoxes: [KVCacheBox] = []
+    private static let maxCacheBoxes = 2
+
+    final class KVCacheBox: @unchecked Sendable {
+        var caches: [KVCache]
+        var tokens: [Int32]
+        init(caches: [KVCache], tokens: [Int32]) {
+            self.caches = caches
+            self.tokens = tokens
+        }
+    }
 
     struct GenerationParams: Sendable {
         var temperature: Float
@@ -148,7 +159,13 @@ actor MlxSwiftEngine {
             if stopMatcher.stopped { stoppedByMatch = true }
         }
 
-        let stream = try await container.perform { context -> AsyncStream<Generation> in
+        let reuseEnabled =
+            ProcessInfo.processInfo.environment["HEDOS_MLX_KV_CACHE"] != "0"
+        let allowReuse = reuseEnabled && params.repeatPenalty == nil
+        let candidates = allowReuse ? cacheBoxes : []
+
+        let (stream, activeBox, touchedBox) = try await container.perform {
+            context -> (AsyncStream<Generation>, KVCacheBox, KVCacheBox?) in
             let input: LMInput
             if context.tokenizer.hasChatTemplate {
                 let chat: [Chat.Message] = messages.map { message in
@@ -179,8 +196,42 @@ actor MlxSwiftEngine {
                 let rendered = Self.renderChatML(messages)
                 input = try await context.processor.prepare(input: UserInput(prompt: .text(rendered)))
             }
-            return try MLXLMCommon.generate(
-                input: input, parameters: generateParameters, context: context)
+            let promptTokens = input.text.tokens.asArray(Int32.self)
+            let plainInput = input.text.mask == nil
+            var chosen: KVCacheBox?
+            var chosenPrefix = 0
+            if plainInput {
+                for box in candidates where box.caches.allSatisfy(\.isTrimmable) {
+                    let prefix = Self.commonPrefixLength(box.tokens, promptTokens)
+                    if prefix > chosenPrefix {
+                        chosenPrefix = prefix
+                        chosen = box
+                    }
+                }
+            }
+            let usable = min(chosenPrefix, promptTokens.count - 1)
+            if let chosen, usable > 0, let offset = chosen.caches.first?.offset, offset >= usable {
+                for cache in chosen.caches { _ = cache.trim(cache.offset - usable) }
+                if chosen.caches.allSatisfy({ $0.offset == usable }) {
+                    chosen.tokens = promptTokens
+                    let feedInput = LMInput(tokens: MLXArray(Array(promptTokens[usable...])))
+                    let stream = try MLXLMCommon.generate(
+                        input: feedInput, cache: chosen.caches, parameters: generateParameters,
+                        context: context)
+                    return (stream, chosen, chosen)
+                }
+                let caches = context.model.newCache(parameters: generateParameters)
+                let stream = try MLXLMCommon.generate(
+                    input: input, cache: caches, parameters: generateParameters, context: context)
+                return (stream, KVCacheBox(caches: caches, tokens: promptTokens), chosen)
+            }
+            let caches = context.model.newCache(parameters: generateParameters)
+            let stream = try MLXLMCommon.generate(
+                input: input, cache: caches, parameters: generateParameters, context: context)
+            return (stream, KVCacheBox(caches: caches, tokens: promptTokens), nil)
+        }
+        if let touchedBox {
+            cacheBoxes.removeAll { $0 === touchedBox }
         }
 
         consume: for await generation in stream {
@@ -217,6 +268,14 @@ actor MlxSwiftEngine {
             if stopMatcher.isActive, !stoppedByMatch {
                 let tail = stopMatcher.flush()
                 if !tail.isEmpty { continuation.yield(.text(tail)) }
+            }
+        }
+
+        promptTokenCount = activeBox.tokens.count
+        if allowReuse, !stoppedByMatch {
+            cacheBoxes.insert(activeBox, at: 0)
+            if cacheBoxes.count > Self.maxCacheBoxes {
+                cacheBoxes = Array(cacheBoxes.prefix(Self.maxCacheBoxes))
             }
         }
 
@@ -261,7 +320,15 @@ actor MlxSwiftEngine {
         container = nil
         loadedPath = nil
         loadedModelID = nil
+        cacheBoxes = []
         MLX.GPU.clearCache()
+    }
+
+    private static func commonPrefixLength(_ a: [Int32], _ b: [Int32]) -> Int {
+        let limit = min(a.count, b.count)
+        var index = 0
+        while index < limit, a[index] == b[index] { index += 1 }
+        return index
     }
 
     static func cacheLimit(footprintMB: Int?) -> Int {
