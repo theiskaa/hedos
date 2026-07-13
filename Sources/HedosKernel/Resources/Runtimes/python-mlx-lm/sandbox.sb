@@ -49,5 +49,10 @@
 
 (allow mach-lookup (global-name "com.apple.MTLCompilerService"))
 
+(allow file-issue-extension
+    (require-all
+        (extension-class "com.apple.app-sandbox.read-write")
+        (subpath (param "CACHE"))))
+
 (allow sysctl-read)
 (allow ipc-posix-shm)
