@@ -476,11 +476,6 @@ final class ChatViewModel {
         }
     }
 
-    func releaseImageWatcher() {
-        imageTask?.cancel()
-        imageTask = nil
-    }
-
     private func watchImage(_ id: String, prompt: String) async {
         for await event in await kernel.scheduler.events(id: id) {
             switch event {
@@ -725,14 +720,7 @@ final class ChatViewModel {
 
     func suspend() {
         isVisible = false
-        speakTask?.cancel()
-        if let speakLiveID {
-            audio.dismissIfActive(speakLiveID)
-        }
-        speakLiveID = nil
         stopTicker()
-        isSpeaking = false
-        pendingSpeech = nil
     }
 
     func resumeUI() {
@@ -1191,7 +1179,6 @@ struct ChatView: View {
         }
         .onDisappear {
             model.suspend()
-            model.releaseImageWatcher()
             model.stopReadAloud()
             model.stopVoicePreview()
             voiceConversation.stop()
