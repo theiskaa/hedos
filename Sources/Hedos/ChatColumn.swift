@@ -192,6 +192,7 @@ struct ChatSessionsColumn: View {
     @State private var hits: [SearchHit] = []
     @State private var hoveredSession: String?
     @State private var hoveredHit: String?
+    @FocusState private var listFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -242,11 +243,7 @@ struct ChatSessionsColumn: View {
                                 .padding(Design.Space.m)
                         } else {
                             ForEach(matches) { session in
-                                ChatSessionRow(
-                                    session: session, shell: shell,
-                                    hovered: $hoveredSession
-                                )
-                                .contextMenu { rowActions(session) }
+                                sessionRow(session)
                             }
                         }
                     } else if shell.filteredSessions.isEmpty {
@@ -265,11 +262,7 @@ struct ChatSessionsColumn: View {
                                 .padding(.top, Design.Space.l)
                                 .padding(.bottom, Design.Space.xxs)
                             ForEach(group.sessions) { session in
-                                ChatSessionRow(
-                                    session: session, shell: shell,
-                                    hovered: $hoveredSession
-                                )
-                                .contextMenu { rowActions(session) }
+                                sessionRow(session)
                             }
                         }
                     }
@@ -283,23 +276,6 @@ struct ChatSessionsColumn: View {
             }
         }
         .task { await shell.refreshSessions() }
-        .alert(
-            "Rename Chat",
-            isPresented: Binding(
-                get: { renaming != nil },
-                set: { if !$0 { renaming = nil } })
-        ) {
-            TextField("Title", text: $renameTitle)
-            Button("Rename") {
-                if let session = renaming {
-                    rename(session, to: renameTitle)
-                }
-                renaming = nil
-            }
-            Button("Cancel", role: .cancel) {
-                renaming = nil
-            }
-        }
         .confirmationDialog(
             "Delete “\(deleting?.title ?? "")”?",
             isPresented: Binding(
@@ -308,7 +284,7 @@ struct ChatSessionsColumn: View {
         ) {
             Button("Delete", role: .destructive) {
                 if let session = deleting {
-                    delete(session)
+                    shell.deleteChat(id: session.id)
                 }
                 deleting = nil
             }
@@ -316,6 +292,9 @@ struct ChatSessionsColumn: View {
         } message: {
             Text("The conversation leaves your history.")
         }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($listFocused)
         .onDeleteCommand {
             if let id = shell.chatSelection,
                 let session = shell.sessions.first(where: { $0.id == id })
@@ -323,6 +302,44 @@ struct ChatSessionsColumn: View {
                 deleting = session
             }
         }
+        .onMoveCommand { direction in
+            let ordered = orderedSessions
+            guard !ordered.isEmpty else { return }
+            let current = ordered.firstIndex { $0.id == shell.chatSelection }
+            switch direction {
+            case .up:
+                let next = current.map { max(0, $0 - 1) } ?? ordered.count - 1
+                shell.selectChat(ordered[next].id)
+            case .down:
+                let next = current.map { min(ordered.count - 1, $0 + 1) } ?? 0
+                shell.selectChat(ordered[next].id)
+            default:
+                break
+            }
+        }
+    }
+
+    private var orderedSessions: [ChatSession] {
+        if !query.isEmpty {
+            return shell.filteredSessions.filter {
+                $0.title.localizedCaseInsensitiveContains(query)
+            }
+        }
+        return SessionGrouping.groups(shell.filteredSessions).flatMap(\.sessions)
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ session: ChatSession) -> some View {
+        ChatSessionRow(
+            session: session,
+            shell: shell,
+            hovered: $hoveredSession,
+            renaming: renaming?.id == session.id,
+            renameText: $renameTitle,
+            onCommitRename: { commitRename() },
+            onCancelRename: { renaming = nil }
+        )
+        .contextMenu { rowActions(session) }
     }
 
     @ViewBuilder
@@ -333,10 +350,10 @@ struct ChatSessionsColumn: View {
             renaming = live
         }
         Button(live.pinned ? "Unpin" : "Pin") {
-            setPinned(live, !live.pinned)
+            shell.setChatPinned(id: live.id, !live.pinned)
         }
         Button(live.archived ? "Unarchive" : "Archive") {
-            setArchived(live, !live.archived)
+            shell.setChatArchived(id: live.id, !live.archived)
         }
         Divider()
         if shell.settings.chat.exportFormat == .json {
@@ -378,42 +395,94 @@ struct ChatSessionsColumn: View {
         }
     }
 
-    private func rename(_ session: ChatSession, to title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        mutate { try await $0.renameSession(id: session.id, title: trimmed) }
+    private func commitRename() {
+        if let session = renaming {
+            shell.renameChat(id: session.id, to: renameTitle)
+        }
+        renaming = nil
+    }
+}
+
+private struct RenameField: NSViewRepresentable {
+    @Binding var text: String
+    var onCommit: () -> Void
+    var onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
     }
 
-    private func setPinned(_ session: ChatSession, _ pinned: Bool) {
-        mutate { try await $0.setPinned(id: session.id, pinned) }
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 13, weight: .medium)
+        field.textColor = NSColor(Design.ink)
+        field.maximumNumberOfLines = 1
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.lineBreakMode = .byTruncatingTail
+        field.delegate = context.coordinator
+        field.stringValue = text
+        DispatchQueue.main.async {
+            field.window?.makeFirstResponder(field)
+            if let editor = field.currentEditor() as? NSTextView {
+                editor.insertionPointColor = NSColor(Design.ink)
+                editor.selectedTextAttributes = [
+                    .backgroundColor: NSColor(Design.ink).withAlphaComponent(0.16),
+                    .foregroundColor: NSColor(Design.ink),
+                ]
+                editor.selectAll(nil)
+            }
+        }
+        return field
     }
 
-    private func setArchived(_ session: ChatSession, _ archived: Bool) {
-        mutate { try await $0.setArchived(id: session.id, archived) }
-        if archived, shell.chatSelection == session.id {
-            shell.selectChat(nil)
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text {
+            field.stringValue = text
         }
     }
 
-    private func delete(_ session: ChatSession) {
-        let shell = shell
-        Task {
-            do {
-                try await shell.kernel.chats.deleteSession(id: session.id)
-                shell.discardChatModel(session.id)
-                if shell.chatSelection == session.id {
-                    shell.selectChat(nil)
-                }
-            } catch {}
-            await shell.refreshSessions()
-        }
-    }
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: RenameField
+        private var cancelled = false
 
-    private func mutate(_ change: @escaping @Sendable (ChatStore) async throws -> Void) {
-        let shell = shell
-        Task {
-            try? await change(shell.kernel.chats)
-            await shell.refreshSessions()
+        init(_ parent: RenameField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            if cancelled {
+                cancelled = false
+                parent.onCancel()
+            } else {
+                parent.onCommit()
+            }
+        }
+
+        func control(
+            _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
+        ) -> Bool {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)),
+                #selector(NSResponder.insertLineBreak(_:)):
+                control.window?.makeFirstResponder(nil)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                cancelled = true
+                control.window?.makeFirstResponder(nil)
+                return true
+            default:
+                return false
+            }
         }
     }
 }
@@ -422,53 +491,27 @@ private struct ChatSessionRow: View {
     let session: ChatSession
     let shell: ShellModel
     @Binding var hovered: String?
+    var renaming = false
+    var renameText: Binding<String> = .constant("")
+    var onCommitRename: () -> Void = {}
+    var onCancelRename: () -> Void = {}
 
     private var selected: Bool { shell.chatSelection == session.id }
     private var hovering: Bool { hovered == session.id }
 
     var body: some View {
-        Button {
-            shell.selectChat(session.id)
-        } label: {
-            HStack(spacing: Design.Space.s) {
-                VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                    Text(session.title)
-                        .font(Design.body.weight(selected ? .semibold : .medium))
-                        .foregroundStyle(Design.ink)
-                        .lineLimit(1)
-                    Text(subtitle)
-                        .font(Design.label)
-                        .foregroundStyle(Design.inkSoft)
-                        .lineLimit(1)
+        Group {
+            if renaming {
+                rowInterior(editing: true)
+            } else {
+                Button {
+                    shell.selectChat(session.id)
+                } label: {
+                    rowInterior(editing: false)
                 }
-                Spacer(minLength: Design.Space.xs)
-                HStack(spacing: Design.Space.xs) {
-                    ForEach(session.capabilityTags.compactMap(Design.tagGlyph), id: \.self) {
-                        glyph in
-                        Image(systemName: glyph)
-                            .font(Design.glyphSmall)
-                            .foregroundStyle(Design.inkFaint)
-                    }
-                    if session.pinned {
-                        Image(systemName: "pin.fill")
-                            .font(Design.glyphMicro)
-                            .foregroundStyle(Design.inkFaint)
-                    }
-                }
+                .buttonStyle(PressDipStyle())
             }
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                selected
-                    ? Design.ink.opacity(0.08)
-                    : hovering ? Design.ink.opacity(0.04) : .clear,
-                in: RoundedRectangle.soft(Design.Radius.control))
-            .contentShape(RoundedRectangle.soft(Design.Radius.control))
-            .animation(Design.wash, value: selected)
-            .animation(Design.wash, value: hovering)
         }
-        .buttonStyle(PressDipStyle())
         .onHover { inside in
             if inside {
                 hovered = session.id
@@ -479,6 +522,52 @@ private struct ChatSessionRow: View {
         .accessibilityLabel(session.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("session-\(session.id)")
+    }
+
+    private func rowInterior(editing: Bool) -> some View {
+        HStack(spacing: Design.Space.s) {
+            VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                if editing {
+                    RenameField(
+                        text: renameText, onCommit: onCommitRename,
+                        onCancel: onCancelRename)
+                } else {
+                    Text(session.title)
+                        .font(Design.body.weight(selected ? .semibold : .medium))
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                }
+                Text(subtitle)
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkSoft)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: Design.Space.xs)
+            HStack(spacing: Design.Space.xs) {
+                ForEach(session.capabilityTags.compactMap(Design.tagGlyph), id: \.self) {
+                    glyph in
+                    Image(systemName: glyph)
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(Design.inkFaint)
+                }
+                if session.pinned {
+                    Image(systemName: "pin.fill")
+                        .font(Design.glyphMicro)
+                        .foregroundStyle(Design.inkFaint)
+                }
+            }
+        }
+        .padding(.horizontal, Design.Space.chipX)
+        .padding(.vertical, Design.Space.m)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            selected || editing
+                ? Design.ink.opacity(0.08)
+                : hovering ? Design.ink.opacity(0.04) : .clear,
+            in: RoundedRectangle.soft(Design.Radius.control))
+        .contentShape(RoundedRectangle.soft(Design.Radius.control))
+        .animation(Design.wash, value: selected)
+        .animation(Design.wash, value: hovering)
     }
 
     private var subtitle: String {
