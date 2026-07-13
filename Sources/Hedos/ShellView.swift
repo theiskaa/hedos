@@ -20,6 +20,7 @@ final class ShellModel {
     var chatSelection: String?
     var imagesSelection: String?
     var showingGallery = false
+    var galleryFocusID: String?
     var pendingLaunch: PendingLaunch?
     var voiceSelection: String?
     var pipelineSelection: String?
@@ -233,6 +234,7 @@ final class ShellModel {
     func showArtifact(_ id: String?) {
         if let id, gallery.artifact(id: id) != nil {
             imagesSelection = id
+            galleryFocusID = id
         } else if imagesSelection == nil || gallery.artifact(id: imagesSelection) == nil {
             imagesSelection = gallery.arranged.first?.id
         }
@@ -1246,7 +1248,13 @@ struct GallerySheet: View {
             }
         }
         .frame(width: Design.Sheet.gallery.width, height: Design.Sheet.gallery.height)
-        .task { await shell.gallery.load() }
+        .task {
+            await shell.gallery.load()
+            if let id = shell.galleryFocusID, let artifact = shell.gallery.artifact(id: id) {
+                viewing = artifact
+            }
+            shell.galleryFocusID = nil
+        }
     }
 
     private var grid: some View {
@@ -1482,6 +1490,7 @@ private struct GalleryImageViewer: View {
     let onClose: () -> Void
     let onDelete: () -> Void
     @State private var image: NSImage?
+    @State private var loadFailed = false
 
     var body: some View {
         ZStack {
@@ -1503,8 +1512,10 @@ private struct GalleryImageViewer: View {
         }
         .onExitCommand(perform: onClose)
         .task(id: artifact.id) {
+            loadFailed = false
             image = shell.gallery.thumbnail(artifact)
             image = await shell.gallery.fullImage(artifact) ?? image
+            loadFailed = image == nil
         }
     }
 
@@ -1516,6 +1527,17 @@ private struct GalleryImageViewer: View {
                     .scaledToFit()
                     .contentShape(Rectangle())
                     .onTapGesture {}
+            } else if loadFailed {
+                VStack(spacing: Design.Space.m) {
+                    Image(systemName: "photo.badge.exclamationmark")
+                        .font(Design.glyphPrimary)
+                        .foregroundStyle(Design.inkSoft)
+                    Text("Couldn't load this image.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkSoft)
+                }
+                .frame(width: 240, height: 180)
+                .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.artifact))
             } else {
                 RoundedRectangle.soft(Design.Radius.artifact)
                     .fill(Design.cardFill)
