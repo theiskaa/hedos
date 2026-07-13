@@ -32,6 +32,8 @@ struct HomePane: View {
                     Group {
                         centeredHero
                         board
+                        activityCard
+                            .staggeredArrival(2)
                         if !readyModels.isEmpty {
                             readySection
                         }
@@ -60,6 +62,7 @@ struct HomePane: View {
         .onDisappear { shell.system.stop() }
         .task {
             await shell.refreshSessions()
+            await shell.refreshUsage()
             if shell.library.summary == nil {
                 await shell.library.rescan()
             }
@@ -76,11 +79,10 @@ struct HomePane: View {
             if summary != nil {
                 temperatureBadge
             }
-            if shell.library.isScanning {
-                ProgressView()
-                    .controlSize(.small)
-                    .transition(.opacity)
-            }
+            ProgressView()
+                .controlSize(.small)
+                .opacity(shell.library.isScanning ? 1 : 0)
+                .frame(width: 16)
             QuietIconButton(glyph: "arrow.clockwise") {
                 Task { await shell.library.rescan() }
             }
@@ -211,16 +213,23 @@ struct HomePane: View {
         }
     }
 
+    private var activityCard: some View {
+        ActivityGraph(usage: shell.usageByDay, loaded: shell.usageLoaded)
+            .padding(Design.Space.xl)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .surfaceCard(radius: Design.Radius.card)
+    }
+
     @ViewBuilder
     private var statCard: some View {
         VStack(alignment: .leading, spacing: Design.Space.xl) {
             HStack {
                 MicroHeader(title: "On this machine")
                 Spacer(minLength: 0)
-                if shell.library.isScanning {
-                    ShimmerText(text: "Scanning…", tracked: false)
-                }
+                ShimmerText(text: "Scanning…", tracked: false)
+                    .opacity(shell.library.isScanning ? 1 : 0)
             }
+            .animation(Design.motion(reduceMotion: reduceMotion), value: shell.library.isScanning)
             HStack(alignment: .bottom, spacing: Design.Space.l) {
                 Group {
                     if let summary {
@@ -334,10 +343,10 @@ struct HomePane: View {
                     .font(Design.micro)
                     .tracking(Design.microTracking)
                     .foregroundStyle(Design.inkFaint)
-                if shell.library.isScanning {
-                    ShimmerText(text: "Scanning…".uppercased())
-                }
+                ShimmerText(text: "Scanning…".uppercased())
+                    .opacity(shell.library.isScanning ? 1 : 0)
             }
+            .animation(Design.motion(reduceMotion: reduceMotion), value: shell.library.isScanning)
             statusLine
         }
     }
