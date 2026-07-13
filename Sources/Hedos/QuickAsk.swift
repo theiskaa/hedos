@@ -198,8 +198,13 @@ final class QuickAskModel {
     var answer = ""
     var isStreaming = false
     var notice: String?
+    var focusToken = 0
     private(set) var sessionID: String?
     private var task: Task<Void, Never>?
+
+    func requestFocus() {
+        focusToken += 1
+    }
 
     func ask(kernel: Kernel, records: [ModelRecord]) {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -214,6 +219,7 @@ final class QuickAskModel {
         isStreaming = true
         task = Task { [weak self] in
             guard let self else { return }
+            defer { isStreaming = false }
             let preferred = await kernel.settings.defaultChatModelID()
             guard let record = Launcher.defaultChatModel(in: records, preferring: preferred)
             else { return }
@@ -234,7 +240,6 @@ final class QuickAskModel {
             } catch {
                 notice = error.localizedDescription
             }
-            isStreaming = false
         }
     }
 
@@ -292,6 +297,7 @@ final class QuickAskController {
         }
         panel.orderFrontRegardless()
         panel.makeKey()
+        model.requestFocus()
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
             if event.keyCode == UInt16(kVK_Escape), self?.panel?.isKeyWindow == true {
@@ -403,6 +409,7 @@ private struct QuickAskView: View {
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
         .shade(Design.Elevation.modal)
         .onAppear { focused = true }
+        .onChange(of: model.focusToken) { focused = true }
         .accessibilityIdentifier("quick-ask")
     }
 }
