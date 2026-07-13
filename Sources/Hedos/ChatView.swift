@@ -111,7 +111,7 @@ final class ChatViewModel {
     var imageModelID: String?
     var voiceModelID: String?
     var form = ParamForm(schema: [])
-    var voice = "af_heart"
+    var voice = SpeechVoices.fallback
     var voices: [String] = []
     var speakingEntryID: String?
     var showsStreamCursor = false
@@ -555,7 +555,7 @@ final class ChatViewModel {
         speakTask = Task { [weak self] in
             guard let self else { return }
             var pcm = Data()
-            var sampleRate = 24000
+            var sampleRate = SidecarSpec.defaultSampleRate
             let playsLive = await kernel.settings.voice().autoSpeak
             audio.beginLive(
                 AudioSession.Track(id: liveID, title: content, subtitle: voice),
@@ -996,7 +996,7 @@ final class ChatViewModel {
         readAloudTask = Task { [weak self] in
             guard let self else { return }
             var pcm = Data()
-            var sampleRate = 24000
+            var sampleRate = SidecarSpec.defaultSampleRate
             do {
                 let voices = (try? await kernel.voices(for: speaker.id)) ?? []
                 var chosen: String?
@@ -1489,14 +1489,6 @@ struct ChatView: View {
         }
     }
 
-    static func toolActionSummary(_ text: String) -> String {
-        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-        guard firstLine.hasPrefix("["),
-            let dash = firstLine.range(of: " — data from the user's disk")
-        else { return firstLine }
-        return String(firstLine[firstLine.index(after: firstLine.startIndex)..<dash.lowerBound])
-    }
-
     private struct ScrollAnchorState: Equatable {
         var container: CGSize = .zero
         var contentHeight: CGFloat = 0
@@ -1521,7 +1513,7 @@ struct ChatView: View {
     private func turn(_ entry: ChatViewModel.Entry, at index: Int) -> some View {
         if entry.role == .tool {
             ToolTimelineRow(
-                summary: Self.toolActionSummary(entry.text),
+                summary: Harness.summary(fromFramed: entry.text),
                 connectsUp: index > 0 && model.transcript[index - 1].role == .tool,
                 connectsDown: index + 1 < model.transcript.count
                     && model.transcript[index + 1].role == .tool,

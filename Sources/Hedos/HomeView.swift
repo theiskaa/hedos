@@ -574,12 +574,7 @@ struct HomePane: View {
                 $0.state == .ready && $0.runtime.tier != .recipeNeeded
                     && Launcher.destination(for: $0) != .library
             }
-            .sorted { first, second in
-                if Fit.rank(first) != Fit.rank(second) {
-                    return Fit.rank(first) < Fit.rank(second)
-                }
-                return (first.footprintMB ?? 0) > (second.footprintMB ?? 0)
-            }
+            .sorted(by: Fit.prefers)
     }
 
     private var readySection: some View {
