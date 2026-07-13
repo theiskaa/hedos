@@ -27,6 +27,8 @@ final class ShellModel {
     var pipelineSelection: String?
     var librarySelection: String?
     var sessions: [ChatSession] = []
+    var usageByDay: [DayUsage] = []
+    private(set) var usageLoaded = false
     var sidebarCollapsed = false
     var isFullscreen = false
     var settingsTarget: SettingsDestination?
@@ -285,6 +287,12 @@ final class ShellModel {
 
     func refreshSessions() async {
         sessions = (try? await kernel.chats.sessions(filter: .all)) ?? sessions
+    }
+
+    func refreshUsage() async {
+        let since = Calendar.current.date(byAdding: .day, value: -371, to: .now) ?? .now
+        usageByDay = await kernel.chatUsage(since: since)
+        usageLoaded = true
     }
 
     func session(id: String?) -> ChatSession? {

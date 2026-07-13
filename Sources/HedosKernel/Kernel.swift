@@ -254,6 +254,10 @@ public actor Kernel {
         return summary
     }
 
+    public func chatUsage(since: Date) async -> [DayUsage] {
+        await chats.usageByDay(since: since)
+    }
+
     public func shelfUpdates() -> AsyncStream<DiscoverySummary> {
         let id = UUID()
         return AsyncStream { continuation in

@@ -83,6 +83,37 @@ public actor ChatStore {
         return rows.map(Self.session(from:))
     }
 
+    public func usageByDay(since: Date) -> [DayUsage] {
+        guard let database = try? open() else { return [] }
+        let rows =
+            (try? database.rows(
+                """
+                SELECT t.created_at, t.role, t.stats_json
+                FROM turns t JOIN sessions s ON t.session_id = s.id
+                WHERE s.deleted_at IS NULL AND t.superseded_by IS NULL
+                    AND t.role IN ('user', 'assistant') AND t.created_at >= ?
+                """, [.real(since.timeIntervalSince1970)])) ?? []
+        var buckets: [Date: (messages: Int, prompt: Int, completion: Int)] = [:]
+        let calendar = Calendar.current
+        for row in rows {
+            let day = calendar.startOfDay(for: Date(timeIntervalSince1970: row.real(0)))
+            var entry = buckets[day] ?? (0, 0, 0)
+            entry.messages += 1
+            if let stats = GenerationStats.fromTurnStatsJSON(row.optionalText(2)) {
+                entry.prompt += stats.promptTokens ?? 0
+                entry.completion += stats.completionTokens ?? 0
+            }
+            buckets[day] = entry
+        }
+        return buckets
+            .map {
+                DayUsage(
+                    day: $0.key, messages: $0.value.messages,
+                    promptTokens: $0.value.prompt, completionTokens: $0.value.completion)
+            }
+            .sorted { $0.day < $1.day }
+    }
+
     public func session(id: String) throws -> ChatTranscript? {
         let database = try open()
         return try database.readTransaction {
