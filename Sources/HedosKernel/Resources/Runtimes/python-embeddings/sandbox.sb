@@ -16,6 +16,8 @@
     (subpath (param "MODEL"))
     (subpath (param "WORKDIR"))
     (subpath (param "RESOURCES"))
+    (subpath (param "CACHE"))
+    (subpath (param "TMP"))
     (subpath "/System")
     (subpath "/usr")
     (subpath "/Library")
