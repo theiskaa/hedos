@@ -104,7 +104,7 @@ struct GatewayPane: View {
                 if running {
                     AccentDot(size: 10)
                 } else {
-                    RoundedRectangle(cornerRadius: 1)
+                    Circle()
                         .fill(Design.inkFaint)
                         .frame(width: 10, height: 10)
                 }
@@ -295,7 +295,7 @@ struct GatewayPane: View {
                     if client.lastUsedAt != nil {
                         AccentDot(size: 7)
                     } else {
-                        RoundedRectangle(cornerRadius: 1)
+                        Circle()
                             .fill(Design.inkFaint)
                             .frame(width: 7, height: 7)
                     }

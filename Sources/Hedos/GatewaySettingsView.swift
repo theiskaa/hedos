@@ -125,7 +125,7 @@ struct GatewaySection: View {
                 if running {
                     AccentDot(size: 9)
                 } else {
-                    RoundedRectangle(cornerRadius: 1)
+                    Circle()
                         .fill(Design.inkFaint)
                         .frame(width: 9, height: 9)
                 }
@@ -252,7 +252,7 @@ struct GatewaySection: View {
                     if client.lastUsedAt != nil {
                         AccentDot(size: 7)
                     } else {
-                        RoundedRectangle(cornerRadius: 1)
+                        Circle()
                             .fill(Design.inkFaint)
                             .frame(width: 7, height: 7)
                     }
