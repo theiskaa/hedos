@@ -1135,6 +1135,29 @@ struct ShimmerText: View {
     }
 }
 
+struct ScanningTag: View {
+    let active: Bool
+    var uppercased = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var label: String { uppercased ? "Scanning…".uppercased() : "Scanning…" }
+
+    var body: some View {
+        Text(label)
+            .font(Design.micro)
+            .tracking(uppercased ? Design.microTracking : 0)
+            .lineLimit(1)
+            .hidden()
+            .overlay {
+                if active {
+                    ShimmerText(text: label, tracked: uppercased)
+                        .transition(.opacity)
+                }
+            }
+            .animation(Design.motion(reduceMotion: reduceMotion), value: active)
+    }
+}
+
 struct SkeletonPulse: View {
     var radius: CGFloat = Design.Radius.card
     @State private var bright = false

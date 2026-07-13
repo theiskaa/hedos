@@ -79,10 +79,13 @@ struct HomePane: View {
             if summary != nil {
                 temperatureBadge
             }
-            ProgressView()
-                .controlSize(.small)
-                .opacity(shell.library.isScanning ? 1 : 0)
-                .frame(width: 16)
+            Color.clear
+                .frame(width: 16, height: 16)
+                .overlay {
+                    if shell.library.isScanning {
+                        ProgressView().controlSize(.small)
+                    }
+                }
             QuietIconButton(glyph: "arrow.clockwise") {
                 Task { await shell.library.rescan() }
             }
@@ -226,10 +229,8 @@ struct HomePane: View {
             HStack {
                 MicroHeader(title: "On this machine")
                 Spacer(minLength: 0)
-                ShimmerText(text: "Scanning…", tracked: false)
-                    .opacity(shell.library.isScanning ? 1 : 0)
+                ScanningTag(active: shell.library.isScanning)
             }
-            .animation(Design.motion(reduceMotion: reduceMotion), value: shell.library.isScanning)
             HStack(alignment: .bottom, spacing: Design.Space.l) {
                 Group {
                     if let summary {
@@ -343,10 +344,8 @@ struct HomePane: View {
                     .font(Design.micro)
                     .tracking(Design.microTracking)
                     .foregroundStyle(Design.inkFaint)
-                ShimmerText(text: "Scanning…".uppercased())
-                    .opacity(shell.library.isScanning ? 1 : 0)
+                ScanningTag(active: shell.library.isScanning, uppercased: true)
             }
-            .animation(Design.motion(reduceMotion: reduceMotion), value: shell.library.isScanning)
             statusLine
         }
     }

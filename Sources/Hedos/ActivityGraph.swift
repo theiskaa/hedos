@@ -5,7 +5,7 @@ struct ActivityGraph: View {
     let usage: [DayUsage]
     let loaded: Bool
 
-    @State private var hovered: Date?
+    @State private var hovered: Date? = nil
     @State private var appeared = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -16,19 +16,42 @@ struct ActivityGraph: View {
     private static let leftInset: CGFloat = 22
     private static let topInset: CGFloat = 14
 
-    private var calendar: Calendar { Calendar.current }
-    private var today: Date { calendar.startOfDay(for: .now) }
+    private let today: Date
+    private let gridStart: Date
+    private let visible: [DayUsage]
+    private let byDay: [Date: DayUsage]
+    private let thresholds: [Int]
 
-    private var byDay: [Date: DayUsage] {
-        Dictionary(usage.map { ($0.day, $0) }, uniquingKeysWith: { first, _ in first })
-    }
+    init(usage: [DayUsage], loaded: Bool) {
+        self.usage = usage
+        self.loaded = loaded
 
-    private var gridStart: Date {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
         let weekday = calendar.component(.weekday, from: today)
         let offset = (weekday - calendar.firstWeekday + 7) % 7
         let weekStart = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
-        return calendar.date(byAdding: .day, value: -(Self.weeks - 1) * 7, to: weekStart) ?? today
+        let start = calendar.date(byAdding: .day, value: -(Self.weeks - 1) * 7, to: weekStart)
+            ?? today
+
+        self.today = today
+        self.gridStart = start
+        let visible = usage.filter { $0.day >= start }
+        self.visible = visible
+        self.byDay = Dictionary(visible.map { ($0.day, $0) }, uniquingKeysWith: { first, _ in first })
+
+        let counts = visible.map(\.messages).filter { $0 > 0 }.sorted()
+        if counts.isEmpty {
+            self.thresholds = [1, 1, 1, 1]
+        } else {
+            func quantile(_ p: Double) -> Int {
+                counts[min(counts.count - 1, Int(Double(counts.count - 1) * p))]
+            }
+            self.thresholds = [quantile(0.25), quantile(0.5), quantile(0.75), quantile(1)]
+        }
     }
+
+    private var calendar: Calendar { Calendar.current }
 
     private var gridHeight: CGFloat {
         Self.topInset + 7 * Self.maxCell + 6 * Self.gap
@@ -36,29 +59,25 @@ struct ActivityGraph: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            header
-            if usage.isEmpty {
-                if loaded {
-                    Text("No chats yet — your activity shows up here as you use the app.")
-                        .font(Design.caption)
-                        .foregroundStyle(Design.inkSoft)
-                        .padding(.vertical, Design.Space.s)
-                } else {
-                    SkeletonPulse(radius: Design.Radius.control)
-                        .frame(height: gridHeight)
-                }
-            } else {
+            if !usage.isEmpty {
+                header
                 grid
                     .frame(height: gridHeight)
                     .opacity(appeared || reduceMotion ? 1 : 0)
                     .onAppear {
                         withAnimation(Design.motion(reduceMotion: reduceMotion)) { appeared = true }
                     }
+            } else if loaded {
+                Text("No chats yet — your activity shows up here as you use the app.")
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkSoft)
+                    .padding(.vertical, Design.Space.s)
+            } else {
+                SkeletonPulse(radius: Design.Radius.control)
+                    .frame(height: gridHeight)
             }
         }
     }
-
-    // MARK: Grid
 
     private var grid: some View {
         GeometryReader { geometry in
@@ -138,24 +157,12 @@ struct ActivityGraph: View {
         return day <= today ? day : nil
     }
 
-    // MARK: Ramp
-
-    private var thresholds: [Int] {
-        let counts = usage.map(\.messages).filter { $0 > 0 }.sorted()
-        guard !counts.isEmpty else { return [1, 1, 1, 1] }
-        func quantile(_ p: Double) -> Int {
-            counts[min(counts.count - 1, Int(Double(counts.count - 1) * p))]
-        }
-        return [quantile(0.25), quantile(0.5), quantile(0.75), quantile(1)]
-    }
-
     private func level(_ messages: Int) -> Int {
         guard messages > 0 else { return 0 }
-        let t = thresholds
-        if messages <= t[0] { return 1 }
-        if messages <= t[1] { return 2 }
-        if messages <= t[2] { return 3 }
-        return 4
+        if messages >= thresholds[2] { return 4 }
+        if messages >= thresholds[1] { return 3 }
+        if messages >= thresholds[0] { return 2 }
+        return 1
     }
 
     private func color(_ level: Int) -> Color {
@@ -167,8 +174,6 @@ struct ActivityGraph: View {
         default: Design.inkWash
         }
     }
-
-    // MARK: Labels
 
     private func weekdaySymbol(_ row: Int) -> String {
         let index = (calendar.firstWeekday - 1 + row) % 7
@@ -183,8 +188,6 @@ struct ActivityGraph: View {
         guard month != calendar.component(.month, from: previous) else { return nil }
         return calendar.shortMonthSymbols[month - 1]
     }
-
-    // MARK: Header
 
     private var header: some View {
         ZStack(alignment: .leading) {
@@ -208,9 +211,9 @@ struct ActivityGraph: View {
     }
 
     private var summaryText: Text {
-        let tokens = usage.reduce(0) { $0 + $1.tokens }
-        let messages = usage.reduce(0) { $0 + $1.messages }
-        let activeDays = usage.filter { $0.messages > 0 }.count
+        let tokens = visible.reduce(0) { $0 + $1.tokens }
+        let messages = visible.reduce(0) { $0 + $1.messages }
+        let activeDays = visible.filter { $0.messages > 0 }.count
         return pair(compact(tokens), "tokens") + separator
             + pair(compact(messages), messages == 1 ? "message" : "messages") + separator
             + pair(activeDays.formatted(), "active days") + separator
@@ -227,31 +230,15 @@ struct ActivityGraph: View {
                 .foregroundStyle(Design.inkFaint)
     }
 
-    private var legend: some View {
-        HStack(spacing: Self.gap) {
-            Spacer(minLength: 0)
-            Text("less")
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
-            ForEach(0..<5, id: \.self) { level in
-                RoundedRectangle.soft(2)
-                    .fill(color(level))
-                    .frame(width: 11, height: 11)
-            }
-            Text("more")
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
-        }
-    }
-
     private func compact(_ value: Int) -> String {
         value.formatted(.number.notation(.compactName))
     }
 
     private func streak() -> Int {
-        var count = 0
-        var day = today
         let active = Set(byDay.filter { $0.value.messages > 0 }.keys)
+        var day = active.contains(today)
+            ? today : (calendar.date(byAdding: .day, value: -1, to: today) ?? today)
+        var count = 0
         while active.contains(day) {
             count += 1
             day = calendar.date(byAdding: .day, value: -1, to: day) ?? day

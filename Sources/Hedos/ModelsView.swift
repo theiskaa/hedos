@@ -137,11 +137,13 @@ struct ModelsPane: View {
 
     @ViewBuilder
     private var controls: some View {
-        ProgressView()
-            .controlSize(.small)
-            .opacity(shell.library.isScanning ? 1 : 0)
-            .frame(width: 16)
-            .animation(Design.motion(reduceMotion: reduceMotion), value: shell.library.isScanning)
+        Color.clear
+            .frame(width: 16, height: 16)
+            .overlay {
+                if shell.library.isScanning {
+                    ProgressView().controlSize(.small)
+                }
+            }
         QuietIconButton(glyph: "folder.badge.plus") {
             showFolders.toggle()
         }
@@ -223,10 +225,8 @@ struct ModelsPane: View {
                 }
             }
             Spacer(minLength: 0)
-            ShimmerText(text: "Scanning…", tracked: false)
-                .opacity(shell.library.isScanning ? 1 : 0)
+            ScanningTag(active: shell.library.isScanning)
         }
-        .animation(Design.wash, value: shell.library.isScanning)
         .animation(Design.spring, value: shell.library.summary?.totalCount)
     }
 
