@@ -85,8 +85,10 @@ public struct ParamForm: Hashable, Sendable {
         self.schema = schema
         var seeded: [String: JSONValue] = [:]
         for spec in schema {
-            if let fallback = spec.defaultValue, fallback != .null {
-                seeded[spec.key] = spec.normalized(fallback) ?? fallback
+            if let fallback = spec.defaultValue, fallback != .null,
+                let normalized = spec.normalized(fallback)
+            {
+                seeded[spec.key] = normalized
             }
         }
         self.values = seeded
@@ -148,8 +150,10 @@ public struct ParamForm: Hashable, Sendable {
         for spec in schema {
             if let raw = fields[spec.key], raw != .null, let normalized = spec.normalized(raw) {
                 values[spec.key] = normalized
-            } else if let fallback = spec.defaultValue, fallback != .null {
-                values[spec.key] = spec.normalized(fallback) ?? fallback
+            } else if let fallback = spec.defaultValue, fallback != .null,
+                let normalized = spec.normalized(fallback)
+            {
+                values[spec.key] = normalized
             } else {
                 values[spec.key] = nil
             }
@@ -157,12 +161,13 @@ public struct ParamForm: Hashable, Sendable {
     }
 
     public func payload(prompt: String) -> JSONValue {
-        var fields: [String: JSONValue] = ["prompt": .string(prompt)]
+        var fields: [String: JSONValue] = [:]
         for spec in schema {
             if let value = values[spec.key] {
                 fields[spec.key] = value
             }
         }
+        fields["prompt"] = .string(prompt)
         return .object(fields)
     }
 }

@@ -107,6 +107,16 @@ import Testing
     #expect(tokens == [CodeToken(text: "0xDEAD_beef", kind: .number)])
 }
 
+@Test func tokensDoNotAbsorbTrailingLetterIntoANonHexNumber() {
+    let tokens = CodeHighlighter.tokens("3x", language: "swift")
+    #expect(tokens.first == CodeToken(text: "3", kind: .number))
+}
+
+@Test func tokensStopStringLiteralAtABackslashBeforeNewline() {
+    let tokens = CodeHighlighter.tokens("\"a\\\nb\"", language: "swift")
+    #expect(tokens.first == CodeToken(text: "\"a\\", kind: .string))
+}
+
 @Test func tokensDoNotTreatDigitsInsideIdentifiersAsNumbers() {
     let tokens = CodeHighlighter.tokens("var1", language: "swift")
     #expect(tokens == [CodeToken(text: "var1", kind: .plain)])

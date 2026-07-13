@@ -53,7 +53,7 @@ public enum CodeHighlighter {
                 while let next = scan.first, next != character, next != "\n" {
                     literal.append(next)
                     scan = scan.dropFirst()
-                    if next == "\\", let escaped = scan.first {
+                    if next == "\\", let escaped = scan.first, escaped != "\n" {
                         literal.append(escaped)
                         scan = scan.dropFirst()
                     }
@@ -87,8 +87,9 @@ public enum CodeHighlighter {
             }
             if character.isNumber, plainEndsAtBoundary(plain) {
                 flushPlain()
+                let allowsHex = character == "0"
                 let initialScan = rest.prefix {
-                    $0.isNumber || $0 == "." || $0 == "_" || $0 == "x" || $0 == "X"
+                    $0.isNumber || $0 == "." || $0 == "_" || (allowsHex && ($0 == "x" || $0 == "X"))
                 }
                 var numberText = String(initialScan)
                 var consumedCount = initialScan.count
