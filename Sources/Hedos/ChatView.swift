@@ -247,9 +247,30 @@ final class ChatViewModel {
             imagePhase = .idle
         }
         intent = next
+        ensureBinding(for: next)
         let kernel = kernel
         let sessionID = sessionID
         Task { try? await kernel.chats.setIntent(id: sessionID, intent: next.stored) }
+    }
+
+    private func ensureBinding(for intent: Intent) {
+        let records = recordsProvider?() ?? []
+        switch intent {
+        case .text:
+            break
+        case .image:
+            let runnable = imageModels(in: records)
+            if !runnable.contains(where: { $0.id == imageModelID }), let first = runnable.first {
+                bindImage(to: first)
+            }
+        case .speak:
+            let speakers = voiceModels(in: records)
+            if !speakers.contains(where: { $0.id == voiceModelID }),
+                let first = SpeechModels.preferred(in: records) ?? speakers.first
+            {
+                Task { await bindVoice(to: first) }
+            }
+        }
     }
 
     func selectVoice(_ candidate: String) {
