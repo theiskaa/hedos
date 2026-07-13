@@ -81,15 +81,10 @@ struct InkSidebarRow<ID: Hashable>: View {
     let action: () -> Void
 
     var body: some View {
-        Group {
-            if collapsed {
-                button.inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
-            } else {
-                button.inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
-            }
-        }
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        button
+            .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var button: some View {
