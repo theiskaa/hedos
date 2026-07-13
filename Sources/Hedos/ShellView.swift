@@ -231,6 +231,12 @@ final class ShellModel {
         }
     }
 
+    func isWarm(_ record: ModelRecord) -> Bool {
+        resident.contains {
+            $0.modelID == record.id || ($0.origin == .ollama && $0.name == record.name)
+        }
+    }
+
     func showArtifact(_ id: String?) {
         if let id, gallery.artifact(id: id) != nil {
             imagesSelection = id

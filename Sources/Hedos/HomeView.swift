@@ -20,10 +20,10 @@ struct HomePane: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Design.Space.pane) {
                 topStrip
-                if let failure = shell.library.errorMessage {
-                    scanFailure(failure)
-                } else if let summary, summary.totalCount == 0 {
+                if let summary, summary.totalCount == 0 {
                     FirstRunDiscovery(shell: shell)
+                } else if summary == nil, let failure = shell.library.errorMessage {
+                    scanFailure(failure)
                 } else {
                     centeredHero
                     board
@@ -138,7 +138,9 @@ struct HomePane: View {
                     .background(Design.ink, in: Circle())
             }
             .buttonStyle(PressDipStyle())
-            .disabled(chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(
+                chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || defaultChatName == nil)
             .accessibilityLabel("Start chat")
         }
         .padding(.leading, Design.Space.xl)
@@ -593,7 +595,7 @@ struct HomePane: View {
     }
 
     private func isWarm(_ record: ModelRecord) -> Bool {
-        shell.resident.contains { $0.modelID == record.id || $0.name == record.name }
+        shell.isWarm(record)
     }
 }
 

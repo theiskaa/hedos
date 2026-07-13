@@ -421,7 +421,7 @@ struct ModelsPane: View {
     }
 
     private func isWarm(_ record: ModelRecord) -> Bool {
-        shell.resident.contains { $0.modelID == record.id || $0.name == record.name }
+        shell.isWarm(record)
     }
 
     private var filtered: [ModelRecord] {
@@ -777,6 +777,9 @@ struct ModelDetailSheet: View {
             consent = try? await shell.kernel.pendingHostConsent(for: record.id)
             approvedConsent = try? await shell.kernel.approvedHostConsent(for: record.id)
             communityRecipes = await shell.kernel.communityRecipes(for: record.id)
+        }
+        .onChange(of: currentRuntimeValue) { _, value in
+            chosenRuntime = value
         }
     }
 
