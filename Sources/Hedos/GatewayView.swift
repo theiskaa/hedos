@@ -13,7 +13,7 @@ struct GatewayPane: View {
     private var model: SettingsModel { shell.settings }
     private var running: Bool { model.gatewayStatus.running }
     private var port: Int { model.gatewayStatus.port ?? model.gateway.port }
-    private var address: String { "http://127.0.0.1:\(port)/v1" }
+    private var address: String { GatewayDefaults.baseURL(port: port) }
 
     var body: some View {
         ScrollView {
@@ -501,7 +501,7 @@ struct GatewayPane: View {
     }
 
     private func applyPort() {
-        guard let value = Int(portText), (1024...65535).contains(value) else {
+        guard let value = Int(portText), GatewayDefaults.portRange.contains(value) else {
             portText = String(model.gateway.port)
             return
         }

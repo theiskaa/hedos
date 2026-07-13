@@ -1,10 +1,11 @@
 import Foundation
+import HedosKernel
 
 enum GatewayExamples {
     static let tokenPlaceholder = "$TOKEN"
 
     static func baseURL(port: Int) -> String {
-        "http://127.0.0.1:\(port)/v1"
+        GatewayDefaults.baseURL(port: port)
     }
 
     static func chatCurl(port: Int, model: String, token: String) -> String {

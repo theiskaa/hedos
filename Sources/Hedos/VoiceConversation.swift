@@ -89,7 +89,7 @@ final class VoiceConversationController {
         onTurn: @escaping () -> Void
     ) async {
         let voices = (try? await kernel.voices(for: participants.speaker.id)) ?? []
-        var voice = voices.first ?? "af_heart"
+        var voice = voices.first ?? SpeechVoices.fallback
         if case .string(let configured)? = participants.speaker.paramValues["voice"],
             voices.contains(configured)
         {

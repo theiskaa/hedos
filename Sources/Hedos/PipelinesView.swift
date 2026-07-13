@@ -147,6 +147,7 @@ struct PipelinesPane: View {
                     }
                     if rows.isEmpty {
                         ModeEmptyState(
+                            glyph: "magnifyingglass",
                             eyebrow: "Filtered view",
                             headline: "Nothing found.",
                             caption: "No saved pipeline matches that name."

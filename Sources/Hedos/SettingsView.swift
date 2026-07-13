@@ -157,6 +157,7 @@ final class SettingsModel {
     private var previewTask: Task<Void, Never>?
     var audio: AudioSession?
     var saveNotice: String?
+    private var failedSaveKeys: Set<String> = []
 
     var general = GeneralSettings()
     var models = ModelsSettings()
@@ -286,9 +287,11 @@ final class SettingsModel {
         saveTasks["appearance"] = Task {
             do {
                 try await kernel.settings.save(value)
-                saveNotice = nil
+                failedSaveKeys.remove("appearance")
+                if failedSaveKeys.isEmpty { saveNotice = nil }
             } catch is CancellationError {
             } catch {
+                failedSaveKeys.insert("appearance")
                 saveNotice = "Couldn't save this change: \(error.localizedDescription)"
             }
         }
@@ -316,7 +319,7 @@ final class SettingsModel {
         let kernel = kernel
         Task {
             defer { gatewayBusy = false }
-            try await kernel.settings.save(value)
+            try? await kernel.settings.save(value)
             if enabled {
                 do {
                     _ = try await kernel.startGateway()
@@ -336,7 +339,7 @@ final class SettingsModel {
         let value = gateway
         let kernel = kernel
         Task {
-            try await kernel.settings.save(value)
+            try? await kernel.settings.save(value)
             if await kernel.gatewayStatus().running {
                 await kernel.stopGateway()
                 do {
@@ -485,9 +488,11 @@ final class SettingsModel {
             guard !Task.isCancelled else { return }
             do {
                 try await operation(kernel)
-                saveNotice = nil
+                failedSaveKeys.remove(key)
+                if failedSaveKeys.isEmpty { saveNotice = nil }
             } catch is CancellationError {
             } catch {
+                failedSaveKeys.insert(key)
                 saveNotice = "Couldn't save this change: \(error.localizedDescription)"
             }
         }

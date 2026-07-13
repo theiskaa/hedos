@@ -209,7 +209,7 @@ struct GatewaySection: View {
     }
 
     private var address: String {
-        "http://127.0.0.1:\(String(port))/v1"
+        GatewayDefaults.baseURL(port: port)
     }
 
     private func lastUsedShort(_ client: GatewayClient) -> String {
@@ -385,7 +385,7 @@ struct GatewaySection: View {
     }
 
     private func applyPort() {
-        guard let port = Int(portText), (1024...65535).contains(port) else {
+        guard let port = Int(portText), GatewayDefaults.portRange.contains(port) else {
             portDenyCount += 1
             portError = true
             portRevert?.cancel()

@@ -433,14 +433,17 @@ struct ModelsPane: View {
     private var gridContent: some View {
         if filtered.isEmpty {
             ModeEmptyState(
+                glyph: "line.3.horizontal.decrease",
                 eyebrow: "Filtered view",
                 headline: "No models match.",
                 caption: "Loosen the filter or search by another name."
             ) {
                 if !filter.isEmpty || !query.isEmpty {
                     Button("Clear filters") {
-                        filter = ModelFilter()
-                        query = ""
+                        withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+                            filter = ModelFilter()
+                            query = ""
+                        }
                     }
                     .buttonStyle(QuietButtonStyle())
                 }
