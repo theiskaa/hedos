@@ -171,8 +171,8 @@ final class ChatViewModel {
     private func apply(_ stored: ChatTranscript) {
         boundModelID = stored.session.modelID
         intent = Intent(stored.session.intent)
-        imageModelID = stored.session.imageModelID
-        voiceModelID = stored.session.voiceModelID
+        imageModelID = stored.session.imageModelID ?? imageModelID
+        voiceModelID = stored.session.voiceModelID ?? voiceModelID
         var retired: [String: [ChatTurn]] = [:]
         for turn in stored.turns {
             if let supersededBy = turn.supersededBy {
@@ -276,7 +276,6 @@ final class ChatViewModel {
             pendingAttachments = []
         }
         intent = next
-        composerFocusSignal += 1
         ensureBinding(for: next)
         let kernel = kernel
         let sessionID = sessionID
@@ -306,7 +305,7 @@ final class ChatViewModel {
     func selectVoice(_ candidate: String) {
         guard voice != candidate else { return }
         voice = candidate
-        composerFocusSignal += 1
+        focusComposer()
         let kernel = kernel
         Task {
             var settings = await kernel.settings.voice()
@@ -359,7 +358,6 @@ final class ChatViewModel {
         imageModelID = record.id
         form = ParamForm(schema: record.params)
         guard persist else { return }
-        composerFocusSignal += 1
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
@@ -371,7 +369,6 @@ final class ChatViewModel {
         let changed = voiceModelID != record.id
         voiceModelID = record.id
         if persist && changed {
-            composerFocusSignal += 1
             try? await kernel.chats.bindVoiceModel(id: sessionID, modelID: record.id)
         }
         voices = (try? await kernel.voices(for: record.id)) ?? []
@@ -401,7 +398,7 @@ final class ChatViewModel {
             if voices.isEmpty {
                 await bindVoice(to: record, persist: false)
             }
-        } else if let record = SpeechModels.preferred(in: records) {
+        } else if let record = SpeechModels.preferred(in: records) ?? speakers.first {
             await bindVoice(to: record, persist: false)
         }
         if !records.isEmpty {
@@ -471,11 +468,15 @@ final class ChatViewModel {
         guard !pendingAttachments.contains(where: { $0.ref == ref }) else { return }
         pendingAttachments.append(
             PendingAttachment(ref: ref, data: data, mimeType: mimeType, name: name, image: image))
-        composerFocusSignal += 1
+        focusComposer()
     }
 
     func removeAttachment(_ id: String) {
         pendingAttachments.removeAll { $0.id == id }
+    }
+
+    func focusComposer() {
+        composerFocusSignal += 1
     }
 
     var boundSupportsVision: Bool {
@@ -735,7 +736,6 @@ final class ChatViewModel {
         if !record.capabilities.contains(.see) {
             pendingAttachments = []
         }
-        composerFocusSignal += 1
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
@@ -1050,7 +1050,7 @@ final class ChatViewModel {
     }
 
     func setPlace(_ path: String) {
-        composerFocusSignal += 1
+        focusComposer()
         Task {
             do {
                 try await kernel.setChatPlace(sessionID: sessionID, path: path)
@@ -1067,7 +1067,7 @@ final class ChatViewModel {
     }
 
     func clearPlace() {
-        composerFocusSignal += 1
+        focusComposer()
         Task {
             try? await kernel.setChatPlace(sessionID: sessionID, path: nil)
             place = nil
@@ -1387,7 +1387,6 @@ struct ChatView: View {
                 .frame(height: Design.Control.size)
                 .background(Design.inkWash, in: Capsule())
                 .hairlineBorder(Capsule())
-                .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
                 .help(
                     "The model can list, read, and search inside \(place). "
                         + "It cannot touch anything outside it, and it cannot write or run anything."
@@ -1412,6 +1411,7 @@ struct ChatView: View {
                 disabled: model.isWorking
             ) { target in
                 model.setIntent(target)
+                model.focusComposer()
             }
         }
     }
@@ -2090,6 +2090,7 @@ struct ChatView: View {
                         selected: record.id == model.boundModelID
                     ) {
                         model.rebind(to: record)
+                        model.focusComposer()
                     }
                 }
             }
@@ -2121,6 +2122,7 @@ struct ChatView: View {
                     selected: record.id == model.imageModelID
                 ) {
                     model.bindImage(to: record)
+                    model.focusComposer()
                 }
             }
             if !waiting.isEmpty {
@@ -2151,6 +2153,7 @@ struct ChatView: View {
                     selected: record.id == model.voiceModelID
                 ) {
                     Task { await model.bindVoice(to: record) }
+                    model.focusComposer()
                 }
             }
         }
@@ -2236,7 +2239,6 @@ private struct ModeSelector: View {
     let disabled: Bool
     let onSelect: (ChatViewModel.Intent) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Namespace private var highlight
 
     private struct Segment: Identifiable {
         let id: ChatViewModel.Intent
@@ -2284,11 +2286,9 @@ private struct ModeSelector: View {
             .padding(.horizontal, Design.Space.chipX)
             .frame(height: Design.Control.size - 4)
             .background {
-                if active {
-                    Capsule()
-                        .fill(Design.ink)
-                        .matchedGeometryEffect(id: "mode-highlight", in: highlight)
-                }
+                Capsule()
+                    .fill(Design.ink)
+                    .opacity(active ? 1 : 0)
             }
             .contentShape(Capsule())
         }
