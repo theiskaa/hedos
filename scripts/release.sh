@@ -35,7 +35,7 @@ command -v gh >/dev/null || { echo "gh not found — install the GitHub CLI" >&2
 command -v jq >/dev/null || { echo "jq not found — brew install jq" >&2; exit 1; }
 command -v uv >/dev/null || { echo "uv not found — https://docs.astral.sh/uv/" >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "gh is not authenticated (gh auth login)" >&2; exit 1; }
-security find-identity -v -p codesigning | grep -q "Developer ID Application" \
+security find-identity -v -p codesigning | grep "Developer ID Application" >/dev/null \
     || { echo "no 'Developer ID Application' certificate in your keychain" >&2; exit 1; }
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "release $TAG already exists on GitHub" >&2; exit 1
@@ -68,7 +68,7 @@ echo "==> Building the signed, styled DMG"
 ./scripts/build_dmg.sh
 
 echo "==> Confirming Developer ID signature (not ad-hoc)"
-codesign -dvv dist/Hedos.app 2>&1 | grep -q "Developer ID Application" \
+codesign -dvv dist/Hedos.app 2>&1 | grep "Developer ID Application" >/dev/null \
     || { echo "app is ad-hoc signed, not Developer ID — aborting before notarization" >&2; exit 1; }
 
 echo "==> Notarizing (this waits for Apple)"
