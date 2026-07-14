@@ -40,6 +40,10 @@ security find-identity -v -p codesigning | grep -q "Developer ID Application" \
 if gh release view "$TAG" >/dev/null 2>&1; then
     echo "release $TAG already exists on GitHub" >&2; exit 1
 fi
+CHANGES=$(awk -v tag="$TAG" '$1 == "##" { found = ($2 == tag); next } found' CHANGELOG.md | sed -e '/./,$!d')
+if [ -z "$CHANGES" ]; then
+    echo "no '## $TAG' section in CHANGELOG.md — write the changelog before releasing" >&2; exit 1
+fi
 if [ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then
     echo "not on main — checkout main before releasing" >&2; exit 1
 fi
@@ -88,8 +92,8 @@ trap - ERR
 
 echo "==> Cutting the GitHub release"
 NOTES=$(mktemp)
-printf 'hedos %s.\n\nDownload `Hedos.dmg` below and drag it into Applications, or install with Homebrew:\n\n    brew install --cask theiskaa/tap/hedos\n\nRequires Apple Silicon and macOS 26 (Tahoe) or later. Signed with a Developer ID and notarized.\n\nSHA-256 (`Hedos.dmg`): `%s`\n' \
-    "$TAG" "$SHA" > "$NOTES"
+printf 'hedos %s.\n\n%s\n\n## Install\n\nDownload `Hedos.dmg` below and drag it into Applications, or install with Homebrew:\n\n    brew install --cask theiskaa/tap/hedos\n\nRequires Apple Silicon and macOS 26 (Tahoe) or later. Signed with a Developer ID and notarized.\n\nSHA-256 (`Hedos.dmg`): `%s`\n' \
+    "$TAG" "$CHANGES" "$SHA" > "$NOTES"
 if ! gh release create "$TAG" "$DMG" "$DMG.sha256" --target main --title "$TAG" --notes-file "$NOTES"; then
     rm -f "$NOTES"
     echo "release creation failed — the version commit is already pushed; re-run ./scripts/release.sh $VERSION to finish (it is idempotent)" >&2
