@@ -3,8 +3,8 @@
 #   brew install --cask theiskaa/homebrew-tap/hedos
 # Set `sha256` to the DMG's checksum (shasum -a 256 dist/Hedos.dmg) before publishing.
 cask "hedos" do
-  version "0.1.0"
-  sha256 "88b426a939ec40b29613ed6c3f0fb96641892e10461162426c0bddd0deec2e3b"
+  version "0.1.1"
+  sha256 "e77af3fa3fd07208f122960cb60a4f7b00793a73b3ec78e155ee2048e1765c82"
 
   url "https://github.com/theiskaa/hedos/releases/download/v#{version}/Hedos.dmg"
   name "Hedos"
