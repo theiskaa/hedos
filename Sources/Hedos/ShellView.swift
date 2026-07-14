@@ -477,7 +477,7 @@ struct ShellView: View {
 struct HedosSidebar: View {
     @Bindable var shell: ShellModel
     @State private var hovered: AppMode?
-    @State private var updateHovered: String?
+    @State private var versionHovered = false
     @State private var railQuery = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -542,7 +542,7 @@ struct HedosSidebar: View {
                 }
             }
             Spacer(minLength: 0)
-            updateRow(collapsedRow: false)
+            versionRow(collapsedRow: false)
             settingsRow(collapsedRow: false)
                 .padding(.bottom, Design.Space.l)
         }
@@ -569,7 +569,7 @@ struct HedosSidebar: View {
                 modeRow(.gateway, collapsedRow: true)
             }
             Spacer(minLength: 0)
-            updateRow(collapsedRow: true)
+            versionRow(collapsedRow: true)
             settingsRow(collapsedRow: true)
                 .padding(.bottom, Design.Space.l)
         }
@@ -614,27 +614,83 @@ struct HedosSidebar: View {
     }
 
     @ViewBuilder
-    private func updateRow(collapsedRow: Bool) -> some View {
-        if Updater.shared.available != nil {
-            InkSidebarRow(
-                id: "update",
-                glyph: "arrow.down.circle",
-                title: "Update",
-                selected: false,
-                collapsed: collapsedRow,
-                hovered: $updateHovered
-            ) {
-                Updater.shared.installAvailable()
+    private func versionRow(collapsedRow: Bool) -> some View {
+        let updateAvailable = Updater.shared.available != nil
+        let interactive = updateAvailable || !Updater.shared.isUnversioned
+        let lit = versionHovered && interactive
+        let wash = lit ? Design.ink.opacity(0.04) : Color.clear
+        let help =
+            updateAvailable
+            ? "Update available — click to install"
+            : interactive
+                ? "Hedos \(Updater.shared.displayVersion) — check for updates"
+                : "Development build"
+        let announce =
+            updateAvailable
+            ? "Update available, Hedos \(Updater.shared.displayVersion)"
+            : "Hedos \(Updater.shared.displayVersion)"
+        let body = versionContent(
+            collapsedRow: collapsedRow, lit: lit, wash: wash, updateAvailable: updateAvailable)
+        if interactive {
+            Button {
+                if updateAvailable {
+                    Updater.shared.installAvailable()
+                } else {
+                    Updater.shared.checkFromMenu()
+                }
+            } label: {
+                body
             }
-            .overlay(alignment: collapsedRow ? .topTrailing : .trailing) {
-                Circle()
-                    .fill(Color.green)
-                    .frame(width: 7, height: 7)
-                    .padding(.top, collapsedRow ? 6 : 0)
-                    .padding(.trailing, collapsedRow ? 6 : Design.Space.l)
+            .buttonStyle(PressDipStyle())
+            .onHover { versionHovered = $0 }
+            .animation(Design.wash, value: lit)
+            .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
+            .help(help)
+            .accessibilityLabel(announce)
+            .accessibilityIdentifier("rail-version")
+        } else {
+            body
+                .help(help)
+                .accessibilityLabel(announce)
+                .accessibilityIdentifier("rail-version")
+        }
+    }
+
+    @ViewBuilder
+    private func versionContent(
+        collapsedRow: Bool, lit: Bool, wash: Color, updateAvailable: Bool
+    ) -> some View {
+        if collapsedRow {
+            HedosLogo(size: 18, color: lit ? Design.ink : Design.inkSoft)
+                .frame(width: 44, height: 36)
+                .background(RoundedRectangle.soft(Design.Radius.control).fill(wash))
+                .overlay(alignment: .topTrailing) {
+                    if updateAvailable {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 7, height: 7)
+                            .padding(.top, 6)
+                            .padding(.trailing, 6)
+                    }
+                }
+                .contentShape(RoundedRectangle.soft(Design.Radius.control))
+        } else {
+            HStack(spacing: Design.Space.chipX) {
+                HedosLogo(size: 16, color: lit ? Design.ink : Design.inkSoft)
+                    .frame(width: 22, alignment: .leading)
+                Text(Updater.shared.displayVersion)
+                    .font(Design.body)
+                    .fontWeight(.medium)
+                    .foregroundStyle(lit ? Design.ink : Design.inkSoft)
+                Spacer(minLength: 0)
+                if updateAvailable {
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
+                }
             }
-            .help("Update available")
-            .accessibilityIdentifier("rail-update")
+            .padding(.horizontal, Design.Space.l)
+            .padding(.vertical, Design.Space.s + 1)
+            .background(RoundedRectangle.soft(Design.Radius.control).fill(wash))
+            .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
     }
 

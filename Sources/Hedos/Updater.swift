@@ -36,6 +36,14 @@ final class Updater {
             Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0")
     }
 
+    var isUnversioned: Bool {
+        currentVersion == [0]
+    }
+
+    var displayVersion: String {
+        isUnversioned ? "dev" : "v" + Self.string(currentVersion)
+    }
+
     func checkOnLaunch() {
         guard !UserDefaults.standard.bool(forKey: "update.disabled") else { return }
         guard currentVersion != [0] else { return }
