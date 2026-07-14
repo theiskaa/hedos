@@ -11,7 +11,7 @@ cask "hedos" do
   desc "One native home for every local model on your Mac"
   homepage "https://github.com/theiskaa/hedos"
 
-  depends_on macos: ">= :sequoia"
+  depends_on macos: ">= :tahoe"
 
   app "Hedos.app"
   binary "#{appdir}/Hedos.app/Contents/Helpers/hedos"
