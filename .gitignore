@@ -13,6 +13,12 @@ DerivedData/
 xcuserdata/
 *.xcresult
 
+# Stray compiler intermediates (should live under .build/)
+/*.o
+/*.d
+/*.dia
+/*.swiftdeps
+
 # Python (runtime sidecars)
 __pycache__/
 *.py[cod]
