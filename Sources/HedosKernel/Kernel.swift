@@ -617,6 +617,19 @@ public actor Kernel {
         }
     }
 
+    private nonisolated var attachmentStore: AttachmentStore {
+        AttachmentStore(
+            directory: directory.appendingPathComponent("attachments", isDirectory: true))
+    }
+
+    public nonisolated func chatAttachments(_ refs: [String]) -> [ChatAttachment] {
+        attachmentStore.load(refs)
+    }
+
+    public nonisolated static func attachmentRef(for data: Data, mimeType: String) -> String {
+        AttachmentStore.ref(for: data, mimeType: mimeType)
+    }
+
     private func chatFlow() -> ChatFlow {
         ChatFlow(
             chats: chats,
@@ -645,8 +658,7 @@ public actor Kernel {
                     state: self.harnessActState)
                 return await Harness.execute(call, place: place, context: context)
             },
-            attachments: AttachmentStore(
-                directory: directory.appendingPathComponent("attachments", isDirectory: true)),
+            attachments: attachmentStore,
             gate: chatSessionGate)
     }
 

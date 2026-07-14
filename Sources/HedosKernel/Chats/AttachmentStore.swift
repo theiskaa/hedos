@@ -8,15 +8,18 @@ struct AttachmentStore: Sendable {
         self.directory = directory
     }
 
+    static func ref(for data: Data, mimeType: String) -> String {
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return "\(digest).\(fileExtension(for: mimeType))"
+    }
+
     func store(_ attachments: [ChatAttachment]) throws -> [String] {
         guard !attachments.isEmpty else { return [] }
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         var refs: [String] = []
         for attachment in attachments {
-            let digest = SHA256.hash(data: attachment.data)
-                .map { String(format: "%02x", $0) }.joined()
-            let ref = "\(digest).\(Self.fileExtension(for: attachment.mimeType))"
+            let ref = Self.ref(for: attachment.data, mimeType: attachment.mimeType)
             let url = directory.appendingPathComponent(ref)
             if !FileManager.default.fileExists(atPath: url.path) {
                 try attachment.data.write(to: url, options: .atomic)

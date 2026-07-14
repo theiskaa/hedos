@@ -123,6 +123,30 @@ private func pngBytes(_ marker: UInt8) -> Data {
     #expect(!Kernel.payloadCarriesImages(historicalImageThenText))
 }
 
+@Test func attachmentRefMatchesTheStoredFilename() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = AttachmentStore(directory: dir.appendingPathComponent("a"))
+    let stored = try store.store(
+        [ChatAttachment(kind: .image, data: pngBytes(11), mimeType: "image/png")])
+    let computed = Kernel.attachmentRef(for: pngBytes(11), mimeType: "image/png")
+    #expect(stored.first == computed)
+    #expect(AttachmentStore.ref(for: pngBytes(11), mimeType: "image/png") == computed)
+}
+
+@Test func kernelChatAttachmentsReadsFromTheSessionAttachmentDirectory() async throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let kernel = Kernel(directory: dir)
+    let store = AttachmentStore(directory: dir.appendingPathComponent("attachments"))
+    let refs = try store.store(
+        [ChatAttachment(kind: .image, data: pngBytes(9), mimeType: "image/png")])
+    let loaded = await kernel.chatAttachments(refs)
+    #expect(loaded.first?.data == pngBytes(9))
+    #expect(loaded.first?.mimeType == "image/png")
+    #expect(await kernel.chatAttachments(["../secret.png"]).isEmpty)
+}
+
 @Test func imageBearingTurnPersistsAndReloadsThroughTheStore() async throws {
     let dir = try Fixtures.tempDirectory()
     defer { try? FileManager.default.removeItem(at: dir) }
