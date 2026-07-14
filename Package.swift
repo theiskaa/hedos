@@ -10,6 +10,7 @@ let package = Package(
         .package(url: "https://github.com/apple/containerization.git", from: "0.36.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.29.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift-examples", from: "2.29.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.0"),
     ],
     targets: [
         .target(
@@ -33,6 +34,13 @@ let package = Package(
         .executableTarget(
             name: "hedos-probe",
             dependencies: ["HedosKernel"]),
+        .executableTarget(
+            name: "hedos-cli",
+            dependencies: [
+                "HedosKernel",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/HedosCLI"),
         .testTarget(
             name: "HedosKernelTests",
             dependencies: ["HedosKernel"],
