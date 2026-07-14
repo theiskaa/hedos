@@ -107,6 +107,7 @@ struct HedosApp: App {
                     FocusJanitor.shared.install()
                     DispatchQueue.main.async {
                         NSApp.keyWindow?.makeFirstResponder(nil)
+                        CLITool.offerOnFirstRun()
                     }
                 }
         }
@@ -122,6 +123,10 @@ struct HedosApp: App {
                     SettingsWindowController.shared.show(shell: shell)
                 }
                 .keyboardShortcut(",", modifiers: .command)
+                Divider()
+                Button("Install Command-Line Tool…") {
+                    CLITool.installFromMenu()
+                }
             }
             CommandGroup(after: .textEditing) {
                 Button("Find Chats") {

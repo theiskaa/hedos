@@ -11,6 +11,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 RELEASE=$(swift build -c release --show-bin-path)
 
 cp "$RELEASE/Hedos" "$APP/Contents/MacOS/Hedos"
+
+mkdir -p "$APP/Contents/Helpers"
+cp "$RELEASE/hedos-cli" "$APP/Contents/Helpers/hedos"
+strip -rSTx "$APP/Contents/Helpers/hedos" 2>/dev/null || true
 for bundle in "$RELEASE"/*.bundle; do
     [ -e "$bundle" ] || continue
     cp -R "$bundle" "$APP/Contents/Resources/"
@@ -23,6 +27,7 @@ for framework in "$RELEASE"/*.framework; do
 done
 if [ "$HAS_FRAMEWORKS" = 1 ]; then
     install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/MacOS/Hedos"
+    install_name_tool -add_rpath "@executable_path/../Frameworks" "$APP/Contents/Helpers/hedos"
 else
     rmdir "$APP/Contents/Frameworks"
 fi
@@ -57,6 +62,7 @@ if [ ! -f "$METALLIB" ]; then
     rm -rf "$VENV"
 fi
 cp "$METALLIB" "$APP/Contents/MacOS/mlx.metallib"
+ln -sf ../MacOS/mlx.metallib "$APP/Contents/Helpers/mlx.metallib"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -78,7 +84,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconName</key>
     <string>hedos</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.0.0</string>
+    <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
@@ -104,6 +110,14 @@ cat > "$ENTITLEMENTS" <<'ENT'
 <dict>
     <key>com.apple.security.virtualization</key>
     <true/>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
 </dict>
 </plist>
 ENT
@@ -114,6 +128,7 @@ sign_bundle() {
         codesign --force "$@" "$framework"
     done
     codesign --force "$@" "$APP/Contents/MacOS/mlx.metallib"
+    codesign --force "$@" "$APP/Contents/Helpers/hedos"
     codesign --force "$@" --entitlements "$ENTITLEMENTS" "$APP"
 }
 
