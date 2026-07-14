@@ -4,8 +4,8 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 RAMP = " .·:-=+*▒▓█"
-INK = (90, 86, 80)
-AMBER = (180, 121, 31)
+INK = (132, 130, 134)
+AMBER = (52, 51, 56)
 PAPER = (244, 244, 245)
 
 BAYER = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
