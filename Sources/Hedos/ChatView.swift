@@ -1626,7 +1626,7 @@ struct ChatView: View {
                     if scrolledUp {
                         Button {
                             followsStream = true
-                            withAnimation(.easeOut(duration: 0.2)) {
+                            withAnimation(Design.wash) {
                                 proxy.scrollTo("tail", anchor: .bottom)
                             }
                         } label: {

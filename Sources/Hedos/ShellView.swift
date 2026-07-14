@@ -731,7 +731,7 @@ struct ChatPane: View {
                 ColumnDivider()
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .animation(.easeOut(duration: 0.15), value: shell.chatSelection)
+                    .animation(Design.wash, value: shell.chatSelection)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

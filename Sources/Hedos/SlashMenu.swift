@@ -106,6 +106,7 @@ struct SlashMenuPanel: View {
     let highlighted: Int
     let onAccept: (SlashEntry) -> Void
     let onHighlight: (Int) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var allFiles: Bool {
         !entries.isEmpty && entries.allSatisfy(\.isFile)
@@ -137,7 +138,7 @@ struct SlashMenuPanel: View {
                 .frame(height: listHeight)
                 .scrollDisabled(entries.count <= 6)
                 .onChange(of: highlighted) { _, new in
-                    withAnimation(.easeOut(duration: 0.1)) {
+                    withAnimation(reduceMotion ? nil : Design.snap) {
                         proxy.scrollTo(new, anchor: .center)
                     }
                 }

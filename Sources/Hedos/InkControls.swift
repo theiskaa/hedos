@@ -41,7 +41,7 @@ struct InkSlider: View {
                         radius: 3, x: 0, y: 1)
                     .scaleEffect(hovering && !reduceMotion ? 1.15 : 1)
                     .offset(x: thumbX)
-                    .animation(.easeOut(duration: 0.15), value: hovering)
+                    .animation(Design.wash, value: hovering)
             }
             .frame(height: 18)
             .contentShape(Rectangle())
@@ -134,7 +134,7 @@ struct InkToggle: View {
             .frame(width: 34, height: 20)
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .animation(
-                reduceMotion ? .easeOut(duration: 0.15) : Design.snap, value: isOn)
+                Design.snapMotion(reduceMotion: reduceMotion), value: isOn)
         }
         .buttonStyle(TogglePressStyle(reduceMotion: reduceMotion))
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
@@ -209,7 +209,7 @@ struct InkSegmented<Value: Hashable>: View {
         .overlay(
             Capsule(style: .continuous)
                 .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .animation(reduceMotion ? .easeOut(duration: 0.15) : Design.snap, value: selection)
+        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: selection)
     }
 }
 
@@ -717,7 +717,7 @@ struct QuietButtonStyle: ButtonStyle {
             .opacity(isEnabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
             .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.15), value: hovering)
+            .animation(Design.wash, value: hovering)
     }
 }
 
@@ -784,7 +784,7 @@ struct InkChoiceCard<Preview: View>: View {
                         lineWidth: selected ? 1.5 : Design.hairlineWidth))
             .offset(y: hovering && !reduceMotion ? -2 : 0)
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
-            .animation(.easeOut(duration: 0.15), value: hovering)
+            .animation(Design.wash, value: hovering)
             .animation(Design.wash, value: selected)
         }
         .buttonStyle(.plain)
@@ -831,7 +831,7 @@ struct ThemeFamilyCard: View {
                         lineWidth: selected ? 1.5 : Design.hairlineWidth))
             .offset(y: hovering && !reduceMotion ? -2 : 0)
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
-            .animation(.easeOut(duration: 0.15), value: hovering)
+            .animation(Design.wash, value: hovering)
             .animation(Design.wash, value: selected)
         }
         .buttonStyle(.plain)

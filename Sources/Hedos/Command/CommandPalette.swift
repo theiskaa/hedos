@@ -44,12 +44,12 @@ private struct CommandPalettePresenter: ViewModifier {
                             reduceMotion
                                 ? .opacity
                                 : .opacity
-                                    .combined(with: .scale(scale: 0.94, anchor: .top))
-                                    .combined(with: .offset(y: -14)))
+                                    .combined(with: .scale(scale: 0.96, anchor: .top))
+                                    .combined(with: .offset(y: -12)))
                     }
                 }
                 .animation(
-                    reduceMotion ? .easeOut(duration: 0.15) : Design.spring,
+                    Design.reveal(isPresented, reduceMotion: reduceMotion),
                     value: isPresented)
             }
     }

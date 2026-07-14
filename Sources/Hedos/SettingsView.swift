@@ -530,7 +530,7 @@ struct SettingRow<Control: View>: View {
                 .fill(highlighted ? Design.ink.opacity(0.08) : .clear)
                 .padding(.vertical, Design.Space.xs))
         .padding(.horizontal, -Design.Space.s)
-        .animation(Design.wash, value: highlighted)
+        .animation(Design.highlight, value: highlighted)
         .id(id)
     }
 }
@@ -1717,7 +1717,7 @@ struct SettingsRoot: View {
             .fill(highlighted == id ? Design.ink.opacity(0.08) : .clear)
             .padding(.horizontal, -Design.Space.s)
             .animation(
-                reduceMotion ? nil : .easeOut(duration: 0.4), value: highlighted)
+                reduceMotion ? nil : Design.highlight, value: highlighted)
     }
 
     private var readyChatModels: [ModelRecord] {

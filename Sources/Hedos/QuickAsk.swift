@@ -95,9 +95,10 @@ final class QuickAskController {
         }
     }
 
-    private var materialize: Animation {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? .easeOut(duration: 0.15) : Design.spring
+    private func materialize(_ shown: Bool) -> Animation {
+        Design.reveal(
+            shown,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
     func hide() {
@@ -105,7 +106,7 @@ final class QuickAskController {
             NSEvent.removeMonitor(escapeMonitor)
             self.escapeMonitor = nil
         }
-        withAnimation(materialize, completionCriteria: .logicallyComplete) {
+        withAnimation(materialize(false), completionCriteria: .logicallyComplete) {
             model.visible = false
         } completion: { [weak self] in
             self?.panel?.orderOut(nil)
@@ -130,7 +131,7 @@ final class QuickAskController {
         panel.orderFrontRegardless()
         panel.makeKey()
         model.requestFocus()
-        withAnimation(materialize) { model.visible = true }
+        withAnimation(materialize(true)) { model.visible = true }
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
             if event.keyCode == UInt16(kVK_Escape), self?.panel?.isKeyWindow == true {

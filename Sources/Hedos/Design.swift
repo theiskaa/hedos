@@ -218,9 +218,18 @@ enum Design {
     static let spring = Animation.spring(response: 0.4, dampingFraction: 0.8)
     static let snap = Animation.spring(response: 0.25, dampingFraction: 0.9)
     static let press = Animation.easeOut(duration: 0.12)
+    static let highlight = Animation.easeOut(duration: 0.4)
 
     static func motion(reduceMotion: Bool) -> Animation? {
         reduceMotion ? .easeOut(duration: 0.15) : spring
+    }
+
+    static func snapMotion(reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeOut(duration: 0.15) : snap
+    }
+
+    static func reveal(_ shown: Bool, reduceMotion: Bool) -> Animation {
+        reduceMotion ? .easeOut(duration: 0.15) : shown ? spring : wash
     }
 
     static let paper = adaptive { $0.ground }
@@ -395,7 +404,7 @@ struct ModalScrim<Modal: View>: ViewModifier {
                     }
                 }
                 .animation(
-                    reduceMotion ? .easeOut(duration: 0.15) : Design.spring,
+                    Design.reveal(isPresented, reduceMotion: reduceMotion),
                     value: isPresented)
             }
     }
@@ -433,7 +442,7 @@ struct Lifts: ViewModifier {
         content
             .shade(hovering ? Design.Elevation.liftHover : Design.Elevation.lift)
             .offset(y: hovering && !reduceMotion ? -3 : 0)
-            .animation(.easeOut(duration: 0.2), value: hovering)
+            .animation(Design.wash, value: hovering)
     }
 }
 
@@ -556,7 +565,7 @@ struct StaggeredArrival: ViewModifier {
                 if reduceMotion {
                     withAnimation(.easeOut(duration: 0.2)) { appeared = true }
                 } else {
-                    withAnimation(Design.spring.delay(0.05 * Double(min(index, 8)))) {
+                    withAnimation(Design.spring.delay(0.04 * Double(min(index, 7)))) {
                         appeared = true
                     }
                 }
@@ -618,7 +627,7 @@ struct InkButtonStyle: ButtonStyle {
             .contentShape(shape)
             .onHover { hovering = $0 }
             .inkFocusRing(shape)
-            .animation(.easeOut(duration: 0.2), value: hovering)
+            .animation(Design.wash, value: hovering)
             .animation(Design.press, value: configuration.isPressed)
     }
 }

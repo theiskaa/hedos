@@ -473,7 +473,7 @@ private struct CirclePressStyle: ButtonStyle {
                     : hovering ? Design.Elevation.buttonHover.y : Design.Elevation.button.y)
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .offset(y: configuration.isPressed ? 0 : hovering && prominent ? -1 : 0)
-            .animation(.easeOut(duration: 0.2), value: hovering)
+            .animation(Design.wash, value: hovering)
             .animation(Design.press, value: configuration.isPressed)
     }
 }
