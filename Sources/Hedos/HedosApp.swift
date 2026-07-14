@@ -108,6 +108,7 @@ struct HedosApp: App {
                     DispatchQueue.main.async {
                         NSApp.keyWindow?.makeFirstResponder(nil)
                         CLITool.offerOnFirstRun()
+                        Updater.shared.checkOnLaunch()
                     }
                 }
         }
@@ -116,6 +117,9 @@ struct HedosApp: App {
             CommandGroup(replacing: .appInfo) {
                 Button("About Hedos") {
                     openWindow(id: "about")
+                }
+                Button("Check for Updates…") {
+                    Updater.shared.checkFromMenu()
                 }
             }
             CommandGroup(replacing: .appSettings) {

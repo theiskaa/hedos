@@ -477,6 +477,7 @@ struct ShellView: View {
 struct HedosSidebar: View {
     @Bindable var shell: ShellModel
     @State private var hovered: AppMode?
+    @State private var updateHovered: String?
     @State private var railQuery = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -541,6 +542,7 @@ struct HedosSidebar: View {
                 }
             }
             Spacer(minLength: 0)
+            updateRow(collapsedRow: false)
             settingsRow(collapsedRow: false)
                 .padding(.bottom, Design.Space.l)
         }
@@ -567,6 +569,7 @@ struct HedosSidebar: View {
                 modeRow(.gateway, collapsedRow: true)
             }
             Spacer(minLength: 0)
+            updateRow(collapsedRow: true)
             settingsRow(collapsedRow: true)
                 .padding(.bottom, Design.Space.l)
         }
@@ -607,6 +610,31 @@ struct HedosSidebar: View {
     private var surfacesMatch: Bool {
         ShellModel.surfaces.contains {
             rowMatches(Design.modeTitle($0))
+        }
+    }
+
+    @ViewBuilder
+    private func updateRow(collapsedRow: Bool) -> some View {
+        if Updater.shared.available != nil {
+            InkSidebarRow(
+                id: "update",
+                glyph: "arrow.down.circle",
+                title: "Update",
+                selected: false,
+                collapsed: collapsedRow,
+                hovered: $updateHovered
+            ) {
+                Updater.shared.installAvailable()
+            }
+            .overlay(alignment: collapsedRow ? .topTrailing : .trailing) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 7, height: 7)
+                    .padding(.top, collapsedRow ? 6 : 0)
+                    .padding(.trailing, collapsedRow ? 6 : Design.Space.l)
+            }
+            .help("Update available")
+            .accessibilityIdentifier("rail-update")
         }
     }
 
