@@ -15,6 +15,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     let canSend: Bool
     var readyToSend: Bool = false
     var extraContent: Bool = false
+    var focusSignal: Int = 0
     let notice: String?
     var noticeActionLabel: String? = nil
     var noticeAction: (() -> Void)? = nil
@@ -54,6 +55,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
         }
         .animation(Design.motion(reduceMotion: reduceMotion), value: notice)
         .onAppear { composerFocusToken += 1 }
+        .onChange(of: focusSignal) { _, _ in composerFocusToken += 1 }
     }
 
     private func noticeBar(_ text: String) -> some View {
@@ -118,6 +120,8 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                     .padding(.top, Design.Space.xs)
                     .padding(.horizontal, Design.Space.xs)
                     HStack(spacing: Design.Space.m) {
+                        micControl
+                        aux()
                         if let notice = dictationController.notice {
                             Text(notice)
                                 .font(Design.label)
@@ -126,8 +130,6 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                                 .truncationMode(.tail)
                         }
                         Spacer(minLength: 0)
-                        micControl
-                        aux()
                         chip()
                         ZStack {
                             if isWorking {

@@ -117,6 +117,7 @@ final class ChatViewModel {
     var transcript: [Entry] = []
     var draft = ""
     var pendingAttachments: [PendingAttachment] = []
+    var composerFocusSignal = 0
     var isStreaming = false
     var isTranscribing = false
     var isVisible = true
@@ -275,6 +276,7 @@ final class ChatViewModel {
             pendingAttachments = []
         }
         intent = next
+        composerFocusSignal += 1
         ensureBinding(for: next)
         let kernel = kernel
         let sessionID = sessionID
@@ -304,6 +306,7 @@ final class ChatViewModel {
     func selectVoice(_ candidate: String) {
         guard voice != candidate else { return }
         voice = candidate
+        composerFocusSignal += 1
         let kernel = kernel
         Task {
             var settings = await kernel.settings.voice()
@@ -356,6 +359,7 @@ final class ChatViewModel {
         imageModelID = record.id
         form = ParamForm(schema: record.params)
         guard persist else { return }
+        composerFocusSignal += 1
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
@@ -367,6 +371,7 @@ final class ChatViewModel {
         let changed = voiceModelID != record.id
         voiceModelID = record.id
         if persist && changed {
+            composerFocusSignal += 1
             try? await kernel.chats.bindVoiceModel(id: sessionID, modelID: record.id)
         }
         voices = (try? await kernel.voices(for: record.id)) ?? []
@@ -466,6 +471,7 @@ final class ChatViewModel {
         guard !pendingAttachments.contains(where: { $0.ref == ref }) else { return }
         pendingAttachments.append(
             PendingAttachment(ref: ref, data: data, mimeType: mimeType, name: name, image: image))
+        composerFocusSignal += 1
     }
 
     func removeAttachment(_ id: String) {
@@ -729,6 +735,7 @@ final class ChatViewModel {
         if !record.capabilities.contains(.see) {
             pendingAttachments = []
         }
+        composerFocusSignal += 1
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
@@ -1043,6 +1050,7 @@ final class ChatViewModel {
     }
 
     func setPlace(_ path: String) {
+        composerFocusSignal += 1
         Task {
             do {
                 try await kernel.setChatPlace(sessionID: sessionID, path: path)
@@ -1059,6 +1067,7 @@ final class ChatViewModel {
     }
 
     func clearPlace() {
+        composerFocusSignal += 1
         Task {
             try? await kernel.setChatPlace(sessionID: sessionID, path: nil)
             place = nil
@@ -1262,6 +1271,7 @@ struct ChatView: View {
             canSend: sendable,
             readyToSend: composerReady,
             extraContent: hasPendingAttachments,
+            focusSignal: model.composerFocusSignal,
             notice: contextNotice ?? model.notice,
             noticeActionLabel: model.canStartOllama ? "Start Ollama" : nil,
             noticeAction: model.canStartOllama ? { model.startOllamaAndRetry() } : nil,
@@ -1346,7 +1356,9 @@ struct ChatView: View {
             }
             HStack(spacing: Design.Space.s) {
                 modelChip
-                boundPlaceChip
+                folderControl
+                Spacer(minLength: Design.Space.s)
+                modeSelector
             }
         }
         .padding(.horizontal, Design.Space.xs)
@@ -1356,42 +1368,57 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private var boundPlaceChip: some View {
-        if model.intent == .text, let place = model.place {
-            HStack(spacing: Design.Space.xs) {
-                Image(systemName: "folder")
-                    .font(Design.glyphSmall)
-                Text(URL(fileURLWithPath: place).lastPathComponent)
-                    .font(Design.label.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                ChipCloseButton(
-                    action: { model.clearPlace() }, label: "Stop reading this folder")
+    private var folderControl: some View {
+        if model.intent == .text {
+            if let place = model.place {
+                HStack(spacing: Design.Space.xs) {
+                    Image(systemName: "folder")
+                        .font(Design.glyphSmall)
+                    Text(URL(fileURLWithPath: place).lastPathComponent)
+                        .font(Design.label.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    ChipCloseButton(
+                        action: { model.clearPlace() }, label: "Stop reading this folder")
+                }
+                .foregroundStyle(Design.inkSoft)
+                .padding(.leading, Design.Space.chipX)
+                .padding(.trailing, Design.Space.xs)
+                .frame(height: Design.Control.size)
+                .background(Design.inkWash, in: Capsule())
+                .hairlineBorder(Capsule())
+                .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
+                .help(
+                    "The model can list, read, and search inside \(place). "
+                        + "It cannot touch anything outside it, and it cannot write or run anything."
+                )
+            } else {
+                CircleControl(glyph: "folder", label: "Let the model read a folder") {
+                    pickPlace()
+                }
             }
-            .foregroundStyle(Design.inkSoft)
-            .padding(.leading, Design.Space.chipX)
-            .padding(.trailing, Design.Space.xs)
-            .frame(height: Design.Control.size)
-            .background(Design.inkWash, in: Capsule())
-            .hairlineBorder(Capsule())
-            .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
-            .help(
-                "The model can list, read, and search inside \(place). "
-                    + "It cannot touch anything outside it, and it cannot write or run anything."
-            )
+        }
+    }
+
+    @ViewBuilder
+    private var modeSelector: some View {
+        let imageAvailable = !model.imageModels(in: library.records).isEmpty
+        let speakAvailable = !model.voiceModels(in: library.records).isEmpty
+        if imageAvailable || speakAvailable || model.intent != .text {
+            ModeSelector(
+                intent: model.intent,
+                imageAvailable: imageAvailable,
+                speakAvailable: speakAvailable,
+                disabled: model.isWorking
+            ) { target in
+                model.setIntent(target)
+            }
         }
     }
 
     @ViewBuilder
     private var composerAux: some View {
         attachControl
-        intentControl(
-            .image, glyph: "photo", label: "Generate an image",
-            available: !model.imageModels(in: library.records).isEmpty)
-        intentControl(
-            .speak, glyph: "speaker.wave.2", label: "Speak this text",
-            available: !model.voiceModels(in: library.records).isEmpty)
-        placeControl
         paramsControl
         voiceLoopControl
     }
@@ -1426,18 +1453,6 @@ struct ChatView: View {
         }
     }
 
-    @ViewBuilder
-    private var placeControl: some View {
-        if model.intent == .text, model.place == nil {
-            CircleControl(
-                glyph: "folder",
-                label: "Let the model read a folder"
-            ) {
-                pickPlace()
-            }
-        }
-    }
-
     private func pickPlace() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -1450,24 +1465,6 @@ struct ChatView: View {
             + "write, delete, or run anything."
         if panel.runModal() == .OK, let url = panel.url {
             model.setPlace(url.path)
-        }
-    }
-
-    @ViewBuilder
-    private func intentControl(
-        _ target: ChatViewModel.Intent, glyph: String, label: String, available: Bool
-    ) -> some View {
-        if available || model.intent == target {
-            let active = model.intent == target
-            CircleControl(
-                glyph: glyph,
-                prominent: active,
-                label: active ? "Back to chat" : label
-            ) {
-                model.setIntent(active ? .text : target)
-            }
-            .disabled(model.isWorking)
-            .accessibilityIdentifier("intent-\(target == .image ? "image" : "speak")")
         }
     }
 
@@ -2231,6 +2228,77 @@ struct ChatView: View {
     }
 }
 
+
+private struct ModeSelector: View {
+    let intent: ChatViewModel.Intent
+    let imageAvailable: Bool
+    let speakAvailable: Bool
+    let disabled: Bool
+    let onSelect: (ChatViewModel.Intent) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var highlight
+
+    private struct Segment: Identifiable {
+        let id: ChatViewModel.Intent
+        let glyph: String
+        let label: String
+    }
+
+    private var segments: [Segment] {
+        var out: [Segment] = []
+        if imageAvailable || intent == .image {
+            out.append(Segment(id: .image, glyph: "photo", label: "Image"))
+        }
+        if speakAvailable || intent == .speak {
+            out.append(Segment(id: .speak, glyph: "speaker.wave.2", label: "Speech"))
+        }
+        return out
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(segments) { segment in
+                segmentButton(segment)
+            }
+        }
+        .padding(2)
+        .background(Design.inkWash, in: Capsule())
+        .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .opacity(disabled ? 0.5 : 1)
+        .animation(reduceMotion ? nil : Design.snap, value: intent)
+    }
+
+    private func segmentButton(_ segment: Segment) -> some View {
+        let active = intent == segment.id
+        return Button {
+            onSelect(active ? .text : segment.id)
+        } label: {
+            HStack(spacing: Design.Space.xs) {
+                Image(systemName: segment.glyph)
+                    .font(Design.glyphSmall)
+                Text(segment.label)
+                    .font(Design.label.weight(.medium))
+                    .fixedSize()
+            }
+            .foregroundStyle(active ? Design.paper : Design.inkSoft)
+            .padding(.horizontal, Design.Space.chipX)
+            .frame(height: Design.Control.size - 4)
+            .background {
+                if active {
+                    Capsule()
+                        .fill(Design.ink)
+                        .matchedGeometryEffect(id: "mode-highlight", in: highlight)
+                }
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(PressDipStyle())
+        .disabled(disabled)
+        .help(active ? "Back to chat" : "\(segment.label) mode")
+        .accessibilityLabel(active ? "\(segment.label) mode, selected" : "\(segment.label) mode")
+        .accessibilityIdentifier("intent-\(segment.id == .image ? "image" : "speak")")
+    }
+}
 
 private struct VersionSwitcher: View {
     let index: Int
