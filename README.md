@@ -14,7 +14,7 @@ Everything runs on your hardware, offline, on Apple's MLX foundation — no brow
 
 ## Download
 
-**[Download for Apple Silicon](https://github.com/theiskaa/hedos/releases/latest/download/Hedos.dmg)** — macOS 26 (Tahoe) or later.
+Grab the latest `Hedos.dmg` from the [releases page](https://github.com/theiskaa/hedos/releases/latest). Requires an Apple Silicon Mac on macOS 26 (Tahoe) or later.
 
 Or with Homebrew:
 
