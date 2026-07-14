@@ -139,7 +139,7 @@ public actor DiscoveryService {
         let scannedKinds = Set(scanners.flatMap(\.kinds)).subtracting(failedKinds)
         for record in existing
         where scannedKinds.contains(record.source.kind) && !seenIDs.contains(record.id)
-            && record.state != .missing
+            && record.state != .missing && !Self.weightsPresent(record)
         {
             var stale = record
             stale.state = .missing
@@ -172,6 +172,12 @@ public actor DiscoveryService {
             duplicates: DuplicateDetector.detect(in: discovered, threshold: duplicateThreshold),
             issues: issues,
             failedKinds: failedKinds)
+    }
+
+    private static func weightsPresent(_ record: ModelRecord) -> Bool {
+        guard let path = record.primaryWeightPath, !path.isEmpty else { return false }
+        if FileManager.default.fileExists(atPath: path) { return true }
+        return FileManager.default.fileExists(atPath: record.source.path)
     }
 
     private func fingerprint(for model: DiscoveredModel, existing: ModelRecord?) -> String? {

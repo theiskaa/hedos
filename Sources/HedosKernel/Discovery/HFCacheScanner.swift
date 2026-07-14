@@ -36,17 +36,25 @@ public struct HFCacheScanner: StoreScanner {
     }
 
     public static func userRoots(_ paths: [String]) -> [URL] {
-        paths.map { path in
+        var roots: [URL] = []
+        for path in paths {
             let base = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            let hub = base.appendingPathComponent("hub")
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: hub.path, isDirectory: &isDirectory),
-                isDirectory.boolValue
-            {
-                return hub
-            }
-            return base
+            let candidates = [
+                base.appendingPathComponent("hub"),
+                base.appendingPathComponent("huggingface/hub"),
+                base,
+            ]
+            let existing = candidates.filter(isHubDirectory)
+            roots.append(contentsOf: existing.isEmpty ? [base] : existing)
         }
+        var seen = Set<String>()
+        return roots.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    private static func isHubDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     public func scan() async -> ScanResult {
