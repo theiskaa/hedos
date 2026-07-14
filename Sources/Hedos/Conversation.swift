@@ -14,6 +14,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     let isWorking: Bool
     let canSend: Bool
     var readyToSend: Bool = false
+    var extraContent: Bool = false
     let notice: String?
     var noticeActionLabel: String? = nil
     var noticeAction: (() -> Void)? = nil
@@ -294,7 +295,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     }
 
     private var draftEmpty: Bool {
-        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !extraContent
     }
 
     private func performSend() {

@@ -1,6 +1,7 @@
 import AppKit
 import HedosKernel
 import SwiftUI
+import UniformTypeIdentifiers
 
 private struct TranscriptTailKey: Equatable {
     var count: Int
@@ -12,6 +13,11 @@ private struct TranscriptTailKey: Equatable {
         lastID = transcript.last?.id
         lastRole = transcript.last?.role
     }
+}
+
+private struct DecodedImage: @unchecked Sendable {
+    let data: Data
+    let image: NSImage
 }
 
 @Observable
@@ -36,6 +42,17 @@ final class ChatViewModel {
         var generatesArtifact = false
         var interrupted = false
         var versions: [Version] = []
+        var attachmentRefs: [String] = []
+        var attachmentImages: [NSImage] = []
+    }
+
+    struct PendingAttachment: Identifiable, Hashable {
+        var id = UUID().uuidString
+        var ref: String
+        var data: Data
+        var mimeType: String
+        var name: String
+        var image: NSImage
     }
 
     enum Intent: Hashable, CaseIterable {
@@ -99,6 +116,7 @@ final class ChatViewModel {
 
     var transcript: [Entry] = []
     var draft = ""
+    var pendingAttachments: [PendingAttachment] = []
     var isStreaming = false
     var isTranscribing = false
     var isVisible = true
@@ -197,7 +215,8 @@ final class ChatViewModel {
                     Version(
                         id: $0.id, text: $0.content, thinking: $0.thinking ?? "",
                         stats: $0.stats, artifactRefs: $0.artifactRefs)
-                })
+                },
+                attachmentRefs: turn.attachmentRefs)
             return (history.first?.seq ?? turn.seq, entry)
         }
         transcript = placed.sorted { $0.root < $1.root }.map(\.entry)
@@ -251,6 +270,9 @@ final class ChatViewModel {
         guard intent != next, !isWorking else { return }
         if case .failed = imagePhase {
             imagePhase = .idle
+        }
+        if next != .text {
+            pendingAttachments = []
         }
         intent = next
         ensureBinding(for: next)
@@ -397,13 +419,79 @@ final class ChatViewModel {
 
     private func sendText() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming, boundModelID != nil else { return }
+        let pending = pendingAttachments
+        guard !text.isEmpty || !pending.isEmpty, !isStreaming, boundModelID != nil else { return }
         draft = ""
-        transcript.append(Entry(role: .user, text: text))
-        transcriptCharacterCount += text.count
-        stream { kernel, sessionID in
-            try await kernel.sendChat(sessionID: sessionID, text: text)
+        pendingAttachments = []
+        for attachment in pending {
+            AttachmentImageCache.set(attachment.image, for: attachment.ref)
         }
+        transcript.append(
+            Entry(role: .user, text: text, attachmentImages: pending.map(\.image)))
+        transcriptCharacterCount += text.count
+        let attachments = pending.map {
+            ChatAttachment(kind: .image, data: $0.data, mimeType: $0.mimeType)
+        }
+        stream { kernel, sessionID in
+            try await kernel.sendChat(sessionID: sessionID, text: text, attachments: attachments)
+        }
+    }
+
+    func attach(_ urls: [URL]) {
+        let candidates = urls.filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
+        guard !candidates.isEmpty else { return }
+        Task { [weak self] in
+            for url in candidates {
+                let mimeType = Self.mimeType(forExtension: url.pathExtension)
+                let loaded = await Task.detached(priority: .userInitiated) {
+                    () -> DecodedImage? in
+                    guard let data = try? Data(contentsOf: url), let image = NSImage(data: data)
+                    else { return nil }
+                    return DecodedImage(data: data, image: image)
+                }.value
+                guard let self, self.acceptsImagesNow else { return }
+                guard let loaded else {
+                    self.notice = "Couldn't read \(url.lastPathComponent) as an image."
+                    continue
+                }
+                self.addAttachment(
+                    data: loaded.data, mimeType: mimeType, image: loaded.image,
+                    name: url.lastPathComponent)
+            }
+        }
+    }
+
+    func addAttachment(data: Data, mimeType: String, image: NSImage, name: String) {
+        let ref = Kernel.attachmentRef(for: data, mimeType: mimeType)
+        guard !pendingAttachments.contains(where: { $0.ref == ref }) else { return }
+        pendingAttachments.append(
+            PendingAttachment(ref: ref, data: data, mimeType: mimeType, name: name, image: image))
+    }
+
+    func removeAttachment(_ id: String) {
+        pendingAttachments.removeAll { $0.id == id }
+    }
+
+    var boundSupportsVision: Bool {
+        recordsProvider?().first { $0.id == boundModelID }?.capabilities.contains(.see) == true
+    }
+
+    var acceptsImagesNow: Bool {
+        intent == .text && boundSupportsVision
+    }
+
+    func rejectImageDrop() {
+        if intent != .text, boundSupportsVision {
+            notice = "Switch back to chat to attach an image."
+        } else {
+            notice = "This model can't read images — pick a vision-capable model to attach them."
+        }
+    }
+
+    static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "gif"]
+
+    static func mimeType(forExtension ext: String) -> String {
+        UTType(filenameExtension: ext.lowercased())?.preferredMIMEType ?? "application/octet-stream"
     }
 
     private func generateImage() {
@@ -638,6 +726,9 @@ final class ChatViewModel {
         guard record.id != boundModelID else { return }
         let previous = boundModelID
         boundModelID = record.id
+        if !record.capabilities.contains(.see) {
+            pendingAttachments = []
+        }
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
@@ -1170,6 +1261,7 @@ struct ChatView: View {
             isWorking: model.isWorking,
             canSend: sendable,
             readyToSend: composerReady,
+            extraContent: hasPendingAttachments,
             notice: contextNotice ?? model.notice,
             noticeActionLabel: model.canStartOllama ? "Start Ollama" : nil,
             noticeAction: model.canStartOllama ? { model.startOllamaAndRetry() } : nil,
@@ -1195,6 +1287,23 @@ struct ChatView: View {
         .onAppear { model.reduceMotion = reduceMotion }
         .onChange(of: reduceMotion) { _, motion in model.reduceMotion = motion }
         .dropDestination(for: URL.self) { urls, _ in
+            let images = urls.filter {
+                ChatViewModel.imageExtensions.contains($0.pathExtension.lowercased())
+            }
+            var handled = false
+            if !images.isEmpty {
+                if acceptsImages {
+                    model.attach(images)
+                } else {
+                    model.rejectImageDrop()
+                }
+                handled = true
+            }
+            if let audio = urls.first(where: { $0.pathExtension.lowercased() == "wav" }) {
+                model.transcribeDropped(audio, records: library.records)
+                handled = true
+            }
+            if handled { return true }
             guard let url = urls.first else { return false }
             model.transcribeDropped(url, records: library.records)
             return true
@@ -1228,12 +1337,22 @@ struct ChatView: View {
 
     @ViewBuilder
     private var composerHeader: some View {
-        HStack(spacing: Design.Space.s) {
-            modelChip
-            boundPlaceChip
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            if !model.pendingAttachments.isEmpty {
+                PendingAttachmentStrip(attachments: model.pendingAttachments) {
+                    model.removeAttachment($0)
+                }
+                .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
+            }
+            HStack(spacing: Design.Space.s) {
+                modelChip
+                boundPlaceChip
+            }
         }
         .padding(.horizontal, Design.Space.xs)
         .animation(Design.wash, value: model.place)
+        .animation(
+            Design.motion(reduceMotion: reduceMotion), value: model.pendingAttachments.map(\.id))
     }
 
     @ViewBuilder
@@ -1265,6 +1384,7 @@ struct ChatView: View {
 
     @ViewBuilder
     private var composerAux: some View {
+        attachControl
         intentControl(
             .image, glyph: "photo", label: "Generate an image",
             available: !model.imageModels(in: library.records).isEmpty)
@@ -1274,6 +1394,36 @@ struct ChatView: View {
         placeControl
         paramsControl
         voiceLoopControl
+    }
+
+    private var acceptsImages: Bool {
+        model.intent == .text && boundRecord?.capabilities.contains(.see) == true
+    }
+
+    @ViewBuilder
+    private var attachControl: some View {
+        if acceptsImages {
+            CircleControl(glyph: "paperclip", label: "Attach an image") {
+                pickAttachment()
+            }
+            .disabled(model.isWorking)
+            .accessibilityIdentifier("composer-attach")
+        }
+    }
+
+    private func pickAttachment() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = ChatViewModel.imageExtensions.compactMap {
+            UTType(filenameExtension: $0)
+        }
+        panel.prompt = "Attach"
+        panel.message = "Attach images for this model to see in your next message."
+        if panel.runModal() == .OK {
+            model.attach(panel.urls)
+        }
     }
 
     @ViewBuilder
@@ -1546,15 +1696,22 @@ struct ChatView: View {
             gap: transcriptSpacing)
     }
 
+    @ViewBuilder
     private func userTurn(_ entry: ChatViewModel.Entry) -> some View {
-        VStack(alignment: .trailing, spacing: 4) {
+        VStack(alignment: .trailing, spacing: Design.Space.s) {
+            if !entry.attachmentRefs.isEmpty || !entry.attachmentImages.isEmpty {
+                SentAttachments(
+                    refs: entry.attachmentRefs, inline: entry.attachmentImages, kernel: kernel)
+            }
             if editingEntryID == entry.id {
                 editField(entry)
-            } else {
+            } else if !entry.text.isEmpty {
                 PromptBubble(text: entry.text)
                     .contextMenu {
                         Button("Copy") { copy(entry.text) }
-                        if entry.persisted && !model.isStreaming && !entry.generatesArtifact {
+                        if entry.persisted && !model.isStreaming && !entry.generatesArtifact
+                            && entry.attachmentRefs.isEmpty
+                        {
                             Button("Edit…") {
                                 editText = entry.text
                                 editingEntryID = entry.id
@@ -2055,10 +2212,13 @@ struct ChatView: View {
     }
 
     private var sendable: Bool {
-        guard !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return false
-        }
+        let hasText = !model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasText || hasPendingAttachments else { return false }
         return composerReady
+    }
+
+    private var hasPendingAttachments: Bool {
+        model.intent == .text && !model.pendingAttachments.isEmpty
     }
 
     private var composerReady: Bool {

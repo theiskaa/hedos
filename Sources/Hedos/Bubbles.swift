@@ -434,3 +434,152 @@ struct ToolTimelineRow: View {
             .padding(edge, -gap)
     }
 }
+
+struct AttachmentThumb: View {
+    let image: NSImage?
+    var size: CGFloat = 60
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFill()
+            } else {
+                ZStack {
+                    Rectangle().fill(Design.cardFill)
+                    Image(systemName: "photo")
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(Design.inkFaint)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle.soft(Design.Radius.control))
+        .overlay(
+            RoundedRectangle.soft(Design.Radius.control)
+                .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+    }
+}
+
+struct PendingAttachmentStrip: View {
+    let attachments: [ChatViewModel.PendingAttachment]
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Design.Space.s) {
+                ForEach(attachments) { attachment in
+                    AttachmentThumb(image: attachment.image)
+                        .overlay(alignment: .topTrailing) {
+                            Button(action: { onRemove(attachment.id) }) {
+                                Image(systemName: "xmark")
+                                    .font(Design.glyphMicro.weight(.bold))
+                                    .foregroundStyle(Design.paper)
+                                    .frame(width: 16, height: 16)
+                                    .background(Design.ink.opacity(0.75), in: Circle())
+                                    .contentShape(Circle())
+                            }
+                            .buttonStyle(PressDipStyle())
+                            .padding(3)
+                            .help("Remove attachment")
+                            .accessibilityLabel("Remove \(attachment.name)")
+                        }
+                        .help(attachment.name)
+                }
+            }
+            .padding(.horizontal, Design.Space.xs)
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+@MainActor
+enum AttachmentImageCache {
+    static let store: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 64
+        return cache
+    }()
+
+    static func image(for ref: String) -> NSImage? {
+        store.object(forKey: ref as NSString)
+    }
+
+    static func set(_ image: NSImage, for ref: String) {
+        store.setObject(image, forKey: ref as NSString)
+    }
+}
+
+struct SentAttachments: View {
+    let refs: [String]
+    let inline: [NSImage]
+    let kernel: Kernel
+    @State private var resolved: [NSImage?] = []
+
+    private var slots: [NSImage?] {
+        if !inline.isEmpty { return inline.map { Optional($0) } }
+        if !resolved.isEmpty { return resolved }
+        return refs.map { AttachmentImageCache.image(for: $0) }
+    }
+
+    var body: some View {
+        Group {
+            if !slots.isEmpty {
+                HStack(alignment: .top, spacing: Design.Space.s) {
+                    ForEach(Array(slots.enumerated()), id: \.offset) { _, image in
+                        if let image {
+                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFill()
+                                .frame(maxWidth: 168, maxHeight: 168)
+                                .clipShape(RoundedRectangle.soft(Design.Radius.bubble))
+                                .overlay(
+                                    RoundedRectangle.soft(Design.Radius.bubble)
+                                        .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            missingTile
+                        }
+                    }
+                }
+                .frame(maxWidth: Design.Bubble.promptMax, alignment: .trailing)
+                .accessibilityLabel(slots.count == 1 ? "Attached image" : "Attached images")
+            }
+        }
+        .task(id: refs) {
+            guard inline.isEmpty, !refs.isEmpty else { return }
+            if refs.allSatisfy({ AttachmentImageCache.image(for: $0) != nil }) {
+                resolved = refs.map { AttachmentImageCache.image(for: $0) }
+                return
+            }
+            let kernel = kernel
+            let refs = refs
+            let loaded = await Task.detached(priority: .utility) {
+                refs.map { ref in
+                    kernel.chatAttachments([ref]).first.flatMap { NSImage(data: $0.data) }
+                }
+            }.value
+            for (ref, image) in zip(refs, loaded) {
+                if let image { AttachmentImageCache.set(image, for: ref) }
+            }
+            resolved = loaded
+        }
+    }
+
+    private var missingTile: some View {
+        ZStack {
+            RoundedRectangle.soft(Design.Radius.bubble).fill(Design.cardFill)
+            Image(systemName: "photo")
+                .font(Design.glyphSmall)
+                .foregroundStyle(Design.inkFaint)
+        }
+        .frame(width: 88, height: 88)
+        .overlay(
+            RoundedRectangle.soft(Design.Radius.bubble)
+                .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .accessibilityLabel("Image unavailable")
+    }
+}
