@@ -31,6 +31,22 @@ struct InstallBrowser: View {
                 value: installs.stagedPlan != nil)
         }
         .frame(width: Design.Sheet.installWidth, height: Design.Sheet.installHeight)
+        .background(
+            Button("") {
+                if installs.stagedPlan != nil || installs.stagingID != nil {
+                    installs.discardStagedPlan()
+                } else if !installs.searchQuery
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    installs.searchQuery = ""
+                    installs.searchDebounced()
+                } else {
+                    onClose()
+                }
+            }
+            .keyboardShortcut(shell.commandPaletteOpen ? nil : .cancelAction)
+            .hidden()
+            .accessibilityHidden(true))
         .task { await installs.load() }
     }
 
@@ -74,7 +90,7 @@ struct InstallBrowser: View {
                 }
             }
             Spacer()
-            SheetCloseButton(action: onClose)
+            SheetCloseButton(usesCancelShortcut: false, action: onClose)
         }
         .animation(
             Design.snapMotion(reduceMotion: reduceMotion),
@@ -115,7 +131,8 @@ struct InstallBrowser: View {
     }
 
     private var searchIsShowing: Bool {
-        !installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let query = installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !query.isEmpty && InstallService.ollamaDirectReference(for: query) == nil
     }
 
     private var searchBar: some View {
@@ -132,21 +149,20 @@ struct InstallBrowser: View {
         }
         .animation(
             Design.snapMotion(reduceMotion: reduceMotion),
-            value: InstallBrowser.directReference(
-                for: installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines))?
-                .reference)
+            value: InstallService.ollamaDirectReference(
+                for: installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)))
     }
 
     @ViewBuilder
     private var directReferenceRow: some View {
         let query = installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let direct = InstallBrowser.directReference(for: query) {
+        if let tag = InstallService.ollamaDirectReference(for: query) {
             Button {
-                Task { await installs.stage(provider: direct.provider, reference: direct.reference) }
+                Task { await installs.stage(provider: .ollama, reference: tag) }
             } label: {
                 HStack(spacing: Design.Space.s) {
-                    SourceMark(kind: installs.sourceKind(of: direct.provider), size: 14)
-                    Text("Review \(direct.reference)")
+                    SourceMark(kind: installs.sourceKind(of: .ollama), size: 14)
+                    Text("Review \(tag)")
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Image(systemName: "arrow.right")
@@ -162,20 +178,6 @@ struct InstallBrowser: View {
             .buttonStyle(PressDipStyle())
             .disabled(installs.stagingID != nil)
         }
-    }
-
-    static func directReference(
-        for query: String
-    ) -> (provider: InstallProviderID, reference: String)? {
-        if let repo = InstallReference.huggingFaceRepo(from: query) {
-            return (.huggingface, repo)
-        }
-        if let tag = InstallReference.ollamaTag(from: query),
-            tag.contains(":") || query.lowercased().contains("ollama")
-        {
-            return (.ollama, tag)
-        }
-        return nil
     }
 
     private var downloadingNow: some View {

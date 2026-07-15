@@ -74,7 +74,7 @@ final class InstallModel {
     func searchDebounced() {
         searchTask?.cancel()
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else {
+        guard !query.isEmpty, InstallService.ollamaDirectReference(for: query) == nil else {
             searchHits = []
             searching = false
             searchError = nil
@@ -84,18 +84,10 @@ final class InstallModel {
         searchTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled, let self else { return }
-            do {
-                let hits = try await kernel.installs.search(
-                    provider: .huggingface, matching: query)
-                guard !Task.isCancelled else { return }
-                self.searchHits = hits
-                self.searchError = nil
-            } catch is CancellationError {
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.searchHits = []
-                self.searchError = error.localizedDescription
-            }
+            let result = await kernel.installs.browse(matching: query)
+            guard !Task.isCancelled else { return }
+            self.searchHits = result.hits
+            self.searchError = result.failureHint
             self.searching = false
         }
     }
@@ -122,6 +114,7 @@ final class InstallModel {
     func discardStagedPlan() {
         stagedPlan = nil
         stageError = nil
+        stagingID = nil
     }
 
     func dismissFailure(reference: String) {

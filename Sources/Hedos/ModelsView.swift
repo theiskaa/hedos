@@ -107,6 +107,7 @@ struct ModelsPane: View {
         }
         .modalScrim(
             isPresented: shell.installBrowserOpen,
+            handlesEscape: false,
             onDismiss: {
                 if shell.installs.stagedPlan != nil {
                     shell.installs.discardStagedPlan()
