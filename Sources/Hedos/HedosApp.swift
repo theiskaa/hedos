@@ -66,6 +66,7 @@ final class HedosAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if Updater.shared.quitForUpdate { return .terminateNow }
         Task {
             await SettingsModel.active?.flush()
             if let kernel = QuickAskController.shared.shell?.kernel {

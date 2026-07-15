@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import HedosKernel
 
 private enum UpdateError: LocalizedError {
     case http(Int)
@@ -17,6 +18,7 @@ final class Updater {
     static let shared = Updater()
 
     var available: Release?
+    private(set) var quitForUpdate = false
 
     private let repo = "theiskaa/hedos"
     private let checkInterval: TimeInterval = 60 * 60 * 24
@@ -142,16 +144,17 @@ final class Updater {
         panel.show()
         do {
             let dmg = try await download(release.dmg)
+            panel.update(title: "Verifying the update…")
             if let shaURL = release.sha, let expected = try? await expectedSHA(shaURL) {
-                guard try sha256(of: dmg) == expected else {
+                let actual = try await Task.detached { try Self.sha256(of: dmg) }.value
+                guard actual == expected else {
                     try? FileManager.default.removeItem(at: dmg)
                     panel.close()
                     inform("Update failed", "The download did not pass its integrity check.")
                     return
                 }
             }
-            panel.close()
-            try installAndRelaunch(dmg: dmg)
+            try await installAndRelaunch(dmg: dmg, panel: panel)
         } catch {
             panel.close()
             inform("Update failed", error.localizedDescription)
@@ -182,7 +185,7 @@ final class Updater {
         return token
     }
 
-    private func sha256(of file: URL) throws -> String {
+    private nonisolated static func sha256(of file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var hasher = SHA256()
@@ -192,49 +195,93 @@ final class Updater {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    private func installAndRelaunch(dmg: URL) throws {
+    private func installAndRelaunch(dmg: URL, panel: ProgressPanel) async throws {
         let running = Bundle.main.bundleURL
-        guard verifyAuthentic(dmg: dmg, matching: running) else {
+        let outcome = await Task.detached { Self.stageUpdate(dmg: dmg, matching: running) }.value
+        let staged: URL
+        switch outcome {
+        case .unauthentic:
             try? FileManager.default.removeItem(at: dmg)
+            panel.close()
             inform(
                 "Update blocked",
-                "The downloaded update isn’t signed by the same developer as this app, so it wasn’t installed.")
+                "The downloaded update couldn’t be verified as coming from the same developer, so it wasn’t installed.")
             return
+        case .failed:
+            panel.close()
+            inform(
+                "Update failed",
+                "The update couldn’t be prepared for install. Check free disk space and try again.")
+            return
+        case .staged(let url):
+            staged = url
         }
         guard let app = installTarget(for: running) else {
+            try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+            panel.close()
             NSWorkspace.shared.open(dmg)
             inform("Almost there", "Drag Hedos onto Applications to finish updating.")
             return
         }
+        panel.update(title: "Installing the update… Hedos will relaunch itself.")
 
         let script = """
             #!/bin/bash
-            PID="$1"; DMG="$2"; APP="$3"; MNT=""
-            trap 'rm -rf "$DMG" "$0" "$MNT"' EXIT
-            for _ in $(seq 1 150); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
-            if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null; sleep 2; kill -9 "$PID" 2>/dev/null; sleep 0.5; fi
-            MNT=$(mktemp -d)
-            if hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MNT" -quiet && [ -d "$MNT/Hedos.app" ]; then
-                rm -rf "$APP.old"
-                if [ ! -e "$APP" ]; then
-                    ditto "$MNT/Hedos.app" "$APP" || rm -rf "$APP"
-                elif mv "$APP" "$APP.old"; then
-                    if ditto "$MNT/Hedos.app" "$APP"; then rm -rf "$APP.old"; else rm -rf "$APP"; mv "$APP.old" "$APP"; fi
-                fi
+            PID="$1"; STAGED="$2"; APP="$3"; DMG="$4"
+            STAGEDIR=$(dirname "$STAGED")
+            LOG="$HOME/Library/Logs/hedos-updater.log"
+            mkdir -p "$HOME/Library/Logs"
+            exec >> "$LOG" 2>&1
+            echo "== $(date) pid=$PID app=$APP staged=$STAGED"
+            trap 'rm -rf "$STAGEDIR" "$0"' EXIT
+            for _ in $(seq 1 50); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
+            if kill -0 "$PID" 2>/dev/null; then echo "app still running, killing"; kill "$PID" 2>/dev/null; sleep 2; kill -9 "$PID" 2>/dev/null; sleep 0.5; fi
+            echo "app exited"
+            install_staged() { mv "$STAGED" "$APP" || ditto "$STAGED" "$APP"; }
+            INSTALLED=0
+            if ! codesign --verify --deep --strict "$STAGED"; then
+                echo "staged copy failed re-verification"
+            elif [ ! -e "$APP" ]; then
+                if install_staged; then echo "fresh install ok"; INSTALLED=1; else echo "fresh install FAILED"; rm -rf "$APP"; fi
+            elif mv "$APP" "$APP.old"; then
+                echo "moved old aside"
+                if install_staged; then echo "swap ok"; INSTALLED=1; rm -rf "$APP.old"; else echo "install FAILED, rolling back"; rm -rf "$APP"; mv "$APP.old" "$APP" && echo "rolled back"; fi
+            else
+                echo "move aside FAILED"
             fi
-            hdiutil detach "$MNT" -quiet 2>/dev/null || true
-            open "$APP" 2>/dev/null || open "$APP.old" 2>/dev/null || true
+            if [ "$INSTALLED" = 1 ]; then
+                rm -f "$DMG"
+                if open "$APP"; then echo "relaunched $APP"; else echo "relaunch FAILED"; fi
+            elif [ -e "$APP" ] && open "$APP"; then
+                echo "relaunched previous copy after failure, dmg kept at $DMG"
+            else
+                open "$DMG" && echo "opened dmg for manual install" || echo "manual fallback FAILED, dmg at $DMG"
+            fi
+            echo "== done $(date)"
             """
         let scriptURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("hedos-update-\(UUID().uuidString).sh")
-        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [
-            scriptURL.path, String(ProcessInfo.processInfo.processIdentifier), dmg.path, app.path,
+            scriptURL.path, String(ProcessInfo.processInfo.processIdentifier), staged.path,
+            app.path, dmg.path,
         ]
-        try process.run()
+        await SettingsModel.active?.flush()
+        if let kernel = QuickAskController.shared.shell?.kernel {
+            await kernel.suspendForQuit()
+        } else {
+            await MemoryGovernor.shared.suspendForQuit()
+            await SidecarSupervisor.shared.terminateAll()
+        }
+        do {
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try process.run()
+        } catch {
+            try? FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+            throw error
+        }
+        quitForUpdate = true
         NSApp.terminate(nil)
     }
 
@@ -247,7 +294,13 @@ final class Updater {
         return applications.appendingPathComponent("Hedos.app")
     }
 
-    private func verifyAuthentic(dmg: URL, matching app: URL) -> Bool {
+    private enum StageOutcome {
+        case staged(URL)
+        case unauthentic
+        case failed
+    }
+
+    private nonisolated static func stageUpdate(dmg: URL, matching app: URL) -> StageOutcome {
         let mount = FileManager.default.temporaryDirectory
             .appendingPathComponent("hedos-verify-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: mount, withIntermediateDirectories: true)
@@ -260,20 +313,36 @@ final class Updater {
                 "/usr/bin/hdiutil",
                 ["attach", dmg.path, "-nobrowse", "-readonly", "-mountpoint", mount.path, "-quiet"]
             ).code == 0
-        else { return false }
+        else { return .failed }
 
         let newApp = mount.appendingPathComponent("Hedos.app").path
         guard FileManager.default.fileExists(atPath: newApp),
             Self.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", newApp]).code == 0
-        else { return false }
+        else { return .unauthentic }
 
         if let team = teamIdentifier(atPath: app.path) {
-            return teamIdentifier(atPath: newApp) == team
+            guard teamIdentifier(atPath: newApp) == team else { return .unauthentic }
+        } else {
+            guard Self.run("/usr/sbin/spctl", ["--assess", "--type", "execute", newApp]).code == 0
+            else { return .unauthentic }
         }
-        return Self.run("/usr/sbin/spctl", ["--assess", "--type", "execute", newApp]).code == 0
+
+        let stageDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hedos-staged-\(UUID().uuidString)")
+        let staged = stageDir.appendingPathComponent("Hedos.app")
+        do {
+            try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
+        } catch {
+            return .failed
+        }
+        guard Self.run("/usr/bin/ditto", [newApp, staged.path]).code == 0 else {
+            try? FileManager.default.removeItem(at: stageDir)
+            return .failed
+        }
+        return .staged(staged)
     }
 
-    private func teamIdentifier(atPath path: String) -> String? {
+    private nonisolated static func teamIdentifier(atPath path: String) -> String? {
         let output = Self.run("/usr/bin/codesign", ["-dvv", path]).err
         for line in output.split(separator: "\n") where line.hasPrefix("TeamIdentifier=") {
             let value = line.dropFirst("TeamIdentifier=".count).trimmingCharacters(in: .whitespaces)
@@ -282,7 +351,7 @@ final class Updater {
         return nil
     }
 
-    private static func run(_ path: String, _ arguments: [String]) -> (code: Int32, err: String) {
+    private nonisolated static func run(_ path: String, _ arguments: [String]) -> (code: Int32, err: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -337,6 +406,7 @@ final class Updater {
 @MainActor
 private final class ProgressPanel {
     private let window: NSWindow
+    private let label: NSTextField
 
     init(title: String) {
         window = NSWindow(
@@ -346,6 +416,7 @@ private final class ProgressPanel {
         window.title = "Software Update"
 
         let label = NSTextField(labelWithString: title)
+        self.label = label
         let bar = NSProgressIndicator()
         bar.style = .bar
         bar.isIndeterminate = true
@@ -364,6 +435,10 @@ private final class ProgressPanel {
     func show() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func update(title: String) {
+        label.stringValue = title
     }
 
     func close() {
