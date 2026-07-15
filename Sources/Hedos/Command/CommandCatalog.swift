@@ -29,7 +29,7 @@ enum CommandCatalog {
                 keywords: ["settings", "preferences", "options"],
                 shortcut: KeyHint(modifiers: .command, key: ","),
                 section: .navigate,
-                perform: { SettingsWindowController.shared.show(shell: shell) }))
+                perform: { shell.openSettings() }))
 
         for section in SettingsSection.allCases {
             items.append(
@@ -40,8 +40,7 @@ enum CommandCatalog {
                     keywords: ["settings", section.title.lowercased()],
                     section: .settings,
                     perform: {
-                        SettingsWindowController.shared.show(shell: shell)
-                        shell.settingsTarget = SettingsDestination(section: section, anchor: nil)
+                        shell.openSettings(at: SettingsDestination(section: section, anchor: nil))
                     }))
         }
 

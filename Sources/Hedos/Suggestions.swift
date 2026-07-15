@@ -158,9 +158,8 @@ struct FirstRunDiscovery: View {
                 .buttonStyle(InkButtonStyle())
                 .disabled(shell.library.isScanning)
                 Button("Choose a folder…") {
-                    shell.settingsTarget = SettingsDestination(
-                        section: .models, anchor: "models.folders")
-                    SettingsWindowController.shared.show(shell: shell)
+                    shell.openSettings(
+                        at: SettingsDestination(section: .models, anchor: "models.folders"))
                 }
                 .buttonStyle(QuietButtonStyle())
             }

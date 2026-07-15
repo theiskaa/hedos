@@ -22,6 +22,7 @@ final class ShellModel {
     var imagesSelection: String?
     var showingGallery = false
     var commandPaletteOpen = false
+    var settingsOpen = false
     var galleryFocusID: String?
     var pendingLaunch: PendingLaunch?
     var voiceSelection: String?
@@ -46,6 +47,34 @@ final class ShellModel {
     @ObservationIgnored private var chatModelOrder: [String] = []
 
     var kernel: Kernel { library.kernel }
+
+    func openSettings() {
+        settingsOpen = true
+        surfaceMainWindow()
+    }
+
+    func openSettings(at target: SettingsDestination) {
+        settingsTarget = target
+        openSettings()
+    }
+
+    private func surfaceMainWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        guard
+            let window = NSApp.windows.first(where: {
+                $0.styleMask.contains(.fullSizeContentView) && !($0 is NSPanel)
+            })
+        else { return }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(nil)
+    }
+
+    func closeSettings() {
+        settingsOpen = false
+    }
 
     func chatModel(for session: ChatSession) -> ChatViewModel {
         if let cached = chatModels[session.id] {
@@ -446,6 +475,7 @@ struct ShellView: View {
             }
         }
         .task { await shell.start() }
+        .settingsOverlay(shell: shell)
         .commandPalette(isPresented: $shell.commandPaletteOpen, shell: shell)
     }
 
@@ -703,7 +733,7 @@ struct HedosSidebar: View {
             collapsed: collapsedRow,
             hovered: $hovered
         ) {
-            SettingsWindowController.shared.show(shell: shell)
+            shell.openSettings()
         }
         .help("Settings — ⌘,")
         .accessibilityIdentifier("rail-settings")

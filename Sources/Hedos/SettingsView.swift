@@ -510,11 +510,11 @@ struct SettingRow<Control: View>: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: Design.Space.xxs) {
                 Text(label)
-                    .font(Design.caption.weight(.medium))
+                    .font(Design.body.weight(.medium))
                     .foregroundStyle(Design.ink)
                 if let caption {
                     Text(caption)
-                        .font(Design.label)
+                        .font(Design.caption)
                         .foregroundStyle(Design.inkFaint)
                         .lineSpacing(1.5)
                         .fixedSize(horizontal: false, vertical: true)
@@ -523,7 +523,7 @@ struct SettingRow<Control: View>: View {
             Spacer(minLength: Design.Space.l)
             control()
         }
-        .padding(.vertical, Design.Space.l)
+        .padding(.vertical, Design.Space.tile)
         .padding(.horizontal, Design.Space.s)
         .background(
             RoundedRectangle.soft(Design.Radius.control)
@@ -640,11 +640,12 @@ enum ThemeBootstrap {
 
 struct SettingsRoot: View {
     @Bindable var shell: ShellModel
+    let dismissAttempts: Int
+    let onClose: () -> Void
     @State private var query = ""
     @State private var highlighted: String?
     @State private var selected: SettingsSection = .general
     @State private var hoveredSection: SettingsSection?
-    @State private var collapsed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var model: SettingsModel { shell.settings }
@@ -657,11 +658,16 @@ struct SettingsRoot: View {
                 .frame(width: 1)
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) {
+                    SheetCloseButton(
+                        usesCancelShortcut: false,
+                        action: { dismissTopmost() }
+                    )
+                    .padding(Design.Space.xl)
+                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.container, edges: .top)
-        .scrollEdgeEffectStyle(.none, for: .top)
-        .background(Design.paper.ignoresSafeArea())
+        .background(Design.paper)
         .id(model.appearance.themeIdentity)
         .modalScrim(
             isPresented: showingAddServer,
@@ -719,6 +725,9 @@ struct SettingsRoot: View {
                     onClose: { promptDraft = nil })
             }
         }
+        .onChange(of: dismissAttempts) { _, _ in
+            dismissTopmost()
+        }
         .task {
             if !shell.settings.loaded {
                 await shell.settings.load()
@@ -726,6 +735,12 @@ struct SettingsRoot: View {
         }
         .task(id: shell.library.shelfSignature) {
             await shell.settings.loadVoices(from: shell.library.records)
+        }
+        .onAppear {
+            if let target = shell.settingsTarget {
+                navigate(to: target)
+                shell.settingsTarget = nil
+            }
         }
         .onChange(of: shell.settingsTarget) { _, target in
             guard let target else { return }
@@ -735,73 +750,31 @@ struct SettingsRoot: View {
     }
 
     private var sidebar: some View {
-        CollapsingSidebar(collapsed: collapsed) {
-            expandedSidebar
-        } collapsedContent: {
-            collapsedSidebar
-        }
-        .accessibilityIdentifier("settings-sidebar")
-    }
-
-    private var expandedSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Design.Space.s) {
-                InkSearchField(placeholder: "Search settings", query: $query)
-                collapser
-            }
-            .padding(.bottom, Design.Space.l)
+            InkSearchField(placeholder: "Search settings", query: $query)
+                .padding(.bottom, Design.Space.l)
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xs) {
-                    expandedGroup("App", [.general, .appearance])
-                    expandedGroup("Surfaces", [.chat, .voice])
-                    expandedGroup("Library", [.models, .prompts])
-                    expandedGroup("System", [.gateway, .advanced])
+                    sidebarGroup("App", [.general, .appearance])
+                    sidebarGroup("Surfaces", [.chat, .voice])
+                    sidebarGroup("Library", [.models, .prompts])
+                    sidebarGroup("System", [.gateway, .advanced])
                 }
                 .padding(.bottom, Design.Space.l)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.hidden)
         }
-        .padding(.top, Design.Space.pane + Design.Space.l)
+        .padding(.top, Design.Space.xl)
         .padding(.horizontal, Design.Space.l)
+        .frame(width: Design.Rail.expandedWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private var collapsedSidebar: some View {
-        VStack(alignment: .center, spacing: 0) {
-            collapser
-                .padding(.bottom, Design.Space.l)
-            ScrollView {
-                VStack(alignment: .center, spacing: Design.Space.xs) {
-                    collapsedGroup([.general, .appearance], first: true)
-                    collapsedGroup([.chat, .voice])
-                    collapsedGroup([.models, .prompts])
-                    collapsedGroup([.gateway, .advanced])
-                }
-                .padding(.bottom, Design.Space.l)
-                .frame(maxWidth: .infinity)
-            }
-            .scrollIndicators(.hidden)
-        }
-        .padding(.top, Design.Space.pane + Design.Space.l)
-        .padding(.horizontal, Design.Space.m)
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private var collapser: some View {
-        SidebarCollapseToggle(collapsed: collapsed) {
-            withAnimation(Design.motion(reduceMotion: reduceMotion)) {
-                collapsed.toggle()
-                if collapsed {
-                    query = ""
-                }
-            }
-        }
-        .accessibilityIdentifier("settings-collapse")
+        .background(Design.panel)
+        .accessibilityIdentifier("settings-sidebar")
     }
 
     @ViewBuilder
-    private func expandedGroup(
+    private func sidebarGroup(
         _ title: String, _ sections: [SettingsSection]
     ) -> some View {
         Text(title.uppercased())
@@ -812,27 +785,11 @@ struct SettingsRoot: View {
             .padding(.top, Design.Space.l)
             .padding(.bottom, Design.Space.xxs)
         ForEach(sections, id: \.self) { section in
-            sectionRow(section, collapsedRow: false)
+            sectionRow(section)
         }
     }
 
-    @ViewBuilder
-    private func collapsedGroup(
-        _ sections: [SettingsSection], first: Bool = false
-    ) -> some View {
-        if !first {
-            Rectangle()
-                .fill(Design.line)
-                .frame(width: 28, height: Design.hairlineWidth)
-                .padding(.vertical, Design.Space.s)
-                .accessibilityHidden(true)
-        }
-        ForEach(sections, id: \.self) { section in
-            sectionRow(section, collapsedRow: true)
-        }
-    }
-
-    private func sectionRow(_ section: SettingsSection, collapsedRow: Bool) -> some View {
+    private func sectionRow(_ section: SettingsSection) -> some View {
         InkSidebarRow(
             id: section,
             glyph: section.glyph,
@@ -841,7 +798,7 @@ struct SettingsRoot: View {
                 ? "\(shell.resident.count) warm" : nil,
             liveAnnotation: section == .models && !shell.resident.isEmpty,
             selected: selected == section && query.isEmpty,
-            collapsed: collapsedRow,
+            collapsed: false,
             hovered: $hoveredSection
         ) {
             query = ""
@@ -850,6 +807,22 @@ struct SettingsRoot: View {
             }
         }
         .accessibilityIdentifier("settings-\(section.rawValue)")
+    }
+
+    private func dismissTopmost() {
+        if promptDraft != nil {
+            promptDismissAttempts += 1
+        } else if showingAddServer {
+            showingAddServer = false
+        } else if showingAddGatewayClient {
+            showingAddGatewayClient = false
+        } else if showingGatewayConnect {
+            showingGatewayConnect = false
+        } else if installCandidate != nil {
+            installCandidate = nil
+        } else {
+            onClose()
+        }
     }
 
     private func navigate(to destination: SettingsDestination) {
@@ -928,7 +901,7 @@ struct SettingsRoot: View {
                     }
                 }
                 .padding(.horizontal, Design.Space.gutter)
-                .padding(.top, Design.Space.pane)
+                .padding(.top, Design.Space.gutter)
                 .padding(.bottom, Design.Space.xxl)
                 .animation(Design.motion(reduceMotion: reduceMotion), value: selected)
                 .animation(Design.wash, value: model.saveNotice)
@@ -1016,6 +989,7 @@ struct SettingsRoot: View {
                     selection: model.general.fixedMode.map { Design.modeTitle($0) },
                     placeholder: "Models",
                     accessibilityName: "start mode",
+                    size: .settings,
                     onSelect: { title in
                         model.general.fixedMode = AppMode.allCases.first {
                             Design.modeTitle($0) == title
@@ -1038,6 +1012,7 @@ struct SettingsRoot: View {
                     selection: defaultChatModelName,
                     placeholder: "None",
                     accessibilityName: "default chat model",
+                    size: .settings,
                     onSelect: { name in
                         let record = readyChatModels.first { $0.displayName == name }
                         model.chat.defaultModelID = record?.id
@@ -1139,7 +1114,7 @@ struct SettingsRoot: View {
                             .accessibilityLabel("Reset RAM budget to auto")
                         }
                     }
-                    .frame(width: Design.Column.control)
+                    .frame(width: Design.Control.fieldWidth)
                     .animation(Design.wash, value: model.models.ramBudgetMB == nil)
                 }
                 .disabled(model.models.eviction != .budgeted)
@@ -1365,44 +1340,48 @@ struct SettingsRoot: View {
         @Bindable var model = shell.settings
         return group("Speaking") {
             settingRow("voice.default", "Default voice") {
-                HStack(spacing: Design.Space.m) {
-                    InkDropdown(
-                        options: model.voices,
-                        selection: model.voice.defaultVoice,
-                        accessibilityName: "default voice",
-                        onPreview: { candidate in
-                            model.previewVoice(
-                                records: shell.library.records, named: candidate)
-                        },
-                        onSelect: { choice in
-                            model.voice.defaultVoice = choice
-                            model.saveVoice()
-                            if let choice {
+                VStack(alignment: .trailing, spacing: Design.Space.xs) {
+                    HStack(spacing: Design.Space.m) {
+                        InkDropdown(
+                            options: model.voices,
+                            selection: model.voice.defaultVoice,
+                            accessibilityName: "default voice",
+                            size: .settings,
+                            onPreview: { candidate in
                                 model.previewVoice(
-                                    records: shell.library.records, named: choice)
-                            }
-                        })
-                    if model.previewing {
-                        SpeakingIndicator()
-                    }
-                    Button(model.previewing ? "Stop" : "Preview") {
+                                    records: shell.library.records, named: candidate)
+                            },
+                            onSelect: { choice in
+                                model.voice.defaultVoice = choice
+                                model.saveVoice()
+                                if let choice {
+                                    model.previewVoice(
+                                        records: shell.library.records, named: choice)
+                                }
+                            })
                         if model.previewing {
-                            model.stopVoicePreview()
-                        } else {
-                            model.previewVoice(records: shell.library.records)
+                            SpeakingIndicator()
                         }
+                        Button(model.previewing ? "Stop" : "Preview") {
+                            if model.previewing {
+                                model.stopVoicePreview()
+                            } else {
+                                model.previewVoice(records: shell.library.records)
+                            }
+                        }
+                        .buttonStyle(QuietButtonStyle())
+                        .fixedSize()
+                        .disabled(model.voices.isEmpty)
+                        .help(
+                            model.voices.isEmpty
+                                ? "Voices appear when a speech model is ready." : "")
                     }
-                    .buttonStyle(QuietButtonStyle())
-                    .disabled(model.voices.isEmpty)
-                    .help(
-                        model.voices.isEmpty
-                            ? "Voices appear when a speech model is ready." : "")
-                }
-                if let voiceNotice = model.voiceNotice {
-                    Text(voiceNotice)
-                        .font(Design.label)
-                        .foregroundStyle(Design.heatText)
-                        .lineLimit(2)
+                    if let voiceNotice = model.voiceNotice {
+                        Text(voiceNotice)
+                            .font(Design.label)
+                            .foregroundStyle(Design.heatText)
+                            .lineLimit(2)
+                    }
                 }
             }
             RowRule()
@@ -1442,7 +1421,7 @@ struct SettingsRoot: View {
                         .foregroundStyle(Design.ink)
                         .frame(minWidth: 34, alignment: .trailing)
                 }
-                .frame(width: Design.Column.control)
+                .frame(width: Design.Control.fieldWidth)
             }
         }
     }
@@ -1450,23 +1429,25 @@ struct SettingsRoot: View {
     private var appearanceSection: some View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
-            group("Appearance") {
-                HStack(alignment: .center) {
-                    Text("Mode")
-                        .font(Design.caption.weight(.medium))
-                        .foregroundStyle(Design.ink)
-                    Spacer(minLength: Design.Space.l)
-                    AppearanceModeToggle(
-                        selection: model.appearance.theme,
-                        onSelect: { mode in
+            cardChoiceRow("appearance.theme", "Mode") {
+                ForEach(
+                    [
+                        (AppearanceSettings.Theme.system, "System", ThemePreview.Variant.system),
+                        (.light, "Light", .light),
+                        (.dark, "Dark", .dark),
+                    ], id: \.1
+                ) { mode, label, variant in
+                    InkChoiceCard(
+                        label: label,
+                        selected: model.appearance.theme == mode,
+                        action: {
                             model.appearance.theme = mode
                             model.saveAppearance()
-                        })
+                        }
+                    ) {
+                        ThemePreview(family: selectedThemeFamily, variant: variant)
+                    }
                 }
-                .padding(.vertical, Design.Space.l)
-                .padding(.horizontal, Design.Space.s)
-                .id("appearance.theme")
-                .background(highlightBackground("appearance.theme"))
             }
             group("Theme") {
                 LazyVGrid(
@@ -1490,82 +1471,87 @@ struct SettingsRoot: View {
                 .id("appearance.family")
                 .background(highlightBackground("appearance.family"))
             }
-            group("Type") {
-                settingRow("appearance.fontUI", "App font") {
-                    InkDropdown(
-                        options: FontCatalog.uiFamilies,
-                        selection: model.appearance.uiFont,
-                        placeholder: "San Francisco",
-                        accessibilityName: "app font",
-                        width: 220,
-                        rowFont: { .custom($0, size: 12) },
-                        onSelect: { family in
-                            model.appearance.uiFont = family
-                            model.saveAppearance()
-                        })
-                }
-                settingRow("appearance.fontMono", "Mono font") {
-                    InkDropdown(
-                        options: FontCatalog.monoFamilies,
-                        selection: model.appearance.monoFont,
-                        placeholder: "SF Mono",
-                        accessibilityName: "mono font",
-                        width: 220,
-                        rowFont: { .custom($0, size: 12) },
-                        onSelect: { family in
-                            model.appearance.monoFont = family
-                            model.saveAppearance()
-                        })
-                }
-            }
-            group("Layout") {
-                HStack(alignment: .top, spacing: Design.Space.gutter) {
-                    cardChoiceRow("appearance.width", "Chat width") {
-                        InkChoiceCard(
-                            label: "Comfortable",
-                            selected: model.appearance.chatWidth == .comfortable,
-                            action: {
-                                model.appearance.chatWidth = .comfortable
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                MicroHeader(title: "Type")
+                rowCard {
+                    settingRow("appearance.fontUI", "App font") {
+                        InkDropdown(
+                            options: FontCatalog.uiFamilies,
+                            selection: model.appearance.uiFont,
+                            placeholder: "San Francisco",
+                            accessibilityName: "app font",
+                            width: 220,
+                            size: .settings,
+                            rowFont: { .custom($0, size: 12) },
+                            onSelect: { family in
+                                model.appearance.uiFont = family
                                 model.saveAppearance()
-                            }
-                        ) {
-                            WidthPreview(wide: false)
-                        }
-                        InkChoiceCard(
-                            label: "Wide",
-                            selected: model.appearance.chatWidth == .wide,
-                            action: {
-                                model.appearance.chatWidth = .wide
-                                model.saveAppearance()
-                            }
-                        ) {
-                            WidthPreview(wide: true)
-                        }
+                            })
                     }
-                    cardChoiceRow("appearance.density", "Density") {
-                        InkChoiceCard(
-                            label: "Relaxed",
-                            selected: model.appearance.density == .relaxed,
-                            action: {
-                                model.appearance.density = .relaxed
+                }
+                rowCard {
+                    settingRow("appearance.fontMono", "Mono font") {
+                        InkDropdown(
+                            options: FontCatalog.monoFamilies,
+                            selection: model.appearance.monoFont,
+                            placeholder: "SF Mono",
+                            accessibilityName: "mono font",
+                            width: 220,
+                            size: .settings,
+                            rowFont: { .custom($0, size: 12) },
+                            onSelect: { family in
+                                model.appearance.monoFont = family
                                 model.saveAppearance()
-                            }
-                        ) {
-                            DensityPreview(compact: false)
-                        }
-                        InkChoiceCard(
-                            label: "Compact",
-                            selected: model.appearance.density == .compact,
-                            action: {
-                                model.appearance.density = .compact
-                                model.saveAppearance()
-                            }
-                        ) {
-                            DensityPreview(compact: true)
-                        }
+                            })
                     }
                 }
             }
+            HStack(alignment: .top, spacing: Design.Space.gutter) {
+                cardChoiceRow("appearance.width", "Chat width") {
+                    InkChoiceCard(
+                        label: "Comfortable",
+                        selected: model.appearance.chatWidth == .comfortable,
+                        action: {
+                            model.appearance.chatWidth = .comfortable
+                            model.saveAppearance()
+                        }
+                    ) {
+                        WidthPreview(wide: false)
+                    }
+                    InkChoiceCard(
+                        label: "Wide",
+                        selected: model.appearance.chatWidth == .wide,
+                        action: {
+                            model.appearance.chatWidth = .wide
+                            model.saveAppearance()
+                        }
+                    ) {
+                        WidthPreview(wide: true)
+                    }
+                }
+                cardChoiceRow("appearance.density", "Density") {
+                    InkChoiceCard(
+                        label: "Relaxed",
+                        selected: model.appearance.density == .relaxed,
+                        action: {
+                            model.appearance.density = .relaxed
+                            model.saveAppearance()
+                        }
+                    ) {
+                        DensityPreview(compact: false)
+                    }
+                    InkChoiceCard(
+                        label: "Compact",
+                        selected: model.appearance.density == .compact,
+                        action: {
+                            model.appearance.density = .compact
+                            model.saveAppearance()
+                        }
+                    ) {
+                        DensityPreview(compact: true)
+                    }
+                }
+        }
         }
     }
 
@@ -1654,7 +1640,7 @@ struct SettingsRoot: View {
                             .foregroundStyle(Design.ink)
                             .frame(minWidth: 34, alignment: .trailing)
                     }
-                    .frame(width: Design.Column.control)
+                    .frame(width: Design.Control.fieldWidth)
                 }
             }
             group("Data locations") {
@@ -1680,7 +1666,7 @@ struct SettingsRoot: View {
         HStack(alignment: .center, spacing: Design.Space.l) {
             VStack(alignment: .leading, spacing: Design.Space.xxs) {
                 Text(label)
-                    .font(Design.caption.weight(.medium))
+                    .font(Design.body.weight(.medium))
                     .foregroundStyle(Design.ink)
                 Text((path as NSString).abbreviatingWithTildeInPath)
                     .font(Design.data(10))
@@ -1701,6 +1687,19 @@ struct SettingsRoot: View {
         _ header: String, @ViewBuilder content: @escaping () -> some View
     ) -> some View {
         SettingsGroup(header: header, content: content)
+    }
+
+    private func rowCard(@ViewBuilder content: @escaping () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content()
+        }
+        .padding(.horizontal, Design.Space.xl)
+        .padding(.vertical, Design.Space.s)
+        .surfaceCard(radius: Design.Radius.tile)
+    }
+
+    private var selectedThemeFamily: ThemeFamily {
+        ThemeFamily.all.first { $0.id == shell.settings.appearance.family } ?? .standard
     }
 
     private func settingRow<Control: View>(
@@ -2040,7 +2039,9 @@ private struct PromptSheet: View {
                     VStack(alignment: .leading, spacing: Design.Space.m) {
                         MicroHeader(title: "Prompt")
                         VStack(alignment: .leading, spacing: Design.Space.m) {
-                            InkField(placeholder: "How the / menu lists it", text: $draft.title)
+                            InkField(
+                                placeholder: "How the / menu lists it", text: $draft.title,
+                                size: .settings)
                             InkTextArea(
                                 placeholder: "The message to insert",
                                 text: $draft.body,
@@ -2120,7 +2121,13 @@ private struct PromptSheet: View {
                     .foregroundStyle(Design.inkFaint)
             }
             Spacer()
-            SheetCloseButton(action: onClose)
+            SheetCloseButton(usesCancelShortcut: false) {
+                if isDirty {
+                    confirmingDiscard = true
+                } else {
+                    onClose()
+                }
+            }
         }
         .animation(Design.spring, value: draft.capability)
     }

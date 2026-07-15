@@ -103,7 +103,6 @@ struct HedosApp: App {
                     HotkeyCenter.shared.onSummon = {
                         QuickAskController.shared.toggle()
                     }
-                    SettingsWindowController.shared.prewarm(shell: shell)
                     FocusJanitor.shared.install()
                     DispatchQueue.main.async {
                         NSApp.keyWindow?.makeFirstResponder(nil)
@@ -124,7 +123,7 @@ struct HedosApp: App {
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
-                    SettingsWindowController.shared.show(shell: shell)
+                    shell.openSettings()
                 }
                 .keyboardShortcut(",", modifiers: .command)
                 Divider()

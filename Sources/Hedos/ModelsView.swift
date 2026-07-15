@@ -156,9 +156,8 @@ struct ModelsPane: View {
         ) {
             FoldersPopover(model: shell.library) {
                 showFolders = false
-                shell.settingsTarget = SettingsDestination(
-                    section: .models, anchor: "models.folders")
-                SettingsWindowController.shared.show(shell: shell)
+                shell.openSettings(
+                    at: SettingsDestination(section: .models, anchor: "models.folders"))
             }
         }
         QuietIconButton(glyph: "arrow.clockwise") {
