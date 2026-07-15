@@ -146,6 +146,12 @@ struct HedosApp: App {
                 }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("Close") {
+                    shell.handleCloseCommand()
+                }
+                .keyboardShortcut("w", modifiers: .command)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") {
                     shell.newChat()

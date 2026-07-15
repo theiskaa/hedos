@@ -4,7 +4,6 @@ import SwiftUI
 
 struct SettingsOverlay: ViewModifier {
     @Bindable var shell: ShellModel
-    @State private var dismissAttempts = 0
     @State private var escapeMonitor: Any?
 
     func body(content: Content) -> some View {
@@ -12,11 +11,11 @@ struct SettingsOverlay: ViewModifier {
             .modalScrim(
                 isPresented: shell.settingsOpen,
                 handlesEscape: false,
-                onDismiss: { dismissAttempts += 1 }
+                onDismiss: { shell.requestSettingsDismiss() }
             ) {
                 SettingsRoot(
                     shell: shell,
-                    dismissAttempts: dismissAttempts,
+                    dismissAttempts: shell.settingsDismissAttempts,
                     onClose: { shell.closeSettings() }
                 )
                 .frame(
@@ -41,7 +40,7 @@ struct SettingsOverlay: ViewModifier {
                 !shell.commandPaletteOpen,
                 !(NSApp.keyWindow is NSPanel)
             else { return event }
-            dismissAttempts += 1
+            shell.requestSettingsDismiss()
             return nil
         }
     }

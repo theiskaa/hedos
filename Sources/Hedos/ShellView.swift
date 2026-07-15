@@ -23,6 +23,7 @@ final class ShellModel {
     var showingGallery = false
     var commandPaletteOpen = false
     var settingsOpen = false
+    private(set) var settingsDismissAttempts = 0
     var galleryFocusID: String?
     var pendingLaunch: PendingLaunch?
     var voiceSelection: String?
@@ -60,11 +61,7 @@ final class ShellModel {
 
     private func surfaceMainWindow() {
         NSApp.activate(ignoringOtherApps: true)
-        guard
-            let window = NSApp.windows.first(where: {
-                $0.styleMask.contains(.fullSizeContentView) && !($0 is NSPanel)
-            })
-        else { return }
+        guard let window = NSApp.windows.first(where: isMainWindow) else { return }
         if window.isMiniaturized {
             window.deminiaturize(nil)
         }
@@ -72,8 +69,29 @@ final class ShellModel {
         window.makeFirstResponder(nil)
     }
 
+    private func isMainWindow(_ window: NSWindow) -> Bool {
+        window.styleMask.contains(.fullSizeContentView) && !(window is NSPanel)
+    }
+
     func closeSettings() {
         settingsOpen = false
+    }
+
+    func requestSettingsDismiss() {
+        settingsDismissAttempts += 1
+    }
+
+    func handleCloseCommand() {
+        guard let key = NSApp.keyWindow else { return }
+        guard settingsOpen, isMainWindow(key) else {
+            key.performClose(nil)
+            return
+        }
+        if commandPaletteOpen {
+            commandPaletteOpen = false
+        } else {
+            requestSettingsDismiss()
+        }
     }
 
     func chatModel(for session: ChatSession) -> ChatViewModel {
