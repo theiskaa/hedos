@@ -55,12 +55,18 @@ struct OllamaAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .native, preference: BidPreference.ollama)
     }
 
-    static func daemonBinary() -> URL? {
-        let candidates = [
+    static func daemonBinary(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        var candidates = [
             "/usr/local/bin/ollama",
             "/opt/homebrew/bin/ollama",
             "\(NSHomeDirectory())/.local/bin/ollama",
         ]
+        if let path = environment["PATH"] {
+            candidates.append(
+                contentsOf: path.split(separator: ":").map { "\($0)/ollama" })
+        }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
             .map { URL(fileURLWithPath: $0) }
     }

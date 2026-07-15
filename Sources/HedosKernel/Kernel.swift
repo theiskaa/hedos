@@ -100,7 +100,9 @@ public actor Kernel {
     private var loadedManifests: [RuntimeManifest] = []
     private let daemonLiveness: DaemonLiveness
     private let communityLibrary: CommunityLibrary
+    public nonisolated let installs: InstallService
     private nonisolated(unsafe) var settingsReaction: Task<Void, Never>?
+    private nonisolated(unsafe) var installReaction: Task<Void, Never>?
     private var knownWatchedFolders: [String]?
     private var knownHFCacheRoots: [String]?
 
@@ -113,7 +115,8 @@ public actor Kernel {
         vmHost: (any VMHost)? = nil,
         daemonLiveness: DaemonLiveness = .shared,
         communityLibrary: CommunityLibrary = CommunityLibrary(),
-        duplicateThreshold: Int64 = DuplicateDetector.defaultThreshold
+        duplicateThreshold: Int64 = DuplicateDetector.defaultThreshold,
+        installProviders: [any InstallProvider]? = nil
     ) {
         self.habitat = habitat
         self.directory = directory
@@ -149,6 +152,11 @@ public actor Kernel {
         self.gatewayClientStore = GatewayClientStore(directory: gatewayDirectory, secrets: secrets)
         self.gatewayAuditLog = GatewayAuditLog(directory: gatewayDirectory)
         self.vmHost = vmHost ?? ContainerizationVMHost(directory: directory)
+        let installService = InstallService(
+            providers: installProviders
+                ?? Self.defaultInstallProviders(
+                    secrets: secrets, habitat: habitat, settings: self.settings))
+        self.installs = installService
         let changes = self.settings.changes()
         settingsReaction = Task { [weak self] in
             for await domain in changes {
@@ -156,10 +164,16 @@ public actor Kernel {
                 await self.react(toSettingsDomain: domain)
             }
         }
+        installReaction = Task { [weak self] in
+            for await kinds in await installService.completions() {
+                await self?.scopedRescan(kinds)
+            }
+        }
     }
 
     deinit {
         settingsReaction?.cancel()
+        installReaction?.cancel()
     }
 
     private func react(toSettingsDomain domain: String) async {
@@ -204,6 +218,63 @@ public actor Kernel {
             AppleFoundationAdapter(registry: registry),
             OpenAIEndpointAdapter(secrets: secrets, registry: registry),
         ]
+    }
+
+    static func defaultInstallProviders(
+        secrets: any SecretStore, habitat: ModelHabitat, settings: SettingsStore
+    ) -> [any InstallProvider] {
+        let environment = habitat.environment
+        let home = habitat.home
+        let hfRoot: @Sendable () async -> URL = {
+            if let cache = environment["HF_HUB_CACHE"], !cache.isEmpty {
+                return URL(fileURLWithPath: (cache as NSString).expandingTildeInPath)
+            }
+            if let hfHome = environment["HF_HOME"], !hfHome.isEmpty {
+                return URL(fileURLWithPath: (hfHome as NSString).expandingTildeInPath)
+                    .appendingPathComponent("hub")
+            }
+            let userRoots = HFCacheScanner.userRoots(await settings.models().hfCacheRoots)
+            return userRoots.first ?? home.appendingPathComponent(".cache/huggingface/hub")
+        }
+        let tokenProvider: @Sendable () -> String? = {
+            if let stored = try? secrets.get(account: HuggingFaceInstallProvider.tokenAccount),
+                !stored.isEmpty
+            {
+                return stored
+            }
+            if let env = environment["HF_TOKEN"], !env.isEmpty {
+                return env
+            }
+            let tokenFile =
+                environment["HF_HOME"].map {
+                    URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+                        .appendingPathComponent("token")
+                } ?? home.appendingPathComponent(".cache/huggingface/token")
+            guard let contents = try? String(contentsOf: tokenFile, encoding: .utf8) else {
+                return nil
+            }
+            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return [
+            OllamaInstallProvider(),
+            HuggingFaceInstallProvider(
+                root: hfRoot, tokenProvider: tokenProvider, home: home),
+        ]
+    }
+
+    public nonisolated func setHuggingFaceToken(_ token: String?) throws {
+        if let token, !token.isEmpty {
+            try secrets.set(token, account: HuggingFaceInstallProvider.tokenAccount)
+        } else {
+            try secrets.delete(account: HuggingFaceInstallProvider.tokenAccount)
+        }
+    }
+
+    public nonisolated func hasHuggingFaceToken() -> Bool {
+        guard let stored = try? secrets.get(account: HuggingFaceInstallProvider.tokenAccount)
+        else { return false }
+        return !stored.isEmpty
     }
 
     private func reloadUserRuntimes() async -> [String] {
