@@ -606,10 +606,23 @@ struct InstallConfirmPage: View {
             Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
             HStack(spacing: Design.Space.l) {
                 if plan.requiresAuth {
-                    Text("Gated model — sign in with `huggingface-cli login` or set HF_TOKEN, then review again.")
+                    Text("Gated model — it needs a Hugging Face token first.")
                         .font(Design.label)
                         .foregroundStyle(Design.heatText)
                         .lineLimit(2)
+                    Button("Open Settings…") {
+                        shell.openSettings(
+                            at: SettingsDestination(section: .models, anchor: "models.hfToken"))
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    Button("Check again") {
+                        Task {
+                            await installs.stage(
+                                provider: plan.provider, reference: plan.reference)
+                        }
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(installs.stagingID != nil)
                 }
                 Spacer()
                 Button(beginning ? "Starting…" : "Install") {

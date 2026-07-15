@@ -21,7 +21,7 @@ public enum InstallError: Error, Sendable, Hashable, LocalizedError {
         case .referenceNotFound(let reference):
             "\(reference) was not found on the platform."
         case .authRequired(let reference):
-            "\(reference) is gated. Sign in with `huggingface-cli login` or set HF_TOKEN, then try again."
+            "\(reference) is gated. Add a Hugging Face access token, or sign in with `huggingface-cli login`."
         case .insufficientDisk(let requiredBytes, let availableBytes):
             "Not enough free disk space: this model needs \(ByteCountFormatter.string(fromByteCount: requiredBytes, countStyle: .file)) and \(ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file)) is available."
         case .checksumMismatch(let file):

@@ -56,6 +56,9 @@ enum SettingsIndex {
             id: "models.hfCache", section: "Models", title: "Hugging Face caches",
             keywords: ["hf", "hugging", "face", "cache", "hub", "home", "huggingface"]),
         .init(
+            id: "models.hfToken", section: "Models", title: "Hugging Face access token",
+            keywords: ["token", "gated", "key", "auth", "hugging", "face", "huggingface", "login"]),
+        .init(
             id: "models.servers", section: "Models", title: "Servers",
             keywords: ["endpoint", "openai", "api", "server", "remote", "url", "key"]),
         .init(
@@ -173,6 +176,8 @@ final class SettingsModel {
     var gatewayNotice: String?
     var installedRuntimes: [RuntimeManifest] = []
     var prompts: [Prompt] = []
+    var hfTokenSaved = false
+    var hfTokenDraft = ""
     var voices: [String] = []
     var previewing = false
     var previewingVoice: String?
@@ -375,6 +380,31 @@ final class SettingsModel {
 
     func refreshInstalledRuntimes() async {
         installedRuntimes = kernel.runtimeCatalog.installedCommunity()
+    }
+
+    func refreshHFToken() {
+        hfTokenSaved = kernel.hasHuggingFaceToken()
+    }
+
+    func saveHFToken() {
+        let token = hfTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else { return }
+        do {
+            try kernel.setHuggingFaceToken(token)
+            hfTokenDraft = ""
+            hfTokenSaved = true
+        } catch {
+            saveNotice = "The token couldn't be saved to your keychain."
+        }
+    }
+
+    func removeHFToken() {
+        do {
+            try kernel.setHuggingFaceToken(nil)
+            hfTokenSaved = false
+        } catch {
+            saveNotice = "The token couldn't be removed from your keychain."
+        }
     }
 
     func previewRuntimeInstall(from url: URL) async throws -> RuntimeInstallPreview {
@@ -1133,6 +1163,9 @@ struct SettingsRoot: View {
             group("Hugging Face caches") {
                 hfCacheRows
             }
+            group("Hugging Face access token") {
+                hfTokenRows
+            }
             group("Servers") {
                 serverRows
             }
@@ -1234,6 +1267,50 @@ struct SettingsRoot: View {
 
     private var budgetBar: some View {
         BudgetBar(shell: shell)
+    }
+
+    private var hfTokenRows: some View {
+        @Bindable var model = shell.settings
+        return VStack(alignment: .leading, spacing: Design.Space.s) {
+            if model.hfTokenSaved {
+                HStack(spacing: Design.Space.s) {
+                    Image(systemName: "checkmark.seal")
+                        .font(Design.glyphInline)
+                        .foregroundStyle(Design.accentText)
+                    Text("A token is in your keychain — gated models download with it.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.ink)
+                    Spacer()
+                    ConfirmableIconButton(
+                        label: "Remove the Hugging Face token", confirmLabel: "Remove?"
+                    ) {
+                        model.removeHFToken()
+                    }
+                    .fixedSize()
+                }
+            } else {
+                HStack(spacing: Design.Space.s) {
+                    InkField(
+                        placeholder: "hf_… token for gated models",
+                        text: $model.hfTokenDraft, size: .settings, glyph: "key")
+                    Button("Save") {
+                        model.saveHFToken()
+                    }
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(
+                        model.hfTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty)
+                }
+                Text("Kept in your keychain, never in a settings file. HF_TOKEN and `huggingface-cli login` work without it.")
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkFaint)
+            }
+        }
+        .padding(.vertical, Design.Space.m)
+        .id("models.hfToken")
+        .background(highlightBackground("models.hfToken"))
+        .animation(Design.wash, value: model.hfTokenSaved)
+        .task { model.refreshHFToken() }
     }
 
     private var hfCacheRows: some View {
