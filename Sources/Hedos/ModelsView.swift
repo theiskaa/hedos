@@ -771,9 +771,11 @@ struct InstallInviteBanner: View {
     }
 
     private var title: String {
-        downloading
-            ? "New models are on their way."
-            : "Pull new models onto this Mac."
+        guard downloading else { return "Pull new models onto this Mac." }
+        let count = installs.active.count
+        return count == 1
+            ? "Downloading 1 model."
+            : "Downloading \(count) models."
     }
 
     private var subtitle: String {
@@ -786,14 +788,9 @@ struct InstallInviteBanner: View {
     @ViewBuilder
     private var trailing: some View {
         if downloading {
-            HStack(spacing: Design.Space.m) {
-                InstallProgressBar(fraction: installs.aggregateProgress?.fraction)
-                    .frame(width: 140)
-                TintChip(
-                    text: "\(installs.active.count) downloading",
-                    glyph: "arrow.down.circle", live: true)
-            }
-            .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+            InstallProgressBar(fraction: installs.aggregateProgress?.fraction)
+                .frame(width: 180)
+                .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         } else {
             HStack(spacing: Design.Space.m) {
                 TintChip(text: "Browse", glyph: "arrow.down.circle")
