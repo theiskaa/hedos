@@ -158,8 +158,8 @@ struct GatewayPane: View {
                     Text("Port")
                         .font(Design.label)
                         .foregroundStyle(Design.inkFaint)
-                    InkField(placeholder: "43367", text: $portText)
-                        .frame(width: 84)
+                    InkField(placeholder: "43367", text: $portText, size: .settings)
+                        .frame(width: Design.Control.fieldWidthNarrow)
                         .onSubmit { applyPort() }
                         .accessibilityIdentifier("gateway-port")
                 }

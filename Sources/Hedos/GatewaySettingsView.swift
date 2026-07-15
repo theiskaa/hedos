@@ -54,8 +54,8 @@ struct GatewaySection: View {
                     highlighted: highlighted == "gateway.port"
                 ) {
                     VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                        InkField(placeholder: "43367", text: $portText)
-                            .frame(width: 96)
+                        InkField(placeholder: "43367", text: $portText, size: .settings)
+                            .frame(width: Design.Control.fieldWidthNarrow)
                             .onSubmit { applyPort() }
                             .denyShake(
                                 on: portDenyCount,

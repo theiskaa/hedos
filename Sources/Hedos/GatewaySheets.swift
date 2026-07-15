@@ -67,7 +67,7 @@ struct AddGatewayClientSheet: View {
     private var nameSection: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
             MicroHeader(title: "Name")
-            InkField(placeholder: "my editor", text: $name)
+            InkField(placeholder: "my editor", text: $name, size: .settings)
                 .accessibilityIdentifier("gateway-client-name")
         }
     }

@@ -72,8 +72,8 @@ struct AddServerSheet: View {
 
     private var connectSection: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            InkField(placeholder: "http://127.0.0.1:11434", text: $baseURL)
-            InkField(placeholder: "API key (optional)", text: $apiKey)
+            InkField(placeholder: "http://127.0.0.1:11434", text: $baseURL, size: .settings, glyph: "link")
+            InkField(placeholder: "API key (optional)", text: $apiKey, size: .settings, glyph: "key")
             HStack {
                 Spacer()
                 Button(connecting ? "Connecting…" : "Connect") {

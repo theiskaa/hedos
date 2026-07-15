@@ -527,7 +527,7 @@ private struct PipelineComposerSheet: View {
     private var nameSection: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
             MicroHeader(title: "Name")
-            InkField(placeholder: "voice reply", text: $name)
+            InkField(placeholder: "voice reply", text: $name, size: .settings)
                 .accessibilityIdentifier("pipeline-name")
         }
     }

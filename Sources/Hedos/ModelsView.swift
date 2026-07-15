@@ -1216,10 +1216,11 @@ struct ModelConfigureSection: View {
                 InkField(
                     placeholder: record.name,
                     text: $aliasDraft,
+                    size: .settings,
                     onSubmit: { commitAlias() },
                     onFocusLost: { commitAlias() }
                 )
-                .frame(width: 200)
+                .frame(width: Design.Control.fieldWidth)
                 .accessibilityLabel("Display name")
             }
             if record.capabilities.contains(.chat) {
