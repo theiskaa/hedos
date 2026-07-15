@@ -36,22 +36,49 @@ struct InstallBrowser: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: Design.Space.l) {
-            IconPlaque(size: 44) {
-                Image(systemName: "arrow.down.circle")
-                    .font(Design.glyphNav)
-                    .foregroundStyle(Design.inkSoft)
-            }
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                Text("Install models")
-                    .font(Design.title)
-                    .tracking(Design.tightTracking)
-                Text("Pulled into each platform's own store — nothing hidden, nothing moved.")
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
+            if let plan = installs.stagedPlan {
+                QuietIconButton(glyph: "chevron.left") {
+                    installs.discardStagedPlan()
+                }
+                .help("Back to browsing")
+                .accessibilityLabel("Back")
+                .accessibilityIdentifier("install-confirm-back")
+                IconPlaque(size: 44) {
+                    SourceMark(kind: installs.sourceKind(of: plan.provider), size: 24)
+                        .foregroundStyle(Design.inkSoft)
+                }
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    Text(plan.displayName)
+                        .font(Design.title)
+                        .tracking(Design.tightTracking)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(plan.reference)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .textSelection(.enabled)
+                }
+            } else {
+                IconPlaque(size: 44) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(Design.glyphNav)
+                        .foregroundStyle(Design.inkSoft)
+                }
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    Text("Install models")
+                        .font(Design.title)
+                        .tracking(Design.tightTracking)
+                    Text("Pulled into each platform's own store — nothing hidden, nothing moved.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                }
             }
             Spacer()
             SheetCloseButton(action: onClose)
         }
+        .animation(
+            Design.snapMotion(reduceMotion: reduceMotion),
+            value: installs.stagedPlan?.reference)
     }
 
     private var browsePage: some View {
@@ -517,27 +544,21 @@ struct InstallConfirmPage: View {
 
     private var installs: InstallModel { shell.installs }
 
+    private static let weightExtensions: Set<String> = [
+        "safetensors", "gguf", "bin", "ckpt", "pt", "pth",
+    ]
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xl) {
-                    identity
-                    VStack(alignment: .leading, spacing: Design.Space.m) {
-                        confirmRow("shippingbox", "From", providerName)
-                        confirmRow("folder", "Lands in", plan.destination)
-                        confirmRow("scalemass", "Download size", sizeLine)
-                        if !plan.files.isEmpty {
-                            confirmRow("doc.on.doc", "Files", filesLine)
-                        }
-                        if plan.requiresAuth {
-                            confirmRow(
-                                "lock", "Gated model",
-                                "Needs a Hugging Face access token: sign in with `huggingface-cli login` or set HF_TOKEN, then review again.",
-                                heat: true)
-                        }
+                    statsStrip
+                    detailsCard
+                    if plan.files.isEmpty {
+                        pullNote
+                    } else {
+                        filesSection
                     }
-                    .padding(Design.Space.tile)
-                    .surfaceCard(radius: Design.Radius.tile)
                     if let error = installs.stageError {
                         Text(error)
                             .font(Design.label)
@@ -550,18 +571,13 @@ struct InstallConfirmPage: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             Rectangle().fill(Design.hairline).frame(height: Design.hairlineWidth)
-            HStack {
-                Button {
-                    installs.discardStagedPlan()
-                } label: {
-                    HStack(spacing: Design.Space.xs) {
-                        Image(systemName: "chevron.left")
-                            .font(Design.glyphSmall)
-                        Text("Back")
-                    }
+            HStack(spacing: Design.Space.l) {
+                if plan.requiresAuth {
+                    Text("Gated model — sign in with `huggingface-cli login` or set HF_TOKEN, then review again.")
+                        .font(Design.label)
+                        .foregroundStyle(Design.heatText)
+                        .lineLimit(2)
                 }
-                .buttonStyle(QuietButtonStyle())
-                .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button(beginning ? "Starting…" : "Install") {
                     beginning = true
@@ -580,23 +596,145 @@ struct InstallConfirmPage: View {
         }
     }
 
-    private var identity: some View {
-        HStack(alignment: .center, spacing: Design.Space.l) {
-            IconPlaque(size: 44) {
-                SourceMark(kind: installs.sourceKind(of: plan.provider), size: 24)
-                    .foregroundStyle(Design.inkSoft)
+    private var statsStrip: some View {
+        HStack(alignment: .top, spacing: 0) {
+            stat(label: "Download", value: sizeValue, detail: sizeDetail)
+            statDivider
+            if plan.files.isEmpty {
+                stat(label: "Tag", value: tagValue, detail: "pulled layer by layer")
+            } else {
+                stat(
+                    label: "Files", value: "\(plan.files.count)",
+                    detail: "\(weightFiles.count) weight\(weightFiles.count == 1 ? "" : "s"), the rest configs")
             }
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                Text(plan.displayName)
-                    .font(Design.title)
-                    .tracking(Design.tightTracking)
-                    .foregroundStyle(Design.ink)
-                Text(plan.reference)
-                    .font(Design.label)
-                    .foregroundStyle(Design.inkFaint)
-                    .textSelection(.enabled)
+            statDivider
+            stat(label: "Source", value: providerName, detail: sourceDetail)
+        }
+        .padding(.vertical, Design.Space.l)
+        .surfaceCard(radius: Design.Radius.tile)
+    }
+
+    private func stat(label: String, value: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.xs) {
+            Text(label.uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+            Text(value)
+                .font(Design.data(16))
+                .monospacedDigit()
+                .foregroundStyle(Design.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text(detail)
+                .font(Design.label)
+                .foregroundStyle(Design.inkFaint)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, Design.Space.xl)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var statDivider: some View {
+        Rectangle()
+            .fill(Design.hairline)
+            .frame(width: Design.hairlineWidth)
+            .padding(.vertical, Design.Space.xxs)
+    }
+
+    private var detailsCard: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            confirmRow("folder", "Lands in", plan.destination)
+            if let revision = plan.revision {
+                confirmRow("number", "Revision", String(revision.prefix(12)))
+            }
+            if plan.requiresAuth {
+                confirmRow(
+                    "lock", "Gated model",
+                    "The owner requires an access token before files download. Nothing starts until one is set.",
+                    heat: true)
             }
         }
+        .padding(Design.Space.tile)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.tile)
+    }
+
+    private var filesSection: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "What downloads")
+            VStack(spacing: 0) {
+                let ordered = orderedFiles
+                ForEach(Array(ordered.enumerated()), id: \.element.path) { index, file in
+                    HStack(spacing: Design.Space.m) {
+                        Text(file.path)
+                            .font(Design.data(11))
+                            .foregroundStyle(Design.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        if Self.isWeight(file.path) {
+                            TintChip(text: "weights")
+                        }
+                        Spacer(minLength: Design.Space.m)
+                        Text(file.bytes.map { DiscoverySummary.formatBytes($0) } ?? "—")
+                            .font(Design.data(11))
+                            .monospacedDigit()
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    .padding(.horizontal, Design.Space.m)
+                    .padding(.vertical, Design.Space.s + 1)
+                    if index < ordered.count - 1 {
+                        Rectangle().fill(Design.hairline)
+                            .frame(height: Design.hairlineWidth)
+                            .padding(.leading, Design.Space.m)
+                    }
+                }
+            }
+            .surfaceCard(radius: Design.Radius.tile)
+        }
+    }
+
+    private var pullNote: some View {
+        VStack(alignment: .leading, spacing: Design.Space.m) {
+            MicroHeader(title: "How it lands")
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                confirmRow(
+                    "arrow.down.circle", "Pulled by Ollama itself",
+                    "hedos asks the local daemon to pull this tag, the same request `ollama pull` makes. Layer sizes and progress appear the moment the transfer starts.")
+                confirmRow(
+                    "square.stack.3d.up", "Straight into Ollama's store",
+                    "Layers land in \(plan.destination) where every other Ollama tool can use them. Cancel any time — finished layers stay and the next pull resumes from them.")
+                confirmRow(
+                    "checkmark.circle", "On your shelf when done",
+                    "The scanner watches Ollama's store, so the model registers and resolves without a manual rescan.")
+            }
+            .padding(Design.Space.tile)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .surfaceCard(radius: Design.Radius.tile)
+        }
+    }
+
+    private var orderedFiles: [InstallPlanFile] {
+        plan.files.sorted { first, second in
+            let firstWeight = Self.isWeight(first.path)
+            let secondWeight = Self.isWeight(second.path)
+            if firstWeight != secondWeight {
+                return firstWeight
+            }
+            if firstWeight, first.bytes != second.bytes {
+                return (first.bytes ?? 0) > (second.bytes ?? 0)
+            }
+            return first.path < second.path
+        }
+    }
+
+    private var weightFiles: [InstallPlanFile] {
+        plan.files.filter { Self.isWeight($0.path) }
+    }
+
+    private static func isWeight(_ path: String) -> Bool {
+        weightExtensions.contains((path as NSString).pathExtension.lowercased())
     }
 
     private var providerName: String {
@@ -604,27 +742,41 @@ struct InstallConfirmPage: View {
             ?? plan.provider.rawValue
     }
 
-    private var sizeLine: String {
-        if let total = plan.totalBytes {
-            if let remaining = plan.remainingBytes, remaining < total {
-                return "\(DiscoverySummary.formatBytes(total)) — \(DiscoverySummary.formatBytes(total - remaining)) already here, \(DiscoverySummary.formatBytes(remaining)) to go"
-            }
-            return DiscoverySummary.formatBytes(total)
-        }
-        return plan.provider == .ollama
-            ? "Reported by Ollama once the pull starts."
-            : "Unknown until the download starts."
+    private var tagValue: String {
+        plan.reference.split(separator: ":").last.map(String.init) ?? plan.reference
     }
 
-    private var filesLine: String {
-        let chosen = plan.files.map(\.path).sorted()
-        let weights = chosen.filter { path in
-            ["safetensors", "gguf", "bin", "ckpt", "pt", "pth"].contains(
-                (path as NSString).pathExtension.lowercased())
+    private var sourceDetail: String {
+        if plan.provider == .ollama {
+            return "through the local daemon"
         }
-        let headline = "\(chosen.count) file\(chosen.count == 1 ? "" : "s")"
-        guard let first = weights.first else { return headline }
-        return "\(headline), including \(first)"
+        return plan.revision.map { "pinned to \(String($0.prefix(7)))" } ?? "hub resolve"
+    }
+
+    private var sizeValue: String {
+        if let total = plan.totalBytes {
+            return DiscoverySummary.formatBytes(total)
+        }
+        if let estimate = catalogEstimateGB {
+            return String(format: "≈ %g GB", estimate)
+        }
+        return "—"
+    }
+
+    private var sizeDetail: String {
+        if let total = plan.totalBytes {
+            if let remaining = plan.remainingBytes, remaining < total {
+                return "\(DiscoverySummary.formatBytes(remaining)) to go, the rest is here"
+            }
+            return "verified as it downloads"
+        }
+        return "exact size once the pull starts"
+    }
+
+    private var catalogEstimateGB: Double? {
+        InstallCatalog.entries.first {
+            $0.provider == plan.provider && $0.reference == plan.reference
+        }?.sizeGB
     }
 
     private func confirmRow(
