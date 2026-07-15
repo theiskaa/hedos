@@ -930,22 +930,38 @@ struct ModelDetailSheet: View {
     }
 
     private func specRow(_ label: String, _ value: String, mono: Bool = false) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
-            Text(label)
-                .font(Design.caption)
-                .foregroundStyle(Design.inkFaint)
-                .fixedSize()
-                .layoutPriority(1)
-            Text(value)
-                .font(Design.data(12))
-                .monospacedDigit()
-                .foregroundStyle(Design.ink)
-                .textSelection(.enabled)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+        SpecRow(label: label, value: value)
+    }
+
+    private struct SpecRow: View {
+        let label: String
+        let value: String
+        @State private var hovering = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
+                Text(label)
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkFaint)
+                    .fixedSize()
+                    .layoutPriority(1)
+                Text(value)
+                    .font(Design.data(12))
+                    .monospacedDigit()
+                    .foregroundStyle(Design.ink)
+                    .textSelection(.enabled)
+                    .lineLimit(hovering ? nil : 1)
+                    .truncationMode(.middle)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            .padding(.vertical, Design.Space.m)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .animation(Design.motion(reduceMotion: reduceMotion), value: hovering)
         }
-        .padding(.vertical, Design.Space.m)
     }
 
     @ViewBuilder
