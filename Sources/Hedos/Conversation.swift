@@ -646,16 +646,18 @@ struct ArtifactExchangeView: View {
     }
 
     private func copyImage() async -> Bool {
-        guard let source = try? await kernel.artifactStore.url(id: reference) else {
-            saveNotice = "This artifact's file is missing."
-            return false
+        if let source = try? await kernel.artifactStore.url(id: reference),
+            await ImagePasteboard.copy(fileURL: source)
+        {
+            saveNotice = nil
+            return true
         }
-        guard await ImagePasteboard.copy(fileURL: source) else {
-            saveNotice = "Couldn't copy the image."
-            return false
+        if let image, ImagePasteboard.copy(image: image) {
+            saveNotice = nil
+            return true
         }
-        saveNotice = nil
-        return true
+        saveNotice = "Couldn't copy the image."
+        return false
     }
 
 }
@@ -727,10 +729,7 @@ private final class AttachingTextView: NSTextView {
     var onAttachPasteboard: ((NSPasteboard) -> Bool)?
 
     private func carriesAttachment(_ pasteboard: NSPasteboard) -> Bool {
-        onAttachPasteboard != nil
-            && (pasteboard.canReadObject(
-                forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
-                || pasteboard.canReadObject(forClasses: [NSImage.self]))
+        onAttachPasteboard != nil && ImagePasteboard.carriesAttachment(pasteboard)
     }
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {

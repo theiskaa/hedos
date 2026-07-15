@@ -786,8 +786,10 @@ struct ConfirmingButton: View {
     private func fire() {
         revert?.cancel()
         revert = Task {
-            guard await attempt() else { return }
-            confirmed = true
+            let succeeded = await attempt()
+            guard !Task.isCancelled else { return }
+            confirmed = succeeded
+            guard succeeded else { return }
             try? await Task.sleep(for: holdFor)
             guard !Task.isCancelled else { return }
             confirmed = false

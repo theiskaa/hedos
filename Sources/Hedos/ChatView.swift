@@ -190,6 +190,7 @@ final class ChatViewModel {
             apply(stored)
         }
         defaultModelID = await kernel.settings.defaultChatModelID()
+        refreshDocumentBudget()
         if await kernel.chats.persistenceDegraded() {
             notice = "This conversation isn't being saved right now."
         }
@@ -478,6 +479,7 @@ final class ChatViewModel {
         guard !urls.isEmpty else { return }
         Task { [weak self] in
             for url in urls {
+                guard url.isFileURL else { continue }
                 if Self.imageExtensions.contains(url.pathExtension.lowercased()) {
                     await self?.attachImage(url)
                 } else {
@@ -510,6 +512,10 @@ final class ChatViewModel {
     }
 
     private func attachDocument(_ url: URL) async {
+        if Self.audioExtensions.contains(url.pathExtension.lowercased()) {
+            transcribeDropped(url, records: recordsProvider?() ?? [])
+            return
+        }
         guard intent == .text else {
             notice = "Switch back to chat to attach a file."
             return
@@ -521,7 +527,7 @@ final class ChatViewModel {
             notice = "Couldn't read \(url.lastPathComponent)."
             return
         }
-        let budget = documentBudgetNow - pendingDocumentBytes
+        let budget = documentBudget - pendingDocumentBytes
         switch AttachmentIntake.classify(
             data: data, filename: url.lastPathComponent, budgetBytes: max(budget, 0))
         {
@@ -530,9 +536,11 @@ final class ChatViewModel {
         case .binary:
             notice =
                 "\(url.lastPathComponent) looks like a binary file — only text files can be attached."
-        case .tooLarge(let limit):
+        case .tooLarge:
             notice =
-                "\(url.lastPathComponent) doesn't fit this model's context — up to \(Self.byteText(limit)) of attached text fits."
+                pendingDocumentBytes > 0 && data.count <= documentBudget
+                ? "\(url.lastPathComponent) doesn't fit next to the already-attached files — this model fits about \(Self.byteText(documentBudget)) of attached text; remove one to make room."
+                : "\(url.lastPathComponent) doesn't fit this model's context — up to \(Self.byteText(documentBudget)) of attached text fits."
         }
     }
 
@@ -556,12 +564,19 @@ final class ChatViewModel {
         focusComposer()
     }
 
-    var boundContextLength: Int? {
-        recordsProvider?().first { $0.id == boundModelID }?.contextLength
-    }
+    private(set) var documentBudget = AttachmentIntake.fallbackBudget
 
-    var documentBudgetNow: Int {
-        AttachmentIntake.documentBudget(contextLength: boundContextLength)
+    func refreshDocumentBudget() {
+        guard let modelID = boundModelID else {
+            documentBudget = AttachmentIntake.fallbackBudget
+            return
+        }
+        let kernel = kernel
+        Task { [weak self] in
+            let budget = await kernel.documentBudget(modelID: modelID)
+            guard let self, self.boundModelID == modelID else { return }
+            self.documentBudget = budget
+        }
     }
 
     var pendingDocumentBytes: Int {
@@ -605,7 +620,8 @@ final class ChatViewModel {
             attach(urls)
             return true
         }
-        guard let image = (pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first
+        guard !ImagePasteboard.prefersText(pasteboard),
+            let image = (pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first
         else { return false }
         guard acceptsImagesNow else {
             rejectImageDrop()
@@ -630,6 +646,10 @@ final class ChatViewModel {
     }
 
     static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp", "gif"]
+
+    static let audioExtensions: Set<String> = [
+        "wav", "mp3", "m4a", "aac", "flac", "ogg", "aiff", "aif",
+    ]
 
     static func mimeType(forExtension ext: String) -> String {
         UTType(filenameExtension: ext.lowercased())?.preferredMIMEType ?? "application/octet-stream"
@@ -870,12 +890,6 @@ final class ChatViewModel {
         if !record.capabilities.contains(.see) {
             pendingAttachments.removeAll { $0.kind == .image }
         }
-        if pendingDocumentBytes > AttachmentIntake.documentBudget(
-            contextLength: record.contextLength)
-        {
-            notice =
-                "Attached files may not fit \(record.displayName)'s context window."
-        }
         let kernel = kernel
         let sessionID = sessionID
         let recordID = record.id
@@ -886,9 +900,14 @@ final class ChatViewModel {
             } catch {
                 if boundModelID == recordID {
                     boundModelID = previous
+                    refreshDocumentBudget()
                 }
                 notice = error.localizedDescription
                 return
+            }
+            let budget = await kernel.documentBudget(modelID: recordID)
+            if boundModelID == recordID {
+                documentBudget = budget
             }
             let assessment =
                 (try? await kernel.chatContextAssessment(
@@ -896,6 +915,9 @@ final class ChatViewModel {
             if let assessment, !assessment.fits {
                 notice =
                     "This conversation is longer than \(displayName) can hold — older turns will not fit. Start a new chat or pick a larger model."
+            } else if boundModelID == recordID, pendingDocumentBytes > budget {
+                notice =
+                    "Attached files may not fit \(displayName)'s context window."
             } else {
                 notice = nil
             }
@@ -986,12 +1008,16 @@ final class ChatViewModel {
     }
 
     func transcribeDropped(_ url: URL, records: [ModelRecord]) {
-        guard let transcriber = DictationController.transcriber(in: records) else {
-            notice = "Transcribing a file needs a ready transcription model."
+        guard !isTranscribing else {
+            notice = "Already transcribing a file."
             return
         }
         guard url.pathExtension.lowercased() == "wav" else {
             notice = "Only WAV files can be transcribed for now."
+            return
+        }
+        guard let transcriber = DictationController.transcriber(in: records) else {
+            notice = "Transcribing a file needs a ready transcription model."
             return
         }
         notice = "Transcribing \(url.lastPathComponent)…"
@@ -1438,10 +1464,19 @@ struct ChatView: View {
         .onAppear { model.reduceMotion = reduceMotion }
         .onChange(of: reduceMotion) { _, motion in model.reduceMotion = motion }
         .dropDestination(for: ChatDropItem.self) { items, _ in
-            let urls = items.compactMap(\.fileURL)
+            let dropped = items.compactMap(\.fileURL)
+            let urls = dropped.filter(\.isFileURL)
+            let links = dropped.filter { !$0.isFileURL }
             let imageData = items.compactMap(\.imageData)
-            let files = urls.filter { $0.pathExtension.lowercased() != "wav" }
+            let files = urls.filter {
+                !ChatViewModel.audioExtensions.contains($0.pathExtension.lowercased())
+            }
             var handled = false
+            if !links.isEmpty {
+                let joined = links.map(\.absoluteString).joined(separator: " ")
+                model.draft = model.draft.isEmpty ? joined : model.draft + " " + joined
+                handled = true
+            }
             if !files.isEmpty {
                 model.attach(files)
                 handled = true
@@ -1450,7 +1485,9 @@ struct ChatView: View {
                 model.attachDroppedImageData(imageData)
                 handled = true
             }
-            if let audio = urls.first(where: { $0.pathExtension.lowercased() == "wav" }) {
+            if let audio = urls.first(where: {
+                ChatViewModel.audioExtensions.contains($0.pathExtension.lowercased())
+            }) {
                 model.transcribeDropped(audio, records: library.records)
                 handled = true
             }
