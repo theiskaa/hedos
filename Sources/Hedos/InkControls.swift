@@ -221,19 +221,9 @@ extension InkSegmented where Value == String {
     }
 }
 
-struct AppearanceModeToggle: View {
-    let selection: AppearanceSettings.Theme
-    let onSelect: (AppearanceSettings.Theme) -> Void
-
-    private static let modes: [(value: AppearanceSettings.Theme, label: String, icon: String?)] = [
-        (.system, "System", "circle.lefthalf.filled"),
-        (.light, "Light", "sun.max"),
-        (.dark, "Dark", "moon.stars"),
-    ]
-
-    var body: some View {
-        InkSegmented(segments: Self.modes, selection: selection, onSelect: onSelect)
-    }
+enum InkControlSize {
+    case compact
+    case settings
 }
 
 struct InkField: View {
@@ -245,28 +235,41 @@ struct InkField: View {
     let placeholder: String
     @Binding var text: String
     var shape: FieldShape = .rounded
+    var size: InkControlSize = .compact
+    var glyph: String? = nil
     var font: Font = Design.caption
     var onSubmit: (() -> Void)? = nil
     var onFocusLost: (() -> Void)? = nil
     @FocusState private var focused: Bool
 
     var body: some View {
-        TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Design.inkFaint))
-            .textFieldStyle(.plain)
-            .font(font)
-            .foregroundStyle(Design.ink)
-            .focused($focused)
-            .onSubmit { onSubmit?() }
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.xs + 1)
-            .background(Design.surface, in: fieldShape)
-            .overlay(
-                fieldShape.strokeBorder(
-                    focused ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
-                    lineWidth: Design.hairlineWidth))
-            .onChange(of: focused) { _, isFocused in
-                if !isFocused { onFocusLost?() }
+        HStack(spacing: Design.Space.s) {
+            if size == .settings, let glyph {
+                Image(systemName: glyph)
+                    .font(Design.glyphInline)
+                    .foregroundStyle(Design.inkFaint)
             }
+            TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Design.inkFaint))
+                .textFieldStyle(.plain)
+                .font(size == .settings ? Design.body : font)
+                .foregroundStyle(Design.ink)
+                .focused($focused)
+                .onSubmit { onSubmit?() }
+        }
+        .padding(.horizontal, size == .settings ? Design.Space.l : Design.Space.chipX)
+        .padding(.vertical, size == .settings ? 0 : Design.Space.xs + 1)
+        .frame(height: size == .settings ? Design.Control.fieldHeight : nil)
+        .background(size == .settings ? Design.surface2 : Design.surface, in: fieldShape)
+        .overlay(
+            fieldShape.strokeBorder(
+                focused ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
+                lineWidth: focused && size == .settings
+                    ? Design.hairlineWidth * 1.5 : Design.hairlineWidth))
+        .contentShape(Rectangle())
+        .onTapGesture { focused = true }
+        .onChange(of: focused) { _, isFocused in
+            if !isFocused { onFocusLost?() }
+        }
     }
 
     private var fieldShape: AnyInsettableShape {
@@ -560,6 +563,7 @@ struct InkDropdown: View {
     var allowsAuto = true
     var accessibilityName: String = "option"
     var width: CGFloat? = nil
+    var size: InkControlSize = .compact
     var rowFont: ((String) -> Font)? = nil
     var onPreview: ((String) -> Void)? = nil
     let onSelect: (String?) -> Void
@@ -572,7 +576,7 @@ struct InkDropdown: View {
         } label: {
             HStack(spacing: Design.Space.s) {
                 Text(selection ?? placeholder)
-                    .font(Design.caption)
+                    .font(size == .settings ? Design.body : Design.caption)
                     .lineLimit(1)
                     .foregroundStyle(selection == nil ? Design.inkFaint : Design.ink)
                 Spacer(minLength: Design.Space.m)
@@ -580,15 +584,20 @@ struct InkDropdown: View {
                     .font(Design.glyphSmall)
                     .foregroundStyle(Design.inkFaint)
             }
-            .padding(.horizontal, Design.Space.chipX)
-            .padding(.vertical, Design.Space.s)
+            .padding(.horizontal, size == .settings ? Design.Space.l : Design.Space.chipX)
+            .padding(.vertical, size == .settings ? 0 : Design.Space.s)
+            .frame(height: size == .settings ? Design.Control.fieldHeight : nil)
             .background(
-                hovering ? Design.inkWash : Design.surface,
+                hovering
+                    ? Design.inkWash
+                    : size == .settings ? Design.surface2 : Design.surface,
                 in: RoundedRectangle.soft(Design.Radius.control))
             .overlay(
                 RoundedRectangle.soft(Design.Radius.control).strokeBorder(
                     open ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line),
                     lineWidth: Design.hairlineWidth))
+            .frame(
+                maxWidth: size == .settings && width == nil ? Design.Control.fieldWidth : nil)
             .frame(width: width)
             .fixedSize(horizontal: width == nil, vertical: true)
             .contentShape(RoundedRectangle.soft(Design.Radius.control))

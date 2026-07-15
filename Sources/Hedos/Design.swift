@@ -19,6 +19,9 @@ enum Design {
 
     enum Control {
         static let size: CGFloat = 28
+        static let fieldWidth: CGFloat = 300
+        static let fieldWidthNarrow: CGFloat = 120
+        static let fieldHeight: CGFloat = 32
     }
 
     enum Radius {
@@ -56,12 +59,11 @@ enum Design {
 
     enum Window {
         static let mainMin = CGSize(width: 860, height: 520)
-        static let settings = CGSize(width: 920, height: 560)
-        static let settingsMin = CGSize(width: 760, height: 520)
         static let aboutWidth: CGFloat = 300
     }
 
     enum Sheet {
+        static let settings = CGSize(width: 920, height: 620)
         static let gallery = CGSize(width: 720, height: 560)
         static let modelDetailWidth: CGFloat = 620
         static let modelDetailHeight: CGFloat = 680
@@ -364,6 +366,7 @@ extension RoundedRectangle {
 struct ModalScrim<Modal: View>: ViewModifier {
     let isPresented: Bool
     var anchor: UnitPoint = .center
+    var handlesEscape = true
     let onDismiss: () -> Void
     @ViewBuilder let modal: () -> Modal
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -395,7 +398,7 @@ struct ModalScrim<Modal: View>: ViewModifier {
                                     .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
                             .shade(Design.Elevation.sheet)
                             .padding(Design.Space.xxl)
-                            .onExitCommand(perform: onDismiss)
+                            .onExitCommand(perform: handlesEscape ? onDismiss : nil)
                             .transition(
                                 reduceMotion
                                     ? .opacity
@@ -412,12 +415,14 @@ struct ModalScrim<Modal: View>: ViewModifier {
 
 extension View {
     func modalScrim<Modal: View>(
-        isPresented: Bool, anchor: UnitPoint = .center, onDismiss: @escaping () -> Void,
+        isPresented: Bool, anchor: UnitPoint = .center, handlesEscape: Bool = true,
+        onDismiss: @escaping () -> Void,
         @ViewBuilder modal: @escaping () -> Modal
     ) -> some View {
         modifier(
             ModalScrim(
-                isPresented: isPresented, anchor: anchor, onDismiss: onDismiss, modal: modal))
+                isPresented: isPresented, anchor: anchor, handlesEscape: handlesEscape,
+                onDismiss: onDismiss, modal: modal))
     }
 }
 
@@ -983,8 +988,8 @@ struct SettingsGroup<Content: View>: View {
             VStack(alignment: .leading, spacing: 0) {
                 content()
             }
-            .padding(.horizontal, Design.Space.tile)
-            .padding(.vertical, Design.Space.xs)
+            .padding(.horizontal, Design.Space.xl)
+            .padding(.vertical, Design.Space.s)
             .surfaceCard(radius: Design.Radius.tile)
         }
     }
@@ -1225,6 +1230,7 @@ struct SkeletonPulse: View {
 }
 
 struct SheetCloseButton: View {
+    var usesCancelShortcut = true
     let action: () -> Void
     @State private var hovering = false
 
@@ -1243,7 +1249,7 @@ struct SheetCloseButton: View {
         .buttonStyle(PressDipStyle())
         .onHover { hovering = $0 }
         .inkFocusRing(Circle())
-        .keyboardShortcut(.cancelAction)
+        .keyboardShortcut(usesCancelShortcut ? .cancelAction : nil)
         .accessibilityLabel("Close")
     }
 }
