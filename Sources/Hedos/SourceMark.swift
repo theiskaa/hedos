@@ -46,9 +46,9 @@ struct SourceMark: View {
         ]
         for entry in manifest {
             guard
-                let url = Bundle.module.url(
+                let url = Bundle.appModule.url(
                     forResource: "Resources/Brands/\(entry.slug)", withExtension: entry.ext)
-                    ?? Bundle.module.url(forResource: entry.slug, withExtension: entry.ext),
+                    ?? Bundle.appModule.url(forResource: entry.slug, withExtension: entry.ext),
                 let image = NSImage(contentsOf: url)
             else { continue }
             image.isTemplate = entry.template

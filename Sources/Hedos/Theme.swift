@@ -151,11 +151,11 @@ enum ThemeStore {
         let override = ("~/.config/hedos/themes/\(name).toml" as NSString).expandingTildeInPath
         if let text = try? String(contentsOfFile: override, encoding: .utf8) { return text }
         guard
-            let url = Bundle.module.url(
+            let url = Bundle.appModule.url(
                 forResource: name, withExtension: "toml", subdirectory: "Resources/Themes")
-                ?? Bundle.module.url(
+                ?? Bundle.appModule.url(
                     forResource: name, withExtension: "toml", subdirectory: "Themes")
-                ?? Bundle.module.url(forResource: "Resources/Themes/\(name)", withExtension: "toml"),
+                ?? Bundle.appModule.url(forResource: "Resources/Themes/\(name)", withExtension: "toml"),
             let text = try? String(contentsOf: url, encoding: .utf8)
         else { return nil }
         return text

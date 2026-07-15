@@ -1306,8 +1306,8 @@ struct LogoMark: View {
 
     private static let artwork: NSImage? = {
         guard
-            let url = Bundle.module.url(forResource: "Resources/logo", withExtension: "svg")
-                ?? Bundle.module.url(forResource: "logo", withExtension: "svg"),
+            let url = Bundle.appModule.url(forResource: "Resources/logo", withExtension: "svg")
+                ?? Bundle.appModule.url(forResource: "logo", withExtension: "svg"),
             let image = NSImage(contentsOf: url)
         else { return nil }
         return image

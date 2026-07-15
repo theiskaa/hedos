@@ -19,6 +19,15 @@ for bundle in "$RELEASE"/*.bundle; do
     [ -e "$bundle" ] || continue
     cp -R "$bundle" "$APP/Contents/Resources/"
 done
+for required in hedos_Hedos.bundle hedos_HedosKernel.bundle; do
+    if [ ! -d "$APP/Contents/Resources/$required" ]; then
+        echo "error: $required missing from $APP/Contents/Resources" >&2
+        exit 1
+    fi
+done
+for bundle in "$APP/Contents/Resources/"*.bundle; do
+    ln -sf "../Resources/$(basename "$bundle")" "$APP/Contents/Helpers/$(basename "$bundle")"
+done
 HAS_FRAMEWORKS=0
 for framework in "$RELEASE"/*.framework; do
     [ -e "$framework" ] || continue

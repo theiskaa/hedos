@@ -7,9 +7,9 @@ struct HedosLogo: View {
 
     private static let artwork: NSImage? = {
         guard
-            let url = Bundle.module.url(
+            let url = Bundle.appModule.url(
                 forResource: "hedos", withExtension: "svg", subdirectory: "Resources")
-                ?? Bundle.module.url(forResource: "hedos", withExtension: "svg"),
+                ?? Bundle.appModule.url(forResource: "hedos", withExtension: "svg"),
             let image = NSImage(contentsOf: url)
         else { return nil }
         image.isTemplate = true
