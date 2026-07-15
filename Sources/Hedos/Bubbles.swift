@@ -463,6 +463,32 @@ struct AttachmentThumb: View {
     }
 }
 
+struct DocumentChip: View {
+    let name: String
+    var size: CGFloat = 60
+
+    var body: some View {
+        VStack(spacing: Design.Space.xs) {
+            Image(systemName: "doc.text")
+                .font(Design.glyphSmall)
+                .foregroundStyle(Design.inkSoft)
+            Text(name)
+                .font(Design.label)
+                .foregroundStyle(Design.inkSoft)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, Design.Space.xs)
+        .frame(width: size * 1.6, height: size)
+        .background(Design.cardFill, in: RoundedRectangle.soft(Design.Radius.control))
+        .overlay(
+            RoundedRectangle.soft(Design.Radius.control)
+                .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+        .accessibilityLabel("Attached file \(name)")
+    }
+}
+
 struct PendingAttachmentStrip: View {
     let attachments: [ChatViewModel.PendingAttachment]
     let onRemove: (String) -> Void
@@ -471,22 +497,28 @@ struct PendingAttachmentStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Design.Space.s) {
                 ForEach(attachments) { attachment in
-                    AttachmentThumb(image: attachment.image)
-                        .overlay(alignment: .topTrailing) {
-                            Button(action: { onRemove(attachment.id) }) {
-                                Image(systemName: "xmark")
-                                    .font(Design.glyphMicro.weight(.bold))
-                                    .foregroundStyle(Design.paper)
-                                    .frame(width: 16, height: 16)
-                                    .background(Design.ink.opacity(0.75), in: Circle())
-                                    .contentShape(Circle())
-                            }
-                            .buttonStyle(PressDipStyle())
-                            .padding(3)
-                            .help("Remove attachment")
-                            .accessibilityLabel("Remove \(attachment.name)")
+                    Group {
+                        if attachment.kind == .document {
+                            DocumentChip(name: attachment.name)
+                        } else {
+                            AttachmentThumb(image: attachment.image)
                         }
-                        .help(attachment.name)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        Button(action: { onRemove(attachment.id) }) {
+                            Image(systemName: "xmark")
+                                .font(Design.glyphMicro.weight(.bold))
+                                .foregroundStyle(Design.paper)
+                                .frame(width: 16, height: 16)
+                                .background(Design.ink.opacity(0.75), in: Circle())
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(PressDipStyle())
+                        .padding(3)
+                        .help("Remove attachment")
+                        .accessibilityLabel("Remove \(attachment.name)")
+                    }
+                    .help(attachment.name)
                 }
             }
             .padding(.horizontal, Design.Space.xs)
@@ -514,22 +546,50 @@ enum AttachmentImageCache {
 
 struct SentAttachments: View {
     let refs: [String]
-    let inline: [NSImage]
+    let inline: [ChatViewModel.AttachmentPreview]
     let kernel: Kernel
-    @State private var resolved: [NSImage?] = []
+    @State private var resolved: [Slot] = []
 
-    private var slots: [NSImage?] {
-        if !inline.isEmpty { return inline.map { Optional($0) } }
+    enum Slot: Hashable {
+        case image(NSImage)
+        case document(String)
+        case missing
+    }
+
+    private static func documentName(fromRef ref: String) -> String {
+        let stem = (ref as NSString).deletingPathExtension
+        let slug = (stem as NSString).pathExtension
+        let ext = (ref as NSString).pathExtension
+        return slug.isEmpty ? "attached file" : "\(slug).\(ext)"
+    }
+
+    private static func refSlot(_ ref: String) -> Slot {
+        let ext = (ref as NSString).pathExtension.lowercased()
+        if ChatViewModel.imageExtensions.contains(ext) {
+            return AttachmentImageCache.image(for: ref).map(Slot.image) ?? .missing
+        }
+        return .document(documentName(fromRef: ref))
+    }
+
+    private var slots: [Slot] {
+        if !inline.isEmpty {
+            return inline.map { preview in
+                if preview.kind == .document { return .document(preview.name) }
+                if let image = preview.image { return .image(image) }
+                return .missing
+            }
+        }
         if !resolved.isEmpty { return resolved }
-        return refs.map { AttachmentImageCache.image(for: $0) }
+        return refs.map(Self.refSlot)
     }
 
     var body: some View {
         Group {
             if !slots.isEmpty {
                 HStack(alignment: .top, spacing: Design.Space.s) {
-                    ForEach(Array(slots.enumerated()), id: \.offset) { _, image in
-                        if let image {
+                    ForEach(Array(slots.enumerated()), id: \.offset) { _, slot in
+                        switch slot {
+                        case .image(let image):
                             Image(nsImage: image)
                                 .resizable()
                                 .interpolation(.high)
@@ -540,32 +600,46 @@ struct SentAttachments: View {
                                     RoundedRectangle.soft(Design.Radius.bubble)
                                         .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
                                 .fixedSize(horizontal: false, vertical: true)
-                        } else {
+                        case .document(let name):
+                            DocumentChip(name: name)
+                        case .missing:
                             missingTile
                         }
                     }
                 }
                 .frame(maxWidth: Design.Bubble.promptMax, alignment: .trailing)
-                .accessibilityLabel(slots.count == 1 ? "Attached image" : "Attached images")
+                .accessibilityLabel(slots.count == 1 ? "Attachment" : "Attachments")
             }
         }
         .task(id: refs) {
             guard inline.isEmpty, !refs.isEmpty else { return }
-            if refs.allSatisfy({ AttachmentImageCache.image(for: $0) != nil }) {
-                resolved = refs.map { AttachmentImageCache.image(for: $0) }
+            let initial = refs.map(Self.refSlot)
+            if !initial.contains(.missing) {
+                resolved = initial
                 return
             }
             let kernel = kernel
             let refs = refs
             let loaded = await Task.detached(priority: .utility) {
-                refs.map { ref in
-                    kernel.chatAttachments([ref]).first.flatMap { NSImage(data: $0.data) }
+                refs.map { ref -> (NSImage?, ChatAttachment?) in
+                    guard let attachment = kernel.chatAttachments([ref]).first else {
+                        return (nil, nil)
+                    }
+                    if attachment.kind == .document { return (nil, attachment) }
+                    return (NSImage(data: attachment.data), attachment)
                 }
             }.value
-            for (ref, image) in zip(refs, loaded) {
-                if let image { AttachmentImageCache.set(image, for: ref) }
+            resolved = zip(refs, loaded).map { ref, pair in
+                let (image, attachment) = pair
+                if let image {
+                    AttachmentImageCache.set(image, for: ref)
+                    return .image(image)
+                }
+                if let attachment, attachment.kind == .document {
+                    return .document(attachment.name ?? Self.documentName(fromRef: ref))
+                }
+                return .missing
             }
-            resolved = loaded
         }
     }
 

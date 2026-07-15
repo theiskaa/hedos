@@ -63,16 +63,23 @@ final class ChatViewModel {
         var interrupted = false
         var versions: [Version] = []
         var attachmentRefs: [String] = []
-        var attachmentImages: [NSImage] = []
+        var attachmentPreviews: [AttachmentPreview] = []
+    }
+
+    struct AttachmentPreview: Hashable {
+        var kind: ChatAttachment.Kind
+        var name: String
+        var image: NSImage?
     }
 
     struct PendingAttachment: Identifiable, Hashable {
         var id = UUID().uuidString
         var ref: String
+        var kind: ChatAttachment.Kind
         var data: Data
         var mimeType: String
         var name: String
-        var image: NSImage
+        var image: NSImage?
     }
 
     enum Intent: Hashable, CaseIterable {
@@ -446,13 +453,21 @@ final class ChatViewModel {
         draft = ""
         pendingAttachments = []
         for attachment in pending {
-            AttachmentImageCache.set(attachment.image, for: attachment.ref)
+            if let image = attachment.image {
+                AttachmentImageCache.set(image, for: attachment.ref)
+            }
         }
         transcript.append(
-            Entry(role: .user, text: text, attachmentImages: pending.map(\.image)))
+            Entry(
+                role: .user, text: text,
+                attachmentPreviews: pending.map {
+                    AttachmentPreview(kind: $0.kind, name: $0.name, image: $0.image)
+                }))
         transcriptCharacterCount += text.count
         let attachments = pending.map {
-            ChatAttachment(kind: .image, data: $0.data, mimeType: $0.mimeType)
+            ChatAttachment(
+                kind: $0.kind, data: $0.data, mimeType: $0.mimeType,
+                name: $0.kind == .document ? $0.name : nil)
         }
         stream { kernel, sessionID in
             try await kernel.sendChat(sessionID: sessionID, text: text, attachments: attachments)
@@ -460,26 +475,64 @@ final class ChatViewModel {
     }
 
     func attach(_ urls: [URL]) {
-        let candidates = urls.filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
-        guard !candidates.isEmpty else { return }
+        guard !urls.isEmpty else { return }
         Task { [weak self] in
-            for url in candidates {
-                let mimeType = Self.mimeType(forExtension: url.pathExtension)
-                let loaded = await Task.detached(priority: .userInitiated) {
-                    () -> DecodedImage? in
-                    guard let data = try? Data(contentsOf: url), let image = NSImage(data: data)
-                    else { return nil }
-                    return DecodedImage(data: data, image: image)
-                }.value
-                guard let self, self.acceptsImagesNow else { return }
-                guard let loaded else {
-                    self.notice = "Couldn't read \(url.lastPathComponent) as an image."
-                    continue
+            for url in urls {
+                if Self.imageExtensions.contains(url.pathExtension.lowercased()) {
+                    await self?.attachImage(url)
+                } else {
+                    await self?.attachDocument(url)
                 }
-                self.addAttachment(
-                    data: loaded.data, mimeType: mimeType, image: loaded.image,
-                    name: url.lastPathComponent)
             }
+        }
+    }
+
+    private func attachImage(_ url: URL) async {
+        guard acceptsImagesNow else {
+            rejectImageDrop()
+            return
+        }
+        let mimeType = Self.mimeType(forExtension: url.pathExtension)
+        let loaded = await Task.detached(priority: .userInitiated) {
+            () -> DecodedImage? in
+            guard let data = try? Data(contentsOf: url), let image = NSImage(data: data)
+            else { return nil }
+            return DecodedImage(data: data, image: image)
+        }.value
+        guard acceptsImagesNow else { return }
+        guard let loaded else {
+            notice = "Couldn't read \(url.lastPathComponent) as an image."
+            return
+        }
+        addAttachment(
+            data: loaded.data, mimeType: mimeType, image: loaded.image,
+            name: url.lastPathComponent)
+    }
+
+    private func attachDocument(_ url: URL) async {
+        guard intent == .text else {
+            notice = "Switch back to chat to attach a file."
+            return
+        }
+        let data = await Task.detached(priority: .userInitiated) {
+            try? Data(contentsOf: url)
+        }.value
+        guard let data else {
+            notice = "Couldn't read \(url.lastPathComponent)."
+            return
+        }
+        let budget = documentBudgetNow - pendingDocumentBytes
+        switch AttachmentIntake.classify(
+            data: data, filename: url.lastPathComponent, budgetBytes: max(budget, 0))
+        {
+        case .document(let document):
+            addDocument(document)
+        case .binary:
+            notice =
+                "\(url.lastPathComponent) looks like a binary file — only text files can be attached."
+        case .tooLarge(let limit):
+            notice =
+                "\(url.lastPathComponent) doesn't fit this model's context — up to \(Self.byteText(limit)) of attached text fits."
         }
     }
 
@@ -487,8 +540,36 @@ final class ChatViewModel {
         let ref = Kernel.attachmentRef(for: data, mimeType: mimeType)
         guard !pendingAttachments.contains(where: { $0.ref == ref }) else { return }
         pendingAttachments.append(
-            PendingAttachment(ref: ref, data: data, mimeType: mimeType, name: name, image: image))
+            PendingAttachment(
+                ref: ref, kind: .image, data: data, mimeType: mimeType, name: name, image: image))
         focusComposer()
+    }
+
+    func addDocument(_ document: ChatAttachment) {
+        let name = document.name ?? "attachment.txt"
+        let ref = Kernel.attachmentRef(for: document.data, mimeType: document.mimeType, name: name)
+        guard !pendingAttachments.contains(where: { $0.ref == ref }) else { return }
+        pendingAttachments.append(
+            PendingAttachment(
+                ref: ref, kind: .document, data: document.data, mimeType: document.mimeType,
+                name: name, image: nil))
+        focusComposer()
+    }
+
+    var boundContextLength: Int? {
+        recordsProvider?().first { $0.id == boundModelID }?.contextLength
+    }
+
+    var documentBudgetNow: Int {
+        AttachmentIntake.documentBudget(contextLength: boundContextLength)
+    }
+
+    var pendingDocumentBytes: Int {
+        pendingAttachments.filter { $0.kind == .document }.reduce(0) { $0 + $1.data.count }
+    }
+
+    static func byteText(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
     func removeAttachment(_ id: String) {
@@ -521,15 +602,7 @@ final class ChatViewModel {
                 forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
             as? [URL] ?? []
         if !urls.isEmpty {
-            let images = urls.filter {
-                Self.imageExtensions.contains($0.pathExtension.lowercased())
-            }
-            guard !images.isEmpty else { return false }
-            if acceptsImagesNow {
-                attach(images)
-            } else {
-                rejectImageDrop()
-            }
+            attach(urls)
             return true
         }
         guard let image = (pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first
@@ -795,7 +868,13 @@ final class ChatViewModel {
         let previous = boundModelID
         boundModelID = record.id
         if !record.capabilities.contains(.see) {
-            pendingAttachments = []
+            pendingAttachments.removeAll { $0.kind == .image }
+        }
+        if pendingDocumentBytes > AttachmentIntake.documentBudget(
+            contextLength: record.contextLength)
+        {
+            notice =
+                "Attached files may not fit \(record.displayName)'s context window."
         }
         let kernel = kernel
         let sessionID = sessionID
@@ -1361,16 +1440,10 @@ struct ChatView: View {
         .dropDestination(for: ChatDropItem.self) { items, _ in
             let urls = items.compactMap(\.fileURL)
             let imageData = items.compactMap(\.imageData)
-            let images = urls.filter {
-                ChatViewModel.imageExtensions.contains($0.pathExtension.lowercased())
-            }
+            let files = urls.filter { $0.pathExtension.lowercased() != "wav" }
             var handled = false
-            if !images.isEmpty {
-                if acceptsImages {
-                    model.attach(images)
-                } else {
-                    model.rejectImageDrop()
-                }
+            if !files.isEmpty {
+                model.attach(files)
                 handled = true
             }
             if !imageData.isEmpty {
@@ -1381,10 +1454,7 @@ struct ChatView: View {
                 model.transcribeDropped(audio, records: library.records)
                 handled = true
             }
-            if handled { return true }
-            guard let url = urls.first else { return false }
-            model.transcribeDropped(url, records: library.records)
-            return true
+            return handled
         }
         .onDisappear {
             model.suspend()
@@ -1497,8 +1567,8 @@ struct ChatView: View {
 
     @ViewBuilder
     private var attachControl: some View {
-        if acceptsImages {
-            CircleControl(glyph: "paperclip", label: "Attach an image") {
+        if model.intent == .text {
+            CircleControl(glyph: "paperclip", label: "Attach a file") {
                 pickAttachment()
             }
             .disabled(model.isWorking)
@@ -1511,11 +1581,11 @@ struct ChatView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = ChatViewModel.imageExtensions.compactMap {
-            UTType(filenameExtension: $0)
-        }
         panel.prompt = "Attach"
-        panel.message = "Attach images for this model to see in your next message."
+        panel.message =
+            acceptsImages
+            ? "Attach text files or images for your next message."
+            : "Attach text files for your next message."
         if panel.runModal() == .OK {
             model.attach(panel.urls)
         }
@@ -1764,9 +1834,9 @@ struct ChatView: View {
     @ViewBuilder
     private func userTurn(_ entry: ChatViewModel.Entry) -> some View {
         VStack(alignment: .trailing, spacing: Design.Space.s) {
-            if !entry.attachmentRefs.isEmpty || !entry.attachmentImages.isEmpty {
+            if !entry.attachmentRefs.isEmpty || !entry.attachmentPreviews.isEmpty {
                 SentAttachments(
-                    refs: entry.attachmentRefs, inline: entry.attachmentImages, kernel: kernel)
+                    refs: entry.attachmentRefs, inline: entry.attachmentPreviews, kernel: kernel)
             }
             if editingEntryID == entry.id {
                 editField(entry)
