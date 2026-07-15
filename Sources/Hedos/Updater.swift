@@ -193,15 +193,15 @@ final class Updater {
     }
 
     private func installAndRelaunch(dmg: URL) throws {
-        let app = Bundle.main.bundleURL
-        guard verifyAuthentic(dmg: dmg, matching: app) else {
+        let running = Bundle.main.bundleURL
+        guard verifyAuthentic(dmg: dmg, matching: running) else {
             try? FileManager.default.removeItem(at: dmg)
             inform(
                 "Update blocked",
                 "The downloaded update isn’t signed by the same developer as this app, so it wasn’t installed.")
             return
         }
-        guard FileManager.default.isWritableFile(atPath: app.deletingLastPathComponent().path) else {
+        guard let app = installTarget(for: running) else {
             NSWorkspace.shared.open(dmg)
             inform("Almost there", "Drag Hedos onto Applications to finish updating.")
             return
@@ -216,7 +216,9 @@ final class Updater {
             MNT=$(mktemp -d)
             if hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$MNT" -quiet && [ -d "$MNT/Hedos.app" ]; then
                 rm -rf "$APP.old"
-                if mv "$APP" "$APP.old"; then
+                if [ ! -e "$APP" ]; then
+                    ditto "$MNT/Hedos.app" "$APP" || rm -rf "$APP"
+                elif mv "$APP" "$APP.old"; then
                     if ditto "$MNT/Hedos.app" "$APP"; then rm -rf "$APP.old"; else rm -rf "$APP"; mv "$APP.old" "$APP"; fi
                 fi
             fi
@@ -234,6 +236,15 @@ final class Updater {
         ]
         try process.run()
         NSApp.terminate(nil)
+    }
+
+    private func installTarget(for running: URL) -> URL? {
+        if FileManager.default.isWritableFile(atPath: running.deletingLastPathComponent().path) {
+            return running
+        }
+        let applications = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        guard FileManager.default.isWritableFile(atPath: applications.path) else { return nil }
+        return applications.appendingPathComponent("Hedos.app")
     }
 
     private func verifyAuthentic(dmg: URL, matching app: URL) -> Bool {
