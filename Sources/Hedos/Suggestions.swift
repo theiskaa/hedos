@@ -138,6 +138,7 @@ struct SuggestionCard: View {
     let recommended: Bool
     @State private var hovering = false
     @State private var acted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var installs: InstallModel { shell.installs }
 
@@ -178,6 +179,7 @@ struct SuggestionCard: View {
                 InstallProgressBar(
                     fraction: (installs.progress(installID: install.id) ?? install.progress)
                         .fraction)
+                .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
             }
             if let failure = installs.failures[entry.reference] {
                 Text(failure)
@@ -185,6 +187,7 @@ struct SuggestionCard: View {
                     .foregroundStyle(Design.heatText)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
             }
             HStack {
                 Text(String(format: "%g GB", entry.sizeGB))
@@ -206,7 +209,15 @@ struct SuggestionCard: View {
                     lineWidth: Design.hairlineWidth))
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
+        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: cardState)
         .help(helpText)
+    }
+
+    private var cardState: String {
+        if installs.completed.contains(entry.reference) { return "done" }
+        if activeInstall != nil { return "downloading" }
+        if let failure = installs.failures[entry.reference] { return "failed|\(failure)" }
+        return "idle"
     }
 
     private var helpText: String {

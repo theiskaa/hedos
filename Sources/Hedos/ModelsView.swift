@@ -120,6 +120,9 @@ struct ModelsPane: View {
             VStack(alignment: .leading, spacing: Design.Space.pane) {
                 hero
                 contextRow
+                InstallInviteBanner(shell: shell) {
+                    shell.installBrowserOpen = true
+                }
                 filterRow
                 gridContent
             }
@@ -255,11 +258,7 @@ struct ModelsPane: View {
                 }
             }
             warmCard
-            InstallInviteCard(shell: shell) {
-                shell.installBrowserOpen = true
-            }
         }
-        .task { await shell.installs.load() }
     }
 
     private var warmCard: some View {
@@ -590,6 +589,7 @@ struct ModelCard: View {
     var downloadProgress: InstallProgress?
     let onOpen: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onOpen) {
@@ -641,6 +641,7 @@ struct ModelCard: View {
                 Spacer(minLength: 0)
                 if let downloadProgress {
                     InstallProgressBar(fraction: downloadProgress.fraction)
+                        .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
                 }
                 HStack(alignment: .firstTextBaseline) {
                     Text(
@@ -674,6 +675,8 @@ struct ModelCard: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
+        .animation(
+            Design.snapMotion(reduceMotion: reduceMotion), value: downloadProgress != nil)
         .help("Show details")
         .accessibilityLabel(record.displayName)
         .accessibilityIdentifier("model-card-\(record.id)")
@@ -686,39 +689,41 @@ struct ModelCard: View {
     }
 }
 
-struct InstallInviteCard: View {
+struct InstallInviteBanner: View {
     @Bindable var shell: ShellModel
     let onOpen: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var installs: InstallModel { shell.installs }
 
+    private var downloading: Bool {
+        !installs.active.isEmpty
+    }
+
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: Design.Space.m) {
-                MicroHeader(
-                    title: installs.active.isEmpty
-                        ? "Get more" : "Downloading · \(installs.active.count)")
-                HStack(alignment: .top, spacing: Design.Space.l) {
-                    marks
-                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                        Text(title)
-                            .font(Design.title)
-                            .tracking(Design.tightTracking)
-                            .foregroundStyle(Design.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(subtitle)
-                            .font(Design.data(11))
-                            .foregroundStyle(Design.inkFaint)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
+            HStack(alignment: .center, spacing: Design.Space.l) {
+                marks
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    Text(title)
+                        .font(Design.body.weight(.medium))
+                        .tracking(Design.tightTracking)
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(Design.data(11))
+                        .monospacedDigit()
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
                 }
-                Spacer(minLength: 0)
-                footer
+                Spacer(minLength: Design.Space.l)
+                trailing
             }
-            .padding(Design.Space.xl)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, Design.Space.xl)
+            .padding(.vertical, Design.Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
             .overlay(
                 RoundedRectangle.soft(Design.Radius.card)
@@ -730,9 +735,17 @@ struct InstallInviteCard: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
+        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: downloading)
+        .animation(
+            Design.motion(reduceMotion: reduceMotion),
+            value: installs.aggregateProgress?.bytesDownloaded)
         .help("Browse and install models")
-        .accessibilityLabel("Install models")
+        .accessibilityLabel(
+            downloading
+                ? "Downloading \(installs.active.count) models, open the install browser"
+                : "Install models")
         .accessibilityIdentifier("models-install-invite")
+        .task { await installs.load() }
     }
 
     private var marks: some View {
@@ -745,15 +758,15 @@ struct InstallInviteCard: View {
     private func markPlaque(_ kind: SourceKind) -> some View {
         SourceMark(kind: kind, size: 13)
             .foregroundStyle(Design.inkSoft)
-            .frame(width: 22, height: 22)
+            .frame(width: 24, height: 24)
             .background(Design.panel, in: Circle())
             .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
     }
 
     private var title: String {
-        installs.active.isEmpty
-            ? "Pull new models onto this Mac."
-            : "New models are on their way."
+        downloading
+            ? "New models are on their way."
+            : "Pull new models onto this Mac."
     }
 
     private var subtitle: String {
@@ -764,17 +777,24 @@ struct InstallInviteCard: View {
     }
 
     @ViewBuilder
-    private var footer: some View {
-        if let progress = installs.aggregateProgress {
-            InstallProgressBar(fraction: progress.fraction)
+    private var trailing: some View {
+        if downloading {
+            HStack(spacing: Design.Space.m) {
+                InstallProgressBar(fraction: installs.aggregateProgress?.fraction)
+                    .frame(width: 140)
+                TintChip(
+                    text: "\(installs.active.count) downloading",
+                    glyph: "arrow.down.circle", live: true)
+            }
+            .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         } else {
-            HStack(spacing: Design.Space.s) {
+            HStack(spacing: Design.Space.m) {
                 TintChip(text: "Browse", glyph: "arrow.down.circle")
-                Spacer(minLength: 0)
                 Image(systemName: "arrow.right")
                     .font(Design.glyphSmall)
                     .foregroundStyle(hovering ? Design.accentText : Design.inkFaint)
             }
+            .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         }
     }
 }

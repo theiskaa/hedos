@@ -64,9 +64,11 @@ struct InstallBrowser: View {
                 VStack(alignment: .leading, spacing: Design.Space.xl) {
                     if !installs.active.isEmpty {
                         downloadingNow
+                            .transition(.arrive(from: .top, reduceMotion: reduceMotion))
                     }
                     if !installs.failures.isEmpty {
                         failuresSection
+                            .transition(.arrive(from: .top, reduceMotion: reduceMotion))
                     }
                     catalogSection
                     providerStrip
@@ -75,6 +77,12 @@ struct InstallBrowser: View {
                 .padding(.top, Design.Space.xs)
                 .padding(.bottom, Design.Space.xl)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .animation(
+                    Design.motion(reduceMotion: reduceMotion),
+                    value: installs.active.isEmpty)
+                .animation(
+                    Design.motion(reduceMotion: reduceMotion),
+                    value: installs.failures.keys.sorted())
             }
         }
     }
@@ -93,7 +101,12 @@ struct InstallBrowser: View {
                 fill: Design.panel)
             .onChange(of: installs.searchQuery) { installs.searchDebounced() }
             directReferenceRow
+                .transition(.arrive(from: .top, reduceMotion: reduceMotion))
         }
+        .animation(
+            Design.snapMotion(reduceMotion: reduceMotion),
+            value: InstallBrowser.directProvider(
+                for: installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)))
     }
 
     @ViewBuilder
@@ -199,16 +212,20 @@ struct InstallBrowser: View {
                         ShimmerInstallCard()
                     }
                 } else if searchIsShowing {
-                    ForEach(installs.searchHits.prefix(9)) { hit in
+                    ForEach(Array(installs.searchHits.prefix(9).enumerated()), id: \.element.id) {
+                        index, hit in
                         SearchResultCard(shell: shell, hit: hit)
+                            .staggeredArrival(index)
                     }
                 } else {
-                    ForEach(visibleEntries) { entry in
+                    ForEach(Array(visibleEntries.enumerated()), id: \.element.id) { index, entry in
                         CatalogInstallCard(shell: shell, entry: entry)
+                            .staggeredArrival(index)
                     }
                 }
             }
             .animation(Design.wash, value: installs.searching)
+            .animation(Design.wash, value: searchIsShowing)
             if searchIsShowing, !installs.searching {
                 if let error = installs.searchError {
                     Text(error)
