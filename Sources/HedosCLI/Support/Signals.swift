@@ -18,4 +18,10 @@ enum Signals {
             source = interrupt
         }
     }
+
+    static func restoreDefault() {
+        source?.cancel()
+        source = nil
+        signal(SIGINT, SIG_DFL)
+    }
 }

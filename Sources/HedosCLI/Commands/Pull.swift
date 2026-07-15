@@ -5,103 +5,163 @@ import HedosKernel
 struct Pull: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pull",
-        abstract: "Fetch a recommended model into hedos from the terminal.")
+        abstract: "Fetch a model from Ollama or Hugging Face onto the shelf.")
 
     @OptionGroup var global: GlobalOptions
 
-    @Argument(help: "Model to fetch (an Ollama tag like gemma3:4b, or a Hugging Face repo).")
-    var suggestion: String?
+    @Argument(help: "Model to fetch (an Ollama tag like gemma3:4b, or a Hugging Face org/repo).")
+    var reference: String?
+
+    @Option(
+        name: .customLong("from"),
+        help: "Where to fetch from: ollama or huggingface. Without it, org/repo goes to Hugging Face and everything else to Ollama (use user/model:latest for Ollama community models).")
+    var from: String?
 
     func run() async throws {
         let kernel = Session.kernel()
-        guard let suggestion else {
+        guard let reference else {
             try recommend()
             return
         }
-
-        if suggestion.contains("/") && !suggestion.contains(":") {
+        let provider = try Self.provider(for: reference, override: from)
+        let plan: InstallPlan
+        do {
+            plan = try await kernel.installs.plan(provider: provider, reference: reference)
+        } catch let error as InstallError {
+            throw CLIError(error.localizedDescription)
+        }
+        if plan.requiresAuth {
             throw CLIError(
-                "\(suggestion) looks like a Hugging Face repo. Download it with `huggingface-cli "
-                + "download \(suggestion)`, then run `hedos scan`.")
+                "\(plan.reference) is gated. Set a token with HF_TOKEN or `huggingface-cli login`, then retry."
+            )
         }
-
-        if !global.json { Out.err("pulling \(suggestion) with ollama…") }
-        let status = runOllamaPull(suggestion)
-        guard status == 0 else {
-            if status == 127 {
-                throw CLIError("`ollama` is not installed or not on PATH — install it, then retry.")
+        if !global.json {
+            let size = plan.totalBytes.map { " (~\(Self.gigabytes($0)))" } ?? ""
+            Out.err("pulling \(plan.reference)\(size) into \(plan.destination)…")
+        }
+        let id: String
+        do {
+            id = try await kernel.installs.begin(plan)
+        } catch let error as InstallError {
+            throw CLIError(error.localizedDescription)
+        }
+        let interrupt = Task {
+            await Signals.waitForInterrupt()
+            await kernel.installs.cancel(id)
+        }
+        var failure: String?
+        var cancelled = false
+        var lastBytes: Int64 = 0
+        for await event in await kernel.installs.events(id: id) {
+            switch event {
+            case .queued, .preparing, .done:
+                break
+            case .status(let message):
+                if !global.json { Out.err(message) }
+            case .progress(let progress):
+                lastBytes = progress.bytesDownloaded
+                if !global.json { renderProgress(progress) }
+            case .failed(let message):
+                failure = message
+            case .cancelled:
+                cancelled = true
             }
-            throw CLIError("`ollama pull \(suggestion)` failed (exit \(status)).")
         }
-
+        interrupt.cancel()
+        Signals.restoreDefault()
+        if !global.json { clearProgressLine() }
+        if let failure {
+            throw CLIError(failure)
+        }
+        if cancelled {
+            throw CLIError(
+                "cancelled — partial data stays in the store; run the same pull to resume.")
+        }
         let summary = try await kernel.discover()
         if global.json {
-            try Out.json(PullReport(pulled: suggestion, shelfCount: summary.totalCount))
+            try Out.json(
+                PullReport(
+                    pulled: plan.reference, provider: provider.rawValue,
+                    bytes: plan.totalBytes ?? lastBytes, shelfCount: summary.totalCount))
         } else {
-            Out.line("pulled \(suggestion) — \(summary.headline)")
+            Out.line("pulled \(plan.reference) — \(summary.headline)")
+        }
+    }
+
+    static func provider(for reference: String, override: String? = nil) throws
+        -> InstallProviderID
+    {
+        guard !reference.contains("://") else {
+            throw CLIError(
+                "\(reference) is a URL. Pass an Ollama tag (gemma3:4b) or a Hugging Face org/repo.")
+        }
+        if let override {
+            switch override.lowercased() {
+            case "ollama": return .ollama
+            case "huggingface", "hf": return .huggingface
+            default:
+                throw CLIError("--from accepts ollama or huggingface, not \(override).")
+            }
+        }
+        let components = reference.split(separator: "/", omittingEmptySubsequences: false)
+        if components.count == 2, !reference.contains(":") {
+            return .huggingface
+        }
+        return .ollama
+    }
+
+    static func gigabytes(_ bytes: Int64) -> String {
+        String(format: "%.1f GB", Double(bytes) / Double(1 << 30))
+    }
+
+    private var progressToTTY: Bool {
+        isatty(fileno(stderr)) == 1
+    }
+
+    private func renderProgress(_ progress: InstallProgress) {
+        let downloaded = DiscoverySummary.formatBytes(progress.bytesDownloaded)
+        var line = downloaded
+        if let total = progress.totalBytes {
+            let percent = Int((progress.fraction ?? 0) * 100)
+            line = "\(downloaded) / \(DiscoverySummary.formatBytes(total))  \(percent)%"
+        }
+        if let file = progress.currentFile {
+            line += "  \(file)"
+        }
+        if progressToTTY {
+            FileHandle.standardError.write(Data(("\r\u{1B}[K" + line).utf8))
+        } else {
+            Out.err(line)
+        }
+    }
+
+    private func clearProgressLine() {
+        if progressToTTY {
+            FileHandle.standardError.write(Data("\r\u{1B}[K".utf8))
         }
     }
 
     private func recommend() throws {
         let profile = HardwareProfile.current
-        let picks = Recommendation.forRAM(profile.ramGB)
+        let picks = InstallCatalog.recommended(ramGB: profile.ramGB, providers: [.ollama])
         if global.json {
-            try Out.json(RecommendReport(ramGB: profile.ramGB, recommended: picks.map(\.name)))
+            try Out.json(
+                RecommendReport(ramGB: profile.ramGB, recommended: picks.map(\.reference)))
         } else {
             Out.line("recommended for this Mac (\(profile.ramGB) GB):")
-            for pick in picks { Out.line("  \(pick.name)  ·  ~\(pick.sizeGB) GB  ·  \(pick.blurb)") }
+            for pick in picks {
+                Out.line(
+                    "  \(pick.reference)  ·  ~\(String(format: "%g", pick.sizeGB)) GB  ·  \(pick.blurb)")
+            }
             Out.err("fetch one with `hedos pull <name>`.")
         }
-    }
-
-    private func runOllamaPull(_ name: String) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["ollama", "pull", name]
-        process.standardOutput = FileHandle.standardError
-        process.standardError = FileHandle.standardError
-        do {
-            try process.run()
-        } catch {
-            return 127
-        }
-        process.waitUntilExit()
-        return process.terminationStatus
-    }
-}
-
-struct Recommendation {
-    let name: String
-    let sizeGB: Int
-    let blurb: String
-
-    static let catalog: [Recommendation] = [
-        Recommendation(name: "gemma3:1b", sizeGB: 1, blurb: "tiny, always fits"),
-        Recommendation(name: "llama3.2:3b", sizeGB: 2, blurb: "fast general chat"),
-        Recommendation(name: "gemma3:4b", sizeGB: 3, blurb: "balanced quality"),
-        Recommendation(name: "qwen2.5-coder:7b", sizeGB: 5, blurb: "coding"),
-        Recommendation(name: "gemma3:12b", sizeGB: 8, blurb: "stronger reasoning"),
-        Recommendation(name: "gemma3:27b", sizeGB: 17, blurb: "high quality"),
-        Recommendation(name: "llama3.3:70b", sizeGB: 43, blurb: "frontier, needs room"),
-    ]
-
-    static func forRAM(_ ramGB: Int) -> [Recommendation] {
-        let ceiling = Double(ramGB) * 0.6
-        let fitting = catalog.filter { Double($0.sizeGB) <= ceiling }
-        return Array((fitting.isEmpty ? [catalog[0]] : fitting).suffix(3))
-    }
-}
-
-struct HardwareProfile {
-    let ramGB: Int
-
-    static var current: HardwareProfile {
-        HardwareProfile(ramGB: Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824))
     }
 }
 
 struct PullReport: Encodable {
     let pulled: String
+    let provider: String
+    let bytes: Int64
     let shelfCount: Int
 }
 
