@@ -59,7 +59,7 @@ struct ActivityGraph: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            if !usage.isEmpty {
+            if loaded {
                 header
                 grid
                     .frame(height: gridHeight)
@@ -67,11 +67,6 @@ struct ActivityGraph: View {
                     .onAppear {
                         withAnimation(Design.motion(reduceMotion: reduceMotion)) { appeared = true }
                     }
-            } else if loaded {
-                Text("No chats yet — your activity shows up here as you use the app.")
-                    .font(Design.caption)
-                    .foregroundStyle(Design.inkSoft)
-                    .padding(.vertical, Design.Space.s)
             } else {
                 SkeletonPulse(radius: Design.Radius.control)
                     .frame(height: gridHeight)
