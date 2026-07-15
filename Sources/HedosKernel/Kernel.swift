@@ -566,9 +566,16 @@ public actor Kernel {
         }
         let fallbackPrompt = await settings.chat().defaultSystemPrompt
         let systemPrompt = record.systemPrompt ?? fallbackPrompt
-        let messages = ChatFlow.messages(from: transcript.turns)
+        let store = attachmentStore
+        let messages = ChatFlow.messages(
+            from: transcript.turns, attachmentLoader: { store.load($0) })
         let characters =
-            messages.reduce(0) { $0 + $1.content.count } + (systemPrompt?.count ?? 0)
+            messages.reduce(0) { total, message in
+                total + message.content.count
+                    + message.attachments
+                        .filter { $0.kind == .document }
+                        .reduce(0) { $0 + $1.data.count }
+            } + (systemPrompt?.count ?? 0)
         let fits: Bool =
             switch ContextBudget.assess(
                 promptCharacters: characters, window: window, requestedMaxTokens: nil)
@@ -626,8 +633,10 @@ public actor Kernel {
         attachmentStore.load(refs)
     }
 
-    public nonisolated static func attachmentRef(for data: Data, mimeType: String) -> String {
-        AttachmentStore.ref(for: data, mimeType: mimeType)
+    public nonisolated static func attachmentRef(
+        for data: Data, mimeType: String, name: String? = nil
+    ) -> String {
+        AttachmentStore.ref(for: data, mimeType: mimeType, name: name)
     }
 
     private func chatFlow() -> ChatFlow {

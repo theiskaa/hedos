@@ -68,16 +68,19 @@ public struct ChatAttachment: Codable, Sendable, Hashable {
         public init(rawValue: String) { self.rawValue = rawValue }
         public init(stringLiteral value: String) { self.rawValue = value }
         public static let image = Kind(rawValue: "image")
+        public static let document = Kind(rawValue: "document")
     }
 
     public var kind: Kind
     public var data: Data
     public var mimeType: String
+    public var name: String?
 
-    public init(kind: Kind, data: Data, mimeType: String) {
+    public init(kind: Kind, data: Data, mimeType: String, name: String? = nil) {
         self.kind = kind
         self.data = data
         self.mimeType = mimeType
+        self.name = name
     }
 }
 

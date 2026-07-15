@@ -157,3 +157,165 @@ private func pngBytes(_ marker: UInt8) -> Data {
     let reloaded = try #require(try await store.session(id: session.id))
     #expect(reloaded.turns.first?.attachmentRefs == ["abc.png"])
 }
+
+private func textBytes(_ text: String) -> Data {
+    Data(text.utf8)
+}
+
+@Test func documentRefsCarryASanitizedNameSlug() {
+    let data = textBytes("hello")
+    let named = AttachmentStore.ref(for: data, mimeType: "text/markdown", name: "My Notes v2.md")
+    #expect(named.hasSuffix(".my-notes-v2.md"))
+    #expect(AttachmentStore.isSafeRef(named))
+    let unnamed = AttachmentStore.ref(for: data, mimeType: "text/markdown")
+    #expect(unnamed.hasSuffix(".md"))
+    #expect(!unnamed.contains("--"))
+    #expect(AttachmentStore.slug("Weird — name!!.txt") == "weird-name")
+    #expect(AttachmentStore.slug("dots.in.middle.txt") == "dots-in-middle")
+    #expect(AttachmentStore.slug("ünïcödé.md") == "n-c-d")
+    #expect(AttachmentStore.slug(String(repeating: "a", count: 80) + ".txt").count <= 40)
+    #expect(AttachmentStore.slug("...") == "")
+    #expect(!AttachmentStore.slug("comma,name.txt").contains(","))
+}
+
+@Test func documentStoreLoadRoundTripsKindAndName() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = AttachmentStore(directory: dir.appendingPathComponent("a"))
+    let doc = ChatAttachment(
+        kind: .document, data: textBytes("# hi"), mimeType: "text/markdown", name: "readme.md")
+    let refs = try store.store([doc])
+    let loaded = try #require(store.load(refs).first)
+    #expect(loaded.kind == .document)
+    #expect(loaded.mimeType == "text/markdown")
+    #expect(loaded.name == "readme.md")
+    #expect(loaded.data == textBytes("# hi"))
+}
+
+@Test func sourceFilesKeepTheirExtensionThroughTheStore() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = AttachmentStore(directory: dir.appendingPathComponent("a"))
+    let doc = ChatAttachment(
+        kind: .document, data: textBytes("let x = 1"), mimeType: "text/plain",
+        name: "parser.swift")
+    let refs = try store.store([doc])
+    #expect(refs.first?.hasSuffix(".parser.swift") == true)
+    let loaded = try #require(store.load(refs).first)
+    #expect(loaded.kind == .document)
+    #expect(loaded.name == "parser.swift")
+}
+
+@Test func legacyRefsLoadWithTodaysBehavior() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let attachments = dir.appendingPathComponent("a")
+    try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true)
+    try pngBytes(1).write(to: attachments.appendingPathComponent("abc.png"))
+    try textBytes("x").write(to: attachments.appendingPathComponent("abc.bin"))
+    try textBytes("hi").write(to: attachments.appendingPathComponent("abc.txt"))
+    let store = AttachmentStore(directory: attachments)
+    let image = try #require(store.load(["abc.png"]).first)
+    #expect(image.kind == .image)
+    #expect(image.name == nil)
+    let binary = try #require(store.load(["abc.bin"]).first)
+    #expect(binary.kind == .image)
+    #expect(binary.mimeType == "application/octet-stream")
+    let text = try #require(store.load(["abc.txt"]).first)
+    #expect(text.kind == .document)
+    #expect(text.name == nil)
+}
+
+@Test func payloadValueInlinesDocumentsIntoContent() {
+    let doc = ChatAttachment(
+        kind: .document, data: textBytes("alpha beta"), mimeType: "text/plain",
+        name: "notes.txt")
+    let message = ChatMessage(role: .user, content: "summarize this", attachments: [doc])
+    guard case .object(let object) = message.payloadValue,
+        case .string(let content)? = object["content"]
+    else {
+        Issue.record("expected string content")
+        return
+    }
+    #expect(content.contains("<attached-file name=\"notes.txt\">"))
+    #expect(content.contains("alpha beta"))
+    #expect(content.contains("</attached-file>"))
+    #expect(content.hasSuffix("summarize this"))
+    #expect(object["images"] == nil)
+}
+
+@Test func payloadValueMixesImagesAndDocuments() {
+    let doc = ChatAttachment(
+        kind: .document, data: textBytes("body"), mimeType: "text/plain", name: nil)
+    let image = ChatAttachment(kind: .image, data: pngBytes(8), mimeType: "image/png")
+    let message = ChatMessage(role: .user, content: "both", attachments: [doc, image])
+    guard case .object(let object) = message.payloadValue,
+        case .string(let content)? = object["content"],
+        case .array(let images)? = object["images"]
+    else {
+        Issue.record("expected content and images")
+        return
+    }
+    #expect(content.contains("<attached-file>"))
+    #expect(images.count == 1)
+}
+
+@Test func documentOnlyMessagesDoNotTripTheVisionGate() {
+    let doc = ChatAttachment(
+        kind: .document, data: textBytes("text"), mimeType: "text/plain", name: "a.txt")
+    let message = ChatMessage(role: .user, content: "read", attachments: [doc])
+    let payload = JSONValue.object(["messages": .array([message.payloadValue])])
+    #expect(!Kernel.payloadCarriesImages(payload))
+}
+
+@Test func mergedTurnsPlaceDocumentBlocksBeforeMergedContent() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = AttachmentStore(directory: dir.appendingPathComponent("a"))
+    let refsA = try store.store([
+        ChatAttachment(
+            kind: .document, data: textBytes("doc one"), mimeType: "text/plain", name: "one.txt")
+    ])
+    let refsB = try store.store([
+        ChatAttachment(
+            kind: .document, data: textBytes("doc two"), mimeType: "text/plain", name: "two.txt")
+    ])
+    let now = Date(timeIntervalSince1970: 0)
+    let turns = [
+        ChatTurn(
+            id: "1", sessionID: "s", seq: 0, role: .user, content: "first",
+            attachmentRefs: refsA, contentHash: "h1", createdAt: now, updatedAt: now),
+        ChatTurn(
+            id: "2", sessionID: "s", seq: 1, role: .user, content: "second",
+            attachmentRefs: refsB, contentHash: "h2", createdAt: now, updatedAt: now),
+    ]
+    let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+    let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
+    #expect(messages.count == 1)
+    #expect(messages.first?.attachments.count == 2)
+    guard case .object(let object) = messages[0].payloadValue,
+        case .string(let content)? = object["content"]
+    else {
+        Issue.record("expected string content")
+        return
+    }
+    let docOne = try #require(content.range(of: "doc one"))
+    let docTwo = try #require(content.range(of: "doc two"))
+    let first = try #require(content.range(of: "first"))
+    #expect(docOne.lowerBound < first.lowerBound)
+    #expect(docTwo.lowerBound < first.lowerBound)
+}
+
+@Test func chatMessageCodableRoundTripsAttachmentNames() throws {
+    let doc = ChatAttachment(
+        kind: .document, data: textBytes("x"), mimeType: "text/plain", name: "a.txt")
+    let message = ChatMessage(role: .user, content: "c", attachments: [doc])
+    let round = try JSONDecoder().decode(
+        ChatMessage.self, from: try JSONEncoder().encode(message))
+    #expect(round.attachments.first?.name == "a.txt")
+    let legacy = """
+        {"role":"user","content":"c","attachments":[{"kind":"image","data":"","mimeType":"image/png"}]}
+        """
+    let decoded = try JSONDecoder().decode(ChatMessage.self, from: Data(legacy.utf8))
+    #expect(decoded.attachments.first?.name == nil)
+}
