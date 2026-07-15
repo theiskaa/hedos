@@ -27,6 +27,7 @@ final class InstallModel {
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var watchers: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var referenceByInstallID: [String: String] = [:]
+    @ObservationIgnored var recordsProvider: () -> [ModelRecord] = { [] }
 
     var catalog: [InstallCatalogEntry] { InstallCatalog.entries }
 
@@ -172,6 +173,25 @@ final class InstallModel {
     func sourceKind(of provider: InstallProviderID) -> SourceKind {
         providers.first { $0.id == provider }?.sourceKind
             ?? (provider == .ollama ? .ollama : .huggingfaceCache)
+    }
+
+    func onShelf(provider: InstallProviderID, reference: String) -> Bool {
+        let records = recordsProvider()
+        switch provider {
+        case .ollama:
+            let tag = reference.contains(":") ? reference : reference + ":latest"
+            return records.contains {
+                $0.source.kind == .ollama && $0.state != .missing
+                    && $0.name.lowercased() == tag.lowercased()
+            }
+        case .huggingface:
+            return records.contains {
+                $0.source.kind == .huggingfaceCache && $0.state != .missing
+                    && ($0.source.repo ?? "").lowercased() == reference.lowercased()
+            }
+        default:
+            return false
+        }
     }
 
     var aggregateProgress: InstallProgress? {

@@ -151,6 +151,7 @@ final class ShellModel {
         self.audio = AudioSession(kernel: library.kernel)
         self.installs = InstallModel(kernel: library.kernel)
         self.settings.audio = audio
+        self.installs.recordsProvider = { [weak library] in library?.records ?? [] }
     }
 
     init(library: LibraryViewModel) {
@@ -160,6 +161,7 @@ final class ShellModel {
         self.audio = AudioSession(kernel: library.kernel)
         self.installs = InstallModel(kernel: library.kernel)
         self.settings.audio = audio
+        self.installs.recordsProvider = { [weak library] in library?.records ?? [] }
     }
 
     func start() async {

@@ -434,59 +434,81 @@ struct SearchResultCard: View {
         return parts.isEmpty ? hit.reference : parts.joined(separator: " · ")
     }
 
+    private var installed: Bool {
+        installs.onShelf(provider: hit.provider, reference: hit.reference)
+    }
+
+    private var stageable: Bool {
+        !installed && installs.stagingID == nil
+            && installs.activeInstall(reference: hit.reference) == nil
+    }
+
+    private func stage() {
+        Task {
+            await installs.stage(provider: hit.provider, reference: hit.reference)
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack(spacing: Design.Space.s) {
-                SourceMark(kind: installs.sourceKind(of: hit.provider), size: 16)
-                    .foregroundStyle(Design.inkSoft)
-                Spacer(minLength: 0)
-                if let updated = hit.updatedAt {
-                    Text(updated.formatted(.dateTime.month(.abbreviated).year()).uppercased())
+        Button(action: stage) {
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                HStack(spacing: Design.Space.s) {
+                    SourceMark(kind: installs.sourceKind(of: hit.provider), size: 16)
+                        .foregroundStyle(Design.inkSoft)
+                    Spacer(minLength: 0)
+                    if let updated = hit.updatedAt {
+                        Text(
+                            updated.formatted(.dateTime.month(.abbreviated).year()).uppercased()
+                        )
                         .font(Design.label)
                         .tracking(Design.microTracking)
                         .foregroundStyle(Design.inkFaint)
-                }
-            }
-            Text(hit.name)
-                .font(Design.caption.weight(.medium))
-                .foregroundStyle(Design.ink)
-                .lineLimit(1)
-            Text(meta)
-                .font(Design.label)
-                .foregroundStyle(Design.inkSoft)
-                .lineLimit(2, reservesSpace: true)
-            HStack {
-                Text(hit.reference.split(separator: "/").first.map(String.init) ?? "")
-                    .font(Design.data(11))
-                    .foregroundStyle(Design.inkFaint)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: Design.Space.s)
-                if installs.activeInstall(reference: hit.reference) != nil {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button("Install") {
-                        Task {
-                            await installs.stage(
-                                provider: hit.provider, reference: hit.reference)
-                        }
                     }
-                    .buttonStyle(QuietButtonStyle())
-                    .disabled(installs.stagingID != nil)
+                }
+                Text(hit.name)
+                    .font(Design.caption.weight(.medium))
+                    .foregroundStyle(Design.ink)
+                    .lineLimit(1)
+                Text(meta)
+                    .font(Design.label)
+                    .foregroundStyle(Design.inkSoft)
+                    .lineLimit(2, reservesSpace: true)
+                HStack {
+                    Text(hit.reference.split(separator: "/").first.map(String.init) ?? "")
+                        .font(Design.data(11))
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: Design.Space.s)
+                    if installed {
+                        TintChip(text: "installed", glyph: "checkmark")
+                    } else if installs.activeInstall(reference: hit.reference) != nil {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Install", action: stage)
+                            .buttonStyle(QuietButtonStyle())
+                            .disabled(!stageable)
+                    }
                 }
             }
+            .padding(Design.Space.tile)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.tile)
+                    .strokeBorder(
+                        hovering ? Design.accentEdge : Design.line,
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle.soft(Design.Radius.tile))
         }
-        .padding(Design.Space.tile)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
-        .overlay(
-            RoundedRectangle.soft(Design.Radius.tile)
-                .strokeBorder(
-                    hovering ? Design.accentEdge : Design.line,
-                    lineWidth: Design.hairlineWidth))
+        .buttonStyle(.plain)
+        .disabled(!stageable)
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
-        .help(hit.reference)
+        .help(installed ? "\(hit.reference) is already on your shelf" : "Review \(hit.reference)")
+        .accessibilityLabel(
+            installed
+                ? "\(hit.reference), already installed" : "Review \(hit.reference)")
     }
 
     static func compact(_ value: Int) -> String {
@@ -553,10 +575,10 @@ struct InstallConfirmPage: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xl) {
                     statsStrip
-                    detailsCard
                     if plan.files.isEmpty {
                         pullNote
                     } else {
+                        detailsCard
                         filesSection
                     }
                     if let error = installs.stageError {
@@ -644,10 +666,9 @@ struct InstallConfirmPage: View {
 
     private var detailsCard: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
-            confirmRow("folder", "Lands in", plan.destination)
-            if let revision = plan.revision {
-                confirmRow("number", "Revision", String(revision.prefix(12)))
-            }
+            confirmRow(
+                "folder", "Lands in",
+                "\(plan.destination) — the same hub cache huggingface tooling reads, blobs verified against the pinned revision.")
             if plan.requiresAuth {
                 confirmRow(
                     "lock", "Gated model",
@@ -782,7 +803,7 @@ struct InstallConfirmPage: View {
     private func confirmRow(
         _ glyph: String, _ title: String, _ detail: String, heat: Bool = false
     ) -> some View {
-        HStack(alignment: .top, spacing: Design.Space.m) {
+        HStack(alignment: .firstTextBaseline, spacing: Design.Space.m) {
             Image(systemName: glyph)
                 .font(Design.glyphInline)
                 .foregroundStyle(heat ? Design.heatText : Design.inkSoft)
@@ -813,62 +834,81 @@ struct CatalogInstallCard: View {
         entry.fit(totalMemoryBytes: ProcessInfo.processInfo.physicalMemory)?.verdict
     }
 
+    private var installed: Bool {
+        installs.onShelf(provider: entry.provider, reference: entry.reference)
+            || installs.completed.contains(entry.reference)
+    }
+
+    private var stageable: Bool {
+        !installed && installs.stagingID == nil
+            && installs.activeInstall(reference: entry.reference) == nil
+            && installs.isAvailable(entry.provider)
+    }
+
+    private func stage() {
+        Task { await installs.stage(entry: entry) }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
-            HStack(spacing: Design.Space.s) {
-                SourceMark(kind: installs.sourceKind(of: entry.provider), size: 16)
+        Button(action: stage) {
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                HStack(spacing: Design.Space.s) {
+                    SourceMark(kind: installs.sourceKind(of: entry.provider), size: 16)
+                        .foregroundStyle(Design.inkSoft)
+                    Spacer(minLength: 0)
+                    if let verdict, !installed {
+                        Text(SuggestionCategories.label(verdict).uppercased())
+                            .font(Design.label)
+                            .tracking(Design.microTracking)
+                            .foregroundStyle(
+                                verdict == .tightFit ? Design.heatText : Design.accentText)
+                    }
+                }
+                Text(entry.name)
+                    .font(Design.caption.weight(.medium))
+                    .foregroundStyle(Design.ink)
+                    .lineLimit(1)
+                Text(entry.blurb)
+                    .font(Design.label)
                     .foregroundStyle(Design.inkSoft)
-                Spacer(minLength: 0)
-                if let verdict {
-                    Text(SuggestionCategories.label(verdict).uppercased())
-                        .font(Design.label)
-                        .tracking(Design.microTracking)
-                        .foregroundStyle(
-                            verdict == .tightFit ? Design.heatText : Design.accentText)
+                    .lineLimit(2, reservesSpace: true)
+                HStack {
+                    Text(String(format: "%g GB", entry.sizeGB))
+                        .font(Design.data(11))
+                        .foregroundStyle(Design.inkFaint)
+                    Spacer(minLength: Design.Space.s)
+                    action
                 }
             }
-            Text(entry.name)
-                .font(Design.caption.weight(.medium))
-                .foregroundStyle(Design.ink)
-                .lineLimit(1)
-            Text(entry.blurb)
-                .font(Design.label)
-                .foregroundStyle(Design.inkSoft)
-                .lineLimit(2, reservesSpace: true)
-            HStack {
-                Text(String(format: "%g GB", entry.sizeGB))
-                    .font(Design.data(11))
-                    .foregroundStyle(Design.inkFaint)
-                Spacer(minLength: Design.Space.s)
-                actionButton
-            }
+            .padding(Design.Space.tile)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.tile)
+                    .strokeBorder(
+                        hovering && stageable ? Design.accentEdge : Design.line,
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle.soft(Design.Radius.tile))
         }
-        .padding(Design.Space.tile)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.tile))
-        .overlay(
-            RoundedRectangle.soft(Design.Radius.tile)
-                .strokeBorder(
-                    hovering ? Design.accentEdge : Design.line,
-                    lineWidth: Design.hairlineWidth))
+        .buttonStyle(.plain)
+        .disabled(!stageable)
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
+        .help(installed ? "\(entry.name) is already on your shelf" : "Review \(entry.name)")
+        .accessibilityLabel(
+            installed ? "\(entry.name), already installed" : "Review \(entry.name)")
     }
 
     @ViewBuilder
-    private var actionButton: some View {
-        if installs.completed.contains(entry.reference) {
-            Text("On your shelf")
-                .font(Design.micro)
-                .foregroundStyle(Design.accentText)
+    private var action: some View {
+        if installed {
+            TintChip(text: "installed", glyph: "checkmark")
         } else if installs.activeInstall(reference: entry.reference) != nil {
             ProgressView().controlSize(.small)
         } else if installs.isAvailable(entry.provider) {
-            Button("Install") {
-                Task { await installs.stage(entry: entry) }
-            }
-            .buttonStyle(QuietButtonStyle())
-            .disabled(installs.stagingID != nil)
+            Button("Install", action: stage)
+                .buttonStyle(QuietButtonStyle())
+                .disabled(!stageable)
         } else {
             Text("unavailable")
                 .font(Design.micro)
