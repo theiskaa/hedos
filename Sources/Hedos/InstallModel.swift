@@ -174,6 +174,24 @@ final class InstallModel {
             ?? (provider == .ollama ? .ollama : .huggingfaceCache)
     }
 
+    var aggregateProgress: InstallProgress? {
+        guard !active.isEmpty else { return nil }
+        var downloaded: Int64 = 0
+        var total: Int64 = 0
+        var totalKnown = true
+        for install in active {
+            let progress = progressByID[install.id] ?? install.progress
+            downloaded += progress.bytesDownloaded
+            if let totalBytes = progress.totalBytes ?? install.totalBytes {
+                total += totalBytes
+            } else {
+                totalKnown = false
+            }
+        }
+        return InstallProgress(
+            bytesDownloaded: downloaded, totalBytes: totalKnown && total > 0 ? total : nil)
+    }
+
     func cancel(installID: String) async {
         await kernel.installs.cancel(installID)
     }

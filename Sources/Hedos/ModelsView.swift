@@ -255,7 +255,11 @@ struct ModelsPane: View {
                 }
             }
             warmCard
+            InstallInviteCard(shell: shell) {
+                shell.installBrowserOpen = true
+            }
         }
+        .task { await shell.installs.load() }
     }
 
     private var warmCard: some View {
@@ -678,6 +682,99 @@ struct ModelCard: View {
     private var capabilities: [AppMode] {
         [AppMode.chat, .images, .voice].filter {
             !Launcher.models(in: [record], for: $0).isEmpty
+        }
+    }
+}
+
+struct InstallInviteCard: View {
+    @Bindable var shell: ShellModel
+    let onOpen: () -> Void
+    @State private var hovering = false
+
+    private var installs: InstallModel { shell.installs }
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                MicroHeader(
+                    title: installs.active.isEmpty
+                        ? "Get more" : "Downloading · \(installs.active.count)")
+                HStack(alignment: .top, spacing: Design.Space.l) {
+                    marks
+                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                        Text(title)
+                            .font(Design.title)
+                            .tracking(Design.tightTracking)
+                            .foregroundStyle(Design.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(subtitle)
+                            .font(Design.data(11))
+                            .foregroundStyle(Design.inkFaint)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                Spacer(minLength: 0)
+                footer
+            }
+            .padding(Design.Space.xl)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.card)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle.soft(Design.Radius.card))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .help("Browse and install models")
+        .accessibilityLabel("Install models")
+        .accessibilityIdentifier("models-install-invite")
+    }
+
+    private var marks: some View {
+        HStack(spacing: -Design.Space.xs) {
+            markPlaque(.ollama)
+            markPlaque(.huggingfaceCache)
+        }
+    }
+
+    private func markPlaque(_ kind: SourceKind) -> some View {
+        SourceMark(kind: kind, size: 13)
+            .foregroundStyle(Design.inkSoft)
+            .frame(width: 22, height: 22)
+            .background(Design.panel, in: Circle())
+            .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+    }
+
+    private var title: String {
+        installs.active.isEmpty
+            ? "Pull new models onto this Mac."
+            : "New models are on their way."
+    }
+
+    private var subtitle: String {
+        if let progress = installs.aggregateProgress {
+            return ActiveInstallRow.byteLabel(progress)
+        }
+        return "Ollama tags and Hugging Face repos, sized to your hardware."
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if let progress = installs.aggregateProgress {
+            InstallProgressBar(fraction: progress.fraction)
+        } else {
+            HStack(spacing: Design.Space.s) {
+                TintChip(text: "Browse", glyph: "arrow.down.circle")
+                Spacer(minLength: 0)
+                Image(systemName: "arrow.right")
+                    .font(Design.glyphSmall)
+                    .foregroundStyle(hovering ? Design.accentText : Design.inkFaint)
+            }
         }
     }
 }
