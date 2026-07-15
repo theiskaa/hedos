@@ -15,6 +15,7 @@ final class ShellModel {
     let gallery: GalleryModel
     let settings: SettingsModel
     let audio: AudioSession
+    let installs: InstallModel
     let system = SystemMonitor()
 
     var mode: AppMode = .home
@@ -23,6 +24,7 @@ final class ShellModel {
     var showingGallery = false
     var commandPaletteOpen = false
     var settingsOpen = false
+    var installBrowserOpen = false
     private(set) var settingsDismissAttempts = 0
     var galleryFocusID: String?
     var pendingLaunch: PendingLaunch?
@@ -147,6 +149,7 @@ final class ShellModel {
         self.gallery = GalleryModel(kernel: library.kernel)
         self.settings = SettingsModel(kernel: library.kernel)
         self.audio = AudioSession(kernel: library.kernel)
+        self.installs = InstallModel(kernel: library.kernel)
         self.settings.audio = audio
     }
 
@@ -155,6 +158,7 @@ final class ShellModel {
         self.gallery = GalleryModel(kernel: library.kernel)
         self.settings = SettingsModel(kernel: library.kernel)
         self.audio = AudioSession(kernel: library.kernel)
+        self.installs = InstallModel(kernel: library.kernel)
         self.settings.audio = audio
     }
 

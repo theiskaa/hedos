@@ -105,6 +105,14 @@ struct ModelsPane: View {
                 }
             }
         }
+        .modalScrim(
+            isPresented: shell.installBrowserOpen,
+            onDismiss: { shell.installBrowserOpen = false }
+        ) {
+            InstallBrowser(shell: shell) {
+                shell.installBrowserOpen = false
+            }
+        }
     }
 
     private var dashboard: some View {
@@ -166,6 +174,12 @@ struct ModelsPane: View {
         .disabled(shell.library.isScanning)
         .help("Scan the machine again")
         .accessibilityLabel("Rescan")
+        QuietIconButton(glyph: "plus") {
+            shell.installBrowserOpen = true
+        }
+        .help("Install models")
+        .accessibilityLabel("Install models")
+        .accessibilityIdentifier("open-install-browser")
     }
 
     private var hero: some View {
@@ -471,7 +485,10 @@ struct ModelsPane: View {
             spacing: Design.Space.l
         ) {
             ForEach(records) { record in
-                ModelCard(record: record, warm: isWarm(record)) {
+                ModelCard(
+                    record: record, warm: isWarm(record),
+                    downloadProgress: shell.installs.progress(for: record)
+                ) {
                     presented = record.id
                     shell.selectLibrary(record.id)
                 }
@@ -532,6 +549,13 @@ struct ModelsPane: View {
                     text: "Looking for models on this Mac…",
                     font: Design.paneTitle, tracked: false)
             }
+            if shell.library.summary != nil || shell.library.errorMessage != nil {
+                Button("Install models…") {
+                    shell.installBrowserOpen = true
+                }
+                .buttonStyle(QuietButtonStyle())
+                .padding(.top, Design.Space.xl)
+            }
             Spacer()
             Spacer()
         }
@@ -559,6 +583,7 @@ extension SourceKind {
 struct ModelCard: View {
     let record: ModelRecord
     var warm = false
+    var downloadProgress: InstallProgress?
     let onOpen: () -> Void
     @State private var hovering = false
 
@@ -595,12 +620,24 @@ struct ModelCard: View {
                         TintChip(text: Design.modeTitle(mode), glyph: Design.modeGlyph(mode))
                     }
                     FitChip(record: record)
+                    if record.downloading {
+                        if downloadProgress != nil {
+                            TintChip(text: "downloading", glyph: "arrow.down.circle")
+                                .help("Downloading into its store right now")
+                        } else {
+                            TintChip(text: "incomplete", glyph: "circle.dotted", faint: true)
+                                .help("Only part of this model is on disk")
+                        }
+                    }
                     if record.state == .missing {
                         TintChip(text: "missing", glyph: "exclamationmark.triangle", faint: true)
                             .help("No longer found on disk")
                     }
                 }
                 Spacer(minLength: 0)
+                if let downloadProgress {
+                    InstallProgressBar(fraction: downloadProgress.fraction)
+                }
                 HStack(alignment: .firstTextBaseline) {
                     Text(
                         record.footprintMB.map {
