@@ -24,6 +24,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     var slash: SlashSetup? = nil
     var mentions: MentionSetup? = nil
     var dictation: DictationSetup? = nil
+    var onAttachPasteboard: ((NSPasteboard) -> Bool)? = nil
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let header: () -> Header
     @ViewBuilder let aux: () -> Aux
@@ -108,7 +109,8 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                             focused: $composerFocused,
                             onCommand: interceptCommand,
                             focusToken: composerFocusToken,
-                            mentionPaths: mentionIndex
+                            mentionPaths: mentionIndex,
+                            onAttachPasteboard: onAttachPasteboard
                         ) {
                             if !isWorking {
                                 performSend()
@@ -630,7 +632,7 @@ struct ArtifactExchangeView: View {
     }
 
     private func saveImage() {
-        guard let image, let data = ArtifactExchangeView.pngData(image) else { return }
+        guard let image, let data = ImagePasteboard.pngData(image) else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
         panel.nameFieldStringValue = "image.png"
@@ -656,12 +658,6 @@ struct ArtifactExchangeView: View {
         return true
     }
 
-    private static func pngData(_ image: NSImage) -> Data? {
-        guard let tiff = image.tiffRepresentation,
-            let rep = NSBitmapImageRep(data: tiff)
-        else { return nil }
-        return rep.representation(using: .png, properties: [:])
-    }
 }
 
 struct ArtifactTray<Content: View>: View {
@@ -727,6 +723,44 @@ struct TrayButton: View {
     }
 }
 
+private final class AttachingTextView: NSTextView {
+    var onAttachPasteboard: ((NSPasteboard) -> Bool)?
+
+    private func carriesAttachment(_ pasteboard: NSPasteboard) -> Bool {
+        onAttachPasteboard != nil
+            && (pasteboard.canReadObject(
+                forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+                || pasteboard.canReadObject(forClasses: [NSImage.self]))
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(NSText.paste(_:)), carriesAttachment(.general) {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override func paste(_ sender: Any?) {
+        if let onAttachPasteboard, onAttachPasteboard(NSPasteboard.general) { return }
+        super.paste(sender)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if carriesAttachment(sender.draggingPasteboard) { return .copy }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if carriesAttachment(sender.draggingPasteboard) { return .copy }
+        return super.draggingUpdated(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let onAttachPasteboard, onAttachPasteboard(sender.draggingPasteboard) { return true }
+        return super.performDragOperation(sender)
+    }
+}
+
 private struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     let sendWithEnter: Bool
@@ -735,6 +769,7 @@ private struct ComposerTextView: NSViewRepresentable {
     var onCommand: ((Selector) -> Bool)? = nil
     var focusToken: Int = 0
     var mentionPaths: Set<String> = []
+    var onAttachPasteboard: ((NSPasteboard) -> Bool)? = nil
     let onSend: () -> Void
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -783,27 +818,36 @@ private struct ComposerTextView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
+        let view = AttachingTextView()
+        view.autoresizingMask = [.width]
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.minSize = NSSize(width: 0, height: 0)
+        view.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        view.textContainer?.widthTracksTextView = true
+        view.delegate = context.coordinator
+        view.font = Design.editorFont()
+        view.drawsBackground = false
+        view.isRichText = false
+        view.allowsUndo = true
+        view.textContainerInset = NSSize(width: 0, height: 2)
+        view.textContainer?.lineFragmentPadding = 3
+        view.string = text
+        view.onAttachPasteboard = onAttachPasteboard
+        let scroll = NSScrollView()
+        scroll.documentView = view
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
-        if let view = scroll.documentView as? NSTextView {
-            view.delegate = context.coordinator
-            view.font = Design.editorFont()
-            view.drawsBackground = false
-            view.isRichText = false
-            view.allowsUndo = true
-            view.textContainerInset = NSSize(width: 0, height: 2)
-            view.textContainer?.lineFragmentPadding = 3
-            view.string = text
-        }
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
+        (view as? AttachingTextView)?.onAttachPasteboard = onAttachPasteboard
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async {

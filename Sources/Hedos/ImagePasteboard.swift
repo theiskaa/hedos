@@ -2,6 +2,13 @@ import AppKit
 import UniformTypeIdentifiers
 
 enum ImagePasteboard {
+    static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+            let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
     struct Payload {
         let data: Data
         let type: NSPasteboard.PasteboardType

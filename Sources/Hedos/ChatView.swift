@@ -3,6 +3,26 @@ import HedosKernel
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum ChatDropItem: Transferable {
+    case file(URL)
+    case image(Data)
+
+    var fileURL: URL? {
+        guard case .file(let url) = self else { return nil }
+        return url
+    }
+
+    var imageData: Data? {
+        guard case .image(let data) = self else { return nil }
+        return data
+    }
+
+    static var transferRepresentation: some TransferRepresentation {
+        ProxyRepresentation(importing: { (url: URL) in ChatDropItem.file(url) })
+        DataRepresentation(importedContentType: .image) { ChatDropItem.image($0) }
+    }
+}
+
 private struct TranscriptTailKey: Equatable {
     var count: Int
     var lastID: String?
@@ -492,6 +512,47 @@ final class ChatViewModel {
             notice = "Switch back to chat to attach an image."
         } else {
             notice = "This model can't read images — pick a vision-capable model to attach them."
+        }
+    }
+
+    func attachPasteboard(_ pasteboard: NSPasteboard) -> Bool {
+        let urls =
+            pasteboard.readObjects(
+                forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+            as? [URL] ?? []
+        if !urls.isEmpty {
+            let images = urls.filter {
+                Self.imageExtensions.contains($0.pathExtension.lowercased())
+            }
+            guard !images.isEmpty else { return false }
+            if acceptsImagesNow {
+                attach(images)
+            } else {
+                rejectImageDrop()
+            }
+            return true
+        }
+        guard let image = (pasteboard.readObjects(forClasses: [NSImage.self]) as? [NSImage])?.first
+        else { return false }
+        guard acceptsImagesNow else {
+            rejectImageDrop()
+            return true
+        }
+        guard let data = ImagePasteboard.pngData(image) else { return false }
+        addAttachment(data: data, mimeType: "image/png", image: image, name: "Pasted image")
+        return true
+    }
+
+    func attachDroppedImageData(_ payloads: [Data]) {
+        guard acceptsImagesNow else {
+            rejectImageDrop()
+            return
+        }
+        for raw in payloads {
+            guard let image = NSImage(data: raw), let data = ImagePasteboard.pngData(image)
+            else { continue }
+            addAttachment(
+                data: data, mimeType: "image/png", image: image, name: "Dropped image")
         }
     }
 
@@ -1283,6 +1344,7 @@ struct ChatView: View {
             dictation: DictationSetup(
                 kernel: kernel,
                 records: { [weak library] in library?.records ?? [] }),
+            onAttachPasteboard: { model.attachPasteboard($0) },
             transcript: { transcript },
             header: { composerHeader },
             aux: { composerAux },
@@ -1296,7 +1358,9 @@ struct ChatView: View {
         .task(id: launch) { await applyLaunch() }
         .onAppear { model.reduceMotion = reduceMotion }
         .onChange(of: reduceMotion) { _, motion in model.reduceMotion = motion }
-        .dropDestination(for: URL.self) { urls, _ in
+        .dropDestination(for: ChatDropItem.self) { items, _ in
+            let urls = items.compactMap(\.fileURL)
+            let imageData = items.compactMap(\.imageData)
             let images = urls.filter {
                 ChatViewModel.imageExtensions.contains($0.pathExtension.lowercased())
             }
@@ -1307,6 +1371,10 @@ struct ChatView: View {
                 } else {
                     model.rejectImageDrop()
                 }
+                handled = true
+            }
+            if !imageData.isEmpty {
+                model.attachDroppedImageData(imageData)
                 handled = true
             }
             if let audio = urls.first(where: { $0.pathExtension.lowercased() == "wav" }) {
