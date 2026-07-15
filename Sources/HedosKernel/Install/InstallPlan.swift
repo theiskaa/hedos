@@ -61,6 +61,16 @@ public struct InstallSearchHit: Sendable, Hashable, Identifiable {
     public var id: String { "\(provider.rawValue)|\(reference)" }
 }
 
+public struct InstallBrowseResult: Sendable, Hashable {
+    public let hits: [InstallSearchHit]
+    public let failureHint: String?
+
+    public init(hits: [InstallSearchHit] = [], failureHint: String? = nil) {
+        self.hits = hits
+        self.failureHint = failureHint
+    }
+}
+
 public struct ActiveInstall: Sendable, Hashable, Identifiable {
     public let id: String
     public let provider: InstallProviderID

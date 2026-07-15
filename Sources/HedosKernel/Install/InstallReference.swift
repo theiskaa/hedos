@@ -11,6 +11,16 @@ public enum InstallReference {
         "tasks", "posts", "pricing", "settings", "organizations", "learn", "chat",
     ]
 
+    public static func isHuggingFaceLink(_ raw: String) -> Bool {
+        guard let text = cleaned(raw) else { return false }
+        return huggingFaceHosts.contains { text.lowercased().hasPrefix($0) }
+    }
+
+    public static func isOllamaLink(_ raw: String) -> Bool {
+        guard let text = cleaned(raw) else { return false }
+        return ollamaHosts.contains { text.lowercased().hasPrefix($0) }
+    }
+
     public static func huggingFaceRepo(from raw: String) -> String? {
         guard var text = cleaned(raw) else { return nil }
         text = stripped(text, hosts: huggingFaceHosts)

@@ -48,6 +48,47 @@ public actor InstallService {
         try await requireAvailable(id).search(matching: query, limit: limit)
     }
 
+    public static func ollamaDirectReference(for query: String) -> String? {
+        guard InstallReference.huggingFaceRepo(from: query) == nil,
+            let tag = InstallReference.ollamaTag(from: query),
+            query.contains(":") || InstallReference.isOllamaLink(query)
+        else { return nil }
+        return tag
+    }
+
+    public func browse(matching rawQuery: String, limit: Int = 30) async -> InstallBrowseResult {
+        let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, Self.ollamaDirectReference(for: query) == nil else {
+            return InstallBrowseResult()
+        }
+        let repo = InstallReference.huggingFaceRepo(from: query)
+        do {
+            var hits = try await search(
+                provider: .huggingface, matching: repo ?? query, limit: limit)
+            if let repo,
+                InstallReference.isHuggingFaceLink(query) || hits.isEmpty,
+                !hits.contains(where: { $0.reference.lowercased() == repo.lowercased() })
+            {
+                hits.insert(Self.exactHit(repo), at: 0)
+            }
+            return InstallBrowseResult(hits: hits)
+        } catch is CancellationError {
+            return InstallBrowseResult()
+        } catch {
+            if let repo {
+                return InstallBrowseResult(hits: [Self.exactHit(repo)])
+            }
+            return InstallBrowseResult(failureHint: error.localizedDescription)
+        }
+    }
+
+    private static func exactHit(_ repo: String) -> InstallSearchHit {
+        InstallSearchHit(
+            provider: .huggingface,
+            reference: repo,
+            name: repo.split(separator: "/").last.map(String.init) ?? repo)
+    }
+
     public func plan(
         provider id: InstallProviderID, reference: String
     ) async throws -> InstallPlan {
