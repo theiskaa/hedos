@@ -549,6 +549,17 @@ public actor Kernel {
         ).autoTitleIfNeeded(sessionID: sessionID)
     }
 
+    public func documentBudget(modelID: String) async -> Int {
+        guard let record = try? await registry.get(id: modelID) else {
+            return AttachmentIntake.fallbackBudget
+        }
+        let window = ContextBudget.effectiveWindow(
+            for: record,
+            requestedContextLength: ContextBudget.storedContextLength(of: record),
+            adapter: adapters.first(where: { $0.id == record.runtime.id }))
+        return AttachmentIntake.documentBudget(effectiveWindow: window)
+    }
+
     public func chatContextAssessment(
         sessionID: String, modelID: String
     ) async throws -> ChatContextAssessment? {

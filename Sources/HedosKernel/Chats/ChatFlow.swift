@@ -409,18 +409,24 @@ struct ChatFlow: Sendable {
             } else if let role = turn.role.messageRole,
                 !turn.content.isEmpty || !turn.attachmentRefs.isEmpty
             {
-                let content =
+                var content =
                     turn.role == .assistant && turn.interrupted
                     ? turn.content + Self.interruptedMarker : turn.content
+                let blocks = attachments.compactMap(\.inlineBlock)
+                if !blocks.isEmpty {
+                    content = (blocks + [content]).filter { !$0.isEmpty }
+                        .joined(separator: "\n\n")
+                }
+                let images = attachments.filter { $0.kind == .image }
                 if let last = messages.last, last.role == role, last.toolCalls.isEmpty,
                     last.toolCallID == nil
                 {
                     messages[messages.count - 1] = ChatMessage(
                         role: role, content: last.content + Self.mergeBoundary + content,
-                        attachments: last.attachments + attachments)
+                        attachments: last.attachments + images)
                 } else {
                     messages.append(
-                        ChatMessage(role: role, content: content, attachments: attachments))
+                        ChatMessage(role: role, content: content, attachments: images))
                 }
             }
             index += 1

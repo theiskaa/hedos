@@ -292,7 +292,7 @@ private func textBytes(_ text: String) -> Data {
     let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
     let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
     #expect(messages.count == 1)
-    #expect(messages.first?.attachments.count == 2)
+    #expect(messages.first?.attachments.isEmpty == true)
     guard case .object(let object) = messages[0].payloadValue,
         case .string(let content)? = object["content"]
     else {
@@ -300,10 +300,37 @@ private func textBytes(_ text: String) -> Data {
         return
     }
     let docOne = try #require(content.range(of: "doc one"))
-    let docTwo = try #require(content.range(of: "doc two"))
     let first = try #require(content.range(of: "first"))
+    let docTwo = try #require(content.range(of: "doc two"))
+    let second = try #require(content.range(of: "second"))
     #expect(docOne.lowerBound < first.lowerBound)
-    #expect(docTwo.lowerBound < first.lowerBound)
+    #expect(first.lowerBound < docTwo.lowerBound)
+    #expect(docTwo.lowerBound < second.lowerBound)
+    #expect(content.components(separatedBy: "doc one").count == 2)
+    #expect(content.components(separatedBy: "doc two").count == 2)
+    #expect(content.components(separatedBy: "<attached-file").count == 3)
+}
+
+@Test func documentOnlyTurnProjectsItsBlockAsContent() throws {
+    let dir = try Fixtures.tempDirectory()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = AttachmentStore(directory: dir.appendingPathComponent("a"))
+    let refs = try store.store([
+        ChatAttachment(
+            kind: .document, data: textBytes("just the doc"), mimeType: "text/plain",
+            name: "solo.txt")
+    ])
+    let now = Date(timeIntervalSince1970: 0)
+    let turns = [
+        ChatTurn(
+            id: "1", sessionID: "s", seq: 0, role: .user, content: "",
+            attachmentRefs: refs, contentHash: "h", createdAt: now, updatedAt: now)
+    ]
+    let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+    let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
+    #expect(messages.count == 1)
+    #expect(messages.first?.content.contains("just the doc") == true)
+    #expect(messages.first?.attachments.isEmpty == true)
 }
 
 @Test func chatMessageCodableRoundTripsAttachmentNames() throws {

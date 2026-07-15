@@ -58,13 +58,7 @@ extension ToolCall {
 
 extension ChatMessage {
     public var payloadValue: JSONValue {
-        let documents = attachments.filter { $0.kind == .document }
-        let blocks = documents.map { document in
-            let text = String(decoding: document.data, as: UTF8.self)
-            let open =
-                document.name.map { "<attached-file name=\"\($0)\">" } ?? "<attached-file>"
-            return "\(open)\n\(text)\n</attached-file>"
-        }
+        let blocks = attachments.compactMap(\.inlineBlock)
         let body = (blocks + [content]).filter { !$0.isEmpty }.joined(separator: "\n\n")
         var object: [String: JSONValue] = [
             "role": .string(role.rawValue),

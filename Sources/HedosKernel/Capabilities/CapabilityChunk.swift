@@ -82,6 +82,13 @@ public struct ChatAttachment: Codable, Sendable, Hashable {
         self.mimeType = mimeType
         self.name = name
     }
+
+    public var inlineBlock: String? {
+        guard kind == .document else { return nil }
+        let text = String(decoding: data, as: UTF8.self)
+        let open = name.map { "<attached-file name=\"\($0)\">" } ?? "<attached-file>"
+        return "\(open)\n\(text)\n</attached-file>"
+    }
 }
 
 public struct ChatMessage: Codable, Sendable, Hashable {
