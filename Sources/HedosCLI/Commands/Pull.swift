@@ -91,10 +91,6 @@ struct Pull: AsyncParsableCommand {
     static func provider(for reference: String, override: String? = nil) throws
         -> InstallProviderID
     {
-        guard !reference.contains("://") else {
-            throw CLIError(
-                "\(reference) is a URL. Pass an Ollama tag (gemma3:4b) or a Hugging Face org/repo.")
-        }
         if let override {
             switch override.lowercased() {
             case "ollama": return .ollama
@@ -103,11 +99,15 @@ struct Pull: AsyncParsableCommand {
                 throw CLIError("--from accepts ollama or huggingface, not \(override).")
             }
         }
-        let components = reference.split(separator: "/", omittingEmptySubsequences: false)
-        if components.count == 2, !reference.contains(":") {
+        if InstallReference.huggingFaceRepo(from: reference) != nil {
             return .huggingface
         }
-        return .ollama
+        if InstallReference.ollamaTag(from: reference) != nil {
+            return .ollama
+        }
+        throw CLIError(
+            "\(reference) doesn't look like an Ollama tag (gemma3:4b), a Hugging Face org/repo, or a link to either."
+        )
     }
 
     static func gigabytes(_ bytes: Int64) -> String {

@@ -132,20 +132,21 @@ struct InstallBrowser: View {
         }
         .animation(
             Design.snapMotion(reduceMotion: reduceMotion),
-            value: InstallBrowser.directProvider(
-                for: installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)))
+            value: InstallBrowser.directReference(
+                for: installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines))?
+                .reference)
     }
 
     @ViewBuilder
     private var directReferenceRow: some View {
         let query = installs.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let provider = InstallBrowser.directProvider(for: query) {
+        if let direct = InstallBrowser.directReference(for: query) {
             Button {
-                Task { await installs.stage(provider: provider, reference: query) }
+                Task { await installs.stage(provider: direct.provider, reference: direct.reference) }
             } label: {
                 HStack(spacing: Design.Space.s) {
-                    SourceMark(kind: installs.sourceKind(of: provider), size: 14)
-                    Text("Review \(query)")
+                    SourceMark(kind: installs.sourceKind(of: direct.provider), size: 14)
+                    Text("Review \(direct.reference)")
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Image(systemName: "arrow.right")
@@ -163,13 +164,16 @@ struct InstallBrowser: View {
         }
     }
 
-    static func directProvider(for query: String) -> InstallProviderID? {
-        guard !query.isEmpty, !query.contains(" "), !query.contains("://") else { return nil }
-        if query.split(separator: "/").count == 2, !query.contains(":") {
-            return .huggingface
+    static func directReference(
+        for query: String
+    ) -> (provider: InstallProviderID, reference: String)? {
+        if let repo = InstallReference.huggingFaceRepo(from: query) {
+            return (.huggingface, repo)
         }
-        if query.contains(":") {
-            return .ollama
+        if let tag = InstallReference.ollamaTag(from: query),
+            tag.contains(":") || query.lowercased().contains("ollama")
+        {
+            return (.ollama, tag)
         }
         return nil
     }
@@ -449,6 +453,12 @@ struct SearchResultCard: View {
         }
     }
 
+    private func installNow() {
+        Task {
+            await installs.install(provider: hit.provider, reference: hit.reference)
+        }
+    }
+
     var body: some View {
         Button(action: stage) {
             VStack(alignment: .leading, spacing: Design.Space.s) {
@@ -485,9 +495,10 @@ struct SearchResultCard: View {
                     } else if installs.activeInstall(reference: hit.reference) != nil {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button("Install", action: stage)
+                        Button("Install", action: installNow)
                             .buttonStyle(QuietButtonStyle())
                             .disabled(!stageable)
+                            .help("Start downloading right away")
                     }
                 }
             }
@@ -849,6 +860,12 @@ struct CatalogInstallCard: View {
         Task { await installs.stage(entry: entry) }
     }
 
+    private func installNow() {
+        Task {
+            await installs.install(provider: entry.provider, reference: entry.reference)
+        }
+    }
+
     var body: some View {
         Button(action: stage) {
             VStack(alignment: .leading, spacing: Design.Space.s) {
@@ -906,9 +923,10 @@ struct CatalogInstallCard: View {
         } else if installs.activeInstall(reference: entry.reference) != nil {
             ProgressView().controlSize(.small)
         } else if installs.isAvailable(entry.provider) {
-            Button("Install", action: stage)
+            Button("Install", action: installNow)
                 .buttonStyle(QuietButtonStyle())
                 .disabled(!stageable)
+                .help("Start downloading right away")
         } else {
             Text("unavailable")
                 .font(Design.micro)

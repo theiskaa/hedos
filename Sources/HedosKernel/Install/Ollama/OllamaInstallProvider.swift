@@ -35,29 +35,16 @@ struct OllamaInstallProvider: InstallProvider {
     }
 
     func plan(reference: String) async throws -> InstallPlan {
-        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Self.isTagShaped(trimmed) else {
+        guard let tag = InstallReference.ollamaTag(from: reference) else {
             throw InstallError.referenceInvalid(reference)
         }
         return InstallPlan(
-            provider: id, reference: trimmed, displayName: trimmed,
+            provider: id, reference: tag, displayName: tag,
             destination: "~/.ollama/models")
     }
 
     static func isTagShaped(_ reference: String) -> Bool {
-        guard !reference.isEmpty,
-            reference.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
-            !reference.contains("://")
-        else { return false }
-        let components = reference.split(separator: "/", omittingEmptySubsequences: false)
-        guard components.count <= 2, components.allSatisfy({ !$0.isEmpty }) else { return false }
-        guard let name = components.last else { return false }
-        let nameParts = name.split(separator: ":", omittingEmptySubsequences: false)
-        guard nameParts.count <= 2, nameParts.allSatisfy({ !$0.isEmpty }) else { return false }
-        if components.count == 2 {
-            return name.contains(":")
-        }
-        return true
+        InstallReference.isOllamaTagShaped(reference)
     }
 
     func install(_ plan: InstallPlan) -> AsyncThrowingStream<InstallStreamEvent, Error> {

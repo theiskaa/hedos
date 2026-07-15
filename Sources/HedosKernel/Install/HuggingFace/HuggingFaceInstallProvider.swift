@@ -148,17 +148,10 @@ struct HuggingFaceInstallProvider: InstallProvider {
     }
 
     static func repoShaped(_ reference: String) throws -> String {
-        let trimmed = reference.trimmingCharacters(in: .whitespacesAndNewlines)
-        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
-        guard !trimmed.isEmpty,
-            trimmed.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
-            !trimmed.contains("://"),
-            components.count == 2,
-            components.allSatisfy({ !$0.isEmpty })
-        else {
+        guard let repo = InstallReference.huggingFaceRepo(from: reference) else {
             throw InstallError.referenceInvalid(reference)
         }
-        return trimmed
+        return repo
     }
 
     func install(_ plan: InstallPlan) -> AsyncThrowingStream<InstallStreamEvent, Error> {
