@@ -561,10 +561,8 @@ struct ArtifactExchangeView: View {
                                     saveImage()
                                 }
                                 ConfirmingButton(
-                                    label: "Copy", confirmedLabel: "Copied"
-                                ) {
-                                    copyImage()
-                                }
+                                    label: "Copy", confirmedLabel: "Copied",
+                                    attempt: { await copyImage() })
                             }
                         }
                     }
@@ -645,22 +643,17 @@ struct ArtifactExchangeView: View {
         }
     }
 
-    private func copyImage() {
-        guard let image else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        let png = Self.pngData(image)
-        let tiff = image.tiffRepresentation
-        var types: [NSPasteboard.PasteboardType] = []
-        if png != nil { types.append(.png) }
-        if tiff != nil { types.append(.tiff) }
-        guard !types.isEmpty else {
-            pasteboard.writeObjects([image])
-            return
+    private func copyImage() async -> Bool {
+        guard let source = try? await kernel.artifactStore.url(id: reference) else {
+            saveNotice = "This artifact's file is missing."
+            return false
         }
-        pasteboard.declareTypes(types, owner: nil)
-        if let png { pasteboard.setData(png, forType: .png) }
-        if let tiff { pasteboard.setData(tiff, forType: .tiff) }
+        guard await ImagePasteboard.copy(fileURL: source) else {
+            saveNotice = "Couldn't copy the image."
+            return false
+        }
+        saveNotice = nil
+        return true
     }
 
     private static func pngData(_ image: NSImage) -> Data? {

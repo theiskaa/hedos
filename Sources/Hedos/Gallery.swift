@@ -80,6 +80,18 @@ final class GalleryModel {
         }
     }
 
+    func copy(_ artifact: Artifact) {
+        let kernel = kernel
+        Task { @MainActor in
+            guard let url = try? await kernel.artifactStore.url(id: artifact.id),
+                await ImagePasteboard.copy(fileURL: url)
+            else {
+                notice = "Couldn't copy the image."
+                return
+            }
+        }
+    }
+
     func download(_ artifact: Artifact) {
         let kernel = kernel
         Task { @MainActor in
@@ -277,6 +289,11 @@ struct GallerySheet: View {
             Button("Open") {
                 viewing = artifact
             }
+            if artifact.capability == .image {
+                Button("Copy") {
+                    shell.gallery.copy(artifact)
+                }
+            }
             Button("Download…") {
                 shell.gallery.download(artifact)
             }
@@ -344,6 +361,11 @@ struct GallerySheet: View {
         HStack(spacing: Design.Space.xxs) {
             GalleryQuickAction(glyph: "arrow.up.backward.and.arrow.down.forward", label: "Open") {
                 viewing = artifact
+            }
+            if artifact.capability == .image {
+                GalleryQuickAction(glyph: "doc.on.doc", label: "Copy") {
+                    shell.gallery.copy(artifact)
+                }
             }
             GalleryQuickAction(glyph: "arrow.down.to.line", label: "Save") {
                 shell.gallery.download(artifact)
@@ -451,6 +473,11 @@ struct GalleryImageViewer: View {
                 .lineLimit(2)
                 .frame(maxWidth: Design.Bubble.promptMax)
             HStack(spacing: Design.Space.s) {
+                if artifact.capability == .image {
+                    GalleryQuickAction(glyph: "doc.on.doc", label: "Copy") {
+                        shell.gallery.copy(artifact)
+                    }
+                }
                 GalleryQuickAction(glyph: "arrow.down.to.line", label: "Save") {
                     shell.gallery.download(artifact)
                 }

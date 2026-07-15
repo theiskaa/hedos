@@ -727,10 +727,41 @@ struct ConfirmingButton: View {
     var confirmedGlyph = "checkmark"
     var appearance: Appearance = .tray
     var holdFor: Duration = .seconds(2)
-    let action: () -> Void
+    let attempt: () async -> Bool
     @State private var confirmed = false
     @State private var revert: Task<Void, Never>?
     @State private var hovering = false
+
+    init(
+        label: String, confirmedLabel: String, glyph: String = "doc.on.doc",
+        confirmedGlyph: String = "checkmark", appearance: Appearance = .tray,
+        holdFor: Duration = .seconds(2), action: @escaping () -> Void
+    ) {
+        self.label = label
+        self.confirmedLabel = confirmedLabel
+        self.glyph = glyph
+        self.confirmedGlyph = confirmedGlyph
+        self.appearance = appearance
+        self.holdFor = holdFor
+        self.attempt = {
+            action()
+            return true
+        }
+    }
+
+    init(
+        label: String, confirmedLabel: String, glyph: String = "doc.on.doc",
+        confirmedGlyph: String = "checkmark", appearance: Appearance = .tray,
+        holdFor: Duration = .seconds(2), attempt: @escaping () async -> Bool
+    ) {
+        self.label = label
+        self.confirmedLabel = confirmedLabel
+        self.glyph = glyph
+        self.confirmedGlyph = confirmedGlyph
+        self.appearance = appearance
+        self.holdFor = holdFor
+        self.attempt = attempt
+    }
 
     var body: some View {
         Group {
@@ -753,10 +784,10 @@ struct ConfirmingButton: View {
     }
 
     private func fire() {
-        action()
-        confirmed = true
         revert?.cancel()
         revert = Task {
+            guard await attempt() else { return }
+            confirmed = true
             try? await Task.sleep(for: holdFor)
             guard !Task.isCancelled else { return }
             confirmed = false
