@@ -13,7 +13,7 @@ public struct CommunityLibrary: Sendable {
     }
 
     static func bundledDirectories() -> [URL] {
-        guard let root = Bundle.module.resourceURL else { return [] }
+        guard let root = Bundle.kernelModule.resourceURL else { return [] }
         let candidates = [
             root.appendingPathComponent("Resources/Community"),
             root.appendingPathComponent("Community"),

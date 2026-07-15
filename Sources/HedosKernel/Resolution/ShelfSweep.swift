@@ -306,7 +306,7 @@ public enum ShelfSweep {
     }
 
     static func fixtureURL(named name: String) -> URL? {
-        guard let root = Bundle.module.resourceURL else { return nil }
+        guard let root = Bundle.kernelModule.resourceURL else { return nil }
         let candidates = [
             root.appendingPathComponent("Resources/Fixtures/\(name)"),
             root.appendingPathComponent("Fixtures/\(name)"),
