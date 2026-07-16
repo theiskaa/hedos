@@ -6,15 +6,19 @@
 [![Swift](https://img.shields.io/badge/Swift-6.1-orange)](Package.swift)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-hedos is a native macOS app — and a headless kernel beneath it — that discovers every local model already on your Mac and serves each one through the runtime that fits. It scans where models actually live (the Ollama store, the Hugging Face cache, LM Studio's library, loose GGUF and safetensors in your folders, and the model Apple ships in macOS) and puts them on one shelf, text, image, and speech together, tagged by where they came from. Weights are never moved, copied, or re-downloaded; records point at the files where they already sit.
+hedos is a native macOS app — and a headless kernel beneath it — that discovers every local model already on your Mac, installs new ones, and serves each through the runtime that fits. It scans where models actually live (the Ollama store, the Hugging Face cache, LM Studio's library, loose GGUF and safetensors in your folders, and the model Apple ships in macOS) and puts them on one shelf, text, image, and speech together, tagged by where they came from. Weights are never moved, copied, or re-downloaded; records point at the files where they already sit.
 
-For each model it detects the format, decides what it is and what it can do, and resolves it to a runtime: in-process **llama.cpp** and **MLX-Swift**, managed Python sidecars (**mlx-lm**, **mlx-vlm**, **diffusers**, **mflux**, **Kokoro** speech, **whisper**), **Ollama**, **Apple Foundation**, or any **OpenAI-compatible** endpoint. It reads each model's true context length, chat template, senses, and tool-calling dialect and serves _that_, so a conversation behaves the same across engines — and where a model genuinely can't do something, the shelf says so before you click instead of dropping it silently.
+For each model it detects the format, decides what it is and what it can do, and resolves it to a runtime: in-process **llama.cpp** and **MLX-Swift**, managed Python sidecars (**mlx-lm**, **mlx-vlm**, **diffusers**, **mflux**, **Kokoro** speech, **whisper**), **Ollama**, **Apple Foundation**, or any **OpenAI-compatible** endpoint. It reads each model's true context length, chat template, senses, and tool-calling dialect and serves _that_, so a conversation behaves the same across engines — and where a model genuinely can't do something, the shelf says so up front instead of dropping it silently.
 
 Everything runs on your hardware, offline, on Apple's MLX foundation — no browser wrapper, open source top to bottom.
 
 ## Download
 
-Grab the latest `Hedos.dmg` from the [releases page](https://github.com/theiskaa/hedos/releases/latest). Requires an Apple Silicon Mac on macOS 26 (Tahoe) or later.
+Requires an Apple Silicon Mac on macOS 26 (Tahoe) or later.
+
+```sh
+curl -fsSL https://hedos.ai/install | bash
+```
 
 Or with Homebrew:
 
@@ -22,15 +26,17 @@ Or with Homebrew:
 brew install --cask theiskaa/tap/hedos
 ```
 
-Both install the app and its bundled `hedos` command-line tool; the app puts `hedos` on your `PATH` for you.
+Or you can grab the latest `Hedos.dmg` from the [releases page](https://github.com/theiskaa/hedos/releases/latest).
 
-## Beyond chat
+## Managing Models
 
-Chat is one capability of many. Any chat model streams replies with code, tables, and tool calls; diffusion models (diffusers, mflux) turn a prompt into an image inside the same conversation; Kokoro synthesizes speech and whisper transcribes it, so a thread can be spoken or dictated. A global hotkey summons a small ask panel over any app without leaving what you're doing.
+The shelf isn't read-only. The kernel's install service resolves any reference — a `huggingface.co` or `ollama.com` link, an `org/repo`, a `name:tag` — and plans the install before a byte moves: the exact file set, sizes, destination, and pinned revision. A curated catalog, fitted to the machine's hardware, backs recommendations in the app and the CLI alike.
 
-A conversation can also be given a **place** — a folder that becomes its world. Within that canonicalized path prefix, and only with your per-action consent, the model lists, reads, searches, writes, and runs commands, every action rendered in the transcript as it happens: reads are quiet once you open the door, and anything that changes the world asks first, every time. Models compose, too — chained into a pipeline, three you already own (transcribe → chat → speak) become one new tool.
+Installs write into each platform's native habitat: Ollama models pull through the daemon's own API, Hugging Face models download into the standard hub cache layout (blobs, snapshots, refs) with `Range` resume and incremental SHA-256 verified against LFS oids. hedos owns no weights directory — every other tool sees the model — and installs never touch the registry; the scanners discover the result. Gated repos authenticate with a token from the keychain, `HF_TOKEN`, or an existing `huggingface-cli` login.
 
-## The gateway and the CLI
+Removal is symmetric: a deletion plan reports what would go — files, bytes, and where duplicate copies remain — before anything moves. File-backed models go to the Trash (reversible); Ollama models delete through the daemon.
+
+## Gateway and CLI
 
 The same shelf is served locally over an OpenAI- and Ollama-compatible HTTP gateway, bound to loopback and authenticated with scoped client tokens, so any editor, script, or agent on your Mac can reach the models you own, tools and all:
 
@@ -45,6 +51,7 @@ The `hedos` command drives the same kernel headlessly — it links no UI, so it 
 ```sh
 hedos scan                        # discover every model on this Mac
 hedos ls                          # list them with fit, tier, and runtime
+hedos pull qwen2.5:3b             # install from ollama or hugging face
 hedos run gemma3 "explain this"   # stream a completion
 hedos rm gemma3 --yes             # delete a model (files to the Trash)
 hedos serve                       # start the gateway

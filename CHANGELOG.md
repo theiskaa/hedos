@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.3 - 2026-07-16
+
+- Install models from inside hedos: the Models screen gains an Install browser with a curated catalog fitted to the Mac's hardware, Hugging Face search, and direct entry — paste a `huggingface.co` or `ollama.com` link, an `org/repo`, or a `name:tag` and it resolves. A confirm page shows exactly what will land on disk (size, file manifest, destination, pinned revision) before anything downloads.
+- Ollama installs drive the local daemon's own pull (auto-starting it when needed); Hugging Face installs download straight into the standard hub cache layout with resume after interruption and per-file checksum verification. Hedos still owns no weights directory — everything lands where the native tools expect it, so other tools see the models too.
+- Live download surfaces everywhere: determinate progress on model cards, a full-width banner on the Models dashboard that flips into aggregate progress while downloads run, cancel that keeps resumable progress, and failure rows that announce a dead install instead of letting it vanish. First-run suggestion cards install for real.
+- `hedos pull` installs from the command line: byte progress on a TTY, Ctrl-C cancels with a resume hint, `--from ollama|huggingface` disambiguates references, `--json` emits a final report. Links work there too.
+- Hugging Face access token gets a home in Settings > Models — keychain-backed, never written to a settings file. Gated repos point there, and "Check again" unlocks Install without leaving the page. `HF_TOKEN` and existing `huggingface-cli` logins keep working.
+- Delete models: the model detail sheet gains a trash button (⌘⌫) with a confirmation that says exactly what would go — item count, bytes, and where duplicate copies remain. File-backed models move to the Trash (reversible); Ollama models delete through the daemon. `hedos rm <model>` is a dry-run by default and deletes with `--yes`.
+- Model detail sheet redesigned: the title renames inline like chat records (the separate display-name field is gone), sections adopt the settings-grade layout, and the sheet opens with a single clean entrance motion.
+- Updater fixes: running from a mounted DMG or a Gatekeeper-translocated copy now installs updates to /Applications instead of punting to a manual drag; quitting for an update no longer hangs; the staged install re-verifies the code signature before swapping and relaunches the old copy if the swap fails.
+- The home activity graph renders its full year grid from day zero instead of swapping itself for a "No chats yet" caption.
+- Cmd+W while settings is open closes the settings panel (or the command palette above it) instead of the whole window, and Esc throughout the install browser steps back contextually instead of closing the modal.
+- Fixed panels rounding their interior corners away from dividers on macOS 26.
+
 ## v0.1.2 - 2026-07-15
 
 - Fixed the launch crash: v0.1.1 crashed on startup on every Mac except the machine that built it, because the packaged app looked for its bundled resources through a path that only existed there. Resources now resolve from inside the app bundle for both the app and the `hedos` command-line tool, including when the tool is run through its `/usr/local/bin` link.
