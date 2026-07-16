@@ -606,7 +606,7 @@ struct HedosSidebar: View {
             Spacer(minLength: 0)
             settingsRow(collapsedRow: false)
             Rectangle()
-                .fill(Design.line)
+                .fill(Design.line.opacity(0.45))
                 .frame(height: Design.hairlineWidth)
                 .padding(.horizontal, Design.Space.l)
                 .padding(.vertical, Design.Space.xs)
