@@ -697,7 +697,7 @@ struct SettingsRoot: View {
                 }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Design.paper)
+        .background(Design.paper, in: Rectangle())
         .id(model.appearance.themeIdentity)
         .modalScrim(
             isPresented: showingAddServer,
@@ -799,7 +799,7 @@ struct SettingsRoot: View {
         .padding(.horizontal, Design.Space.l)
         .frame(width: Design.Rail.expandedWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Design.panel)
+        .background(Design.panel, in: Rectangle())
         .accessibilityIdentifier("settings-sidebar")
     }
 
@@ -1978,7 +1978,7 @@ private struct PromptCard: View {
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Design.Space.tile)
-                    .background(Design.panel)
+                    .background(Design.panel, in: Rectangle())
                 if !tags.isEmpty {
                     HStack(spacing: Design.Space.l) {
                         ForEach(tags, id: \.self) { tag in
