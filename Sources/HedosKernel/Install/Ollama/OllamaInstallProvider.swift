@@ -124,15 +124,7 @@ struct OllamaInstallProvider: InstallProvider {
     }
 
     static func pullFailure(body: Data, code: Int) -> InstallError {
-        struct ErrorBody: Decodable {
-            let error: String?
-        }
-        if let decoded = try? JSONDecoder().decode(ErrorBody.self, from: body),
-            let message = decoded.error, !message.isEmpty
-        {
-            return .transferFailed("ollama: \(message)")
-        }
-        return .transferFailed("ollama returned HTTP \(code)")
+        .transferFailed(OllamaDefaults.errorMessage(body: body, code: code))
     }
 
     private func daemonReachable() async -> Bool {

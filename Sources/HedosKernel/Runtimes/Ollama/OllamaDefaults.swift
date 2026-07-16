@@ -12,6 +12,18 @@ enum OllamaDefaults {
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
+    static func errorMessage(body: Data, code: Int) -> String {
+        struct ErrorBody: Decodable {
+            let error: String?
+        }
+        if let decoded = try? JSONDecoder().decode(ErrorBody.self, from: body),
+            let message = decoded.error, !message.isEmpty
+        {
+            return "ollama: \(message)"
+        }
+        return "ollama returned HTTP \(code)"
+    }
+
     static func modelsRoot(environment: [String: String], home: URL) -> URL {
         if let custom = environment["OLLAMA_MODELS"], !custom.isEmpty {
             return URL(
