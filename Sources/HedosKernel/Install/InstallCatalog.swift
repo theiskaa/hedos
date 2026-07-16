@@ -101,6 +101,15 @@ public enum InstallCatalog {
         category: InstallCategory? = nil, ramGB: Int,
         providers: Set<InstallProviderID>? = nil
     ) -> [InstallCatalogEntry] {
+        recommended(
+            category: category, totalMemoryBytes: UInt64(max(ramGB, 1)) << 30,
+            providers: providers)
+    }
+
+    public static func recommended(
+        category: InstallCategory? = nil, totalMemoryBytes: UInt64,
+        providers: Set<InstallProviderID>? = nil
+    ) -> [InstallCatalogEntry] {
         var scoped = entries
         if let category {
             scoped = scoped.filter { $0.category == category }
@@ -108,13 +117,13 @@ public enum InstallCatalog {
         if let providers {
             scoped = scoped.filter { providers.contains($0.provider) }
         }
-        let totalMemoryBytes = UInt64(max(ramGB, 1)) << 30
         let fitting =
             scoped
             .filter { $0.fit(totalMemoryBytes: totalMemoryBytes)?.verdict == .runsWell }
-            .sorted { $0.sizeGB < $1.sizeGB }
+            .sorted { ($0.sizeGB, $0.reference) < ($1.sizeGB, $1.reference) }
         if fitting.isEmpty {
-            return scoped.min { $0.sizeGB < $1.sizeGB }.map { [$0] } ?? []
+            return scoped.min { ($0.sizeGB, $0.reference) < ($1.sizeGB, $1.reference) }
+                .map { [$0] } ?? []
         }
         return Array(fitting.suffix(3))
     }

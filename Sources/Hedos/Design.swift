@@ -1461,3 +1461,16 @@ enum Haptics {
             .levelChange, performanceTime: .drawCompleted)
     }
 }
+
+extension Int {
+    var compactCount: String {
+        switch self {
+        case 1_000_000...:
+            String(format: "%.1fM", Double(self) / 1_000_000)
+        case 1_000...:
+            String(format: "%.1fk", Double(self) / 1_000)
+        default:
+            String(self)
+        }
+    }
+}

@@ -225,41 +225,14 @@ public actor Kernel {
     ) -> [any InstallProvider] {
         let environment = habitat.environment
         let home = habitat.home
-        let hfRoot: @Sendable () async -> URL = {
-            if let cache = environment["HF_HUB_CACHE"], !cache.isEmpty {
-                return URL(fileURLWithPath: (cache as NSString).expandingTildeInPath)
-            }
-            if let hfHome = environment["HF_HOME"], !hfHome.isEmpty {
-                return URL(fileURLWithPath: (hfHome as NSString).expandingTildeInPath)
-                    .appendingPathComponent("hub")
-            }
-            let userRoots = HFCacheScanner.userRoots(await settings.models().hfCacheRoots)
-            return userRoots.first ?? home.appendingPathComponent(".cache/huggingface/hub")
-        }
-        let tokenProvider: @Sendable () -> String? = {
-            if let stored = try? secrets.get(account: HuggingFaceInstallProvider.tokenAccount),
-                !stored.isEmpty
-            {
-                return stored
-            }
-            if let env = environment["HF_TOKEN"], !env.isEmpty {
-                return env
-            }
-            let tokenFile =
-                environment["HF_HOME"].map {
-                    URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
-                        .appendingPathComponent("token")
-                } ?? home.appendingPathComponent(".cache/huggingface/token")
-            guard let contents = try? String(contentsOf: tokenFile, encoding: .utf8) else {
-                return nil
-            }
-            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }
         return [
             OllamaInstallProvider(environment: environment, home: home),
             HuggingFaceInstallProvider(
-                root: hfRoot, tokenProvider: tokenProvider, home: home),
+                root: HuggingFaceInstallProvider.defaultRoot(
+                    environment: environment, settings: settings, home: home),
+                tokenProvider: HuggingFaceInstallProvider.defaultToken(
+                    secrets: secrets, environment: environment, home: home),
+                home: home),
         ]
     }
 

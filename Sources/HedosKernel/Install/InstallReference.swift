@@ -50,6 +50,14 @@ public enum InstallReference {
         tag(from: raw, requireExplicitTagForNamespaced: false)
     }
 
+    public static func ollamaDirectTag(from query: String) -> String? {
+        guard huggingFaceRepo(from: query) == nil,
+            let tag = ollamaTag(from: query),
+            query.contains(":") || isOllamaLink(query)
+        else { return nil }
+        return tag
+    }
+
     private static func tag(
         from raw: String, requireExplicitTagForNamespaced: Bool
     ) -> String? {

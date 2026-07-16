@@ -162,87 +162,63 @@ struct HuggingFaceInstallProvider: InstallProvider {
     }
 
     func install(_ plan: InstallPlan) -> AsyncThrowingStream<InstallStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let interruptionCleanup = Mutex<(@Sendable () -> Void)?>(nil)
-            let task = Task {
-                let root = await rootProvider()
-                let layout = HFCacheLayout(root: root, repo: plan.reference)
-                let writer = HFCacheWriter(layout: layout, transport: transport)
-                let repoExistedBefore = FileManager.default.fileExists(
-                    atPath: layout.repoDirectory.path)
-                interruptionCleanup.withLock {
-                    $0 = {
-                        Self.cleanUpAfterInterruption(
-                            writer: writer, repoExistedBefore: repoExistedBefore)
+        InstallStream.make { error in
+            (error as? URLError).map {
+                InstallError.transferFailed("the download failed: \($0.localizedDescription)")
+            }
+        } run: { continuation, interruption in
+            let root = await rootProvider()
+            let layout = HFCacheLayout(root: root, repo: plan.reference)
+            let writer = HFCacheWriter(layout: layout, transport: transport)
+            let repoExistedBefore = FileManager.default.fileExists(
+                atPath: layout.repoDirectory.path)
+            interruption.register {
+                Self.cleanUpAfterInterruption(
+                    writer: writer, repoExistedBefore: repoExistedBefore)
+            }
+            continuation.yield(.status("Resolving \(plan.reference)"))
+            let info = try await api.modelInfo(repo: plan.reference)
+            guard let revision = info.sha ?? plan.revision else {
+                throw InstallError.transferFailed(
+                    "\(plan.reference) has no resolvable revision.")
+            }
+            let selection = HFFileSelection.select(siblings: info.siblings)
+            guard selection.contains(where: HFFileSelection.isWeight) else {
+                throw InstallError.transferFailed(
+                    "\(plan.reference) has no model weights hedos knows how to download.")
+            }
+            let ordered = Self.downloadOrder(selection)
+            let firstWeight = ordered.first(where: HFFileSelection.isWeight)
+            try writer.prepareSkeleton(
+                revision: revision,
+                firstWeightPendingName: firstWeight.map {
+                    HFCacheWriter.pendingBlobName(for: $0, revision: revision)
+                })
+            try writer.removeStrayIncompletes(
+                keeping: Set(
+                    ordered.map {
+                        HFCacheWriter.pendingBlobName(for: $0, revision: revision)
+                    }))
+            let sizes = ordered.compactMap(\.bytes)
+            let meter = InstallProgressMeter(
+                totalBytes: sizes.isEmpty ? nil : sizes.saturatingSum())
+            for sibling in ordered {
+                try Task.checkCancellation()
+                continuation.yield(.progress(meter.begin(file: sibling.rfilename)))
+                try await writer.download(
+                    sibling: sibling, revision: revision,
+                    request: api.resolveRequest(
+                        repo: plan.reference, revision: revision,
+                        path: sibling.rfilename)
+                ) { delta in
+                    if let progress = meter.add(delta) {
+                        continuation.yield(.progress(progress))
                     }
-                }
-                do {
-                    continuation.yield(.status("Resolving \(plan.reference)"))
-                    let info = try await api.modelInfo(repo: plan.reference)
-                    guard let revision = info.sha ?? plan.revision else {
-                        throw InstallError.transferFailed(
-                            "\(plan.reference) has no resolvable revision.")
-                    }
-                    let selection = HFFileSelection.select(siblings: info.siblings)
-                    guard selection.contains(where: HFFileSelection.isWeight) else {
-                        throw InstallError.transferFailed(
-                            "\(plan.reference) has no model weights hedos knows how to download.")
-                    }
-                    let ordered = Self.downloadOrder(selection)
-                    let firstWeight = ordered.first(where: HFFileSelection.isWeight)
-                    try writer.prepareSkeleton(
-                        revision: revision,
-                        firstWeightPendingName: firstWeight.map {
-                            HFCacheWriter.pendingBlobName(for: $0, revision: revision)
-                        })
-                    try writer.removeStrayIncompletes(
-                        keeping: Set(
-                            ordered.map {
-                                HFCacheWriter.pendingBlobName(for: $0, revision: revision)
-                            }))
-                    let sizes = ordered.compactMap(\.bytes)
-                    let meter = InstallProgressMeter(
-                        totalBytes: sizes.isEmpty ? nil : sizes.saturatingSum())
-                    for sibling in ordered {
-                        try Task.checkCancellation()
-                        continuation.yield(.progress(meter.begin(file: sibling.rfilename)))
-                        try await writer.download(
-                            sibling: sibling, revision: revision,
-                            request: api.resolveRequest(
-                                repo: plan.reference, revision: revision,
-                                path: sibling.rfilename)
-                        ) { delta in
-                            if let progress = meter.add(delta) {
-                                continuation.yield(.progress(progress))
-                            }
-                        }
-                    }
-                    try writer.commitRef(revision: revision)
-                    try writer.removeStrayIncompletes()
-                    continuation.yield(.progress(meter.finish()))
-                    continuation.finish()
-                } catch is CancellationError {
-                    Self.cleanUpAfterInterruption(
-                        writer: writer, repoExistedBefore: repoExistedBefore)
-                    continuation.finish()
-                } catch let error as URLError {
-                    Self.cleanUpAfterInterruption(
-                        writer: writer, repoExistedBefore: repoExistedBefore)
-                    continuation.finish(
-                        throwing: InstallError.transferFailed(
-                            "the download failed: \(error.localizedDescription)"))
-                } catch {
-                    Self.cleanUpAfterInterruption(
-                        writer: writer, repoExistedBefore: repoExistedBefore)
-                    continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { termination in
-                task.cancel()
-                if case .cancelled = termination {
-                    interruptionCleanup.withLock { $0 }?()
-                }
-            }
+            try writer.commitRef(revision: revision)
+            try writer.removeStrayIncompletes()
+            continuation.yield(.progress(meter.finish()))
         }
     }
 
@@ -276,5 +252,46 @@ struct HuggingFaceInstallProvider: InstallProvider {
         let homePath = home.standardizedFileURL.path
         guard path == homePath || path.hasPrefix(homePath + "/") else { return path }
         return "~" + path.dropFirst(homePath.count)
+    }
+}
+
+extension HuggingFaceInstallProvider {
+    static func defaultRoot(
+        environment: [String: String], settings: SettingsStore, home: URL
+    ) -> @Sendable () async -> URL {
+        {
+            if let cache = environment["HF_HUB_CACHE"], !cache.isEmpty {
+                return URL(fileURLWithPath: (cache as NSString).expandingTildeInPath)
+            }
+            if let hfHome = environment["HF_HOME"], !hfHome.isEmpty {
+                return URL(fileURLWithPath: (hfHome as NSString).expandingTildeInPath)
+                    .appendingPathComponent("hub")
+            }
+            let userRoots = HFCacheScanner.userRoots(await settings.models().hfCacheRoots)
+            return userRoots.first ?? home.appendingPathComponent(".cache/huggingface/hub")
+        }
+    }
+
+    static func defaultToken(
+        secrets: any SecretStore, environment: [String: String], home: URL
+    ) -> @Sendable () -> String? {
+        {
+            if let stored = try? secrets.get(account: tokenAccount), !stored.isEmpty {
+                return stored
+            }
+            if let env = environment["HF_TOKEN"], !env.isEmpty {
+                return env
+            }
+            let tokenFile =
+                environment["HF_HOME"].map {
+                    URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)
+                        .appendingPathComponent("token")
+                } ?? home.appendingPathComponent(".cache/huggingface/token")
+            guard let contents = try? String(contentsOf: tokenFile, encoding: .utf8) else {
+                return nil
+            }
+            let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
     }
 }

@@ -1857,7 +1857,7 @@ struct ResidencyStrip: View {
                             .foregroundStyle(Design.ink)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                        Text(ByteFormat.string(Int64(entry.footprintMB) << 20))
                             .font(Design.data(11))
                             .foregroundStyle(Design.inkFaint)
                         if entry.origin == .ollama {

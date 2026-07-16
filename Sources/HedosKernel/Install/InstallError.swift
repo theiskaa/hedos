@@ -23,7 +23,7 @@ public enum InstallError: Error, Sendable, Hashable, LocalizedError {
         case .authRequired(let reference):
             "\(reference) is gated. Add a Hugging Face access token, or sign in with `huggingface-cli login`."
         case .insufficientDisk(let requiredBytes, let availableBytes):
-            "Not enough free disk space: this model needs \(ByteCountFormatter.string(fromByteCount: requiredBytes, countStyle: .file)) and \(ByteCountFormatter.string(fromByteCount: availableBytes, countStyle: .file)) is available."
+            "Not enough free disk space: this model needs \(ByteFormat.string(requiredBytes)) and \(ByteFormat.string(availableBytes)) is available."
         case .checksumMismatch(let file):
             "\(file) failed checksum verification after download."
         case .transferFailed(let message):

@@ -231,7 +231,7 @@ struct ModelsPane: View {
                     .foregroundStyle(Design.inkFaint)
                 if let summary = shell.library.summary {
                     HStack(spacing: Design.Space.s) {
-                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                        Text(ByteFormat.string(summary.totalBytes))
                             .font(Design.data(12))
                             .foregroundStyle(Design.inkSoft)
                         if !shell.resident.isEmpty {
@@ -286,7 +286,7 @@ struct ModelsPane: View {
                             .foregroundStyle(Design.ink)
                             .lineLimit(1)
                         Spacer(minLength: Design.Space.m)
-                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                        Text(ByteFormat.string(Int64(entry.footprintMB) << 20))
                             .font(Design.data(11))
                             .monospacedDigit()
                             .foregroundStyle(Design.inkFaint)
@@ -654,7 +654,7 @@ struct ModelCard: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(
                         record.footprintMB.map {
-                            $0 > 0 ? DiscoverySummary.formatBytes(Int64($0) << 20) : "—"
+                            $0 > 0 ? ByteFormat.string(Int64($0) << 20) : "—"
                         } ?? "size unknown"
                     )
                     .font(Design.data(15))
@@ -862,7 +862,7 @@ struct BestFitCard: View {
     private var subtitle: String {
         var parts: [String] = []
         if let mb = record.footprintMB, mb > 0 {
-            parts.append(DiscoverySummary.formatBytes(Int64(mb) << 20))
+            parts.append(ByteFormat.string(Int64(mb) << 20))
         }
         if let runtime = record.runtime.id {
             parts.append(runtime.rawValue)
@@ -1005,7 +1005,7 @@ struct ModelDetailSheet: View {
             items.append(("Repo", repo, false))
         }
         if let mb = record.footprintMB, mb > 0 {
-            items.append(("On disk", DiscoverySummary.formatBytes(Int64(mb) << 20), true))
+            items.append(("On disk", ByteFormat.string(Int64(mb) << 20), true))
         }
         if let path = record.primaryWeightPath ?? record.source.path as String? {
             items.append(("Path", (path as NSString).abbreviatingWithTildeInPath, false))
@@ -1053,7 +1053,7 @@ struct ModelDetailSheet: View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
             MicroHeader(title: "Shared weights")
             Text(
-                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")), \(DiscoverySummary.formatBytes(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
+                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")), \(ByteFormat.string(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
             )
             .font(Design.caption)
             .foregroundStyle(Design.inkSoft)

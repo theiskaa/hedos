@@ -41,17 +41,17 @@ private func hit(_ reference: String, downloads: Int = 1) -> InstallSearchHit {
 }
 
 struct InstallBrowseTests {
-    @Test func ollamaDirectReferenceClassifiesShapes() {
-        #expect(InstallService.ollamaDirectReference(for: "gemma3:4b") == "gemma3:4b")
+    @Test func ollamaDirectTagClassifiesShapes() {
+        #expect(InstallReference.ollamaDirectTag(from: "gemma3:4b") == "gemma3:4b")
         #expect(
-            InstallService.ollamaDirectReference(for: "https://ollama.com/library/gemma3")
+            InstallReference.ollamaDirectTag(from: "https://ollama.com/library/gemma3")
                 == "gemma3")
-        #expect(InstallService.ollamaDirectReference(for: "gemma3") == nil)
-        #expect(InstallService.ollamaDirectReference(for: "ollama") == nil)
-        #expect(InstallService.ollamaDirectReference(for: "smollama") == nil)
-        #expect(InstallService.ollamaDirectReference(for: "org/repo") == nil)
+        #expect(InstallReference.ollamaDirectTag(from: "gemma3") == nil)
+        #expect(InstallReference.ollamaDirectTag(from: "ollama") == nil)
+        #expect(InstallReference.ollamaDirectTag(from: "smollama") == nil)
+        #expect(InstallReference.ollamaDirectTag(from: "org/repo") == nil)
         #expect(
-            InstallService.ollamaDirectReference(for: "https://huggingface.co/org/repo") == nil)
+            InstallReference.ollamaDirectTag(from: "https://huggingface.co/org/repo") == nil)
     }
 
     @Test func browseSearchesWithTheNormalizedRepo() async {

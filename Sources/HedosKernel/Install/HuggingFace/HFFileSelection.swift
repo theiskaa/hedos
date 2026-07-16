@@ -25,7 +25,11 @@ enum HFFileSelection {
     }
 
     static func isWeight(_ sibling: HFSibling) -> Bool {
-        weightExtensions.contains(fileExtension(sibling.rfilename))
+        isWeightPath(sibling.rfilename)
+    }
+
+    static func isWeightPath(_ path: String) -> Bool {
+        weightExtensions.contains(fileExtension(path))
     }
 
     private static func isEligible(_ sibling: HFSibling) -> Bool {

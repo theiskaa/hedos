@@ -13,7 +13,7 @@ struct OllamaAdapter: RuntimeAdapter {
     var id: RuntimeID { .ollama }
     let baseURL: URL
 
-    init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!) {
+    init(baseURL: URL = OllamaDefaults.baseURL) {
         self.baseURL = baseURL
     }
 
@@ -89,8 +89,7 @@ struct OllamaAdapter: RuntimeAdapter {
 
     func startDaemon(session: URLSession = .shared) async throws {
         guard let binary = Self.daemonBinary() else {
-            throw KernelError.runtimeUnavailable(
-                hint: "Ollama isn't installed. Get it from ollama.com.")
+            throw KernelError.runtimeUnavailable(hint: OllamaDefaults.notInstalledHint)
         }
         let process = Process()
         process.executableURL = binary
@@ -99,15 +98,10 @@ struct OllamaAdapter: RuntimeAdapter {
         process.standardError = FileHandle.nullDevice
         try process.run()
 
-        let probe = baseURL.appendingPathComponent("api/tags")
         var exited = false
         for _ in 0..<20 {
             try await Task.sleep(nanoseconds: 500_000_000)
-            var request = URLRequest(url: probe)
-            request.timeoutInterval = 2
-            if let (_, response) = try? await session.data(for: request),
-                (response as? HTTPURLResponse)?.statusCode == 200
-            {
+            if await OllamaDefaults.daemonReachable(baseURL: baseURL, session: session) {
                 return
             }
             if !process.isRunning {

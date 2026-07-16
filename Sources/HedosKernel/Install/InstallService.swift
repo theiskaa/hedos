@@ -52,17 +52,9 @@ public actor InstallService {
         try await requireAvailable(id).search(matching: query, limit: limit)
     }
 
-    public static func ollamaDirectReference(for query: String) -> String? {
-        guard InstallReference.huggingFaceRepo(from: query) == nil,
-            let tag = InstallReference.ollamaTag(from: query),
-            query.contains(":") || InstallReference.isOllamaLink(query)
-        else { return nil }
-        return tag
-    }
-
     public func browse(matching rawQuery: String, limit: Int = 30) async -> InstallBrowseResult {
         let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, Self.ollamaDirectReference(for: query) == nil else {
+        guard !query.isEmpty, InstallReference.ollamaDirectTag(from: query) == nil else {
             return InstallBrowseResult()
         }
         let repo = InstallReference.huggingFaceRepo(from: query)

@@ -249,7 +249,7 @@ struct HomePane: View {
                         .font(Design.micro)
                         .foregroundStyle(Design.inkFaint)
                     if let summary {
-                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                        Text(ByteFormat.string(summary.totalBytes))
                             .font(Design.data(12))
                             .foregroundStyle(Design.inkSoft)
                     } else {
@@ -269,7 +269,7 @@ struct HomePane: View {
                             .foregroundStyle(Design.inkFaint)
                         Spacer(minLength: 0)
                         Text(
-                            "\(DiscoverySummary.formatBytes(Int64(shell.residentUsedMB) << 20)) / \(DiscoverySummary.formatBytes(Int64(shell.residencyBudgetMB) << 20))"
+                            "\(ByteFormat.string(Int64(shell.residentUsedMB) << 20)) / \(ByteFormat.string(Int64(shell.residencyBudgetMB) << 20))"
                         )
                         .font(Design.data(10))
                         .monospacedDigit()
@@ -303,7 +303,7 @@ struct HomePane: View {
                             .foregroundStyle(Design.ink)
                             .lineLimit(1)
                         Spacer(minLength: Design.Space.m)
-                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                        Text(ByteFormat.string(Int64(entry.footprintMB) << 20))
                             .font(Design.data(11))
                             .monospacedDigit()
                             .foregroundStyle(Design.inkFaint)
@@ -361,7 +361,7 @@ struct HomePane: View {
                         .tracking(Design.microTracking)
                         .foregroundStyle(Design.inkFaint)
                     HStack(spacing: Design.Space.s) {
-                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                        Text(ByteFormat.string(summary.totalBytes))
                             .font(Design.data(12))
                             .foregroundStyle(Design.inkSoft)
                         if !shell.resident.isEmpty {
@@ -390,7 +390,7 @@ struct HomePane: View {
 
     private func counts(_ summary: DiscoverySummary) -> Text {
         Text(
-            "\(summary.totalCount) \(summary.totalCount == 1 ? "model" : "models") · \(DiscoverySummary.formatBytes(summary.totalBytes))"
+            "\(summary.totalCount) \(summary.totalCount == 1 ? "model" : "models") · \(ByteFormat.string(summary.totalBytes))"
         )
     }
 
@@ -467,7 +467,7 @@ struct HomePane: View {
     private func startCardSubtitle(_ pick: ModelRecord) -> String {
         var parts: [String] = []
         if let mb = pick.footprintMB, mb > 0 {
-            parts.append(DiscoverySummary.formatBytes(Int64(mb) << 20))
+            parts.append(ByteFormat.string(Int64(mb) << 20))
         }
         if let runtime = pick.runtime.id {
             parts.append(runtime.rawValue)
@@ -487,7 +487,7 @@ struct HomePane: View {
                             .font(Design.body.weight(.medium))
                             .foregroundStyle(Design.ink)
                             .lineLimit(1)
-                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                        Text(ByteFormat.string(Int64(entry.footprintMB) << 20))
                             .font(Design.data(11))
                             .foregroundStyle(Design.inkFaint)
                         Spacer(minLength: 0)
@@ -513,7 +513,7 @@ struct HomePane: View {
             SegmentedBar(used: residentFraction, warm: residentFraction, segments: 20)
                 .animation(Design.spring, value: shell.residentUsedMB)
             Text(
-                "\(DiscoverySummary.formatBytes(Int64(shell.residentUsedMB) << 20)) / \(DiscoverySummary.formatBytes(Int64(shell.residencyBudgetMB) << 20))"
+                "\(ByteFormat.string(Int64(shell.residentUsedMB) << 20)) / \(ByteFormat.string(Int64(shell.residencyBudgetMB) << 20))"
             )
             .font(Design.data(10))
             .monospacedDigit()
@@ -543,7 +543,7 @@ struct HomePane: View {
                         .foregroundStyle(Design.inkFaint)
                     Spacer(minLength: 0)
                     Text(
-                        "\(DiscoverySummary.formatBytes(Int64(mem.usedBytes))) / \(DiscoverySummary.formatBytes(Int64(mem.totalBytes)))"
+                        "\(ByteFormat.string(Int64(mem.usedBytes))) / \(ByteFormat.string(Int64(mem.totalBytes)))"
                     )
                     .font(Design.data(10))
                     .monospacedDigit()
@@ -654,7 +654,7 @@ struct ReadyModelCard: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text(
                         record.footprintMB.map {
-                            $0 > 0 ? DiscoverySummary.formatBytes(Int64($0) << 20) : "—"
+                            $0 > 0 ? ByteFormat.string(Int64($0) << 20) : "—"
                         } ?? "size unknown"
                     )
                     .font(Design.data(11))

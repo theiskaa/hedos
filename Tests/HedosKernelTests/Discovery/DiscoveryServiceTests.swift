@@ -284,10 +284,10 @@ private func makeStripedFile(
         totalCount: 1, totalBytes: 5 << 30, duplicates: [], issues: [])
     #expect(one.headline == "Found 1 model on this Mac — 1 in Ollama. Total: 5 GB.")
 
-    #expect(DiscoverySummary.formatBytes(87 << 30) == "87 GB")
-    #expect(DiscoverySummary.formatBytes(Int64(6.5 * Double(1 << 30))) == "6.5 GB")
-    #expect(DiscoverySummary.formatBytes(350 << 20) == "350 MB")
-    #expect(DiscoverySummary.formatBytes(512) == "512 B")
+    #expect(ByteFormat.string(87 << 30) == "87 GB")
+    #expect(ByteFormat.string(Int64(6.5 * Double(1 << 30))) == "6.5 GB")
+    #expect(ByteFormat.string(350 << 20) == "350 MB")
+    #expect(ByteFormat.string(512) == "512 B")
 }
 
 @Test func downloadingRepoStaysUnresolvedThenHealsWhenBlobsFinish() async throws {

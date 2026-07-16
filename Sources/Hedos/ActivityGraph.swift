@@ -209,8 +209,8 @@ struct ActivityGraph: View {
         let tokens = visible.reduce(0) { $0 + $1.tokens }
         let messages = visible.reduce(0) { $0 + $1.messages }
         let activeDays = visible.filter { $0.messages > 0 }.count
-        return pair(compact(tokens), "tokens") + separator
-            + pair(compact(messages), messages == 1 ? "message" : "messages") + separator
+        return pair(tokens.compactCount, "tokens") + separator
+            + pair(messages.compactCount, messages == 1 ? "message" : "messages") + separator
             + pair(activeDays.formatted(), "active days") + separator
             + pair(streak().formatted(), "day streak")
     }
@@ -219,14 +219,10 @@ struct ActivityGraph: View {
         let entry = byDay[day]
         let messages = entry?.messages ?? 0
         let tokens = entry?.tokens ?? 0
-        return pair(compact(messages), messages == 1 ? "message" : "messages") + separator
-            + pair(compact(tokens), "tokens") + separator
+        return pair(messages.compactCount, messages == 1 ? "message" : "messages") + separator
+            + pair(tokens.compactCount, "tokens") + separator
             + Text(day.formatted(.dateTime.weekday(.abbreviated).month().day()))
                 .foregroundStyle(Design.inkFaint)
-    }
-
-    private func compact(_ value: Int) -> String {
-        value.formatted(.number.notation(.compactName))
     }
 
     private func streak() -> Int {

@@ -1,6 +1,11 @@
 import Foundation
 import HedosKernel
 
+struct InstallTracking {
+    var progress: InstallProgress?
+    var status: String?
+}
+
 @Observable
 @MainActor
 final class InstallModel {
@@ -19,15 +24,13 @@ final class InstallModel {
     var stagingID: String?
     var stageError: String?
     var active: [ActiveInstall] = []
-    var progressByID: [String: InstallProgress] = [:]
-    var statusByID: [String: String] = [:]
+    var tracking: [String: InstallTracking] = [:]
     var failures: [String: String] = [:]
     var completed: Set<String> = []
 
     @ObservationIgnored private var searchTask: Task<Void, Never>?
     @ObservationIgnored private var watchers: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var watcherTokens: [String: UUID] = [:]
-    @ObservationIgnored private var referenceByInstallID: [String: String] = [:]
     @ObservationIgnored private var canonicalReferences: [String: String] = [:]
     @ObservationIgnored var recordsProvider: () -> [ModelRecord] = { [] }
 
@@ -101,7 +104,11 @@ final class InstallModel {
     }
 
     func progress(installID: String) -> InstallProgress? {
-        progressByID[installID]
+        tracking[installID]?.progress
+    }
+
+    func status(installID: String) -> String? {
+        tracking[installID]?.status
     }
 
     func progress(for record: ModelRecord) -> InstallProgress? {
@@ -120,13 +127,13 @@ final class InstallModel {
             }
         }
         guard let install else { return nil }
-        return progressByID[install.id] ?? install.progress
+        return tracking[install.id]?.progress ?? install.progress
     }
 
     func searchDebounced() {
         searchTask?.cancel()
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, InstallService.ollamaDirectReference(for: query) == nil else {
+        guard !query.isEmpty, InstallReference.ollamaDirectTag(from: query) == nil else {
             searchHits = []
             searching = false
             searchError = nil
@@ -145,7 +152,7 @@ final class InstallModel {
     }
 
     func stage(provider: InstallProviderID, reference: String) async {
-        let stageID = "\(provider.rawValue)|\(reference)"
+        let stageID = Self.referenceKey(provider: provider, reference)
         stagingID = stageID
         stageError = nil
         do {
@@ -186,7 +193,6 @@ final class InstallModel {
             let id = try await kernel.installs.begin(plan)
             failures[plan.reference] = nil
             completed.remove(Self.referenceKey(provider: plan.provider, plan.reference))
-            referenceByInstallID[id] = plan.reference
             watch(id, provider: plan.provider, reference: plan.reference)
             await refreshActive()
             if stagedPlan == plan {
@@ -247,7 +253,7 @@ final class InstallModel {
         var total: Int64 = 0
         var totalKnown = true
         for install in active {
-            let progress = progressByID[install.id] ?? install.progress
+            let progress = tracking[install.id]?.progress ?? install.progress
             let (downloadedSum, downloadedOverflow) = downloaded.addingReportingOverflow(
                 max(0, progress.bytesDownloaded))
             downloaded = downloadedOverflow ? .max : downloadedSum
@@ -277,7 +283,6 @@ final class InstallModel {
         _ installID: String, provider: InstallProviderID, reference: String
     ) {
         watchers[installID]?.cancel()
-        referenceByInstallID[installID] = reference
         let token = UUID()
         watcherTokens[installID] = token
         watchers[installID] = Task { [weak self] in
@@ -289,9 +294,9 @@ final class InstallModel {
                 case .queued, .preparing:
                     break
                 case .status(let message):
-                    self.statusByID[installID] = message
+                    self.tracking[installID, default: InstallTracking()].status = message
                 case .progress(let progress):
-                    self.progressByID[installID] = progress
+                    self.tracking[installID, default: InstallTracking()].progress = progress
                 case .done:
                     self.completed.insert(Self.referenceKey(provider: provider, reference))
                 case .failed(let message):
@@ -302,8 +307,7 @@ final class InstallModel {
                 await self.refreshActive()
             }
             guard self.watcherTokens[installID] == token else { return }
-            self.progressByID[installID] = nil
-            self.statusByID[installID] = nil
+            self.tracking[installID] = nil
             self.watchers[installID] = nil
             self.watcherTokens[installID] = nil
             await self.refreshActive()

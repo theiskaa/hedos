@@ -8,6 +8,10 @@ public struct InstallPlanFile: Sendable, Hashable {
         self.path = path
         self.bytes = bytes
     }
+
+    public var isWeight: Bool {
+        HFFileSelection.isWeightPath(path)
+    }
 }
 
 public struct InstallPlan: Sendable, Hashable {

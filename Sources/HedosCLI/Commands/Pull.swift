@@ -36,7 +36,7 @@ struct Pull: AsyncParsableCommand {
             )
         }
         if !global.json {
-            let size = plan.totalBytes.map { " (~\(Self.gigabytes($0)))" } ?? ""
+            let size = plan.totalBytes.map { " (~\(ByteFormat.string($0)))" } ?? ""
             Out.err("pulling \(plan.reference)\(size) into \(plan.destination)…")
         }
         let id: String
@@ -134,23 +134,19 @@ struct Pull: AsyncParsableCommand {
         )
     }
 
-    static func gigabytes(_ bytes: Int64) -> String {
-        String(format: "%.1f GB", Double(bytes) / Double(1 << 30))
-    }
-
     private var progressToTTY: Bool {
         isatty(fileno(stderr)) == 1
     }
 
     private func renderProgress(_ progress: InstallProgress) {
-        let downloaded = DiscoverySummary.formatBytes(progress.bytesDownloaded)
+        let downloaded = ByteFormat.string(progress.bytesDownloaded)
         var line = downloaded
         if let total = progress.totalBytes {
             if let fraction = progress.fraction {
                 let percent = Int(fraction * 100)
-                line = "\(downloaded) / \(DiscoverySummary.formatBytes(total))  \(percent)%"
+                line = "\(downloaded) / \(ByteFormat.string(total))  \(percent)%"
             } else if progress.totalIsPartial {
-                line = "\(downloaded) / \(DiscoverySummary.formatBytes(total))+"
+                line = "\(downloaded) / \(ByteFormat.string(total))+"
             }
         }
         if let file = progress.currentFile {

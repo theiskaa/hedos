@@ -69,13 +69,13 @@ struct FirstRunDiscovery: View {
     }
 
     private func verdict(_ entry: InstallCatalogEntry) -> FitVerdict? {
-        entry.fit(totalMemoryBytes: ProcessInfo.processInfo.physicalMemory)?.verdict
+        entry.fit(totalMemoryBytes: hardware.totalMemoryBytes)?.verdict
     }
 
     private var recommendedID: InstallCatalogEntry.ID? {
-        let fitting = visible.filter { verdict($0) == .runsWell }
-        return (fitting.max { $0.sizeGB < $1.sizeGB } ?? visible.min { $0.sizeGB < $1.sizeGB })?
-            .id
+        InstallCatalog.recommended(
+            category: category, totalMemoryBytes: hardware.totalMemoryBytes
+        ).last?.id
     }
 
     private var suggestions: some View {
@@ -83,7 +83,7 @@ struct FirstRunDiscovery: View {
             HStack(alignment: .center) {
                 MicroHeader(title: "Recommended for your Mac")
                 Spacer(minLength: Design.Space.l)
-                categoryTabs
+                CategoryTabs(selection: $category)
             }
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 220), spacing: Design.Space.l)],
@@ -100,12 +100,17 @@ struct FirstRunDiscovery: View {
         }
     }
 
-    private var categoryTabs: some View {
+}
+
+struct CategoryTabs: View {
+    @Binding var selection: InstallCategory
+
+    var body: some View {
         HStack(spacing: Design.Space.xs) {
             ForEach(SuggestionCategories.ordered, id: \.category) { item in
-                let selected = item.category == category
+                let selected = item.category == selection
                 Button {
-                    category = item.category
+                    selection = item.category
                 } label: {
                     Text(item.label)
                         .font(Design.micro)

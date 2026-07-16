@@ -15,7 +15,7 @@ struct OllamaInstallProvider: InstallProvider {
     private let home: URL
 
     init(
-        baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
+        baseURL: URL = OllamaDefaults.baseURL,
         session: URLSession = .shared,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -33,7 +33,7 @@ struct OllamaInstallProvider: InstallProvider {
         if await daemonReachable() {
             return .ready
         }
-        return .unavailable(hint: "Ollama isn't installed. Get it from ollama.com.")
+        return .unavailable(hint: OllamaDefaults.notInstalledHint)
     }
 
     func search(matching query: String, limit: Int) async throws -> [InstallSearchHit] {
@@ -56,78 +56,70 @@ struct OllamaInstallProvider: InstallProvider {
     }
 
     func install(_ plan: InstallPlan) -> AsyncThrowingStream<InstallStreamEvent, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    if await !daemonReachable() {
-                        try Task.checkCancellation()
-                        guard OllamaAdapter.daemonBinary() != nil else {
-                            throw InstallError.providerUnavailable(
-                                hint: "Ollama stopped running. Start it again and retry.")
-                        }
-                        continuation.yield(.status("Starting Ollama…"))
-                        try await OllamaAdapter(baseURL: baseURL).startDaemon(session: session)
-                    }
-                    var request = URLRequest(url: baseURL.appendingPathComponent("api/pull"))
-                    request.httpMethod = "POST"
-                    request.timeoutInterval = Self.pullIdleTimeout
-                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    request.httpBody = try JSONSerialization.data(
-                        withJSONObject: ["model": plan.reference, "stream": true])
-                    let (bytes, response) = try await session.bytes(for: request)
-                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                        let code = (response as? HTTPURLResponse)?.statusCode ?? -1
-                        var collected = Data()
-                        for try await byte in bytes {
-                            collected.append(byte)
-                            if collected.count >= 65536 { break }
-                        }
-                        throw Self.pullFailure(body: collected, code: code)
-                    }
-                    let reader = CappedLineReader(
-                        bytes: bytes, source: "ollama",
-                        maxResponseBytes: Self.pullResponseCap)
-                    var aggregator = OllamaPullParser.Aggregator()
-                    var succeeded = false
-                    for try await line in reader.lines() {
-                        if Task.isCancelled { break }
-                        switch try aggregator.fold(line: line) {
-                        case .ignored:
-                            break
-                        case .status(let message):
-                            continuation.yield(.status(message))
-                        case .progress(let progress):
-                            continuation.yield(.progress(progress))
-                        case .success:
-                            succeeded = true
-                        }
-                        if succeeded { break }
-                    }
-                    if !succeeded, !Task.isCancelled {
-                        throw InstallError.transferFailed(
-                            "ollama ended the pull without reporting success")
-                    }
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch KernelError.runtimeUnavailable(let hint) {
-                    continuation.finish(
-                        throwing: InstallError.providerUnavailable(hint: hint))
-                } catch let error as KernelError {
-                    continuation.finish(
-                        throwing: InstallError.transferFailed(error.localizedDescription))
-                } catch let error as URLError
-                    where error.code == .cannotConnectToHost || error.code == .cannotFindHost
-                    || error.code == .networkConnectionLost
-                {
-                    continuation.finish(
-                        throwing: InstallError.providerUnavailable(
-                            hint: "Ollama isn't running. Start it with `ollama serve`."))
-                } catch {
-                    continuation.finish(throwing: error)
-                }
+        InstallStream.make { error in
+            if case KernelError.runtimeUnavailable(let hint) = error {
+                return .providerUnavailable(hint: hint)
             }
-            continuation.onTermination = { _ in task.cancel() }
+            if let kernel = error as? KernelError {
+                return .transferFailed(kernel.localizedDescription)
+            }
+            if let url = error as? URLError,
+                url.code == .cannotConnectToHost || url.code == .cannotFindHost
+                    || url.code == .networkConnectionLost
+            {
+                return .providerUnavailable(
+                    hint: "Ollama isn't running. Start it with `ollama serve`.")
+            }
+            return nil
+        } run: { continuation, _ in
+            if await !daemonReachable() {
+                try Task.checkCancellation()
+                guard OllamaAdapter.daemonBinary() != nil else {
+                    throw InstallError.providerUnavailable(
+                        hint: "Ollama stopped running. Start it again and retry.")
+                }
+                continuation.yield(.status("Starting Ollama…"))
+                try await OllamaAdapter(baseURL: baseURL).startDaemon(session: session)
+            }
+            var request = URLRequest(url: baseURL.appendingPathComponent("api/pull"))
+            request.httpMethod = "POST"
+            request.timeoutInterval = Self.pullIdleTimeout
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: ["model": plan.reference, "stream": true])
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                var collected = Data()
+                for try await byte in bytes {
+                    collected.append(byte)
+                    if collected.count >= 65536 { break }
+                }
+                throw Self.pullFailure(body: collected, code: code)
+            }
+            let reader = CappedLineReader(
+                bytes: bytes, source: "ollama",
+                maxResponseBytes: Self.pullResponseCap)
+            var aggregator = OllamaPullParser.Aggregator()
+            var succeeded = false
+            for try await line in reader.lines() {
+                if Task.isCancelled { break }
+                switch try aggregator.fold(line: line) {
+                case .ignored:
+                    break
+                case .status(let message):
+                    continuation.yield(.status(message))
+                case .progress(let progress):
+                    continuation.yield(.progress(progress))
+                case .success:
+                    succeeded = true
+                }
+                if succeeded { break }
+            }
+            if !succeeded, !Task.isCancelled {
+                throw InstallError.transferFailed(
+                    "ollama ended the pull without reporting success")
+            }
         }
     }
 
@@ -144,9 +136,6 @@ struct OllamaInstallProvider: InstallProvider {
     }
 
     private func daemonReachable() async -> Bool {
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/tags"))
-        request.timeoutInterval = 2
-        guard let (_, response) = try? await session.data(for: request) else { return false }
-        return (response as? HTTPURLResponse)?.statusCode == 200
+        await OllamaDefaults.daemonReachable(baseURL: baseURL, session: session)
     }
 }
