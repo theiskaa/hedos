@@ -24,10 +24,14 @@ enum Session {
     ) throws -> ModelRecord {
         let pool = capability.map { cap in shelf.filter { $0.capabilities.contains(cap) } } ?? shelf
         if let hit = pool.first(where: { $0.id == query }) { return hit }
-        if let hit = pool.first(where: {
+        let exact = pool.filter {
             $0.name.caseInsensitiveCompare(query) == .orderedSame
                 || $0.displayName.caseInsensitiveCompare(query) == .orderedSame
-        }) { return hit }
+        }
+        if exact.count == 1 { return exact[0] }
+        if exact.count > 1 {
+            throw CLIError(ambiguity(query, exact))
+        }
         let matches = pool.filter {
             $0.name.localizedCaseInsensitiveContains(query)
                 || $0.displayName.localizedCaseInsensitiveContains(query)
@@ -35,12 +39,16 @@ enum Session {
         }
         if matches.count == 1 { return matches[0] }
         if matches.count > 1 {
-            let list = matches.prefix(8)
-                .map { "  \($0.id)  ·  \($0.displayName)" }
-                .joined(separator: "\n")
-            throw CLIError("\"\(query)\" matches \(matches.count) models — be more specific:\n\(list)")
+            throw CLIError(ambiguity(query, matches))
         }
         let hint = capability.map { " serving \($0.rawValue)" } ?? ""
         throw CLIError("no model\(hint) matched \"\(query)\" — run `hedos ls` to see the shelf.")
+    }
+
+    private static func ambiguity(_ query: String, _ matches: [ModelRecord]) -> String {
+        let list = matches.prefix(8)
+            .map { "  \($0.id)  ·  \($0.displayName)" }
+            .joined(separator: "\n")
+        return "\"\(query)\" matches \(matches.count) models — pick one by id:\n\(list)"
     }
 }

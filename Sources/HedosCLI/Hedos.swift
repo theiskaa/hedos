@@ -20,6 +20,7 @@ struct Hedos: AsyncParsableCommand {
             Serve.self,
             Token.self,
             Pull.self,
+            Rm.self,
         ])
 
     static func main() async {
