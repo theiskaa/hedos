@@ -234,12 +234,12 @@ final class InstallModel {
         case .ollama:
             let tag = InstallReference.normalizedTag(reference)
             return records.contains {
-                $0.source.kind == .ollama && $0.state != .missing
+                $0.source.kind == .ollama && $0.state != .missing && !$0.downloading
                     && InstallReference.normalizedTag($0.name) == tag
             }
         case .huggingface:
             return records.contains {
-                $0.source.kind == .huggingfaceCache && $0.state != .missing
+                $0.source.kind == .huggingfaceCache && $0.state != .missing && !$0.downloading
                     && ($0.source.repo ?? "").lowercased() == reference.lowercased()
             }
         default:
