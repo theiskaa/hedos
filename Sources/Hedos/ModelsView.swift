@@ -892,6 +892,7 @@ struct ModelDetailSheet: View {
     @State private var nameDraft = ""
     @State private var titleHovering = false
     @State private var previewTick = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(record: ModelRecord, shell: ShellModel, onClose: @escaping () -> Void) {
         self.record = record
@@ -907,7 +908,6 @@ struct ModelDetailSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            SheetDivider()
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.pane) {
                     if record.runtime.tier == .recipeNeeded {
@@ -937,7 +937,10 @@ struct ModelDetailSheet: View {
                     .padding(.vertical, Design.Space.l)
             }
         }
-        .frame(width: Design.Sheet.modelDetailWidth, height: record.runtime.tier == .recipeNeeded ? Design.Sheet.modelRecipeHeight : Design.Sheet.modelDetailHeight)
+        .clampedSheetFrame(
+            width: Design.Sheet.modelDetailWidth,
+            height: record.runtime.tier == .recipeNeeded
+                ? Design.Sheet.modelRecipeHeight : Design.Sheet.modelDetailHeight)
         .task(id: record.id) {
             guard record.runtime.tier == .recipeNeeded else { return }
             let record = record
@@ -1292,9 +1295,11 @@ struct ModelDetailSheet: View {
                     .font(Design.label)
                     .foregroundStyle(Design.danger)
                     .fixedSize(horizontal: false, vertical: true)
+                    .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
             }
             primaryFooter
         }
+        .animation(Design.motion(reduceMotion: reduceMotion), value: deleteFailure)
     }
 
     private var deleteIconButton: some View {

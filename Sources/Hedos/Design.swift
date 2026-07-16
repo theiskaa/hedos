@@ -963,6 +963,24 @@ struct IconPlaque<Content: View>: View {
     }
 }
 
+struct ClampedSheetFrame: ViewModifier {
+    let width: CGFloat
+    let height: CGFloat
+
+    func body(content: Content) -> some View {
+        GeometryReader { geo in
+            content.frame(width: geo.size.width, height: geo.size.height)
+        }
+        .frame(maxWidth: width, maxHeight: height)
+    }
+}
+
+extension View {
+    func clampedSheetFrame(width: CGFloat, height: CGFloat) -> some View {
+        modifier(ClampedSheetFrame(width: width, height: height))
+    }
+}
+
 struct SheetDivider: View {
     var body: some View {
         Rectangle()

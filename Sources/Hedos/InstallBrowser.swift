@@ -30,7 +30,8 @@ struct InstallBrowser: View {
                 Design.motion(reduceMotion: reduceMotion),
                 value: installs.stagedPlan != nil)
         }
-        .frame(width: Design.Sheet.installWidth, height: Design.Sheet.installHeight)
+        .clampedSheetFrame(
+            width: Design.Sheet.installWidth, height: Design.Sheet.installHeight)
         .background(
             Button("") {
                 if installs.stagedPlan != nil || installs.stagingID != nil {
