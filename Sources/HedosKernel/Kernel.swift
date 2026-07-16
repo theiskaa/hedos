@@ -257,7 +257,7 @@ public actor Kernel {
             return trimmed.isEmpty ? nil : trimmed
         }
         return [
-            OllamaInstallProvider(),
+            OllamaInstallProvider(environment: environment, home: home),
             HuggingFaceInstallProvider(
                 root: hfRoot, tokenProvider: tokenProvider, home: home),
         ]

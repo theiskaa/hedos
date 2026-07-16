@@ -54,6 +54,39 @@ struct HFCacheWriterTests {
         #expect(model?.contextLengthHint == 2048)
     }
 
+    @Test func weightOnlyRepoInterruptionRetreatsToBlobsAndResumes() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let weight = Data(repeating: 0xCD, count: Int(12 << 20))
+        let files = ["model.safetensors": weight]
+        let (provider, transport) = HFInstallFixtures.provider(
+            repos: ["org/solo": FakeHubTransport.Repo(files: files)], root: root)
+        transport.failPath("model.safetensors", afterBytes: Int(11 << 20))
+        do {
+            _ = try await install(provider, reference: "org/solo")
+            Issue.record("install should have thrown")
+        } catch {}
+        let layout = HFCacheLayout(root: root, repo: "org/solo")
+        #expect(FileManager.default.fileExists(atPath: layout.blobsDirectory.path))
+        #expect(!FileManager.default.fileExists(atPath: layout.refsDirectory.path))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: layout.repoDirectory.appendingPathComponent("snapshots").path))
+        let scanned = await scan(root)
+        #expect(scanned.discovered.isEmpty)
+
+        transport.healPath("model.safetensors")
+        _ = try await install(provider, reference: "org/solo")
+        let ranged = transport.recordedRequests.filter {
+            $0.url?.path.hasSuffix("model.safetensors") == true
+                && $0.value(forHTTPHeaderField: "Range") == "bytes=\(11 << 20)-"
+        }
+        #expect(ranged.count == 1)
+        let restored = try Data(
+            contentsOf: layout.snapshotFile(revision: "rev0123abc", path: "model.safetensors"))
+        #expect(restored == weight)
+    }
+
     @Test func skeletonAloneReadsAsDownloading() async throws {
         let root = try tempRoot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
@@ -63,7 +96,8 @@ struct HFCacheWriterTests {
         let weight = HFSibling(rfilename: "model.safetensors", size: 64)
         try writer.prepareSkeleton(
             revision: "rev0123abc",
-            firstWeightPendingName: HFCacheWriter.pendingBlobName(for: weight))
+            firstWeightPendingName: HFCacheWriter.pendingBlobName(
+                for: weight, revision: "rev0123abc"))
         let result = await scan(root)
         let model = result.discovered.first { $0.source.repo == "org/tiny" }
         #expect(model != nil)
@@ -125,6 +159,72 @@ struct HFCacheWriterTests {
         #expect(restored == files["model.safetensors"])
     }
 
+    @Test func staleNonLFSIncompleteFromAnotherRevisionIsNotResumed() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        var files = HFInstallFixtures.tinyRepoFiles(weightBytes: 512)
+        files["tokenizer.json"] = Data(#"{"version":"2.0","vocab":"fresh"}"#.utf8)
+        let (provider, transport) = HFInstallFixtures.provider(
+            repos: [
+                "org/tiny": FakeHubTransport.Repo(
+                    files: files, revision: "rev0456def", plainPaths: ["tokenizer.json"])
+            ], root: root)
+
+        let layout = HFCacheLayout(root: root, repo: "org/tiny")
+        try FileManager.default.createDirectory(
+            at: layout.blobsDirectory, withIntermediateDirectories: true)
+        let stale = layout.incompleteURL(
+            named: HFCacheWriter.pendingBlobName(
+                for: HFSibling(rfilename: "tokenizer.json", size: 33),
+                revision: "rev0123abc"))
+        try Data(#"{"version":"1.0","#.utf8).write(to: stale)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -2 * 24 * 60 * 60)],
+            ofItemAtPath: stale.path)
+
+        _ = try await install(provider, reference: "org/tiny")
+        let tokenizerRanges = transport.recordedRequests.filter {
+            $0.url?.path.hasSuffix("tokenizer.json") == true
+                && $0.value(forHTTPHeaderField: "Range") != nil
+        }
+        #expect(tokenizerRanges.isEmpty)
+        let restored = try Data(
+            contentsOf: layout.snapshotFile(revision: "rev0456def", path: "tokenizer.json"))
+        #expect(restored == files["tokenizer.json"])
+        #expect(!FileManager.default.fileExists(atPath: stale.path))
+    }
+
+    @Test func interruptedRepullKeepsRefsOnThePriorWorkingRevision() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let files = HFInstallFixtures.tinyRepoFiles(weightBytes: 512)
+        let (firstProvider, _) = HFInstallFixtures.provider(
+            repos: ["org/tiny": FakeHubTransport.Repo(files: files)], root: root)
+        _ = try await install(firstProvider, reference: "org/tiny")
+
+        var updated = files
+        updated["model.safetensors"] = Data(repeating: 0xEE, count: 512)
+        let (secondProvider, transport) = HFInstallFixtures.provider(
+            repos: ["org/tiny": FakeHubTransport.Repo(files: updated, revision: "rev0456def")],
+            root: root)
+        transport.failPath("model.safetensors")
+        do {
+            _ = try await install(secondProvider, reference: "org/tiny")
+            Issue.record("install should have thrown")
+        } catch {}
+
+        let layout = HFCacheLayout(root: root, repo: "org/tiny")
+        let refURL = layout.refsDirectory.appendingPathComponent("main")
+        #expect(try String(contentsOf: refURL, encoding: .utf8) == "rev0123abc")
+        let result = await scan(root)
+        let model = result.discovered.first { $0.source.repo == "org/tiny" }
+        #expect(model != nil)
+
+        transport.healPath("model.safetensors")
+        _ = try await install(secondProvider, reference: "org/tiny")
+        #expect(try String(contentsOf: refURL, encoding: .utf8) == "rev0456def")
+    }
+
     @Test func serverIgnoringRangeRestartsCleanly() async throws {
         let root = try tempRoot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
@@ -141,6 +241,32 @@ struct HFCacheWriterTests {
         try weightContent.prefix(1000).write(to: pending)
 
         _ = try await install(provider, reference: "org/tiny")
+        let restored = try Data(
+            contentsOf: layout.snapshotFile(revision: "rev0123abc", path: "model.safetensors"))
+        #expect(restored == weightContent)
+    }
+
+    @Test func oversizedStaleIncompleteRestartsInsteadOfWedging() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let files = HFInstallFixtures.tinyRepoFiles(weightBytes: 1000)
+        let weightContent = files["model.safetensors"]!
+        let (provider, transport) = HFInstallFixtures.provider(
+            repos: ["org/tiny": FakeHubTransport.Repo(files: files)], root: root)
+
+        let layout = HFCacheLayout(root: root, repo: "org/tiny")
+        try FileManager.default.createDirectory(
+            at: layout.blobsDirectory, withIntermediateDirectories: true)
+        let pending = layout.incompleteURL(named: sha256Hex(weightContent))
+        try (weightContent + Data(repeating: 0x00, count: 500)).write(to: pending)
+
+        _ = try await install(provider, reference: "org/tiny")
+        let weightRequests = transport.recordedRequests.filter {
+            $0.url?.path.hasSuffix("model.safetensors") == true
+        }
+        #expect(weightRequests.count == 2)
+        #expect(weightRequests[0].value(forHTTPHeaderField: "Range") == "bytes=1500-")
+        #expect(weightRequests[1].value(forHTTPHeaderField: "Range") == nil)
         let restored = try Data(
             contentsOf: layout.snapshotFile(revision: "rev0123abc", path: "model.safetensors"))
         #expect(restored == weightContent)
@@ -180,6 +306,39 @@ struct HFCacheWriterTests {
         #expect(result.discovered.isEmpty)
     }
 
+    @Test func interruptedFreshSingleWeightKeepsResumableIncomplete() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        var files = HFInstallFixtures.tinyRepoFiles()
+        let weight = Data(repeating: 0xCD, count: Int(12 << 20))
+        files["model.safetensors"] = weight
+        let (provider, transport) = HFInstallFixtures.provider(
+            repos: ["org/tiny": FakeHubTransport.Repo(files: files)], root: root)
+        transport.failPath("model.safetensors", afterBytes: Int(11 << 20))
+        do {
+            _ = try await install(provider, reference: "org/tiny")
+            Issue.record("install should have thrown")
+        } catch {}
+        let layout = HFCacheLayout(root: root, repo: "org/tiny")
+        #expect(FileManager.default.fileExists(atPath: layout.repoDirectory.path))
+        let pending = layout.incompleteURL(named: sha256Hex(weight))
+        let partialSize =
+            (try? FileManager.default.attributesOfItem(atPath: pending.path)[.size] as? Int64)
+            ?? 0
+        #expect(partialSize == 11 << 20)
+
+        transport.healPath("model.safetensors")
+        _ = try await install(provider, reference: "org/tiny")
+        let ranged = transport.recordedRequests.filter {
+            $0.url?.path.hasSuffix("model.safetensors") == true
+                && $0.value(forHTTPHeaderField: "Range") == "bytes=\(11 << 20)-"
+        }
+        #expect(ranged.count == 1)
+        let restored = try Data(
+            contentsOf: layout.snapshotFile(revision: "rev0123abc", path: "model.safetensors"))
+        #expect(restored == weight)
+    }
+
     @Test func failureAfterAWeightKeepsPartialRepoAndResumeSkipsIt() async throws {
         let root = try tempRoot()
         defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
@@ -210,6 +369,49 @@ struct HFCacheWriterTests {
         let result = await scan(root)
         let model = result.discovered.first { $0.source.repo == "org/big" }
         #expect(model?.downloading == false)
+    }
+
+    @Test func weightlessRepoRefusesToPlan() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let files: [String: Data] = [
+            "config.json": Data(#"{"model_type":"xtts"}"#.utf8),
+            "model.pth": Data(repeating: 0xAB, count: 512),
+            "dvae.pth": Data(repeating: 0xCD, count: 512),
+        ]
+        let (provider, _) = HFInstallFixtures.provider(
+            repos: ["org/weightless": FakeHubTransport.Repo(files: files)], root: root)
+        await #expect(
+            throws: InstallError.transferFailed(
+                "org/weightless has no model weights hedos knows how to download.")
+        ) {
+            _ = try await provider.plan(reference: "org/weightless")
+        }
+    }
+
+    @Test func cancelledFreshInstallIsCleanedBeforeTheServiceConcludes() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let files = HFInstallFixtures.tinyRepoFiles(weightBytes: 512)
+        let (provider, transport) = HFInstallFixtures.provider(
+            repos: ["org/tiny": FakeHubTransport.Repo(files: files)], root: root)
+        transport.stallPath("model.safetensors")
+        let service = InstallService(providers: [provider], freeDiskBytes: { _ in .max })
+        let plan = try await service.plan(provider: .huggingface, reference: "org/tiny")
+        let id = try await service.begin(plan)
+        let layout = HFCacheLayout(root: root, repo: "org/tiny")
+        for _ in 0..<400 {
+            if FileManager.default.fileExists(atPath: layout.repoDirectory.path) { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(FileManager.default.fileExists(atPath: layout.repoDirectory.path))
+        await service.cancel(id)
+        var terminal: InstallEvent?
+        for await event in await service.events(id: id) where event.isTerminal {
+            terminal = event
+            #expect(!FileManager.default.fileExists(atPath: layout.repoDirectory.path))
+        }
+        #expect(terminal == .cancelled)
     }
 
     @Test func gatedRepoWithoutTokenThrowsAuthRequired() async throws {
@@ -253,6 +455,17 @@ struct HFCacheWriterTests {
         #expect(plan.totalBytes == files.values.map { Int64($0.count) }.reduce(0, +))
         #expect(plan.destination.hasSuffix("hub"))
         #expect(!plan.requiresAuth)
+    }
+
+    @Test func planCanonicalizesReferenceCasing() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        let files = HFInstallFixtures.tinyRepoFiles()
+        let (provider, _) = HFInstallFixtures.provider(
+            repos: ["TheOrg/Tiny-Model": FakeHubTransport.Repo(files: files)], root: root)
+        let plan = try await provider.plan(reference: "theorg/tiny-model")
+        #expect(plan.reference == "TheOrg/Tiny-Model")
+        #expect(plan.displayName == "Tiny-Model")
     }
 
     @Test func unknownRepoThrowsReferenceNotFound() async throws {

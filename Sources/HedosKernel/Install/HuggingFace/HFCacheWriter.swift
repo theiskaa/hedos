@@ -46,6 +46,7 @@ struct HFCacheLayout: Sendable, Hashable {
 
 struct HFCacheWriter: Sendable {
     static let hashChunkBytes = 1 << 20
+    static let staleIncompleteAge: TimeInterval = 24 * 60 * 60
 
     let layout: HFCacheLayout
     let transport: any InstallTransport
@@ -56,19 +57,23 @@ struct HFCacheWriter: Sendable {
         try files.createDirectory(
             at: layout.snapshotDirectory(revision: revision), withIntermediateDirectories: true)
         try files.createDirectory(at: layout.refsDirectory, withIntermediateDirectories: true)
-        try Data(revision.utf8).write(
-            to: layout.refsDirectory.appendingPathComponent("main"), options: .atomic)
+        let ref = layout.refsDirectory.appendingPathComponent("main")
+        if !files.fileExists(atPath: ref.path) {
+            try Data(revision.utf8).write(to: ref, options: .atomic)
+        }
         if let firstWeightPendingName {
             let pending = layout.incompleteURL(named: firstWeightPendingName)
-            if !files.fileExists(atPath: pending.path) {
+            if !files.fileExists(atPath: pending.path),
+                !files.fileExists(atPath: layout.blobURL(named: firstWeightPendingName).path)
+            {
                 files.createFile(atPath: pending.path, contents: nil)
             }
         }
     }
 
-    static func pendingBlobName(for sibling: HFSibling) -> String {
+    static func pendingBlobName(for sibling: HFSibling, revision: String) -> String {
         if let sha = sibling.sha256 { return sha }
-        let digest = SHA256.hash(data: Data(sibling.rfilename.utf8))
+        let digest = SHA256.hash(data: Data((revision + "\n" + sibling.rfilename).utf8))
         return "tmp-" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
@@ -77,8 +82,9 @@ struct HFCacheWriter: Sendable {
         onBytes: @escaping @Sendable (Int64) -> Void
     ) async throws {
         let files = FileManager.default
-        let pendingName = Self.pendingBlobName(for: sibling)
+        let pendingName = Self.pendingBlobName(for: sibling, revision: revision)
         if let sha = sibling.sha256, files.fileExists(atPath: layout.blobURL(named: sha).path) {
+            try? files.removeItem(at: layout.incompleteURL(named: pendingName))
             try link(path: sibling.rfilename, revision: revision, blobName: sha)
             onBytes(sibling.bytes ?? 0)
             return
@@ -94,11 +100,19 @@ struct HFCacheWriter: Sendable {
         } else {
             files.createFile(atPath: incomplete.path, contents: nil)
         }
+        let baseRequest = request
         var request = request
         if written > 0 {
             request.setValue("bytes=\(written)-", forHTTPHeaderField: "Range")
         }
-        let (chunks, http) = try await transport.stream(request)
+        var (chunks, http) = try await transport.stream(request)
+        if http.statusCode == 416, written > 0 {
+            try Data().write(to: incomplete)
+            hasher = SHA256()
+            onBytes(-written)
+            written = 0
+            (chunks, http) = try await transport.stream(baseRequest)
+        }
         switch http.statusCode {
         case 200:
             if written > 0 {
@@ -148,11 +162,22 @@ struct HFCacheWriter: Sendable {
         try link(path: sibling.rfilename, revision: revision, blobName: finalName)
     }
 
-    func removeStrayIncompletes() throws {
+    func commitRef(revision: String) throws {
+        try Data(revision.utf8).write(
+            to: layout.refsDirectory.appendingPathComponent("main"), options: .atomic)
+    }
+
+    func removeStrayIncompletes(keeping expected: Set<String> = []) throws {
         let files = FileManager.default
         let entries = try files.contentsOfDirectory(
-            at: layout.blobsDirectory, includingPropertiesForKeys: nil)
+            at: layout.blobsDirectory, includingPropertiesForKeys: [.contentModificationDateKey])
+        let cutoff = Date(timeIntervalSinceNow: -Self.staleIncompleteAge)
         for entry in entries where entry.lastPathComponent.hasSuffix(".incomplete") {
+            let name = String(entry.lastPathComponent.dropLast(".incomplete".count))
+            guard !expected.contains(name) else { continue }
+            let modified = (try? entry.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate
+            if let modified, modified > cutoff { continue }
             try files.removeItem(at: entry)
         }
     }
@@ -161,17 +186,31 @@ struct HFCacheWriter: Sendable {
         try? FileManager.default.removeItem(at: layout.repoDirectory)
     }
 
-    func hasCompletedWeightBlob(minimumBytes: Int64) -> Bool {
+    func hasSubstantialProgress(minimumBytes: Int64) -> Bool {
         let files = FileManager.default
         guard
             let entries = try? files.contentsOfDirectory(
                 at: layout.blobsDirectory, includingPropertiesForKeys: [.fileSizeKey])
         else { return false }
         return entries.contains { entry in
-            guard !entry.lastPathComponent.hasSuffix(".incomplete") else { return false }
             let size = (try? entry.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             return Int64(size) >= minimumBytes
         }
+    }
+
+    func hasCompletedBlob() -> Bool {
+        let files = FileManager.default
+        guard
+            let entries = try? files.contentsOfDirectory(
+                at: layout.blobsDirectory, includingPropertiesForKeys: nil)
+        else { return false }
+        return entries.contains { !$0.lastPathComponent.hasSuffix(".incomplete") }
+    }
+
+    func retreatToBlobsOnly() {
+        let files = FileManager.default
+        try? files.removeItem(at: layout.refsDirectory)
+        try? files.removeItem(at: layout.repoDirectory.appendingPathComponent("snapshots"))
     }
 
     private func link(path: String, revision: String, blobName: String) throws {

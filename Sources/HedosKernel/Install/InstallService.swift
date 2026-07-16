@@ -2,6 +2,7 @@ import Foundation
 
 public actor InstallService {
     static let diskHeadroom = 1.05
+    static let terminalHistoryLimit = 64
 
     private let providersByID: [InstallProviderID: any InstallProvider]
     private let orderedProviders: [any InstallProvider]
@@ -11,7 +12,10 @@ public actor InstallService {
     private var installs: [String: ActiveInstall] = [:]
     private var phases: [String: InstallEvent] = [:]
     private var terminal: [String: InstallEvent] = [:]
+    private var terminalOrder: [String] = []
     private var tasks: [String: Task<Void, Never>] = [:]
+    private var pumps: [String: Task<Void, Never>] = [:]
+    private var cancelRequests: Set<String> = []
     private var inFlight: [String: String] = [:]
     private var subscribers: [String: [UUID: AsyncStream<InstallEvent>.Continuation]] = [:]
     private var completionSubscribers: [UUID: AsyncStream<Set<SourceKind>>.Continuation] = [:]
@@ -104,7 +108,8 @@ public actor InstallService {
             return existing
         }
         if let pendingBytes = plan.remainingBytes ?? plan.totalBytes {
-            let required = Int64(Double(pendingBytes) * Self.diskHeadroom)
+            let scaled = Double(max(0, pendingBytes)) * Self.diskHeadroom
+            let required = scaled >= Double(Int64.max) ? Int64.max : Int64(scaled)
             let available = freeDiskBytes(diskProbeRoot) ?? .max
             guard available >= required else {
                 throw InstallError.insufficientDisk(
@@ -152,7 +157,11 @@ public actor InstallService {
     }
 
     public func cancel(_ installID: String) {
-        tasks[installID]?.cancel()
+        if let pump = pumps[installID] {
+            pump.cancel()
+        } else if installs[installID] != nil {
+            cancelRequests.insert(installID)
+        }
     }
 
     public func completions() -> AsyncStream<Set<SourceKind>> {
@@ -177,9 +186,30 @@ public actor InstallService {
 
     private func run(id: String, plan: InstallPlan, provider: any InstallProvider) async {
         transition(id, to: .preparing)
+        let (events, feed) = AsyncThrowingStream<InstallStreamEvent, Error>.makeStream()
+        let inner = provider.install(plan)
+        let pump = Task {
+            do {
+                for try await event in inner {
+                    feed.yield(event)
+                }
+                if Task.isCancelled {
+                    feed.finish(throwing: CancellationError())
+                } else {
+                    feed.finish()
+                }
+            } catch is CancellationError {
+                feed.finish(throwing: CancellationError())
+            } catch {
+                feed.finish(throwing: Task.isCancelled ? CancellationError() : error)
+            }
+        }
+        pumps[id] = pump
+        if cancelRequests.remove(id) != nil {
+            pump.cancel()
+        }
         do {
-            for try await event in provider.install(plan) {
-                if Task.isCancelled { break }
+            for try await event in events {
                 switch event {
                 case .status(let message):
                     transition(id, to: .status(message))
@@ -187,7 +217,7 @@ public actor InstallService {
                     applyProgress(id, progress)
                 }
             }
-            conclude(id, plan: plan, provider: provider, as: Task.isCancelled ? .cancelled : .done)
+            conclude(id, plan: plan, provider: provider, as: .done)
         } catch is CancellationError {
             conclude(id, plan: plan, provider: provider, as: .cancelled)
         } catch {
@@ -215,10 +245,16 @@ public actor InstallService {
         guard installs[id] != nil else { return }
         emit(id, event)
         terminal[id] = event
+        terminalOrder.append(id)
+        if terminalOrder.count > Self.terminalHistoryLimit {
+            terminal[terminalOrder.removeFirst()] = nil
+        }
         finishSubscribers(id)
         installs[id] = nil
         phases[id] = nil
         tasks[id] = nil
+        pumps[id] = nil
+        cancelRequests.remove(id)
         inFlight["\(plan.provider.rawValue)|\(plan.reference)"] = nil
         for continuation in completionSubscribers.values {
             continuation.yield([provider.sourceKind])

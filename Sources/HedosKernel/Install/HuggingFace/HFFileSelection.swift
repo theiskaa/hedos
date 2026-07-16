@@ -49,25 +49,36 @@ enum HFFileSelection {
         struct GroupKey: Hashable {
             let directory: String
             let base: String
+            let total: Int
         }
         var groups: [GroupKey: [HFSibling]] = [:]
+        var seenIndices: [GroupKey: Set<Int>] = [:]
         for sibling in ggufs {
             let filename = String(sibling.rfilename.split(separator: "/").last ?? "")
             let directory = sibling.rfilename.split(separator: "/").dropLast()
                 .joined(separator: "/")
             if let shard = GGUFShards.parse(filename) {
-                groups[GroupKey(directory: directory, base: shard.base), default: []]
-                    .append(sibling)
+                let key = GroupKey(
+                    directory: directory, base: shard.base, total: shard.total)
+                groups[key, default: []].append(sibling)
+                seenIndices[key, default: []].insert(shard.index)
             } else {
                 let stem = String(filename.dropLast(".gguf".count))
-                groups[GroupKey(directory: directory, base: stem), default: []].append(sibling)
+                groups[GroupKey(directory: directory, base: stem, total: 0), default: []]
+                    .append(sibling)
             }
         }
         let mmproj = ggufs.filter { $0.rfilename.lowercased().contains("mmproj") }
         let candidates = groups.filter { key, _ in
-            !key.base.lowercased().contains("mmproj")
+            guard !key.base.lowercased().contains("mmproj") else { return false }
+            return key.total == 0 || seenIndices[key]?.count == key.total
         }
-        let chosen = pickQuantGroup(Array(candidates.values))
+        let ordered = candidates.sorted {
+            ($0.key.directory, $0.key.base, $0.key.total)
+                < ($1.key.directory, $1.key.base, $1.key.total)
+        }.map(\.value)
+        let chosen = pickQuantGroup(ordered)
+        guard !chosen.isEmpty else { return [] }
         let companions = others.filter { ($0.bytes ?? 0) <= companionCap }
         return chosen + mmproj.filter { !chosen.contains($0) } + companions
     }
@@ -76,21 +87,43 @@ enum HFFileSelection {
         guard !groups.isEmpty else { return [] }
         for token in quantPreference {
             if let match = groups.first(where: { group in
-                group.contains { $0.rfilename.lowercased().contains(token) }
+                group.contains { matchesQuant($0.rfilename, token: token) }
             }) {
                 return match
             }
         }
         let smallest = groups.min { first, second in
-            first.compactMap(\.bytes).reduce(0, +) < second.compactMap(\.bytes).reduce(0, +)
+            first.compactMap(\.bytes).saturatingSum()
+                < second.compactMap(\.bytes).saturatingSum()
         }
         return smallest ?? []
     }
 
+    private static func matchesQuant(_ rfilename: String, token: String) -> Bool {
+        let name = rfilename.lowercased()
+        var searchStart = name.startIndex
+        while let range = name.range(of: token, range: searchStart..<name.endIndex) {
+            let boundaryBefore =
+                range.lowerBound == name.startIndex
+                || !isQuantCharacter(name[name.index(before: range.lowerBound)])
+            let boundaryAfter =
+                range.upperBound == name.endIndex || !isQuantCharacter(name[range.upperBound])
+            if boundaryBefore && boundaryAfter { return true }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
+    private static func isQuantCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "_"
+    }
+
     private static func diffusersSelection(_ kept: [HFSibling]) -> [HFSibling] {
         let paths = Set(kept.map(\.rfilename))
+        let treeHasWeights = kept.contains { $0.rfilename.contains("/") && isWeight($0) }
         return kept.filter { sibling in
             let path = sibling.rfilename
+            if treeHasWeights, !path.contains("/"), isWeight(sibling) { return false }
             let ext = fileExtension(path)
             if ["bin", "ckpt", "pt", "pth"].contains(ext) {
                 let stem = String(path.dropLast(ext.count + 1))

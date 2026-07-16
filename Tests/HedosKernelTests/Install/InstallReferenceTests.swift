@@ -49,6 +49,25 @@ struct InstallReferenceTests {
                 == "gemma3")
     }
 
+    @Test func ollamaKeepsUserNamespacedLinksWhole() {
+        #expect(
+            InstallReference.ollamaTag(from: "https://ollama.com/nezahatkorkmaz/deepseek-v3")
+                == "nezahatkorkmaz/deepseek-v3")
+        #expect(
+            InstallReference.ollamaTag(
+                from: "https://ollama.com/nezahatkorkmaz/deepseek-v3/tags")
+                == "nezahatkorkmaz/deepseek-v3")
+        #expect(
+            InstallReference.ollamaTag(from: "ollama.com/user/model:tag") == "user/model:tag")
+        #expect(InstallReference.ollamaTag(from: "user/model") == nil)
+    }
+
+    @Test func ollamaInstallTagAcceptsNamespacedWithoutExplicitTag() {
+        #expect(InstallReference.ollamaInstallTag(from: "user/model") == "user/model")
+        #expect(InstallReference.ollamaInstallTag(from: "gemma3:4b") == "gemma3:4b")
+        #expect(InstallReference.ollamaInstallTag(from: "a/b/c") == nil)
+    }
+
     @Test func ollamaRejectsForeignShapes() {
         #expect(InstallReference.ollamaTag(from: "") == nil)
         #expect(InstallReference.ollamaTag(from: "has space") == nil)

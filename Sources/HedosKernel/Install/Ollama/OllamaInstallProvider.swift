@@ -1,7 +1,8 @@
 import Foundation
 
 struct OllamaInstallProvider: InstallProvider {
-    static let pullResponseCap = 256 << 20
+    static let pullIdleTimeout: TimeInterval = 60 * 60
+    static let pullResponseCap = 4 << 30
 
     let id = InstallProviderID.ollama
     let displayName = "Ollama"
@@ -10,13 +11,19 @@ struct OllamaInstallProvider: InstallProvider {
 
     private let baseURL: URL
     private let session: URLSession
+    private let environment: [String: String]
+    private let home: URL
 
     init(
         baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
         self.baseURL = baseURL
         self.session = session
+        self.environment = environment
+        self.home = home
     }
 
     func availability() async -> InstallAvailability {
@@ -35,12 +42,13 @@ struct OllamaInstallProvider: InstallProvider {
     }
 
     func plan(reference: String) async throws -> InstallPlan {
-        guard let tag = InstallReference.ollamaTag(from: reference) else {
+        guard let tag = InstallReference.ollamaInstallTag(from: reference) else {
             throw InstallError.referenceInvalid(reference)
         }
         return InstallPlan(
             provider: id, reference: tag, displayName: tag,
-            destination: "~/.ollama/models")
+            destination: OllamaDefaults.displayModelsPath(
+                environment: environment, home: home))
     }
 
     static func isTagShaped(_ reference: String) -> Bool {
@@ -52,11 +60,17 @@ struct OllamaInstallProvider: InstallProvider {
             let task = Task {
                 do {
                     if await !daemonReachable() {
+                        try Task.checkCancellation()
+                        guard OllamaAdapter.daemonBinary() != nil else {
+                            throw InstallError.providerUnavailable(
+                                hint: "Ollama stopped running. Start it again and retry.")
+                        }
                         continuation.yield(.status("Starting Ollama…"))
-                        try await OllamaAdapter(baseURL: baseURL).startDaemon()
+                        try await OllamaAdapter(baseURL: baseURL).startDaemon(session: session)
                     }
                     var request = URLRequest(url: baseURL.appendingPathComponent("api/pull"))
                     request.httpMethod = "POST"
+                    request.timeoutInterval = Self.pullIdleTimeout
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.httpBody = try JSONSerialization.data(
                         withJSONObject: ["model": plan.reference, "stream": true])
@@ -96,6 +110,12 @@ struct OllamaInstallProvider: InstallProvider {
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
+                } catch KernelError.runtimeUnavailable(let hint) {
+                    continuation.finish(
+                        throwing: InstallError.providerUnavailable(hint: hint))
+                } catch let error as KernelError {
+                    continuation.finish(
+                        throwing: InstallError.transferFailed(error.localizedDescription))
                 } catch let error as URLError
                     where error.code == .cannotConnectToHost || error.code == .cannotFindHost
                     || error.code == .networkConnectionLost

@@ -43,22 +43,58 @@ public enum InstallReference {
     }
 
     public static func ollamaTag(from raw: String) -> String? {
+        tag(from: raw, requireExplicitTagForNamespaced: true)
+    }
+
+    public static func ollamaInstallTag(from raw: String) -> String? {
+        tag(from: raw, requireExplicitTagForNamespaced: false)
+    }
+
+    private static func tag(
+        from raw: String, requireExplicitTagForNamespaced: Bool
+    ) -> String? {
         guard var text = cleaned(raw) else { return nil }
+        let isLink = ollamaHosts.contains { text.lowercased().hasPrefix($0) }
         text = stripped(text, hosts: ollamaHosts)
         guard !text.contains("://") else { return nil }
+        if isLink {
+            var components = text.split(separator: "/", omittingEmptySubsequences: false)
+                .map(String.init)
+            if components.first?.lowercased() == "library" {
+                components = Array(components.dropFirst().prefix(1))
+            } else {
+                components = Array(components.prefix(2))
+            }
+            guard !components.isEmpty else { return nil }
+            text = components.joined(separator: "/")
+            guard shaped(text, requireExplicitTagForNamespaced: false) else { return nil }
+            return text
+        }
         if text.lowercased().hasPrefix("library/") {
             text = String(text.dropFirst("library/".count))
         }
-        if let slash = text.firstIndex(of: "/"),
-            raw.lowercased().contains("ollama.com") || raw.lowercased().contains("ollama.ai")
-        {
-            text = String(text[..<slash])
-        }
-        guard isOllamaTagShaped(text) else { return nil }
+        guard shaped(text, requireExplicitTagForNamespaced: requireExplicitTagForNamespaced)
+        else { return nil }
         return text
     }
 
+    public static func normalizedTag(_ reference: String) -> String {
+        (reference.contains(":") ? reference : reference + ":latest").lowercased()
+    }
+
+    public static func normalized(
+        provider: InstallProviderID, reference: String
+    ) -> String {
+        provider == .ollama ? normalizedTag(reference) : reference.lowercased()
+    }
+
     static func isOllamaTagShaped(_ reference: String) -> Bool {
+        shaped(reference, requireExplicitTagForNamespaced: true)
+    }
+
+    private static func shaped(
+        _ reference: String, requireExplicitTagForNamespaced: Bool
+    ) -> Bool {
         guard !reference.isEmpty,
             reference.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
             !reference.contains("://")
@@ -69,7 +105,7 @@ public enum InstallReference {
         let nameParts = name.split(separator: ":", omittingEmptySubsequences: false)
         guard nameParts.count <= 2, nameParts.allSatisfy({ !$0.isEmpty }) else { return false }
         if components.count == 2 {
-            return name.contains(":")
+            return !requireExplicitTagForNamespaced || name.contains(":")
         }
         return true
     }

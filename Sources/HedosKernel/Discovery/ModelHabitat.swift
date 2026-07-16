@@ -14,7 +14,7 @@ public struct ModelHabitat: Sendable {
 
     public func roots(models: ModelsSettings) -> [(kind: SourceKind, url: URL)] {
         var roots: [(kind: SourceKind, url: URL)] = []
-        roots.append((.ollama, home.appendingPathComponent(".ollama/models")))
+        roots.append((.ollama, OllamaDefaults.modelsRoot(environment: environment, home: home)))
         for url in HFCacheScanner.defaultRoots(
             environment: environment, user: models.hfCacheRoots, home: home)
         {
@@ -41,7 +41,9 @@ public struct ModelHabitat: Sendable {
         }
         var scanners: [any StoreScanner] = []
         if wanted([.ollama]) {
-            scanners.append(OllamaStoreScanner(root: home.appendingPathComponent(".ollama/models")))
+            scanners.append(
+                OllamaStoreScanner(
+                    root: OllamaDefaults.modelsRoot(environment: environment, home: home)))
         }
         if wanted([.huggingfaceCache]) {
             scanners.append(

@@ -148,13 +148,15 @@ struct HFHubAPI: Sendable {
             throw InstallError.transferFailed("hugging face returned HTTP \(http.statusCode)")
         }
         struct Info: Decodable {
+            let id: String?
             let sha: String?
             let gated: Gated?
             let siblings: [HFSibling]?
         }
         let info = try JSONDecoder().decode(Info.self, from: data)
+        let canonical = info.id?.contains("/") == true ? info.id! : repo
         return HFModelInfo(
-            repo: repo, sha: info.sha, gated: info.gated?.isGated ?? false,
+            repo: canonical, sha: info.sha, gated: info.gated?.isGated ?? false,
             siblings: info.siblings ?? [])
     }
 

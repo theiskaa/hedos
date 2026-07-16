@@ -87,7 +87,7 @@ struct OllamaAdapter: RuntimeAdapter {
         return (try? JSONDecoder().decode(Payload.self, from: data))?.models ?? []
     }
 
-    func startDaemon() async throws {
+    func startDaemon(session: URLSession = .shared) async throws {
         guard let binary = Self.daemonBinary() else {
             throw KernelError.runtimeUnavailable(
                 hint: "Ollama isn't installed. Get it from ollama.com.")
@@ -100,18 +100,24 @@ struct OllamaAdapter: RuntimeAdapter {
         try process.run()
 
         let probe = baseURL.appendingPathComponent("api/tags")
+        var exited = false
         for _ in 0..<20 {
             try await Task.sleep(nanoseconds: 500_000_000)
             var request = URLRequest(url: probe)
             request.timeoutInterval = 2
-            if let (_, response) = try? await URLSession.shared.data(for: request),
+            if let (_, response) = try? await session.data(for: request),
                 (response as? HTTPURLResponse)?.statusCode == 200
             {
                 return
             }
+            if !process.isRunning {
+                exited = true
+            }
         }
         throw KernelError.runtimeUnavailable(
-            hint: "Started Ollama but it never became reachable.")
+            hint: exited
+                ? "Ollama quit as soon as it started. Try `ollama serve` in a terminal."
+                : "Started Ollama but it never became reachable.")
     }
 
     func invoke(

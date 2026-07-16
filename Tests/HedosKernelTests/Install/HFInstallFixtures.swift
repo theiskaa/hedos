@@ -13,11 +13,16 @@ final class FakeHubTransport: InstallTransport, @unchecked Sendable {
         var files: [String: Data]
         var revision: String
         var gated: Bool
+        var plainPaths: Set<String>
 
-        init(files: [String: Data], revision: String = "rev0123abc", gated: Bool = false) {
+        init(
+            files: [String: Data], revision: String = "rev0123abc", gated: Bool = false,
+            plainPaths: Set<String> = []
+        ) {
             self.files = files
             self.revision = revision
             self.gated = gated
+            self.plainPaths = plainPaths
         }
     }
 
@@ -26,31 +31,36 @@ final class FakeHubTransport: InstallTransport, @unchecked Sendable {
     private struct State {
         var repos: [String: Repo]
         var honorRange: Bool
-        var failingPaths: Set<String>
+        var failingPaths: [String: Int]
         var corruptPaths: Set<String>
+        var stallingPaths: Set<String> = []
         var requests: [URLRequest] = []
         var searchHits: Data = Data("[]".utf8)
     }
 
     init(repos: [String: Repo], honorRange: Bool = true) {
         state = Mutex(
-            State(repos: repos, honorRange: honorRange, failingPaths: [], corruptPaths: []))
+            State(repos: repos, honorRange: honorRange, failingPaths: [:], corruptPaths: []))
     }
 
     var recordedRequests: [URLRequest] {
         state.withLock { $0.requests }
     }
 
-    func failPath(_ path: String) {
-        state.withLock { _ = $0.failingPaths.insert(path) }
+    func failPath(_ path: String, afterBytes: Int = 0) {
+        state.withLock { $0.failingPaths[path] = afterBytes }
     }
 
     func healPath(_ path: String) {
-        state.withLock { _ = $0.failingPaths.remove(path) }
+        state.withLock { _ = $0.failingPaths.removeValue(forKey: path) }
     }
 
     func corruptPath(_ path: String) {
         state.withLock { _ = $0.corruptPaths.insert(path) }
+    }
+
+    func stallPath(_ path: String) {
+        state.withLock { _ = $0.stallingPaths.insert(path) }
     }
 
     func setSearchHits(_ hits: [[String: Any]]) {
@@ -64,20 +74,24 @@ final class FakeHubTransport: InstallTransport, @unchecked Sendable {
         let path = url.path
         if path.hasPrefix("/api/models/") {
             let repoName = String(path.dropFirst("/api/models/".count))
-            guard let repo = state.withLock({ $0.repos[repoName] }) else {
+            let match = state.withLock { state in
+                state.repos.first { $0.key.lowercased() == repoName.lowercased() }
+            }
+            guard let (canonicalName, repo) = match else {
                 return (Data(), response(url: url, status: 404))
             }
             if repo.gated, request.value(forHTTPHeaderField: "Authorization") == nil {
                 return (Data(), response(url: url, status: 401))
             }
             let siblings = repo.files.map { path, data in
-                [
-                    "rfilename": path,
-                    "size": data.count,
-                    "lfs": ["oid": sha256Hex(data), "size": data.count],
-                ] as [String: Any]
+                var sibling: [String: Any] = ["rfilename": path, "size": data.count]
+                if !repo.plainPaths.contains(path) {
+                    sibling["lfs"] = ["oid": sha256Hex(data), "size": data.count]
+                }
+                return sibling
             }
             let body = try JSONSerialization.data(withJSONObject: [
+                "id": canonicalName,
                 "sha": repo.revision,
                 "gated": repo.gated,
                 "siblings": siblings,
@@ -102,16 +116,33 @@ final class FakeHubTransport: InstallTransport, @unchecked Sendable {
         }
         let repoName = components[0] + "/" + components[1]
         let filePath = components[4...].joined(separator: "/")
-        let (repo, failing, corrupt, honorRange) = state.withLock {
+        let (repo, failAfter, corrupt, stalling, honorRange) = state.withLock {
             (
-                $0.repos[repoName], $0.failingPaths.contains(filePath),
-                $0.corruptPaths.contains(filePath), $0.honorRange
+                $0.repos[repoName], $0.failingPaths[filePath],
+                $0.corruptPaths.contains(filePath), $0.stallingPaths.contains(filePath),
+                $0.honorRange
             )
         }
         guard let repo, var content = repo.files[filePath] else {
             return (finished([]), response(url: url, status: 404))
         }
-        if failing {
+        if stalling {
+            return (
+                AsyncThrowingStream { continuation in
+                    let task = Task {
+                        do {
+                            try await Task.sleep(for: .seconds(300))
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
+                    }
+                    continuation.onTermination = { _ in task.cancel() }
+                },
+                response(url: url, status: 200)
+            )
+        }
+        if let failAfter, failAfter <= 0 {
             throw URLError(.networkConnectionLost)
         }
         if corrupt {
@@ -120,18 +151,43 @@ final class FakeHubTransport: InstallTransport, @unchecked Sendable {
         if honorRange, let range = request.value(forHTTPHeaderField: "Range"),
             range.hasPrefix("bytes="), range.hasSuffix("-"),
             let offset = Int(range.dropFirst("bytes=".count).dropLast()),
-            offset > 0, offset <= content.count
+            offset > 0
         {
+            guard offset < content.count else {
+                return (finished([]), response(url: url, status: 416))
+            }
             return (
-                finished([Data(content.dropFirst(offset))]),
+                finished(
+                    [Data(content.dropFirst(offset))],
+                    failAfterBytes: failAfter),
                 response(url: url, status: 206)
             )
         }
-        return (finished([content]), response(url: url, status: 200))
+        return (
+            finished([content], failAfterBytes: failAfter),
+            response(url: url, status: 200)
+        )
     }
 
-    private func finished(_ chunks: [Data]) -> AsyncThrowingStream<Data, Error> {
+    private func finished(
+        _ chunks: [Data], failAfterBytes: Int? = nil
+    ) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
+            if let failAfterBytes {
+                var remaining = failAfterBytes
+                for chunk in chunks where !chunk.isEmpty {
+                    if chunk.count <= remaining {
+                        continuation.yield(chunk)
+                        remaining -= chunk.count
+                    } else {
+                        continuation.yield(chunk.prefix(remaining))
+                        continuation.finish(throwing: URLError(.networkConnectionLost))
+                        return
+                    }
+                }
+                continuation.finish(throwing: URLError(.networkConnectionLost))
+                return
+            }
             for chunk in chunks where !chunk.isEmpty {
                 continuation.yield(chunk)
             }

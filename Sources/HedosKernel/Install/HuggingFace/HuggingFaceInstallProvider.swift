@@ -106,17 +106,18 @@ struct HuggingFaceInstallProvider: InstallProvider {
     }
 
     func plan(reference: String) async throws -> InstallPlan {
-        let repo = try Self.repoShaped(reference)
-        let info = try await api.modelInfo(repo: repo)
+        let typed = try Self.repoShaped(reference)
+        let info = try await api.modelInfo(repo: typed)
+        let repo = info.repo
         let selection = HFFileSelection.select(siblings: info.siblings)
-        guard !selection.isEmpty else {
+        guard selection.contains(where: HFFileSelection.isWeight) else {
             throw InstallError.transferFailed(
-                "\(repo) has no files hedos knows how to download.")
+                "\(repo) has no model weights hedos knows how to download.")
         }
         let root = await rootProvider()
         let layout = HFCacheLayout(root: root, repo: repo)
         let sizes = selection.compactMap(\.bytes)
-        let totalBytes = sizes.isEmpty ? nil : sizes.reduce(0, +)
+        let totalBytes = sizes.isEmpty ? nil : sizes.saturatingSum()
         return InstallPlan(
             provider: id,
             reference: repo,
@@ -125,25 +126,31 @@ struct HuggingFaceInstallProvider: InstallProvider {
             files: selection.map { InstallPlanFile(path: $0.rfilename, bytes: $0.bytes) },
             totalBytes: totalBytes,
             remainingBytes: totalBytes.map {
-                max($0 - Self.presentBytes(selection: selection, layout: layout), 0)
+                max(
+                    $0
+                        - Self.presentBytes(
+                            selection: selection, layout: layout, revision: info.sha ?? ""),
+                    0)
             },
             destination: displayPath(root),
             requiresAuth: info.gated && api.token() == nil)
     }
 
-    static func presentBytes(selection: [HFSibling], layout: HFCacheLayout) -> Int64 {
+    static func presentBytes(
+        selection: [HFSibling], layout: HFCacheLayout, revision: String
+    ) -> Int64 {
         let files = FileManager.default
         return selection.reduce(0) { present, sibling in
             if let sha = sibling.sha256,
                 files.fileExists(atPath: layout.blobURL(named: sha).path)
             {
-                return present + (sibling.bytes ?? 0)
+                return present.addingClamped(max(0, sibling.bytes ?? 0))
             }
             let pending = layout.incompleteURL(
-                named: HFCacheWriter.pendingBlobName(for: sibling))
+                named: HFCacheWriter.pendingBlobName(for: sibling, revision: revision))
             let size =
                 (try? files.attributesOfItem(atPath: pending.path)[.size] as? Int64) ?? nil
-            return present + (size ?? 0)
+            return present.addingClamped(max(0, size ?? 0))
         }
     }
 
@@ -156,12 +163,19 @@ struct HuggingFaceInstallProvider: InstallProvider {
 
     func install(_ plan: InstallPlan) -> AsyncThrowingStream<InstallStreamEvent, Error> {
         AsyncThrowingStream { continuation in
+            let interruptionCleanup = Mutex<(@Sendable () -> Void)?>(nil)
             let task = Task {
                 let root = await rootProvider()
                 let layout = HFCacheLayout(root: root, repo: plan.reference)
                 let writer = HFCacheWriter(layout: layout, transport: transport)
                 let repoExistedBefore = FileManager.default.fileExists(
                     atPath: layout.repoDirectory.path)
+                interruptionCleanup.withLock {
+                    $0 = {
+                        Self.cleanUpAfterInterruption(
+                            writer: writer, repoExistedBefore: repoExistedBefore)
+                    }
+                }
                 do {
                     continuation.yield(.status("Resolving \(plan.reference)"))
                     let info = try await api.modelInfo(repo: plan.reference)
@@ -170,18 +184,25 @@ struct HuggingFaceInstallProvider: InstallProvider {
                             "\(plan.reference) has no resolvable revision.")
                     }
                     let selection = HFFileSelection.select(siblings: info.siblings)
-                    guard !selection.isEmpty else {
+                    guard selection.contains(where: HFFileSelection.isWeight) else {
                         throw InstallError.transferFailed(
-                            "\(plan.reference) has no files hedos knows how to download.")
+                            "\(plan.reference) has no model weights hedos knows how to download.")
                     }
                     let ordered = Self.downloadOrder(selection)
                     let firstWeight = ordered.first(where: HFFileSelection.isWeight)
                     try writer.prepareSkeleton(
                         revision: revision,
-                        firstWeightPendingName: firstWeight.map(HFCacheWriter.pendingBlobName))
+                        firstWeightPendingName: firstWeight.map {
+                            HFCacheWriter.pendingBlobName(for: $0, revision: revision)
+                        })
+                    try writer.removeStrayIncompletes(
+                        keeping: Set(
+                            ordered.map {
+                                HFCacheWriter.pendingBlobName(for: $0, revision: revision)
+                            }))
                     let sizes = ordered.compactMap(\.bytes)
                     let meter = InstallProgressMeter(
-                        totalBytes: sizes.isEmpty ? nil : sizes.reduce(0, +))
+                        totalBytes: sizes.isEmpty ? nil : sizes.saturatingSum())
                     for sibling in ordered {
                         try Task.checkCancellation()
                         continuation.yield(.progress(meter.begin(file: sibling.rfilename)))
@@ -196,6 +217,7 @@ struct HuggingFaceInstallProvider: InstallProvider {
                             }
                         }
                     }
+                    try writer.commitRef(revision: revision)
                     try writer.removeStrayIncompletes()
                     continuation.yield(.progress(meter.finish()))
                     continuation.finish()
@@ -215,7 +237,12 @@ struct HuggingFaceInstallProvider: InstallProvider {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { termination in
+                task.cancel()
+                if case .cancelled = termination {
+                    interruptionCleanup.withLock { $0 }?()
+                }
+            }
         }
     }
 
@@ -235,15 +262,19 @@ struct HuggingFaceInstallProvider: InstallProvider {
 
     static func cleanUpAfterInterruption(writer: HFCacheWriter, repoExistedBefore: Bool) {
         guard !repoExistedBefore else { return }
-        if !writer.hasCompletedWeightBlob(minimumBytes: weightKeepThreshold) {
+        guard writer.hasSubstantialProgress(minimumBytes: weightKeepThreshold) else {
             writer.removeRepo()
+            return
+        }
+        if !writer.hasCompletedBlob() {
+            writer.retreatToBlobsOnly()
         }
     }
 
     private func displayPath(_ url: URL) -> String {
         let path = url.standardizedFileURL.path
         let homePath = home.standardizedFileURL.path
-        guard path.hasPrefix(homePath) else { return path }
+        guard path == homePath || path.hasPrefix(homePath + "/") else { return path }
         return "~" + path.dropFirst(homePath.count)
     }
 }

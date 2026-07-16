@@ -29,7 +29,11 @@ struct OllamaPullParserTests {
         }
         #expect(success)
         #expect(statuses == ["pulling manifest", "verifying sha256 digest", "writing manifest"])
-        #expect(progress.last == InstallProgress(bytesDownloaded: 1200, totalBytes: 1200))
+        #expect(
+            progress.last
+                == InstallProgress(
+                    bytesDownloaded: 1200, totalBytes: 1200, totalIsPartial: true))
+        #expect(progress.allSatisfy { $0.fraction == nil })
         let downloaded = progress.map(\.bytesDownloaded)
         #expect(downloaded == downloaded.sorted())
     }

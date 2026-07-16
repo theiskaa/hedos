@@ -235,6 +235,35 @@ struct InstallServiceTests {
         #expect(provider.installCount == 0)
     }
 
+    @Test func cancelImmediatelyAfterBeginConcludesCancelled() async throws {
+        let gate = StreamGate()
+        let provider = ScriptedProvider { _ in gate.stream() }
+        let service = InstallService(providers: [provider], freeDiskBytes: { _ in .max })
+        let id = try await service.begin(makePlan())
+        await service.cancel(id)
+        try await pollUntil { await service.active().isEmpty }
+        let events = await collect(await service.events(id: id))
+        #expect(events.last == .cancelled)
+    }
+
+    @Test func hostileByteCountsClampInsteadOfTrapping() async throws {
+        let provider = instantFinish()
+        let service = InstallService(providers: [provider], freeDiskBytes: { _ in 100 })
+        do {
+            _ = try await service.begin(makePlan(totalBytes: .max))
+            Issue.record("begin should have thrown")
+        } catch let error as InstallError {
+            guard case .insufficientDisk(let required, _) = error else {
+                Issue.record("unexpected error \(error)")
+                return
+            }
+            #expect(required == .max)
+        }
+        #expect([Int64.max, .max, 3].saturatingSum() == .max)
+        #expect([Int64.max, -5].saturatingSum() == .max)
+        #expect([Int64(2), 3].saturatingSum() == 5)
+    }
+
     @Test func resumePreflightChecksOnlyRemainingBytes() async throws {
         let service = InstallService(providers: [instantFinish()], freeDiskBytes: { _ in 200 })
         let id = try await service.begin(

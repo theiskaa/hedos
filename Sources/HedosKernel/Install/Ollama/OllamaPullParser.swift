@@ -38,8 +38,9 @@ enum OllamaPullParser {
 
         private func aggregate() -> InstallProgress {
             InstallProgress(
-                bytesDownloaded: completed.values.reduce(0, +),
-                totalBytes: totals.values.reduce(0, +))
+                bytesDownloaded: completed.values.saturatingSum(),
+                totalBytes: totals.values.saturatingSum(),
+                totalIsPartial: true)
         }
     }
 
