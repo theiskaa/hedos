@@ -109,7 +109,7 @@ struct ModelsPane: View {
             isPresented: shell.installBrowserOpen,
             handlesEscape: false,
             onDismiss: {
-                if shell.installs.stagedPlan != nil {
+                if shell.installs.stagedPlan != nil || shell.installs.stagingID != nil {
                     shell.installs.discardStagedPlan()
                 } else {
                     shell.installBrowserOpen = false

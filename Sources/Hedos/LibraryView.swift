@@ -17,8 +17,11 @@ final class LibraryViewModel {
             shelfSignature = records.map {
                 "\($0.id)|\($0.state.rawValue)|\(Launcher.destination(for: $0).rawValue)"
             }
+            recordsChanged()
         }
     }
+
+    @ObservationIgnored var recordsChanged: () -> Void = {}
 
     private(set) var shelfSignature: [String] = []
     var watchedFolders: [String] = []

@@ -151,7 +151,7 @@ struct SuggestionCard: View {
     }
 
     private var activeInstall: ActiveInstall? {
-        installs.activeInstall(reference: entry.reference)
+        installs.activeInstall(provider: entry.provider, reference: entry.reference)
     }
 
     var body: some View {
@@ -181,7 +181,7 @@ struct SuggestionCard: View {
                         .fraction)
                 .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
             }
-            if let failure = installs.failures[entry.reference] {
+            if let failure = installs.failure(provider: entry.provider, reference: entry.reference) {
                 Text(failure)
                     .font(Design.label)
                     .foregroundStyle(Design.heatText)
@@ -214,9 +214,11 @@ struct SuggestionCard: View {
     }
 
     private var cardState: String {
-        if installs.completed.contains(entry.reference) { return "done" }
+        if installs.installed(provider: entry.provider, reference: entry.reference) {
+            return "done"
+        }
         if activeInstall != nil { return "downloading" }
-        if let failure = installs.failures[entry.reference] { return "failed|\(failure)" }
+        if let failure = installs.failure(provider: entry.provider, reference: entry.reference) { return "failed|\(failure)" }
         return "idle"
     }
 
@@ -230,7 +232,7 @@ struct SuggestionCard: View {
 
     @ViewBuilder
     private var action: some View {
-        if installs.completed.contains(entry.reference) {
+        if installs.installed(provider: entry.provider, reference: entry.reference) {
             Text("On your shelf".uppercased())
                 .font(Design.micro)
                 .tracking(Design.microTracking)

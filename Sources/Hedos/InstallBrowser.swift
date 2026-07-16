@@ -390,7 +390,8 @@ struct ActiveInstallRow: View {
     static func byteLabel(_ progress: InstallProgress) -> String {
         let downloaded = DiscoverySummary.formatBytes(progress.bytesDownloaded)
         guard let total = progress.totalBytes else { return downloaded }
-        return "\(downloaded) / \(DiscoverySummary.formatBytes(total))"
+        let suffix = progress.totalIsPartial ? "+" : ""
+        return "\(downloaded) / \(DiscoverySummary.formatBytes(total))\(suffix)"
     }
 }
 
@@ -441,12 +442,12 @@ struct SearchResultCard: View {
     }
 
     private var installed: Bool {
-        installs.onShelf(provider: hit.provider, reference: hit.reference)
+        installs.installed(provider: hit.provider, reference: hit.reference)
     }
 
     private var stageable: Bool {
         !installed && installs.stagingID == nil
-            && installs.activeInstall(reference: hit.reference) == nil
+            && installs.activeInstall(provider: hit.provider, reference: hit.reference) == nil
     }
 
     private func stage() {
@@ -494,7 +495,7 @@ struct SearchResultCard: View {
                     Spacer(minLength: Design.Space.s)
                     if installed {
                         TintChip(text: "installed", glyph: "checkmark")
-                    } else if installs.activeInstall(reference: hit.reference) != nil {
+                    } else if installs.activeInstall(provider: hit.provider, reference: hit.reference) != nil {
                         ProgressView().controlSize(.small)
                     } else {
                         Button("Install", action: installNow)
@@ -861,13 +862,12 @@ struct CatalogInstallCard: View {
     }
 
     private var installed: Bool {
-        installs.onShelf(provider: entry.provider, reference: entry.reference)
-            || installs.completed.contains(entry.reference)
+        installs.installed(provider: entry.provider, reference: entry.reference)
     }
 
     private var stageable: Bool {
         !installed && installs.stagingID == nil
-            && installs.activeInstall(reference: entry.reference) == nil
+            && installs.activeInstall(provider: entry.provider, reference: entry.reference) == nil
             && installs.isAvailable(entry.provider)
     }
 
@@ -935,7 +935,7 @@ struct CatalogInstallCard: View {
     private var action: some View {
         if installed {
             TintChip(text: "installed", glyph: "checkmark")
-        } else if installs.activeInstall(reference: entry.reference) != nil {
+        } else if installs.activeInstall(provider: entry.provider, reference: entry.reference) != nil {
             ProgressView().controlSize(.small)
         } else if installs.isAvailable(entry.provider) {
             Button("Install", action: installNow)
