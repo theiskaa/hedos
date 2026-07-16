@@ -17,8 +17,11 @@ final class LibraryViewModel {
             shelfSignature = records.map {
                 "\($0.id)|\($0.state.rawValue)|\(Launcher.destination(for: $0).rawValue)"
             }
+            recordsChanged()
         }
     }
+
+    @ObservationIgnored var recordsChanged: () -> Void = {}
 
     private(set) var shelfSignature: [String] = []
     var watchedFolders: [String] = []
@@ -117,6 +120,17 @@ final class LibraryViewModel {
     func removeEndpoint(id: String) async {
         try? await kernel.removeEndpoint(id)
         await refreshShelf()
+    }
+
+    func deleteModel(id: String) async -> String? {
+        do {
+            _ = try await kernel.deleteModel(id)
+            await refreshShelf()
+            return nil
+        } catch {
+            await refreshShelf()
+            return error.localizedDescription
+        }
     }
 
     func record(id: String?) -> ModelRecord? {

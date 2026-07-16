@@ -100,9 +100,14 @@ public actor Kernel {
     private var loadedManifests: [RuntimeManifest] = []
     private let daemonLiveness: DaemonLiveness
     private let communityLibrary: CommunityLibrary
+    public nonisolated let installs: InstallService
     private nonisolated(unsafe) var settingsReaction: Task<Void, Never>?
+    private nonisolated(unsafe) var installReaction: Task<Void, Never>?
     private var knownWatchedFolders: [String]?
     private var knownHFCacheRoots: [String]?
+    private var modelRemover = ModelRemover(
+        trasher: ModelRemover.systemTrasher(), ollama: OllamaModelRemover())
+    private let scanTurnstile = ScanTurnstile()
 
     public init(
         directory: URL,
@@ -113,7 +118,8 @@ public actor Kernel {
         vmHost: (any VMHost)? = nil,
         daemonLiveness: DaemonLiveness = .shared,
         communityLibrary: CommunityLibrary = CommunityLibrary(),
-        duplicateThreshold: Int64 = DuplicateDetector.defaultThreshold
+        duplicateThreshold: Int64 = DuplicateDetector.defaultThreshold,
+        installProviders: [any InstallProvider]? = nil
     ) {
         self.habitat = habitat
         self.directory = directory
@@ -149,6 +155,11 @@ public actor Kernel {
         self.gatewayClientStore = GatewayClientStore(directory: gatewayDirectory, secrets: secrets)
         self.gatewayAuditLog = GatewayAuditLog(directory: gatewayDirectory)
         self.vmHost = vmHost ?? ContainerizationVMHost(directory: directory)
+        let installService = InstallService(
+            providers: installProviders
+                ?? Self.defaultInstallProviders(
+                    secrets: secrets, habitat: habitat, settings: self.settings))
+        self.installs = installService
         let changes = self.settings.changes()
         settingsReaction = Task { [weak self] in
             for await domain in changes {
@@ -156,10 +167,16 @@ public actor Kernel {
                 await self.react(toSettingsDomain: domain)
             }
         }
+        installReaction = Task { [weak self] in
+            for await kinds in await installService.completions() {
+                await self?.scopedRescan(kinds)
+            }
+        }
     }
 
     deinit {
         settingsReaction?.cancel()
+        installReaction?.cancel()
     }
 
     private func react(toSettingsDomain domain: String) async {
@@ -206,6 +223,36 @@ public actor Kernel {
         ]
     }
 
+    static func defaultInstallProviders(
+        secrets: any SecretStore, habitat: ModelHabitat, settings: SettingsStore
+    ) -> [any InstallProvider] {
+        let environment = habitat.environment
+        let home = habitat.home
+        return [
+            OllamaInstallProvider(environment: environment, home: home),
+            HuggingFaceInstallProvider(
+                root: HuggingFaceInstallProvider.defaultRoot(
+                    environment: environment, settings: settings, home: home),
+                tokenProvider: HuggingFaceInstallProvider.defaultToken(
+                    secrets: secrets, environment: environment, home: home),
+                home: home),
+        ]
+    }
+
+    public nonisolated func setHuggingFaceToken(_ token: String?) throws {
+        if let token, !token.isEmpty {
+            try secrets.set(token, account: HuggingFaceInstallProvider.tokenAccount)
+        } else {
+            try secrets.delete(account: HuggingFaceInstallProvider.tokenAccount)
+        }
+    }
+
+    public nonisolated func hasHuggingFaceToken() -> Bool {
+        guard let stored = try? secrets.get(account: HuggingFaceInstallProvider.tokenAccount)
+        else { return false }
+        return !stored.isEmpty
+    }
+
     private func reloadUserRuntimes() async -> [String] {
         let models = await settings.models()
         let (manifests, issues) = runtimeCatalog.load()
@@ -243,9 +290,13 @@ public actor Kernel {
         let manifestIssues = await reloadUserRuntimes()
         let models = await settings.models()
         let scanners = habitat.scanners(kinds: nil, models: models)
-        var summary = try await DiscoveryService(
-            scanners: scanners, duplicateThreshold: duplicateThreshold
-        ).discover(into: registry)
+        let registry = registry
+        let threshold = duplicateThreshold
+        var summary = try await scanTurnstile.run {
+            try await DiscoveryService(
+                scanners: scanners, duplicateThreshold: threshold
+            ).discover(into: registry)
+        }
         await daemonLiveness.probe()
         try await ResolutionEngine(adapters: adapters).resolveAll(in: registry)
         summary.issues.append(contentsOf: manifestIssues)
@@ -325,10 +376,14 @@ public actor Kernel {
         let models = await settings.models()
         let scanners = habitat.scanners(kinds: kinds, models: models)
         guard !scanners.isEmpty else { return }
+        let registry = registry
+        let threshold = duplicateThreshold
         guard
-            let partial = try? await DiscoveryService(
-                scanners: scanners, duplicateThreshold: duplicateThreshold
-            ).discover(into: registry)
+            let partial = try? await scanTurnstile.run({
+                try await DiscoveryService(
+                    scanners: scanners, duplicateThreshold: threshold
+                ).discover(into: registry)
+            })
         else { return }
         let affected = Set(scanners.flatMap(\.kinds))
         let resolutionScope: Set<SourceKind>? =
@@ -506,6 +561,75 @@ public actor Kernel {
             state: .ready)
         try await registry.register(record)
         return record
+    }
+
+    public func deletionPreview(_ modelID: String) async throws -> ModelDeletionPreview {
+        modelRemover.preview(try await deletableRecord(modelID))
+    }
+
+    public func deleteModel(_ modelID: String) async throws -> ModelDeletionReport {
+        let record = try await deletableRecord(modelID)
+        if await installInFlight(for: record) {
+            throw RemovalError.stillDownloading(name: record.displayName)
+        }
+        if await governor.isResident(record.id) {
+            await governor.residency.unloadNow(record.id)
+            if await governor.isResident(record.id) {
+                throw RemovalError.modelBusy(name: record.displayName)
+            }
+        }
+        let remover = modelRemover
+        let governor = governor
+        let registry = registry
+        let report = try await scanTurnstile.run {
+            try await governor.gate.withAccess(.unload(modelID: record.id)) {
+                if await governor.isResident(record.id) {
+                    throw RemovalError.modelBusy(name: record.displayName)
+                }
+                let report = try await remover.remove(record)
+                _ = try await registry.unregister(id: record.id)
+                return report
+            }
+        }
+        if await settings.defaultChatModelID() == record.id {
+            try? await settings.setDefaultChatModelID(nil)
+        }
+        await scopedRescan([record.source.kind])
+        return report
+    }
+
+    private func installInFlight(for record: ModelRecord) async -> Bool {
+        let active = await installs.active()
+        guard !active.isEmpty else { return false }
+        switch record.source.kind {
+        case .huggingfaceCache:
+            let repo = (record.source.repo ?? "").lowercased()
+            return active.contains {
+                $0.provider == .huggingface && $0.reference.lowercased() == repo
+            }
+        case .ollama:
+            let tag = InstallReference.normalizedTag(record.source.repo ?? record.name)
+            return active.contains {
+                $0.provider == .ollama
+                    && InstallReference.normalizedTag($0.reference) == tag
+            }
+        default:
+            return false
+        }
+    }
+
+    private func deletableRecord(_ modelID: String) async throws -> ModelRecord {
+        guard let record = try await registry.get(id: modelID) else {
+            throw KernelError.modelNotFound(modelID)
+        }
+        guard record.isDeletable else {
+            throw RemovalError.notDeletable(kind: record.source.kind)
+        }
+        return record
+    }
+
+    func setModelRemover(_ remover: ModelRemover) {
+        modelRemover = remover
     }
 
     public func removeEndpoint(_ modelID: String) async throws {

@@ -13,7 +13,7 @@ struct OllamaAdapter: RuntimeAdapter {
     var id: RuntimeID { .ollama }
     let baseURL: URL
 
-    init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!) {
+    init(baseURL: URL = OllamaDefaults.baseURL) {
         self.baseURL = baseURL
     }
 
@@ -55,12 +55,18 @@ struct OllamaAdapter: RuntimeAdapter {
         return RuntimeBid(tier: .native, preference: BidPreference.ollama)
     }
 
-    static func daemonBinary() -> URL? {
-        let candidates = [
+    static func daemonBinary(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL? {
+        var candidates = [
             "/usr/local/bin/ollama",
             "/opt/homebrew/bin/ollama",
             "\(NSHomeDirectory())/.local/bin/ollama",
         ]
+        if let path = environment["PATH"] {
+            candidates.append(
+                contentsOf: path.split(separator: ":").map { "\($0)/ollama" })
+        }
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
             .map { URL(fileURLWithPath: $0) }
     }
@@ -81,10 +87,9 @@ struct OllamaAdapter: RuntimeAdapter {
         return (try? JSONDecoder().decode(Payload.self, from: data))?.models ?? []
     }
 
-    func startDaemon() async throws {
+    func startDaemon(session: URLSession = .shared) async throws {
         guard let binary = Self.daemonBinary() else {
-            throw KernelError.runtimeUnavailable(
-                hint: "Ollama isn't installed. Get it from ollama.com.")
+            throw KernelError.runtimeUnavailable(hint: OllamaDefaults.notInstalledHint)
         }
         let process = Process()
         process.executableURL = binary
@@ -93,19 +98,20 @@ struct OllamaAdapter: RuntimeAdapter {
         process.standardError = FileHandle.nullDevice
         try process.run()
 
-        let probe = baseURL.appendingPathComponent("api/tags")
+        var exited = false
         for _ in 0..<20 {
             try await Task.sleep(nanoseconds: 500_000_000)
-            var request = URLRequest(url: probe)
-            request.timeoutInterval = 2
-            if let (_, response) = try? await URLSession.shared.data(for: request),
-                (response as? HTTPURLResponse)?.statusCode == 200
-            {
+            if await OllamaDefaults.daemonReachable(baseURL: baseURL, session: session) {
                 return
+            }
+            if !process.isRunning {
+                exited = true
             }
         }
         throw KernelError.runtimeUnavailable(
-            hint: "Started Ollama but it never became reachable.")
+            hint: exited
+                ? "Ollama quit as soon as it started. Try `ollama serve` in a terminal."
+                : "Started Ollama but it never became reachable.")
     }
 
     func invoke(

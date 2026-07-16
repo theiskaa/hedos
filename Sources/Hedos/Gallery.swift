@@ -153,7 +153,8 @@ struct GallerySheet: View {
                 grid
             }
         }
-        .frame(width: Design.Sheet.gallery.width, height: Design.Sheet.gallery.height)
+        .clampedSheetFrame(
+            width: Design.Sheet.gallery.width, height: Design.Sheet.gallery.height)
         .task {
             await shell.gallery.load()
             if let id = shell.galleryFocusID, let artifact = shell.gallery.artifact(id: id) {

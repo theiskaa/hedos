@@ -105,6 +105,22 @@ struct ModelsPane: View {
                 }
             }
         }
+        .modalScrim(
+            isPresented: shell.installBrowserOpen,
+            handlesEscape: false,
+            onDismiss: {
+                if shell.installs.stagedPlan != nil || shell.installs.stagingID != nil {
+                    shell.installs.discardStagedPlan()
+                } else {
+                    shell.installBrowserOpen = false
+                }
+            }
+        ) {
+            InstallBrowser(shell: shell) {
+                shell.installs.discardStagedPlan()
+                shell.installBrowserOpen = false
+            }
+        }
     }
 
     private var dashboard: some View {
@@ -112,6 +128,9 @@ struct ModelsPane: View {
             VStack(alignment: .leading, spacing: Design.Space.pane) {
                 hero
                 contextRow
+                InstallInviteBanner(shell: shell) {
+                    shell.installBrowserOpen = true
+                }
                 filterRow
                 gridContent
             }
@@ -166,6 +185,12 @@ struct ModelsPane: View {
         .disabled(shell.library.isScanning)
         .help("Scan the machine again")
         .accessibilityLabel("Rescan")
+        QuietIconButton(glyph: "plus") {
+            shell.installBrowserOpen = true
+        }
+        .help("Install models")
+        .accessibilityLabel("Install models")
+        .accessibilityIdentifier("open-install-browser")
     }
 
     private var hero: some View {
@@ -206,7 +231,7 @@ struct ModelsPane: View {
                     .foregroundStyle(Design.inkFaint)
                 if let summary = shell.library.summary {
                     HStack(spacing: Design.Space.s) {
-                        Text(DiscoverySummary.formatBytes(summary.totalBytes))
+                        Text(ByteFormat.string(summary.totalBytes))
                             .font(Design.data(12))
                             .foregroundStyle(Design.inkSoft)
                         if !shell.resident.isEmpty {
@@ -261,7 +286,7 @@ struct ModelsPane: View {
                             .foregroundStyle(Design.ink)
                             .lineLimit(1)
                         Spacer(minLength: Design.Space.m)
-                        Text(DiscoverySummary.formatBytes(Int64(entry.footprintMB) << 20))
+                        Text(ByteFormat.string(Int64(entry.footprintMB) << 20))
                             .font(Design.data(11))
                             .monospacedDigit()
                             .foregroundStyle(Design.inkFaint)
@@ -471,7 +496,10 @@ struct ModelsPane: View {
             spacing: Design.Space.l
         ) {
             ForEach(records) { record in
-                ModelCard(record: record, warm: isWarm(record)) {
+                ModelCard(
+                    record: record, warm: isWarm(record),
+                    downloadProgress: shell.installs.progress(for: record)
+                ) {
                     presented = record.id
                     shell.selectLibrary(record.id)
                 }
@@ -532,6 +560,13 @@ struct ModelsPane: View {
                     text: "Looking for models on this Mac…",
                     font: Design.paneTitle, tracked: false)
             }
+            if shell.library.summary != nil || shell.library.errorMessage != nil {
+                Button("Install models…") {
+                    shell.installBrowserOpen = true
+                }
+                .buttonStyle(QuietButtonStyle())
+                .padding(.top, Design.Space.xl)
+            }
             Spacer()
             Spacer()
         }
@@ -559,8 +594,10 @@ extension SourceKind {
 struct ModelCard: View {
     let record: ModelRecord
     var warm = false
+    var downloadProgress: InstallProgress?
     let onOpen: () -> Void
     @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Button(action: onOpen) {
@@ -595,16 +632,29 @@ struct ModelCard: View {
                         TintChip(text: Design.modeTitle(mode), glyph: Design.modeGlyph(mode))
                     }
                     FitChip(record: record)
+                    if record.downloading {
+                        if downloadProgress != nil {
+                            TintChip(text: "downloading", glyph: "arrow.down.circle")
+                                .help("Downloading into its store right now")
+                        } else {
+                            TintChip(text: "incomplete", glyph: "circle.dotted", faint: true)
+                                .help("Only part of this model is on disk")
+                        }
+                    }
                     if record.state == .missing {
                         TintChip(text: "missing", glyph: "exclamationmark.triangle", faint: true)
                             .help("No longer found on disk")
                     }
                 }
                 Spacer(minLength: 0)
+                if let downloadProgress {
+                    InstallProgressBar(fraction: downloadProgress.fraction)
+                        .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
+                }
                 HStack(alignment: .firstTextBaseline) {
                     Text(
                         record.footprintMB.map {
-                            $0 > 0 ? DiscoverySummary.formatBytes(Int64($0) << 20) : "—"
+                            $0 > 0 ? ByteFormat.string(Int64($0) << 20) : "—"
                         } ?? "size unknown"
                     )
                     .font(Design.data(15))
@@ -633,6 +683,8 @@ struct ModelCard: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
+        .animation(
+            Design.snapMotion(reduceMotion: reduceMotion), value: downloadProgress != nil)
         .help("Show details")
         .accessibilityLabel(record.displayName)
         .accessibilityIdentifier("model-card-\(record.id)")
@@ -641,6 +693,113 @@ struct ModelCard: View {
     private var capabilities: [AppMode] {
         [AppMode.chat, .images, .voice].filter {
             !Launcher.models(in: [record], for: $0).isEmpty
+        }
+    }
+}
+
+struct InstallInviteBanner: View {
+    @Bindable var shell: ShellModel
+    let onOpen: () -> Void
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var installs: InstallModel { shell.installs }
+
+    private var downloading: Bool {
+        !installs.active.isEmpty
+    }
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .center, spacing: Design.Space.l) {
+                marks
+                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                    Text(title)
+                        .font(Design.body.weight(.medium))
+                        .tracking(Design.tightTracking)
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(Design.data(11))
+                        .monospacedDigit()
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
+                }
+                Spacer(minLength: Design.Space.l)
+                trailing
+            }
+            .padding(.horizontal, Design.Space.xl)
+            .padding(.vertical, Design.Space.l)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.card)
+                    .strokeBorder(
+                        hovering ? AnyShapeStyle(Design.accentEdge) : AnyShapeStyle(Design.line),
+                        lineWidth: Design.hairlineWidth))
+            .contentShape(RoundedRectangle.soft(Design.Radius.card))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: downloading)
+        .animation(
+            Design.motion(reduceMotion: reduceMotion),
+            value: installs.aggregateProgress?.bytesDownloaded)
+        .help("Browse and install models")
+        .accessibilityLabel(
+            downloading
+                ? "Downloading \(installs.active.count) models, open the install browser"
+                : "Install models")
+        .accessibilityIdentifier("models-install-invite")
+        .task { await installs.load() }
+    }
+
+    private var marks: some View {
+        HStack(spacing: -Design.Space.xs) {
+            markPlaque(.ollama)
+            markPlaque(.huggingfaceCache)
+        }
+    }
+
+    private func markPlaque(_ kind: SourceKind) -> some View {
+        SourceMark(kind: kind, size: 13)
+            .foregroundStyle(Design.inkSoft)
+            .frame(width: 24, height: 24)
+            .background(Design.panel, in: Circle())
+            .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+    }
+
+    private var title: String {
+        guard downloading else { return "Pull new models onto this Mac." }
+        let count = installs.active.count
+        return count == 1
+            ? "Downloading 1 model."
+            : "Downloading \(count) models."
+    }
+
+    private var subtitle: String {
+        if let progress = installs.aggregateProgress {
+            return ActiveInstallRow.byteLabel(progress)
+        }
+        return "Ollama tags and Hugging Face repos, sized to your hardware."
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        if downloading {
+            InstallProgressBar(fraction: installs.aggregateProgress?.fraction)
+                .frame(width: 180)
+                .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+        } else {
+            HStack(spacing: Design.Space.m) {
+                TintChip(text: "Browse", glyph: "arrow.down.circle")
+                Image(systemName: "arrow.right")
+                    .font(Design.glyphSmall)
+                    .foregroundStyle(hovering ? Design.accentText : Design.inkFaint)
+            }
+            .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         }
     }
 }
@@ -703,7 +862,7 @@ struct BestFitCard: View {
     private var subtitle: String {
         var parts: [String] = []
         if let mb = record.footprintMB, mb > 0 {
-            parts.append(DiscoverySummary.formatBytes(Int64(mb) << 20))
+            parts.append(ByteFormat.string(Int64(mb) << 20))
         }
         if let runtime = record.runtime.id {
             parts.append(runtime.rawValue)
@@ -723,6 +882,17 @@ struct ModelDetailSheet: View {
     @State private var communityRecipes: [RuntimeInstallPreview] = []
     @State private var installingRecipe: String?
     @State private var chosenRuntime: String
+    @State private var confirmingDelete = false
+    @State private var deleteFailure: String?
+    @State private var deleting = false
+    @State private var deleteHovering = false
+    @State private var deletePreview: ModelDeletionPreview?
+    @State private var duplicateSiblings: [ModelRecord] = []
+    @State private var renaming = false
+    @State private var nameDraft = ""
+    @State private var titleHovering = false
+    @State private var previewTick = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(record: ModelRecord, shell: ShellModel, onClose: @escaping () -> Void) {
         self.record = record
@@ -738,9 +908,8 @@ struct ModelDetailSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            SheetDivider()
             ScrollView {
-                VStack(alignment: .leading, spacing: Design.Space.gutter) {
+                VStack(alignment: .leading, spacing: Design.Space.pane) {
                     if record.runtime.tier == .recipeNeeded {
                         Text(reason ?? "")
                             .font(Design.body)
@@ -761,12 +930,17 @@ struct ModelDetailSheet: View {
                 }
                 .sheetBodyPadding()
             }
-            SheetDivider()
-            footer
-                .padding(.horizontal, Design.Space.gutter)
-                .padding(.vertical, Design.Space.xl)
+            if hasFooterContent {
+                SheetDivider()
+                footer
+                    .padding(.horizontal, Design.Space.gutter)
+                    .padding(.vertical, Design.Space.l)
+            }
         }
-        .frame(width: Design.Sheet.modelDetailWidth, height: record.runtime.tier == .recipeNeeded ? Design.Sheet.modelRecipeHeight : Design.Sheet.modelDetailHeight)
+        .clampedSheetFrame(
+            width: Design.Sheet.modelDetailWidth,
+            height: record.runtime.tier == .recipeNeeded
+                ? Design.Sheet.modelRecipeHeight : Design.Sheet.modelDetailHeight)
         .task(id: record.id) {
             guard record.runtime.tier == .recipeNeeded else { return }
             let record = record
@@ -780,20 +954,86 @@ struct ModelDetailSheet: View {
             approvedConsent = try? await shell.kernel.approvedHostConsent(for: record.id)
             communityRecipes = await shell.kernel.communityRecipes(for: record.id)
         }
+        .task(id: "\(record.id)|\(previewTick)") {
+            deletePreview = try? await shell.kernel.deletionPreview(record.id)
+            duplicateSiblings = (try? await shell.kernel.duplicateSiblings(of: record.id)) ?? []
+        }
+        .onChange(of: record.id) {
+            deleting = false
+            deleteFailure = nil
+            renaming = false
+        }
         .onChange(of: currentRuntimeValue) { _, value in
             chosenRuntime = value
+        }
+        .confirmationDialog(
+            "Delete \u{201C}\(record.displayName)\u{201D}?",
+            isPresented: $confirmingDelete
+        ) {
+            Button("Delete", role: .destructive) {
+                performDelete()
+            }
+            .keyboardShortcut(.defaultAction)
+        } message: {
+            Text(deleteMessage)
+        }
+    }
+
+    private var isDeletable: Bool {
+        record.isDeletable
+    }
+
+    private var deleteButtonTitle: String {
+        if record.state == .missing {
+            return "Forget this model"
+        }
+        return record.source.kind == .ollama ? "Delete from Ollama" : "Move to Trash"
+    }
+
+    private var deleteMessage: String {
+        if record.state == .missing {
+            return "The files are already gone. This forgets the entry."
+        }
+        guard let preview = deletePreview else {
+            return "Deletes this model from this Mac."
+        }
+        if preview.viaDaemon {
+            return
+                "Asks Ollama to delete \(record.source.repo ?? record.name) (up to \(ByteFormat.string(preview.bytesEstimate))). Layers shared with other Ollama models stay."
+        }
+        let items = preview.paths.count == 1 ? "1 item" : "\(preview.paths.count) items"
+        var message = "Moves \(items) (\(ByteFormat.string(preview.bytesEstimate))) to the Trash."
+        let siblings = duplicateSiblings.map(\.displayName)
+        if !siblings.isEmpty {
+            message += " Copies stay at: \(siblings.joined(separator: ", "))."
+        }
+        return message
+    }
+
+    private func performDelete() {
+        let shell = shell
+        let id = record.id
+        deleting = true
+        deleteFailure = nil
+        Task {
+            if let failure = await shell.library.deleteModel(id: id) {
+                deleteFailure = failure
+                deleting = false
+                previewTick += 1
+            } else {
+                onClose()
+            }
         }
     }
 
     private var header: some View {
-        SheetHeader(
-            title: record.displayName,
-            onClose: onClose,
-            plaque: {
+        HStack(alignment: .center, spacing: Design.Space.l) {
+            IconPlaque(size: 44) {
                 SourceMark(kind: record.source.kind, size: 24)
                     .foregroundStyle(Design.inkSoft)
-            },
-            below: {
+            }
+            VStack(alignment: .leading, spacing: Design.Space.s) {
+                editableTitle
                 HStack(spacing: Design.Space.s) {
                     TintChip(
                         text: record.modality.rawValue,
@@ -804,7 +1044,66 @@ struct ModelDetailSheet: View {
                         TintChip(text: runtime.rawValue)
                     }
                 }
-            })
+            }
+            Spacer(minLength: Design.Space.l)
+            HStack(spacing: Design.Space.s) {
+                if isDeletable {
+                    deleteIconButton
+                }
+                SheetCloseButton(
+                    diameter: 30, glyph: Design.glyphInline.weight(.bold), action: onClose)
+            }
+        }
+        .padding(.horizontal, Design.Space.gutter)
+        .padding(.top, Design.Space.gutter)
+        .padding(.bottom, Design.Space.xl)
+    }
+
+    @ViewBuilder
+    private var editableTitle: some View {
+        if renaming {
+            InlineRenameField(
+                text: $nameDraft, pointSize: 15, weight: .semibold,
+                onCommit: commitName, onCancel: { renaming = false })
+                .frame(height: 22)
+        } else {
+            Button {
+                nameDraft = record.displayName
+                renaming = true
+            } label: {
+                HStack(spacing: Design.Space.xs) {
+                    Text(record.displayName)
+                        .font(Design.title)
+                        .tracking(Design.tightTracking)
+                        .foregroundStyle(Design.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Image(systemName: "pencil")
+                        .font(Design.glyphMicro)
+                        .foregroundStyle(Design.inkFaint)
+                        .opacity(titleHovering ? 1 : 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(deleting)
+            .onHover { titleHovering = $0 }
+            .animation(Design.wash, value: titleHovering)
+            .help("Rename")
+        }
+    }
+
+    private func commitName() {
+        renaming = false
+        let trimmed = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let alias = (trimmed.isEmpty || trimmed == record.name) ? nil : trimmed
+        guard alias != record.alias else { return }
+        let shell = shell
+        let id = record.id
+        Task {
+            try? await shell.kernel.setAlias(id, to: alias)
+            await shell.library.refreshShelf()
+        }
     }
 
     private var runtimeSection: some View {
@@ -846,7 +1145,7 @@ struct ModelDetailSheet: View {
             items.append(("Repo", repo, false))
         }
         if let mb = record.footprintMB, mb > 0 {
-            items.append(("On disk", DiscoverySummary.formatBytes(Int64(mb) << 20), true))
+            items.append(("On disk", ByteFormat.string(Int64(mb) << 20), true))
         }
         if let path = record.primaryWeightPath ?? record.source.path as String? {
             items.append(("Path", (path as NSString).abbreviatingWithTildeInPath, false))
@@ -858,21 +1157,21 @@ struct ModelDetailSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             if record.displayName != record.name {
                 sourceRow
-                if !scalarSpecs.isEmpty { DottedRule() }
+                if !scalarSpecs.isEmpty { RowRule() }
             }
             ForEach(Array(scalarSpecs.enumerated()), id: \.offset) { index, item in
                 specRow(item.0, item.1, mono: item.2)
-                if index < scalarSpecs.count - 1 { DottedRule() }
+                if index < scalarSpecs.count - 1 { RowRule() }
             }
         }
-        .padding(.horizontal, Design.Space.tile)
-        .padding(.vertical, Design.Space.xs)
-        .surfaceCard(radius: Design.Radius.card)
+        .padding(.horizontal, Design.Space.xl)
+        .padding(.vertical, Design.Space.s)
+        .surfaceCard(radius: Design.Radius.tile)
     }
 
     private var sourceRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: Design.Space.l) {
-            Text("Source")
+            Text("Name")
                 .font(Design.caption)
                 .foregroundStyle(Design.inkFaint)
                 .fixedSize()
@@ -887,14 +1186,14 @@ struct ModelDetailSheet: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .padding(.vertical, Design.Space.m)
+        .padding(.vertical, Design.Space.tile)
     }
 
     private func duplicateCard(_ group: DuplicateGroup) -> some View {
         VStack(alignment: .leading, spacing: Design.Space.s) {
             MicroHeader(title: "Shared weights")
             Text(
-                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")), \(DiscoverySummary.formatBytes(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
+                "The same weights also live as \(group.names.filter { $0 != record.displayName && $0 != record.name }.joined(separator: ", ")), \(ByteFormat.string(group.wastedBytes)) of disk counted twice. Hedos points at both; nothing is copied."
             )
             .font(Design.caption)
             .foregroundStyle(Design.inkSoft)
@@ -957,7 +1256,7 @@ struct ModelDetailSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.vertical, Design.Space.m)
+            .padding(.vertical, Design.Space.tile)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
             .animation(Design.motion(reduceMotion: reduceMotion), value: hovering)
@@ -990,6 +1289,56 @@ struct ModelDetailSheet: View {
 
     @ViewBuilder
     private var footer: some View {
+        VStack(alignment: .leading, spacing: Design.Space.s) {
+            if let deleteFailure {
+                Text(deleteFailure)
+                    .font(Design.label)
+                    .foregroundStyle(Design.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
+            }
+            primaryFooter
+        }
+        .animation(Design.motion(reduceMotion: reduceMotion), value: deleteFailure)
+    }
+
+    private var deleteIconButton: some View {
+        Button {
+            confirmingDelete = true
+        } label: {
+            Image(systemName: "trash")
+                .font(Design.glyphInline)
+                .foregroundStyle(
+                    deleteHovering && !deleting ? Design.danger : Design.inkSoft)
+                .frame(width: 30, height: 30)
+                .background(
+                    deleteHovering && !deleting
+                        ? AnyShapeStyle(Design.dangerWash) : AnyShapeStyle(Design.cardFill),
+                    in: Circle())
+                .contentShape(Circle())
+                .opacity(deleting ? 0.4 : 1)
+                .animation(Design.wash, value: deleteHovering)
+        }
+        .buttonStyle(PressDipStyle())
+        .disabled(deleting)
+        .onHover { deleteHovering = $0 }
+        .inkFocusRing(Circle())
+        .help("\(deleteButtonTitle)  ⌘⌫")
+        .keyboardShortcut(.delete, modifiers: .command)
+        .accessibilityLabel(deleteButtonTitle)
+        .accessibilityIdentifier("model-delete")
+    }
+
+    private var hasPrimaryFooter: Bool {
+        record.runtime.tier == .recipeNeeded || openTitle != nil
+    }
+
+    private var hasFooterContent: Bool {
+        deleteFailure != nil || hasPrimaryFooter
+    }
+
+    @ViewBuilder
+    private var primaryFooter: some View {
         if record.runtime.tier == .recipeNeeded {
             VStack(alignment: .leading, spacing: Design.Space.l) {
                 if let consent {
@@ -1030,7 +1379,8 @@ struct ModelDetailSheet: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(InkButtonStyle())
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(deleting ? nil : .defaultAction)
+                .disabled(deleting)
                 if isChatModel {
                     Button("Make this the default chat model") {
                         Task {
@@ -1040,6 +1390,7 @@ struct ModelDetailSheet: View {
                     .buttonStyle(.plain)
                     .font(Design.label)
                     .foregroundStyle(Design.inkSoft)
+                    .disabled(deleting)
                 }
             }
         }
@@ -1208,7 +1559,6 @@ enum RecipeReason {
 struct ModelConfigureSection: View {
     let record: ModelRecord
     let shell: ShellModel
-    @State private var aliasDraft = ""
     @State private var promptDraft = ""
     @State private var seeded = false
     @State private var promptCommit: Task<Void, Never>?
@@ -1216,57 +1566,55 @@ struct ModelConfigureSection: View {
     @State private var pending: [String: JSONValue?] = [:]
     @State private var flush: Task<Void, Never>?
 
+    private var hasChat: Bool { record.capabilities.contains(.chat) }
+    private var hasParams: Bool { !record.params.isEmpty }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Design.Space.m) {
-            MicroHeader(title: "Configure")
-            configureRows
-                .padding(.horizontal, Design.Space.tile)
-                .padding(.vertical, Design.Space.xs)
-                .surfaceCard(radius: Design.Radius.tile)
+        if hasChat || hasParams {
+            VStack(alignment: .leading, spacing: Design.Space.m) {
+                MicroHeader(title: "Configure")
+                configureRows
+                    .padding(.horizontal, Design.Space.xl)
+                    .padding(.vertical, Design.Space.s)
+                    .surfaceCard(radius: Design.Radius.tile)
+            }
+        } else {
+            EmptyView()
         }
     }
 
     private var configureRows: some View {
         VStack(alignment: .leading, spacing: 0) {
-            row("Display name") {
-                InkField(
-                    placeholder: record.name,
-                    text: $aliasDraft,
-                    size: .settings,
-                    onSubmit: { commitAlias() },
-                    onFocusLost: { commitAlias() }
-                )
-                .frame(width: Design.Control.fieldWidth)
-                .accessibilityLabel("Display name")
-            }
-            if record.capabilities.contains(.chat) {
-                Divider()
-                VStack(alignment: .leading, spacing: Design.Space.xs) {
-                    HStack(spacing: Design.Space.s) {
+            if hasChat {
+                VStack(alignment: .leading, spacing: Design.Space.s) {
+                    VStack(alignment: .leading, spacing: Design.Space.xxs) {
                         Text("System prompt")
-                            .font(Design.label)
+                            .font(Design.body.weight(.medium))
+                            .foregroundStyle(Design.ink)
+                        Text("Prepended to every conversation with this model.")
+                            .font(Design.caption)
                             .foregroundStyle(Design.inkFaint)
-                        Text("· prepended to every conversation")
-                            .font(Design.label)
-                            .foregroundStyle(Design.inkFaint.opacity(0.7))
                     }
                     InkTextArea(placeholder: "Optional", text: $promptDraft, resizable: true)
                         .accessibilityLabel("System prompt")
                 }
-                .padding(.vertical, Design.Space.m)
+                .padding(.vertical, Design.Space.tile)
             }
-            ForEach(record.params, id: \.key) { spec in
-                Divider()
+            ForEach(Array(record.params.enumerated()), id: \.element.key) { index, spec in
+                if hasChat || index > 0 {
+                    RowRule()
+                }
                 parameterRow(spec)
             }
-            if !record.params.isEmpty {
-                Divider()
-                HStack {
-                    Text("Overrides apply to the next generation.")
-                        .font(Design.label)
+            if hasParams {
+                RowRule()
+                HStack(alignment: .center) {
+                    Text("Overrides apply to the next generation. Auto means the model decides.")
+                        .font(Design.caption)
                         .foregroundStyle(Design.inkFaint)
-                    Spacer()
-                    Button("Reset to model defaults") {
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: Design.Space.l)
+                    Button("Reset") {
                         let shell = shell
                         let id = record.id
                         Task {
@@ -1277,12 +1625,8 @@ struct ModelConfigureSection: View {
                     .buttonStyle(QuietButtonStyle())
                     .disabled(record.paramValues.isEmpty)
                 }
-                .padding(.vertical, Design.Space.m)
+                .padding(.vertical, Design.Space.tile)
             }
-            Text("Auto means the model decides. Nothing is sent unless you set it.")
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
-                .padding(.top, Design.Space.m)
         }
         .onAppear { seedDrafts() }
         .task(id: record.id) {
@@ -1309,19 +1653,6 @@ struct ModelConfigureSection: View {
         }
     }
 
-    private func row(
-        _ label: String, @ViewBuilder control: () -> some View
-    ) -> some View {
-        HStack(alignment: .center) {
-            Text(label)
-                .font(Design.label)
-                .foregroundStyle(Design.inkFaint)
-            Spacer(minLength: Design.Space.l)
-            control()
-        }
-        .padding(.vertical, Design.Space.m)
-    }
-
     @ViewBuilder
     private func parameterRow(_ spec: ParamSpec) -> some View {
         if spec.type == .enumeration {
@@ -1329,7 +1660,7 @@ struct ModelConfigureSection: View {
                 parameterLabel(spec)
                 parameterControl(spec)
             }
-            .padding(.vertical, Design.Space.chipX)
+            .padding(.vertical, Design.Space.tile)
         } else {
             HStack(alignment: .center, spacing: Design.Space.s) {
                 parameterLabel(spec)
@@ -1337,14 +1668,14 @@ struct ModelConfigureSection: View {
                 parameterControl(spec)
                     .frame(width: 190, alignment: .trailing)
             }
-            .padding(.vertical, Design.Space.chipX)
+            .padding(.vertical, Design.Space.tile)
         }
     }
 
     private func parameterLabel(_ spec: ParamSpec) -> some View {
         HStack(spacing: Design.Space.s) {
             Text(humanized(spec.key))
-                .font(Design.caption)
+                .font(Design.body.weight(.medium))
                 .foregroundStyle(effective(spec.key) != nil ? Design.ink : Design.inkSoft)
             if effective(spec.key) != nil {
                 Circle()
@@ -1432,20 +1763,8 @@ struct ModelConfigureSection: View {
         }
     }
 
-    private func commitAlias() {
-        let trimmed = aliasDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != (record.alias ?? "") else { return }
-        let shell = shell
-        let id = record.id
-        Task {
-            try? await shell.kernel.setAlias(id, to: trimmed.isEmpty ? nil : trimmed)
-            await shell.library.refreshShelf()
-        }
-    }
-
     private func seedDrafts() {
         guard !seeded else { return }
-        aliasDraft = record.alias ?? ""
         promptDraft = record.systemPrompt ?? ""
         seeded = true
     }

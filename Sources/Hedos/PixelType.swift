@@ -29,6 +29,43 @@ struct HedosLogo: View {
     }
 }
 
+struct HedosGlowLogo: View {
+    var size: CGFloat
+    var fraction: CGFloat?
+    var lit: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let spectrum: [Color] = [
+        Design.fixed(0xF2A65A),
+        Design.fixed(0xF0705C),
+        Design.fixed(0xE05680),
+        Design.fixed(0xB25AA0),
+        Design.fixed(0x8A5FC0),
+    ]
+    private var resting: Color { lit ? Design.ink : Design.inkSoft }
+
+    var body: some View {
+        if let fraction {
+            let color = sampled(fraction)
+            HedosLogo(size: size, color: color)
+                .shadow(color: color.opacity(0.6), radius: size * 0.2)
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.28), value: color)
+        } else {
+            HedosLogo(size: size, color: resting)
+                .animation(Design.wash, value: resting)
+        }
+    }
+
+    private func sampled(_ fraction: CGFloat) -> Color {
+        let clamped = min(max(Double(fraction), 0), 1)
+        let span = clamped * Double(Self.spectrum.count - 1)
+        let index = min(Int(span), Self.spectrum.count - 2)
+        return Self.spectrum[index].mix(
+            with: Self.spectrum[index + 1], by: span - Double(index))
+    }
+}
+
 struct PixelKoala: View {
     var size: CGFloat
     var color: Color = Design.ink

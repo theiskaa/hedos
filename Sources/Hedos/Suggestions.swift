@@ -2,129 +2,26 @@ import AppKit
 import HedosKernel
 import SwiftUI
 
-enum SuggestionSource {
-    case ollama
-    case huggingface
-
-    var badge: String {
-        switch self {
-        case .ollama: "OL"
-        case .huggingface: "HF"
-        }
-    }
-}
-
-enum SuggestionCategory: String, CaseIterable, Identifiable {
-    case chat = "Chat"
-    case code = "Code"
-    case voice = "Voice"
-    case image = "Image"
-
-    var id: String { rawValue }
-}
-
-enum SuggestionFit {
-    case easy
-    case good
-    case tight
-    case over
-
-    var label: String {
-        switch self {
-        case .easy: "fits easily"
-        case .good: "good fit"
-        case .tight: "tight fit"
-        case .over: "too large"
-        }
-    }
-}
-
-struct Suggestion: Identifiable {
-    let id = UUID()
-    let name: String
-    let source: SuggestionSource
-    let category: SuggestionCategory
-    let blurb: String
-    let sizeGB: Double
-    let reference: String
-
-    static let catalog: [Suggestion] = [
-        Suggestion(
-            name: "gemma3:4b", source: .ollama, category: .chat,
-            blurb: "Fast everyday chat. Runs comfortably on any Mac.",
-            sizeGB: 3.3, reference: "gemma3:4b"),
-        Suggestion(
-            name: "gemma3:27b", source: .ollama, category: .chat,
-            blurb: "Flagship reasoning with room to spare on a big Mac.",
-            sizeGB: 17, reference: "gemma3:27b"),
-        Suggestion(
-            name: "llama3.3:70b", source: .ollama, category: .chat,
-            blurb: "The big one, at Q4. Leaves a little headroom, not much.",
-            sizeGB: 40, reference: "llama3.3:70b"),
-        Suggestion(
-            name: "qwen2.5-coder:14b", source: .ollama, category: .code,
-            blurb: "Strong local coding model with a large context.",
-            sizeGB: 9, reference: "qwen2.5-coder:14b"),
-        Suggestion(
-            name: "deepseek-coder-v2:16b", source: .ollama, category: .code,
-            blurb: "Sharp on repository-scale edits and refactors.",
-            sizeGB: 9.4, reference: "deepseek-coder-v2:16b"),
-        Suggestion(
-            name: "kokoro-82m", source: .huggingface, category: .voice,
-            blurb: "Tiny, warm text-to-speech. Instant on any Mac.",
-            sizeGB: 0.3, reference: "https://huggingface.co/hexgrad/Kokoro-82M"),
-        Suggestion(
-            name: "whisper-large-v3", source: .huggingface, category: .voice,
-            blurb: "Best-in-class speech-to-text for dictation.",
-            sizeGB: 1.5, reference: "https://huggingface.co/openai/whisper-large-v3"),
-        Suggestion(
-            name: "flux.1-schnell", source: .huggingface, category: .image,
-            blurb: "Quick, striking image generation in a few steps.",
-            sizeGB: 24, reference: "https://huggingface.co/black-forest-labs/FLUX.1-schnell"),
-        Suggestion(
-            name: "sdxl", source: .huggingface, category: .image,
-            blurb: "Dependable, well-supported image workhorse.",
-            sizeGB: 7, reference: "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"),
+enum SuggestionCategories {
+    static let ordered: [(category: InstallCategory, label: String)] = [
+        (.chat, "Chat"),
+        (.code, "Code"),
+        (.voice, "Voice"),
+        (.image, "Image"),
     ]
-}
 
-struct HardwareProfile {
-    let chip: String
-    let ramGB: Int
-
-    static let current = HardwareProfile()
-
-    init() {
-        ramGB = max(1, Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824))
-        chip = HardwareProfile.readChip()
-    }
-
-    var summary: String {
-        "\(chip) · \(ramGB) GB unified"
-    }
-
-    func fit(_ sizeGB: Double) -> SuggestionFit {
-        let ratio = sizeGB / Double(ramGB)
-        if ratio < 0.35 { return .easy }
-        if ratio < 0.6 { return .good }
-        if ratio < 0.9 { return .tight }
-        return .over
-    }
-
-    private static func readChip() -> String {
-        var size = 0
-        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
-        guard size > 0 else { return "Apple Silicon" }
-        var buffer = [CChar](repeating: 0, count: size)
-        sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
-        let value = buffer.withUnsafeBufferPointer { $0.baseAddress.map { String(cString: $0) } } ?? ""
-        return value.isEmpty ? "Apple Silicon" : value
+    static func label(_ verdict: FitVerdict) -> String {
+        switch verdict {
+        case .runsWell: "runs well"
+        case .tightFit: "tight fit"
+        case .tooLarge: "too large"
+        }
     }
 }
 
 struct FirstRunDiscovery: View {
     @Bindable var shell: ShellModel
-    @State private var category: SuggestionCategory = .chat
+    @State private var category: InstallCategory = .chat
 
     private let hardware = HardwareProfile.current
 
@@ -133,6 +30,7 @@ struct FirstRunDiscovery: View {
             invitation
             suggestions
         }
+        .task { await shell.installs.load() }
     }
 
     private var invitation: some View {
@@ -166,16 +64,18 @@ struct FirstRunDiscovery: View {
         }
     }
 
-    private var visible: [Suggestion] {
-        Suggestion.catalog.filter { $0.category == category }
+    private var visible: [InstallCatalogEntry] {
+        InstallCatalog.entries.filter { $0.category == category }
     }
 
-    private var recommendedID: Suggestion.ID? {
-        let fitting = visible.filter {
-            let verdict = hardware.fit($0.sizeGB)
-            return verdict == .easy || verdict == .good
-        }
-        return (fitting.max { $0.sizeGB < $1.sizeGB } ?? visible.min { $0.sizeGB < $1.sizeGB })?.id
+    private func verdict(_ entry: InstallCatalogEntry) -> FitVerdict? {
+        entry.fit(totalMemoryBytes: hardware.totalMemoryBytes)?.verdict
+    }
+
+    private var recommendedID: InstallCatalogEntry.ID? {
+        InstallCatalog.recommended(
+            category: category, totalMemoryBytes: hardware.totalMemoryBytes
+        ).last?.id
     }
 
     private var suggestions: some View {
@@ -183,30 +83,36 @@ struct FirstRunDiscovery: View {
             HStack(alignment: .center) {
                 MicroHeader(title: "Recommended for your Mac")
                 Spacer(minLength: Design.Space.l)
-                categoryTabs
+                CategoryTabs(selection: $category)
             }
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 220), spacing: Design.Space.l)],
                 spacing: Design.Space.l
             ) {
-                ForEach(visible) { suggestion in
+                ForEach(visible) { entry in
                     SuggestionCard(
-                        suggestion: suggestion,
-                        fit: hardware.fit(suggestion.sizeGB),
-                        recommended: suggestion.id == recommendedID)
+                        shell: shell,
+                        entry: entry,
+                        verdict: verdict(entry) ?? .runsWell,
+                        recommended: entry.id == recommendedID)
                 }
             }
         }
     }
 
-    private var categoryTabs: some View {
+}
+
+struct CategoryTabs: View {
+    @Binding var selection: InstallCategory
+
+    var body: some View {
         HStack(spacing: Design.Space.xs) {
-            ForEach(SuggestionCategory.allCases) { item in
-                let selected = item == category
+            ForEach(SuggestionCategories.ordered, id: \.category) { item in
+                let selected = item.category == selection
                 Button {
-                    category = item
+                    selection = item.category
                 } label: {
-                    Text(item.rawValue)
+                    Text(item.label)
                         .font(Design.micro)
                         .tracking(0.4)
                         .foregroundStyle(selected ? Design.onAccent : Design.inkSoft)
@@ -223,7 +129,7 @@ struct FirstRunDiscovery: View {
                         .contentShape(RoundedRectangle.soft(Design.Radius.control))
                 }
                 .buttonStyle(PressDipStyle())
-                .accessibilityLabel(item.rawValue)
+                .accessibilityLabel(item.label)
                 .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
@@ -231,61 +137,69 @@ struct FirstRunDiscovery: View {
 }
 
 struct SuggestionCard: View {
-    let suggestion: Suggestion
-    let fit: SuggestionFit
+    @Bindable var shell: ShellModel
+    let entry: InstallCatalogEntry
+    let verdict: FitVerdict
     let recommended: Bool
     @State private var hovering = false
     @State private var acted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var installs: InstallModel { shell.installs }
+
+    private var referenceURL: String {
+        "https://huggingface.co/\(entry.reference)"
+    }
+
+    private var installable: Bool {
+        installs.isAvailable(entry.provider)
+    }
+
+    private var activeInstall: ActiveInstall? {
+        installs.activeInstall(provider: entry.provider, reference: entry.reference)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
             HStack {
-                Text(suggestion.source.badge)
-                    .font(Design.micro)
-                    .foregroundStyle(Design.accentText)
-                    .frame(width: 26, height: 24)
-                    .overlay(
-                        RoundedRectangle.soft(Design.Radius.control)
-                            .strokeBorder(Design.lineBright, lineWidth: Design.hairlineWidth))
+                SourceMark(kind: installs.sourceKind(of: entry.provider), size: 18)
+                    .foregroundStyle(Design.inkSoft)
                 Spacer(minLength: 0)
-                Text((recommended ? "best for you" : fit.label).uppercased())
+                Text((recommended ? "best for you" : SuggestionCategories.label(verdict)).uppercased())
                     .font(Design.label)
                     .tracking(Design.microTracking)
-                    .foregroundStyle(fit == .tight ? Design.heatText : Design.accentText)
+                    .foregroundStyle(verdict == .tightFit ? Design.heatText : Design.accentText)
             }
-            Text(suggestion.name)
+            Text(entry.name)
                 .font(Design.title)
                 .foregroundStyle(Design.ink)
                 .lineLimit(1)
-            Text(suggestion.blurb)
+            Text(entry.blurb)
                 .font(Design.readingBody)
                 .lineSpacing(2)
                 .foregroundStyle(Design.inkSoft)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
+            if let install = activeInstall {
+                InstallProgressBar(
+                    fraction: (installs.progress(installID: install.id) ?? install.progress)
+                        .fraction)
+                .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
+            }
+            if let failure = installs.failure(provider: entry.provider, reference: entry.reference) {
+                Text(failure)
+                    .font(Design.label)
+                    .foregroundStyle(Design.heatText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
+            }
             HStack {
-                Text(String(format: "%g GB", suggestion.sizeGB))
+                Text(String(format: "%g GB", entry.sizeGB))
                     .font(Design.data(11))
                     .foregroundStyle(Design.inkFaint)
                 Spacer(minLength: Design.Space.m)
-                Button(action: get) {
-                    Text(acted ? "Copied ✓" : suggestion.source == .ollama ? "Get ▸" : "Open ▸")
-                        .font(Design.micro)
-                        .tracking(0.4)
-                        .foregroundStyle(recommended ? Design.onAccent : Design.ink)
-                        .padding(.horizontal, Design.Space.l)
-                        .padding(.vertical, Design.Space.s)
-                        .background(
-                            recommended ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.clear),
-                            in: RoundedRectangle.soft(Design.Radius.control))
-                        .overlay(
-                            RoundedRectangle.soft(Design.Radius.control)
-                                .strokeBorder(
-                                    recommended ? Color.clear : Design.lineBright,
-                                    lineWidth: Design.hairlineWidth))
-                        .contentShape(RoundedRectangle.soft(Design.Radius.control))
-                }
-                .buttonStyle(PressDipStyle())
+                action
             }
         }
         .padding(Design.Space.xl)
@@ -300,21 +214,83 @@ struct SuggestionCard: View {
                     lineWidth: Design.hairlineWidth))
         .onHover { hovering = $0 }
         .animation(Design.wash, value: hovering)
-        .help(suggestion.source == .ollama ? "Copy: ollama pull \(suggestion.name)" : suggestion.reference)
+        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: cardState)
+        .help(helpText)
+    }
+
+    private var cardState: String {
+        if installs.installed(provider: entry.provider, reference: entry.reference) {
+            return "done"
+        }
+        if activeInstall != nil { return "downloading" }
+        if let failure = installs.failure(provider: entry.provider, reference: entry.reference) { return "failed|\(failure)" }
+        return "idle"
+    }
+
+    private var helpText: String {
+        if installable {
+            return "Download \(entry.reference) into its own store"
+        }
+        return entry.provider == .ollama
+            ? "Copy: ollama pull \(entry.reference)" : referenceURL
+    }
+
+    @ViewBuilder
+    private var action: some View {
+        if installs.installed(provider: entry.provider, reference: entry.reference) {
+            Text("On your shelf".uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.accentText)
+        } else if activeInstall != nil {
+            Text("Downloading…".uppercased())
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+        } else if installable {
+            cardButton("Install ▸") {
+                Task { await installs.install(provider: entry.provider, reference: entry.reference) }
+            }
+        } else {
+            cardButton(acted ? "Copied ✓" : entry.provider == .ollama ? "Get ▸" : "Open ▸") {
+                get()
+            }
+        }
+    }
+
+    private func cardButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(Design.micro)
+                .tracking(0.4)
+                .foregroundStyle(recommended ? Design.onAccent : Design.ink)
+                .padding(.horizontal, Design.Space.l)
+                .padding(.vertical, Design.Space.s)
+                .background(
+                    recommended ? AnyShapeStyle(Design.accent) : AnyShapeStyle(.clear),
+                    in: RoundedRectangle.soft(Design.Radius.control))
+                .overlay(
+                    RoundedRectangle.soft(Design.Radius.control)
+                        .strokeBorder(
+                            recommended ? Color.clear : Design.lineBright,
+                            lineWidth: Design.hairlineWidth))
+                .contentShape(RoundedRectangle.soft(Design.Radius.control))
+        }
+        .buttonStyle(PressDipStyle())
     }
 
     private func get() {
-        switch suggestion.source {
+        switch entry.provider {
         case .ollama:
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString("ollama pull \(suggestion.name)", forType: .string)
+            NSPasteboard.general.setString("ollama pull \(entry.reference)", forType: .string)
             acted = true
             Task {
                 try? await Task.sleep(for: .seconds(1.6))
                 acted = false
             }
-        case .huggingface:
-            if let url = URL(string: suggestion.reference) {
+        default:
+            if let url = URL(string: referenceURL) {
                 NSWorkspace.shared.open(url)
             }
         }

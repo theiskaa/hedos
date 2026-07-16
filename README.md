@@ -46,6 +46,7 @@ The `hedos` command drives the same kernel headlessly — it links no UI, so it 
 hedos scan                        # discover every model on this Mac
 hedos ls                          # list them with fit, tier, and runtime
 hedos run gemma3 "explain this"   # stream a completion
+hedos rm gemma3 --yes             # delete a model (files to the Trash)
 hedos serve                       # start the gateway
 ```
 

@@ -403,89 +403,6 @@ struct ChatSessionsColumn: View {
     }
 }
 
-private struct RenameField: NSViewRepresentable {
-    @Binding var text: String
-    var onCommit: () -> Void
-    var onCancel: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none
-        field.font = .systemFont(ofSize: 13, weight: .medium)
-        field.textColor = NSColor(Design.ink)
-        field.maximumNumberOfLines = 1
-        field.cell?.wraps = false
-        field.cell?.isScrollable = true
-        field.lineBreakMode = .byTruncatingTail
-        field.delegate = context.coordinator
-        field.stringValue = text
-        DispatchQueue.main.async {
-            field.window?.makeFirstResponder(field)
-            if let editor = field.currentEditor() as? NSTextView {
-                editor.insertionPointColor = NSColor(Design.ink)
-                editor.selectedTextAttributes = [
-                    .backgroundColor: NSColor(Design.ink).withAlphaComponent(0.16),
-                    .foregroundColor: NSColor(Design.ink),
-                ]
-                editor.selectAll(nil)
-            }
-        }
-        return field
-    }
-
-    func updateNSView(_ field: NSTextField, context: Context) {
-        context.coordinator.parent = self
-        if field.stringValue != text {
-            field.stringValue = text
-        }
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: RenameField
-        private var cancelled = false
-
-        init(_ parent: RenameField) {
-            self.parent = parent
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            parent.text = field.stringValue
-        }
-
-        func controlTextDidEndEditing(_ notification: Notification) {
-            if cancelled {
-                cancelled = false
-                parent.onCancel()
-            } else {
-                parent.onCommit()
-            }
-        }
-
-        func control(
-            _ control: NSControl, textView: NSTextView, doCommandBy selector: Selector
-        ) -> Bool {
-            switch selector {
-            case #selector(NSResponder.insertNewline(_:)),
-                #selector(NSResponder.insertLineBreak(_:)):
-                control.window?.makeFirstResponder(nil)
-                return true
-            case #selector(NSResponder.cancelOperation(_:)):
-                cancelled = true
-                control.window?.makeFirstResponder(nil)
-                return true
-            default:
-                return false
-            }
-        }
-    }
-}
 
 private struct ChatSessionRow: View {
     let session: ChatSession
@@ -528,7 +445,7 @@ private struct ChatSessionRow: View {
         HStack(spacing: Design.Space.s) {
             VStack(alignment: .leading, spacing: Design.Space.xxs) {
                 if editing {
-                    RenameField(
+                    InlineRenameField(
                         text: renameText, onCommit: onCommitRename,
                         onCancel: onCancelRename)
                 } else {

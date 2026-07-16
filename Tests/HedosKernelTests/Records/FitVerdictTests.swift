@@ -23,7 +23,7 @@ private let machineMemory = UInt64(1000) << 20
         FitVerdict.assess(footprintMB: 8192, totalMemoryBytes: UInt64(16) << 30))
     #expect(assessment.requiredBytes == Int64(10240) << 20)
     #expect(assessment.verdict == .runsWell)
-    #expect(DiscoverySummary.formatBytes(assessment.requiredBytes) == "10 GB")
+    #expect(ByteFormat.string(assessment.requiredBytes) == "10 GB")
 }
 
 @Test func fitVerdictAppliesOverheadFactorToFootprint() throws {

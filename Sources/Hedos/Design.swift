@@ -72,6 +72,8 @@ enum Design {
         static let promptHeight: CGFloat = 560
         static let serverWidth: CGFloat = 480
         static let serverHeight: CGFloat = 520
+        static let installWidth: CGFloat = 760
+        static let installHeight: CGFloat = 640
     }
 
     enum Column {
@@ -254,6 +256,7 @@ enum Design {
     static let heatWash = heat.opacity(0.16)
     static let heatEdge = heat.opacity(0.32)
     static let danger = adaptive { $0.error }
+    static let dangerWash = danger.opacity(0.12)
     static let added = fixed(0x2EA043)
 
     enum PreviewPalette {
@@ -960,6 +963,24 @@ struct IconPlaque<Content: View>: View {
     }
 }
 
+struct ClampedSheetFrame: ViewModifier {
+    let width: CGFloat
+    let height: CGFloat
+
+    func body(content: Content) -> some View {
+        GeometryReader { geo in
+            content.frame(width: geo.size.width, height: geo.size.height)
+        }
+        .frame(maxWidth: width, maxHeight: height)
+    }
+}
+
+extension View {
+    func clampedSheetFrame(width: CGFloat, height: CGFloat) -> some View {
+        modifier(ClampedSheetFrame(width: width, height: height))
+    }
+}
+
 struct SheetDivider: View {
     var body: some View {
         Rectangle()
@@ -1231,15 +1252,17 @@ struct SkeletonPulse: View {
 
 struct SheetCloseButton: View {
     var usesCancelShortcut = true
+    var diameter: CGFloat = 24
+    var glyph: Font = Design.glyphSmall.weight(.bold)
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(Design.glyphSmall.weight(.bold))
+                .font(glyph)
                 .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
-                .frame(width: 24, height: 24)
+                .frame(width: diameter, height: diameter)
                 .background(
                     hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.cardFill),
                     in: Circle())
@@ -1457,5 +1480,18 @@ enum Haptics {
     static func completion() {
         NSHapticFeedbackManager.defaultPerformer.perform(
             .levelChange, performanceTime: .drawCompleted)
+    }
+}
+
+extension Int {
+    var compactCount: String {
+        switch self {
+        case 1_000_000...:
+            String(format: "%.1fM", Double(self) / 1_000_000)
+        case 1_000...:
+            String(format: "%.1fk", Double(self) / 1_000)
+        default:
+            String(self)
+        }
     }
 }
