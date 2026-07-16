@@ -538,6 +538,8 @@ struct HedosSidebar: View {
     @Bindable var shell: ShellModel
     @State private var hovered: AppMode?
     @State private var versionHovered = false
+    @State private var hoverFraction: CGFloat?
+    @State private var versionWidth: CGFloat = 1
     @State private var railQuery = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -602,8 +604,14 @@ struct HedosSidebar: View {
                 }
             }
             Spacer(minLength: 0)
-            versionRow(collapsedRow: false)
             settingsRow(collapsedRow: false)
+            Rectangle()
+                .fill(Design.line)
+                .frame(height: Design.hairlineWidth)
+                .padding(.horizontal, Design.Space.l)
+                .padding(.vertical, Design.Space.xs)
+                .accessibilityHidden(true)
+            versionRow(collapsedRow: false)
                 .padding(.bottom, Design.Space.l)
         }
         .padding(.top, topClearance)
@@ -629,8 +637,13 @@ struct HedosSidebar: View {
                 modeRow(.gateway, collapsedRow: true)
             }
             Spacer(minLength: 0)
-            versionRow(collapsedRow: true)
             settingsRow(collapsedRow: true)
+            Rectangle()
+                .fill(Design.line)
+                .frame(width: 28, height: Design.hairlineWidth)
+                .padding(.vertical, Design.Space.s)
+                .accessibilityHidden(true)
+            versionRow(collapsedRow: true)
                 .padding(.bottom, Design.Space.l)
         }
         .padding(.top, topClearance)
@@ -678,7 +691,7 @@ struct HedosSidebar: View {
         let updateAvailable = Updater.shared.available != nil
         let interactive = updateAvailable || !Updater.shared.isUnversioned
         let lit = versionHovered && interactive
-        let wash = lit ? Design.ink.opacity(0.04) : Color.clear
+        let wash = Color.clear
         let help =
             updateAvailable
             ? "Update available — click to install"
@@ -689,8 +702,26 @@ struct HedosSidebar: View {
             updateAvailable
             ? "Update available, Hedos \(Updater.shared.displayVersion)"
             : "Hedos \(Updater.shared.displayVersion)"
-        let body = versionContent(
-            collapsedRow: collapsedRow, lit: lit, wash: wash, updateAvailable: updateAvailable)
+        let tracked = versionContent(
+            collapsedRow: collapsedRow, lit: lit, wash: wash, updateAvailable: updateAvailable
+        )
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { versionWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, value in versionWidth = value }
+            }
+        )
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            switch phase {
+            case .active(let point):
+                versionHovered = true
+                hoverFraction = min(max(point.x / max(versionWidth, 1), 0), 1)
+            case .ended:
+                versionHovered = false
+                hoverFraction = nil
+            }
+        }
         if interactive {
             Button {
                 if updateAvailable {
@@ -699,17 +730,16 @@ struct HedosSidebar: View {
                     Updater.shared.checkFromMenu()
                 }
             } label: {
-                body
+                tracked
             }
             .buttonStyle(PressDipStyle())
-            .onHover { versionHovered = $0 }
             .animation(Design.wash, value: lit)
             .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
             .help(help)
             .accessibilityLabel(announce)
             .accessibilityIdentifier("rail-version")
         } else {
-            body
+            tracked
                 .help(help)
                 .accessibilityLabel(announce)
                 .accessibilityIdentifier("rail-version")
@@ -721,7 +751,7 @@ struct HedosSidebar: View {
         collapsedRow: Bool, lit: Bool, wash: Color, updateAvailable: Bool
     ) -> some View {
         if collapsedRow {
-            HedosLogo(size: 18, color: lit ? Design.ink : Design.inkSoft)
+            HedosGlowLogo(size: 20, fraction: hoverFraction, lit: lit)
                 .frame(width: 44, height: 36)
                 .background(RoundedRectangle.soft(Design.Radius.control).fill(wash))
                 .overlay(alignment: .topTrailing) {
@@ -736,12 +766,17 @@ struct HedosSidebar: View {
                 .contentShape(RoundedRectangle.soft(Design.Radius.control))
         } else {
             HStack(spacing: Design.Space.chipX) {
-                HedosLogo(size: 16, color: lit ? Design.ink : Design.inkSoft)
+                HedosGlowLogo(size: 22, fraction: hoverFraction, lit: lit)
                     .frame(width: 22, alignment: .leading)
-                Text(Updater.shared.displayVersion)
-                    .font(Design.body)
-                    .fontWeight(.medium)
-                    .foregroundStyle(lit ? Design.ink : Design.inkSoft)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("hedos")
+                        .font(Design.body)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(lit ? Design.ink : Design.inkSoft)
+                    Text("version: \(cleanVersion)")
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                }
                 Spacer(minLength: 0)
                 if updateAvailable {
                     Circle().fill(Color.green).frame(width: 7, height: 7)
@@ -752,6 +787,11 @@ struct HedosSidebar: View {
             .background(RoundedRectangle.soft(Design.Radius.control).fill(wash))
             .contentShape(RoundedRectangle.soft(Design.Radius.control))
         }
+    }
+
+    private var cleanVersion: String {
+        let raw = Updater.shared.displayVersion
+        return raw.hasPrefix("v") ? String(raw.dropFirst()) : raw
     }
 
     private func settingsRow(collapsedRow: Bool) -> some View {
