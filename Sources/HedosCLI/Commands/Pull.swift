@@ -47,20 +47,43 @@ struct Pull: AsyncParsableCommand {
         }
         let interrupt = Task {
             await Signals.waitForInterrupt()
+            guard !Task.isCancelled else { return }
             await kernel.installs.cancel(id)
         }
         var failure: String?
         var cancelled = false
         var lastBytes: Int64 = 0
+        var progressLineActive = false
+        var lastPlainProgressAt: ContinuousClock.Instant?
         for await event in await kernel.installs.events(id: id) {
             switch event {
             case .queued, .preparing, .done:
                 break
             case .status(let message):
-                if !global.json { Out.err(message) }
+                if !global.json {
+                    if progressLineActive {
+                        clearProgressLine()
+                        progressLineActive = false
+                    }
+                    Out.err(message)
+                }
             case .progress(let progress):
                 lastBytes = progress.bytesDownloaded
-                if !global.json { renderProgress(progress) }
+                if !global.json {
+                    if progressToTTY {
+                        renderProgress(progress)
+                        progressLineActive = true
+                    } else {
+                        let now = ContinuousClock.Instant.now
+                        let due =
+                            lastPlainProgressAt.map { $0.duration(to: now) >= .seconds(1) }
+                            ?? true
+                        if due {
+                            renderProgress(progress)
+                            lastPlainProgressAt = now
+                        }
+                    }
+                }
             case .failed(let message):
                 failure = message
             case .cancelled:
@@ -75,7 +98,8 @@ struct Pull: AsyncParsableCommand {
         }
         if cancelled {
             throw CLIError(
-                "cancelled — partial data stays in the store; run the same pull to resume.")
+                "cancelled — any substantial progress stays in the store; run the same pull to resume."
+            )
         }
         let summary = try await kernel.discover()
         if global.json {
@@ -122,8 +146,12 @@ struct Pull: AsyncParsableCommand {
         let downloaded = DiscoverySummary.formatBytes(progress.bytesDownloaded)
         var line = downloaded
         if let total = progress.totalBytes {
-            let percent = Int((progress.fraction ?? 0) * 100)
-            line = "\(downloaded) / \(DiscoverySummary.formatBytes(total))  \(percent)%"
+            if let fraction = progress.fraction {
+                let percent = Int(fraction * 100)
+                line = "\(downloaded) / \(DiscoverySummary.formatBytes(total))  \(percent)%"
+            } else if progress.totalIsPartial {
+                line = "\(downloaded) / \(DiscoverySummary.formatBytes(total))+"
+            }
         }
         if let file = progress.currentFile {
             line += "  \(file)"
