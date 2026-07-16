@@ -256,6 +256,7 @@ enum Design {
     static let heatWash = heat.opacity(0.16)
     static let heatEdge = heat.opacity(0.32)
     static let danger = adaptive { $0.error }
+    static let dangerWash = danger.opacity(0.12)
     static let added = fixed(0x2EA043)
 
     enum PreviewPalette {
@@ -1233,15 +1234,17 @@ struct SkeletonPulse: View {
 
 struct SheetCloseButton: View {
     var usesCancelShortcut = true
+    var diameter: CGFloat = 24
+    var glyph: Font = Design.glyphSmall.weight(.bold)
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "xmark")
-                .font(Design.glyphSmall.weight(.bold))
+                .font(glyph)
                 .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
-                .frame(width: 24, height: 24)
+                .frame(width: diameter, height: diameter)
                 .background(
                     hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.cardFill),
                     in: Circle())

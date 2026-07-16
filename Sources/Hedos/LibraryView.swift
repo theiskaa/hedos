@@ -122,6 +122,17 @@ final class LibraryViewModel {
         await refreshShelf()
     }
 
+    func deleteModel(id: String) async -> String? {
+        do {
+            _ = try await kernel.deleteModel(id)
+            await refreshShelf()
+            return nil
+        } catch {
+            await refreshShelf()
+            return error.localizedDescription
+        }
+    }
+
     func record(id: String?) -> ModelRecord? {
         guard let id else { return nil }
         return records.first { $0.id == id }
