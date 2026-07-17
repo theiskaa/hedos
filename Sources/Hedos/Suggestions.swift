@@ -27,19 +27,36 @@ struct FirstRunDiscovery: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Design.Space.pane) {
-            invitation
+            welcome
+            getStarted
             suggestions
         }
-        .task { await shell.installs.load() }
     }
 
-    private var invitation: some View {
-        VStack(alignment: .leading, spacing: Design.Space.l) {
-            Text("hedos never downloads behind your back. Point it at your disk and it finds the models you already have — or start from a recommendation tuned to your hardware.")
-                .font(Design.readingBody)
-                .lineSpacing(Design.readingLineSpacing)
-                .foregroundStyle(Design.inkSoft)
-                .frame(maxWidth: Design.Column.prose, alignment: .leading)
+    private var welcome: some View {
+        VStack(spacing: Design.Space.l) {
+            HedosLogo(size: 46, color: Design.ink)
+                .staggeredArrival(0)
+            VStack(spacing: Design.Space.m) {
+                Text("Welcome")
+                    .font(Design.micro)
+                    .tracking(Design.microTracking)
+                    .foregroundStyle(Design.inkFaint)
+                    .staggeredArrival(1)
+                Text("Let's get your first model.")
+                    .font(Design.hero)
+                    .tracking(Design.tightTracking)
+                    .foregroundStyle(Design.ink)
+                    .multilineTextAlignment(.center)
+                    .staggeredArrival(2)
+                Text("hedos never downloads behind your back. Install a model below and it lives right here — running entirely on your Mac, nothing leaving it.")
+                    .font(Design.readingBody)
+                    .lineSpacing(Design.readingLineSpacing)
+                    .foregroundStyle(Design.inkSoft)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: Design.Column.prose)
+                    .staggeredArrival(3)
+            }
             Text(hardware.summary.uppercased())
                 .font(Design.micro)
                 .tracking(Design.microTracking)
@@ -49,11 +66,26 @@ struct FirstRunDiscovery: View {
                 .overlay(
                     RoundedRectangle.soft(Design.Radius.control)
                         .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                .staggeredArrival(4)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, Design.Space.l)
+    }
+
+    private var getStarted: some View {
+        VStack(alignment: .leading, spacing: Design.Space.l) {
+            MicroHeader(title: "Install models to get started")
+            InstallInviteBanner(shell: shell) {
+                shell.installBrowserOpen = true
+            }
             HStack(spacing: Design.Space.m) {
+                Text("Already have models elsewhere?")
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkFaint)
                 Button("Scan this Mac") {
                     Task { await shell.library.rescan() }
                 }
-                .buttonStyle(InkButtonStyle())
+                .buttonStyle(QuietButtonStyle())
                 .disabled(shell.library.isScanning)
                 Button("Choose a folder…") {
                     shell.openSettings(
