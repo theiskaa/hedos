@@ -71,7 +71,6 @@ enum Design {
         static let promptWidth: CGFloat = 500
         static let promptHeight: CGFloat = 560
         static let serverWidth: CGFloat = 480
-        static let orchestraWidth: CGFloat = 480
         static let serverHeight: CGFloat = 520
         static let installWidth: CGFloat = 760
         static let installHeight: CGFloat = 640

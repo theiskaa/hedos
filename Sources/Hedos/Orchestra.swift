@@ -1,15 +1,23 @@
 import HedosKernel
 import SwiftUI
 
-struct OrchestraSheet: View {
+struct OrchestraMenu: View {
     let library: LibraryViewModel
     let model: ChatViewModel
     let kernel: Kernel
     let onClose: () -> Void
     let onInstallModels: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var savedAsDefault = false
     @State private var saveFailed = false
     @State private var toolSupport: [String: Bool] = [:]
+    @State private var page: Page = .overview
+
+    private enum Page: Equatable {
+        case overview
+        case main
+        case role(String)
+    }
 
     private struct Role: Identifiable {
         let id: String
@@ -35,211 +43,189 @@ struct OrchestraSheet: View {
     ]
 
     var body: some View {
-        sheetContent
-            .frame(width: Design.Sheet.orchestraWidth, alignment: .leading)
-            .task(id: library.shelfSignature) {
-                var probed: [String: Bool] = [:]
-                let candidates = mainCandidates.map(\.id) + [model.boundModelID].compactMap { $0 }
-                for id in Set(candidates) {
-                    probed[id] = (try? await kernel.supportsTools(modelID: id)) ?? false
+        ZStack(alignment: .top) {
+            switch page {
+            case .overview:
+                overview
+                    .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
+            case .main:
+                mainPage
+                    .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+            case .role(let id):
+                if let role = Self.roles.first(where: { $0.id == id }) {
+                    rolePage(role)
+                        .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
                 }
-                toolSupport = probed
             }
-    }
-
-    private var sheetContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("Orchestra")
-                .font(Design.title)
-                .foregroundStyle(Design.ink)
-            Text("The main model runs the conversation and plays the others as instruments.")
-                .font(Design.caption)
-                .foregroundStyle(Design.inkSoft)
-                .padding(.top, Design.Space.xxs)
-            mainRow
-                .padding(.top, Design.Space.xl)
-            if let id = model.boundModelID, let record = library.record(id: id),
-                toolSupport[id] == false
-            {
-                HStack(spacing: Design.Space.s) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(Design.glyphSmall)
-                        .foregroundStyle(Design.inkFaint)
-                        .frame(width: 20)
-                    Text(
-                        "\(record.displayName) can't call other models — pick a different "
-                            + "main model to make the orchestra play."
-                    )
-                    .font(Design.caption)
-                    .foregroundStyle(Design.inkSoft)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.top, Design.Space.xs)
-            }
-            Rectangle()
-                .fill(Design.line)
-                .frame(height: Design.hairlineWidth)
-                .padding(.vertical, Design.Space.s)
-            ForEach(Self.roles) { role in
-                roleRow(role)
-            }
-            if !unavailableIDs.isEmpty {
-                unavailableRows
-                    .padding(.top, Design.Space.s)
-            }
-            Text("Every call the main model makes shows in the conversation.")
-                .font(Design.caption)
-                .foregroundStyle(Design.inkFaint)
-                .padding(.top, Design.Space.l)
-            HStack(spacing: Design.Space.m) {
-                Button(saveButtonTitle) {
-                    saveAsDefault()
-                }
-                .buttonStyle(QuietButtonStyle())
-                .disabled(savedAsDefault)
-                Spacer(minLength: Design.Space.l)
-                Button("Done", action: onClose)
-                    .buttonStyle(QuietButtonStyle())
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.top, Design.Space.xl)
         }
-        .padding(Design.Space.gutter)
-        .animation(Design.wash, value: savedAsDefault)
-        .animation(Design.wash, value: model.bench)
+        .padding(Design.Space.s)
+        .animation(Design.motion(reduceMotion: reduceMotion), value: page)
+        .environment(\.inkMenuDismiss) { onClose() }
+        .task(id: library.shelfSignature) {
+            var probed: [String: Bool] = [:]
+            let candidates = mainCandidates.map(\.id) + [model.boundModelID].compactMap { $0 }
+            for id in Set(candidates) {
+                probed[id] = (try? await kernel.supportsTools(modelID: id)) ?? false
+            }
+            toolSupport = probed
+        }
     }
 
-    private var saveButtonTitle: String {
+    private var overview: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            if noMainIsSelectable {
+                InkMenuRow(title: "Install a model…", glyph: "arrow.down.circle") {
+                    onInstallModels()
+                }
+            } else {
+                InkMenuRow(
+                    title: "Main",
+                    annotation: mainRecord?.displayName ?? "Choose a model",
+                    glyph: "person.wave.2",
+                    dismisses: false,
+                    chevron: true
+                ) {
+                    page = .main
+                }
+                .help("Runs the conversation and decides when to call the others.")
+                if let id = model.boundModelID, let record = library.record(id: id),
+                    toolSupport[id] == false
+                {
+                    caption(
+                        "\(record.displayName) can't call other models — pick a "
+                            + "different main model to make the orchestra play.")
+                }
+            }
+            divider
+            ForEach(Self.roles) { role in
+                InkMenuRow(
+                    title: role.title,
+                    annotation: member(for: role.capability)?.displayName ?? "None",
+                    glyph: role.glyph,
+                    dismisses: false,
+                    chevron: true
+                ) {
+                    page = .role(role.id)
+                }
+                .help(role.detail)
+            }
+            unavailableSection
+            caption("Every call the main model makes shows in the conversation.")
+            divider
+            InkMenuRow(
+                title: saveTitle,
+                glyph: "pin",
+                disabled: savedAsDefault,
+                dismisses: false
+            ) {
+                saveAsDefault()
+            }
+        }
+    }
+
+    private var mainPage: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            backRow("Main")
+            divider
+            ForEach(mainCandidates) { record in
+                InkMenuRow(
+                    title: record.displayName,
+                    annotation: toolSupport[record.id] == false ? "can't use tools" : nil,
+                    selected: record.id == model.boundModelID,
+                    disabled: toolSupport[record.id] == false,
+                    dismisses: false
+                ) {
+                    model.rebind(to: record)
+                    savedAsDefault = false
+                    page = .overview
+                }
+            }
+        }
+    }
+
+    private func rolePage(_ role: Role) -> some View {
+        let candidates = candidates(for: role.capability)
+        let current = member(for: role.capability)
+        return VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            backRow(role.title)
+            caption(role.detail)
+            divider
+            if candidates.isEmpty {
+                InkMenuRow(title: "Install a model…", glyph: "arrow.down.circle") {
+                    onInstallModels()
+                }
+            } else {
+                InkMenuRow(title: "None", selected: current == nil, dismisses: false) {
+                    assign(role.capability, to: nil)
+                    page = .overview
+                }
+                ForEach(candidates) { record in
+                    InkMenuRow(
+                        title: record.displayName,
+                        selected: record.id == current?.id,
+                        dismisses: false
+                    ) {
+                        assign(role.capability, to: record)
+                        page = .overview
+                    }
+                }
+            }
+        }
+    }
+
+    private func backRow(_ title: String) -> some View {
+        InkMenuRow(title: title, glyph: "chevron.left", dismisses: false) {
+            page = .overview
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(Design.micro)
+            .foregroundStyle(Design.inkFaint)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.horizontal, Design.Space.chipX)
+            .padding(.vertical, Design.Space.xs)
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Design.line)
+            .frame(height: Design.hairlineWidth)
+            .padding(.vertical, Design.Space.xxs)
+    }
+
+    @ViewBuilder
+    private var unavailableSection: some View {
+        ForEach(unavailableIDs, id: \.self) { id in
+            InkMenuRow(
+                title: library.records.first { $0.id == id }?.displayName ?? id,
+                annotation: "unavailable — tap to remove",
+                glyph: "exclamationmark.triangle",
+                dismisses: false
+            ) {
+                model.setBench(model.bench.filter { $0 != id })
+                savedAsDefault = false
+            }
+        }
+    }
+
+    private var saveTitle: String {
         if savedAsDefault { return "Saved for new chats" }
         if saveFailed { return "Saving failed — try again" }
         return "Use for new chats"
-    }
-
-    private var mainRow: some View {
-        row(
-            glyph: "person.wave.2",
-            title: "Main",
-            detail: "Runs the conversation and decides when to call the others."
-        ) {
-            if noMainIsSelectable {
-                Button("Install a model…", action: onInstallModels)
-                    .buttonStyle(QuietButtonStyle())
-            } else {
-                InkMenu(
-                    title: mainTitle,
-                    accessibilityName: "Main model",
-                    readyDot: mainRecord?.state == .ready
-                ) {
-                    ForEach(mainCandidates) { record in
-                        InkMenuRow(
-                            title: record.displayName,
-                            annotation: toolSupport[record.id] == false
-                                ? "can't use tools" : nil,
-                            selected: record.id == model.boundModelID,
-                            disabled: toolSupport[record.id] == false
-                        ) {
-                            model.rebind(to: record)
-                            savedAsDefault = false
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var noMainIsSelectable: Bool {
-        mainCandidates.allSatisfy { toolSupport[$0.id] == false }
-    }
-
-    private func roleRow(_ role: Role) -> some View {
-        let candidates = candidates(for: role.capability)
-        let current = member(for: role.capability)
-        return row(glyph: role.glyph, title: role.title, detail: role.detail) {
-            if candidates.isEmpty {
-                Button("Install a model…", action: onInstallModels)
-                    .buttonStyle(QuietButtonStyle())
-            } else {
-                InkMenu(
-                    title: current?.displayName ?? "None",
-                    accessibilityName: "\(role.title) model"
-                ) {
-                    InkMenuRow(title: "None", selected: current == nil) {
-                        assign(role.capability, to: nil)
-                    }
-                    ForEach(candidates) { record in
-                        InkMenuRow(
-                            title: record.displayName,
-                            selected: record.id == current?.id
-                        ) {
-                            assign(role.capability, to: record)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var unavailableRows: some View {
-        VStack(alignment: .leading, spacing: Design.Space.xs) {
-            ForEach(unavailableIDs, id: \.self) { id in
-                HStack(spacing: Design.Space.s) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(Design.glyphSmall)
-                        .foregroundStyle(Design.inkFaint)
-                        .frame(width: 20)
-                    Text(library.records.first { $0.id == id }?.displayName ?? id)
-                        .font(Design.caption)
-                        .foregroundStyle(Design.inkSoft)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("no longer available")
-                        .font(Design.micro)
-                        .foregroundStyle(Design.inkFaint)
-                    Spacer(minLength: Design.Space.m)
-                    Button("Remove") {
-                        model.setBench(model.bench.filter { $0 != id })
-                        savedAsDefault = false
-                    }
-                    .buttonStyle(QuietButtonStyle())
-                }
-            }
-        }
-    }
-
-    private func row<Picker: View>(
-        glyph: String, title: String, detail: String, @ViewBuilder picker: () -> Picker
-    ) -> some View {
-        HStack(alignment: .center, spacing: Design.Space.l) {
-            Image(systemName: glyph)
-                .font(Design.glyphInline)
-                .foregroundStyle(Design.inkSoft)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                Text(title)
-                    .font(Design.body.weight(.medium))
-                    .foregroundStyle(Design.ink)
-                Text(detail)
-                    .font(Design.caption)
-                    .foregroundStyle(Design.inkFaint)
-                    .lineSpacing(1.5)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: Design.Space.l)
-            picker()
-        }
-        .padding(.vertical, Design.Space.s)
     }
 
     private var mainRecord: ModelRecord? {
         library.record(id: model.boundModelID)
     }
 
-    private var mainTitle: String {
-        mainRecord?.displayName ?? "Choose a model"
-    }
-
     private var mainCandidates: [ModelRecord] {
         library.records.filter { $0.state == .ready && $0.capabilities.contains(.chat) }
+    }
+
+    private var noMainIsSelectable: Bool {
+        mainCandidates.allSatisfy { toolSupport[$0.id] == false }
     }
 
     private func candidates(for capability: Capability) -> [ModelRecord] {
@@ -260,15 +246,9 @@ struct OrchestraSheet: View {
     }
 
     private func assign(_ capability: Capability, to record: ModelRecord?) {
-        var ids = model.bench
-        if let current = member(for: capability) {
-            ids.removeAll { $0 == current.id }
-        }
-        if let record {
-            ids.removeAll { $0 == record.id }
-            ids.append(record.id)
-        }
-        model.setBench(ids)
+        model.setBench(
+            BenchTools.assigning(
+                capability, to: record?.id, in: model.bench, records: library.records))
         savedAsDefault = false
     }
 

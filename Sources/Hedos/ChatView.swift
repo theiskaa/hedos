@@ -1455,13 +1455,8 @@ struct ChatView: View {
     @State private var editText = ""
     @State private var modelMenuOpen = false
     @State private var voiceConversation = VoiceConversationController()
-    @State private var composerMenuOpen = false
-    @State private var composerMenuSection: ComposerMenuSection?
+    @State private var showParams = false
     @State private var showingOrchestra = false
-
-    private enum ComposerMenuSection {
-        case params
-    }
 
     init(
         session: ChatSession, model: ChatViewModel, library: LibraryViewModel,
@@ -1525,17 +1520,7 @@ struct ChatView: View {
             leading: { composerLeading },
             trailing: { composerTrailing }
         )
-        .modalScrim(
-            isPresented: showingOrchestra, onDismiss: { showingOrchestra = false }
-        ) {
-            OrchestraSheet(
-                library: library, model: model, kernel: kernel,
-                onClose: { showingOrchestra = false },
-                onInstallModels: {
-                    showingOrchestra = false
-                    onInstallModels?()
-                })
-        }
+        .animation(Design.motion(reduceMotion: reduceMotion), value: model.intent)
         .task(id: session.id) {
             model.resumeUI()
             await model.load()
@@ -1617,50 +1602,47 @@ struct ChatView: View {
             Design.motion(reduceMotion: reduceMotion), value: model.pendingAttachments.map(\.id))
     }
 
-    private var composerLeading: some View {
-        plusControl
-    }
-
     @ViewBuilder
-    private var plusControl: some View {
-        if plusVisible {
-            CircleControl(
-                glyph: reduceMotion && composerMenuOpen ? "xmark" : "plus",
-                glyphAngle: !reduceMotion && composerMenuOpen ? .degrees(45) : .zero,
-                label: "Add to this chat"
-            ) {
-                if composerMenuOpen {
-                    composerMenuOpen = false
-                } else {
-                    openComposerMenu(section: model.intent == .image ? .params : nil)
-                }
-            }
-            .inkPopover(
-                isPresented: $composerMenuOpen,
-                width: Design.Popover.form.width,
-                maxHeight: Design.Popover.form.height
-            ) {
-                composerMenu
-            }
+    private var composerLeading: some View {
+        switch model.intent {
+        case .text:
+            attachControl
+                .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
+        case .image:
+            paramsControl
+                .transition(.arrive(from: .leading, reduceMotion: reduceMotion))
+        case .speak:
+            EmptyView()
         }
     }
 
-    private var plusVisible: Bool {
-        switch model.intent {
-        case .text: true
-        case .image: !model.form.schema.isEmpty || voiceStartAvailable
-        case .speak: voiceStartAvailable
+    private var attachControl: some View {
+        CircleControl(glyph: "paperclip", label: "Attach a file") {
+            pickAttachment()
+        }
+        .disabled(model.isWorking)
+        .accessibilityIdentifier("composer-attach")
+    }
+
+    @ViewBuilder
+    private var paramsControl: some View {
+        if !model.form.schema.isEmpty {
+            CircleControl(glyph: "slider.horizontal.3", label: "Image parameters") {
+                showParams.toggle()
+            }
+            .inkPopover(
+                isPresented: $showParams,
+                width: Design.Popover.form.width,
+                maxHeight: Design.Popover.form.height
+            ) {
+                ParamsForm(form: Bindable(model).form, disabled: model.isWorking)
+            }
         }
     }
 
     private var voiceStartAvailable: Bool {
         VoiceConversationController.participants(in: library.records) != nil
             && !voiceConversation.active
-    }
-
-    private func openComposerMenu(section: ComposerMenuSection?) {
-        composerMenuSection = section
-        composerMenuOpen = true
     }
 
     @ViewBuilder
@@ -1688,68 +1670,44 @@ struct ChatView: View {
                         pickPlace()
                     }
                 }
-                if !model.bench.isEmpty {
+                if !model.bench.isEmpty || !model.benchCandidates(in: library.records).isEmpty {
                     CapsuleControl(
                         glyph: "square.stack.3d.up",
-                        title: benchLabel,
-                        label: "This chat's model can call the granted models as tools — "
-                            + "generate images, speak, or look at images. Every call shows "
-                            + "in the conversation.",
+                        title: model.bench.isEmpty ? "Orchestra" : benchLabel,
+                        label: model.bench.isEmpty
+                            ? "Set up this chat's orchestra"
+                            : "This chat's model can call the granted models as tools — "
+                                + "generate images, speak, or look at images. Every call "
+                                + "shows in the conversation.",
                         removeLabel: "Disband this chat's orchestra",
-                        onRemove: { model.clearBench() }
+                        onRemove: model.bench.isEmpty ? nil : { model.clearBench() }
                     ) {
                         showingOrchestra = true
                     }
-                } else if !model.benchCandidates(in: library.records).isEmpty {
-                    CapsuleControl(
-                        glyph: "square.stack.3d.up",
-                        title: "Orchestra",
-                        label: "Set up this chat's orchestra"
+                    .inkPopover(
+                        isPresented: $showingOrchestra,
+                        width: Design.Popover.form.width,
+                        maxHeight: Design.Popover.form.height
                     ) {
-                        showingOrchestra = true
+                        orchestraMenu
                     }
                 }
             }
             .animation(Design.wash, value: model.place)
             .animation(Design.wash, value: model.bench)
+            .transition(.arrive(from: .top, reduceMotion: reduceMotion))
         }
     }
 
-    private var composerMenu: some View {
-        VStack(alignment: .leading, spacing: Design.Space.xxs) {
-            if model.intent == .image, !model.form.schema.isEmpty {
-                InkMenuRow(
-                    title: "Image parameters", glyph: "slider.horizontal.3",
-                    selected: composerMenuSection == .params, dismisses: false
-                ) {
-                    composerMenuSection = composerMenuSection == .params ? nil : .params
-                }
-                if composerMenuSection == .params {
-                    ParamsForm(form: Bindable(model).form, disabled: model.isWorking)
-                        .padding(.leading, Design.Space.l)
-                        .transition(.arrive(from: .top, reduceMotion: reduceMotion))
-                }
-            }
-            if model.intent == .text {
-                InkMenuRow(
-                    title: "Attach a file", glyph: "paperclip",
-                    disabled: model.isWorking, dismisses: false
-                ) {
-                    composerMenuOpen = false
-                    DispatchQueue.main.async { pickAttachment() }
-                }
-            }
-            if voiceStartAvailable {
-                InkMenuRow(title: "Start a voice conversation", glyph: "waveform") {
-                    toggleVoiceConversation()
-                }
-            }
-        }
-        .padding(Design.Space.s)
-        .animation(Design.motion(reduceMotion: reduceMotion), value: composerMenuSection)
-        .environment(\.inkMenuDismiss) { composerMenuOpen = false }
+    private var orchestraMenu: some View {
+        OrchestraMenu(
+            library: library, model: model, kernel: kernel,
+            onClose: { showingOrchestra = false },
+            onInstallModels: {
+                showingOrchestra = false
+                onInstallModels?()
+            })
     }
-
 
     private var benchLabel: String {
         if model.bench.count == 1, let only = model.bench.first {
@@ -1842,23 +1800,35 @@ struct ChatView: View {
         }
     }
 
-    @ViewBuilder
     private var voiceLoopControl: some View {
-        if voiceConversation.active {
-            if let status = voiceConversation.status {
-                ShimmerText(text: status, tracked: false)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: Design.Column.control, alignment: .trailing)
+        Group {
+            if voiceConversation.active {
+                HStack(spacing: Design.Space.m) {
+                    if let status = voiceConversation.status {
+                        ShimmerText(text: status, tracked: false)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: Design.Column.control, alignment: .trailing)
+                    }
+                    CircleControl(
+                        glyph: "waveform.slash",
+                        prominent: true,
+                        label: "End voice conversation"
+                    ) {
+                        toggleVoiceConversation()
+                    }
+                    .accessibilityIdentifier("voice-conversation")
+                }
+                .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+            } else if voiceStartAvailable {
+                CircleControl(glyph: "waveform", label: "Start voice conversation") {
+                    toggleVoiceConversation()
+                }
+                .accessibilityIdentifier("voice-conversation")
+                .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
             }
-            CircleControl(
-                glyph: "waveform.slash",
-                prominent: true,
-                label: "End voice conversation"
-            ) {
-                toggleVoiceConversation()
-            }
-            .accessibilityIdentifier("voice-conversation")
         }
+        .animation(
+            Design.motion(reduceMotion: reduceMotion), value: voiceConversation.active)
     }
 
     private func toggleVoiceConversation() {
@@ -2434,11 +2404,14 @@ struct ChatView: View {
             if !boundReady {
                 return "\(record.displayName) isn't ready to run — pick another model from the name inside the composer."
             }
-            return "\(record.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, press + to attach files, or give this chat a folder and an orchestra above."
+            return "\(record.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, attach files with the paperclip, or give this chat a folder and an orchestra above."
         case .image:
-            return activeRecord != nil
-                ? "A sentence in, an image out — right here in the conversation. Steps, size, and seed live behind the + button."
-                : "When an image model lands on your shelf, it draws into this conversation."
+            guard activeRecord != nil else {
+                return "When an image model lands on your shelf, it draws into this conversation."
+            }
+            return model.form.schema.isEmpty
+                ? "A sentence in, an image out — right here in the conversation."
+                : "A sentence in, an image out — right here in the conversation. Steps, size, and seed live behind the sliders button."
         case .speak:
             return activeRecord.map {
                 "\($0.displayName) speaks your text into this conversation, playable and saveable. Preview voices from the voice menu."
@@ -2449,11 +2422,18 @@ struct ChatView: View {
     @ViewBuilder
     private var modelChip: some View {
         switch model.intent {
-        case .text: chatChip
-        case .image: imageChip
+        case .text:
+            chatChip
+                .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+        case .image:
+            imageChip
+                .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         case .speak:
-            voiceChip
-            voicePickerChip
+            Group {
+                voiceChip
+                voicePickerChip
+            }
+            .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         }
     }
 

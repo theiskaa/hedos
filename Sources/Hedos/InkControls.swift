@@ -581,6 +581,7 @@ struct InkMenuRow: View {
     var disabled = false
     var previewing = false
     var dismisses = true
+    var chevron = false
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @Environment(\.inkMenuDismiss) private var dismissMenu
@@ -632,6 +633,11 @@ struct InkMenuRow: View {
                         .foregroundStyle(Design.ink)
                         .symbolEffect(.bounce, value: selected)
                 }
+                if chevron {
+                    Image(systemName: "chevron.right")
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(hovering ? Design.inkSoft : Design.inkFaint)
+                }
             }
             .padding(.horizontal, Design.Space.chipX)
             .padding(.vertical, Design.Space.s)
@@ -680,6 +686,8 @@ struct InkDropdown: View {
     var width: CGFloat? = nil
     var size: InkControlSize = .compact
     var rowFont: ((String) -> Font)? = nil
+    var disabledOptions: Set<String> = []
+    var optionAnnotations: [String: String] = [:]
     var onPreview: ((String) -> Void)? = nil
     let onSelect: (String?) -> Void
     @State private var open = false
@@ -759,6 +767,8 @@ struct InkDropdown: View {
             selected: selection == value,
             faint: faint,
             font: value.flatMap { rowFont?($0) } ?? Design.caption,
+            disabled: value.map { disabledOptions.contains($0) } ?? false,
+            annotation: value.flatMap { optionAnnotations[$0] },
             onPreview: value.flatMap { candidate in
                 onPreview.map { preview in { preview(candidate) } }
             }
@@ -774,6 +784,8 @@ private struct DropdownRow: View {
     let selected: Bool
     let faint: Bool
     var font: Font = Design.caption
+    var disabled = false
+    var annotation: String? = nil
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @State private var hovering = false
@@ -784,8 +796,15 @@ private struct DropdownRow: View {
                 Text(title)
                     .font(font)
                     .lineLimit(1)
-                    .foregroundStyle(faint ? Design.inkSoft : Design.ink)
+                    .foregroundStyle(
+                        disabled ? Design.inkFaint : faint ? Design.inkSoft : Design.ink)
                 Spacer(minLength: Design.Space.s)
+                if let annotation {
+                    Text(annotation)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                }
                 if let onPreview {
                     Button(action: onPreview) {
                         Image(systemName: "play.circle")
@@ -810,11 +829,12 @@ private struct DropdownRow: View {
             .background(
                 selected
                     ? Design.ink.opacity(0.08)
-                    : hovering ? Design.ink.opacity(0.04) : .clear,
+                    : hovering && !disabled ? Design.ink.opacity(0.04) : .clear,
                 in: RoundedRectangle.soft(Design.Radius.card))
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
         .onHover { hovering = $0 }
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])

@@ -103,6 +103,8 @@ struct ConversationScaffold<Transcript: View, Header: View, Attachments: View, L
                                 .padding(.leading, 3)
                                 .padding(.top, 2)
                                 .allowsHitTesting(false)
+                                .id(placeholder)
+                                .transition(.opacity)
                         }
                         ComposerTextView(
                             text: $draft,
@@ -440,7 +442,6 @@ struct CircleControl: View {
     let glyph: String
     var prominent = false
     var live = false
-    var glyphAngle: Angle = .zero
     let label: String
     let action: () -> Void
     @Environment(\.isEnabled) private var isEnabled
@@ -457,8 +458,6 @@ struct CircleControl: View {
                         ? Design.paper
                         : hovering ? Design.ink : Design.inkSoft)
                 .contentTransition(.symbolEffect(.replace))
-                .rotationEffect(glyphAngle)
-                .animation(Design.snap, value: glyphAngle)
                 .frame(width: Design.Control.size, height: Design.Control.size)
                 .background(
                     live

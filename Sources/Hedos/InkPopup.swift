@@ -26,7 +26,13 @@ struct InkPopoverBody<Content: View>: View {
         }
         .scrollDisabled(measured <= maxHeight)
         .frame(width: width, height: height)
-        .onPreferenceChange(PopoverHeightKey.self) { measured = $0 }
+        .onPreferenceChange(PopoverHeightKey.self) { value in
+            if measured > 0 {
+                withAnimation(Design.wash) { measured = value }
+            } else {
+                measured = value
+            }
+        }
         .background(Design.panel)
         .presentationBackground(Design.panel)
     }
