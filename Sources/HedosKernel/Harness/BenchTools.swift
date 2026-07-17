@@ -61,6 +61,72 @@ public enum BenchTools {
         toolCapabilities.contains { $0.name == name }
     }
 
+    public static func imageMarker(ref: String?, describeOffered: Bool = true) -> String {
+        guard let ref else {
+            return "[image attached — no reference is available for it.]"
+        }
+        guard describeOffered else {
+            return "[image attached — reference \(ref) — no vision model is available "
+                + "to view it right now]"
+        }
+        return "[image attached — reference \(ref) — call \(describeImageName) "
+            + "with this reference to look at it]"
+    }
+
+    public static func borrowedEyes(
+        messages: [ChatMessage], describeOffered: Bool = true
+    ) -> [ChatMessage] {
+        messages.map { message in
+            let imageIndexes = message.attachments.indices.filter {
+                message.attachments[$0].kind == .image
+            }
+            guard !imageIndexes.isEmpty else { return message }
+            let refsAligned = message.attachmentRefs.count == message.attachments.count
+            let markers = imageIndexes.map { index in
+                imageMarker(
+                    ref: refsAligned ? message.attachmentRefs[index] : nil,
+                    describeOffered: describeOffered)
+            }
+            var stripped = message
+            stripped.attachments = message.attachments.indices
+                .filter { !imageIndexes.contains($0) }
+                .map { message.attachments[$0] }
+            stripped.attachmentRefs =
+                refsAligned
+                ? message.attachmentRefs.indices
+                    .filter { !imageIndexes.contains($0) }
+                    .map { message.attachmentRefs[$0] }
+                : message.attachmentRefs
+            stripped.content = ([message.content] + markers)
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            return stripped
+        }
+    }
+
+    public static func systemBlock(tools: [ToolSpec]) -> String? {
+        let offered = Set(tools.map(\.name))
+        var lines: [String] = []
+        if offered.contains(generateImageName) {
+            lines.append(
+                "You can create images yourself: call \(generateImageName) with a prompt — "
+                    + "never say you cannot generate images.")
+        }
+        if offered.contains(speakName) {
+            lines.append(
+                "You can speak aloud: call \(speakName) with the words — "
+                    + "never say you cannot produce audio.")
+        }
+        if offered.contains(describeImageName) {
+            lines.append(
+                "You can look at images: call \(describeImageName) with an image's "
+                    + "reference — never say you cannot see images.")
+        }
+        guard !lines.isEmpty else { return nil }
+        return (["Other models are on your bench and play when you call them:"] + lines)
+            .joined(separator: "\n")
+    }
+
     public static func member(for capability: Capability, in bench: [ModelRecord])
         -> ModelRecord?
     {
@@ -125,16 +191,18 @@ public enum BenchTools {
                 ToolSpec(
                     name: describeImageName,
                     description:
-                        "Looks at an image generated in this conversation with "
-                        + "\(seer.displayName) and answers from what it actually shows. "
-                        + "Pass the artifact id a generate_image result named.",
+                        "Looks at an image in this conversation with \(seer.displayName) "
+                        + "and answers from what it actually shows. Pass the artifact id a "
+                        + "generate_image result named, or the reference of an attached "
+                        + "image (named in its [image attached — reference …] marker).",
                     parameters: .object([
                         "type": .string("object"),
                         "properties": .object([
                             "artifact": .object([
                                 "type": .string("string"),
                                 "description": .string(
-                                    "The artifact id of a generated image in this "
+                                    "The artifact id of a generated image, or the "
+                                    + "reference of an attached image, in this "
                                     + "conversation."),
                             ]),
                             "question": .object([
@@ -286,7 +354,8 @@ public enum BenchTools {
         guard let raw = stringArgument(call, "artifact") else {
             return ToolOutcome(text: "An artifact id is required.")
         }
-        let ref = raw.hasPrefix("artifact:") ? String(raw.dropFirst("artifact:".count)) : raw
+        let unprefixed = raw.hasPrefix("artifact:") ? String(raw.dropFirst("artifact:".count)) : raw
+        let ref = unprefixed.trimmingCharacters(in: CharacterSet(charactersIn: ".,)]"))
         guard let data = try await context.imageData(ref) else {
             return ToolOutcome(
                 text: "No image with reference \(ref) exists in this conversation.")

@@ -102,11 +102,12 @@ public struct ChatMessage: Codable, Sendable, Hashable {
     public var toolCallID: String?
     public var toolName: String?
     public var attachments: [ChatAttachment]
+    public var attachmentRefs: [String]
 
     public init(
         role: Role, content: String, toolCalls: [ToolCall] = [],
         toolCallID: String? = nil, toolName: String? = nil,
-        attachments: [ChatAttachment] = []
+        attachments: [ChatAttachment] = [], attachmentRefs: [String] = []
     ) {
         self.role = role
         self.content = content
@@ -114,10 +115,11 @@ public struct ChatMessage: Codable, Sendable, Hashable {
         self.toolCallID = toolCallID
         self.toolName = toolName
         self.attachments = attachments
+        self.attachmentRefs = attachmentRefs
     }
 
     enum CodingKeys: String, CodingKey {
-        case role, content, toolCalls, toolCallID, toolName, attachments
+        case role, content, toolCalls, toolCallID, toolName, attachments, attachmentRefs
     }
 
     public init(from decoder: any Decoder) throws {
@@ -129,6 +131,8 @@ public struct ChatMessage: Codable, Sendable, Hashable {
         toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
         attachments =
             try container.decodeIfPresent([ChatAttachment].self, forKey: .attachments) ?? []
+        attachmentRefs =
+            try container.decodeIfPresent([String].self, forKey: .attachmentRefs) ?? []
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -139,5 +143,8 @@ public struct ChatMessage: Codable, Sendable, Hashable {
         try container.encodeIfPresent(toolCallID, forKey: .toolCallID)
         try container.encodeIfPresent(toolName, forKey: .toolName)
         if !attachments.isEmpty { try container.encode(attachments, forKey: .attachments) }
+        if !attachmentRefs.isEmpty {
+            try container.encode(attachmentRefs, forKey: .attachmentRefs)
+        }
     }
 }

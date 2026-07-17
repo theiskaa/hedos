@@ -696,7 +696,7 @@ public actor Kernel {
         let systemPrompt = record.systemPrompt ?? fallbackPrompt
         let store = attachmentStore
         let messages = ChatFlow.messages(
-            from: transcript.turns, attachmentLoader: { store.load($0) })
+            from: transcript.turns, attachmentLoader: { store.loadPairs($0) })
         let characters =
             messages.reduce(0) { total, message in
                 total + message.content.count
@@ -835,14 +835,23 @@ public actor Kernel {
                 guard let transcript = try? await self.chats.session(id: sessionID) else {
                     return nil
                 }
-                let referenced = transcript.turns.reduce(into: Set<String>()) {
+                let artifactRefs = transcript.turns.reduce(into: Set<String>()) {
                     $0.formUnion($1.artifactRefs)
                 }
-                guard referenced.contains(ref),
+                if artifactRefs.contains(ref),
                     let artifact = try? await self.artifactStore.get(id: ref),
                     artifact.capability == .image
+                {
+                    return try await self.artifactData(id: ref)
+                }
+                let attachmentRefs = transcript.turns.reduce(into: Set<String>()) {
+                    $0.formUnion($1.attachmentRefs)
+                }
+                guard attachmentRefs.contains(ref),
+                    let attachment = self.attachmentStore.load([ref]).first,
+                    attachment.kind == .image
                 else { return nil }
-                return try await self.artifactData(id: ref)
+                return attachment.data
             })
     }
 
@@ -947,7 +956,7 @@ public actor Kernel {
 
     public func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue,
-        systemPromptOverride: String?
+        systemPromptOverride: String?, promptSuffix: String? = nil
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
@@ -962,7 +971,8 @@ public actor Kernel {
         let fallback = capability == .chat ? await settings.chat().defaultSystemPrompt : nil
         var configured = ModelConfiguration.merged(
             record: record, capability: capability, payload: payload,
-            fallbackPrompt: fallback, sessionPrompt: systemPromptOverride)
+            fallbackPrompt: fallback, sessionPrompt: systemPromptOverride,
+            appendedBlock: promptSuffix)
         if capability == .chat || capability == .complete,
             case .object(var object) = configured,
             let window = ContextBudget.effectiveWindow(
@@ -1056,15 +1066,27 @@ public actor Kernel {
         _ modelID: String, messages: [ChatMessage], tools: [ToolSpec],
         systemPromptOverride: String? = nil
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        var outbound = messages
+        if let record = try await registry.get(id: modelID),
+            let adapter = adapters.first(where: { $0.canServe(record, .chat) }),
+            !adapter.canServe(record, .see)
+        {
+            outbound = BenchTools.borrowedEyes(
+                messages: outbound,
+                describeOffered: tools.contains {
+                    $0.name == BenchTools.describeImageName
+                })
+        }
         var object: [String: JSONValue] = [
-            "messages": .array(messages.map(\.payloadValue))
+            "messages": .array(outbound.map(\.payloadValue))
         ]
         if !tools.isEmpty {
             object["tools"] = .array(tools.map(\.payloadValue))
         }
         return try await invoke(
             modelID, .chat, payload: .object(object),
-            systemPromptOverride: systemPromptOverride)
+            systemPromptOverride: systemPromptOverride,
+            promptSuffix: tools.isEmpty ? nil : BenchTools.systemBlock(tools: tools))
     }
 
     public func submit(

@@ -20,26 +20,30 @@ extension ModelRecord {
 enum ModelConfiguration {
     static func merged(
         record: ModelRecord, capability: Capability, payload: JSONValue,
-        fallbackPrompt: String? = nil, sessionPrompt: String? = nil
+        fallbackPrompt: String? = nil, sessionPrompt: String? = nil,
+        appendedBlock: String? = nil
     ) -> JSONValue {
         let overrides = record.normalizedParamValues()
         let prompt: String?
+        let block: String?
         if capability == .chat {
             if let sessionPrompt {
                 prompt = trimmed(sessionPrompt)
             } else {
                 prompt = trimmedSystemPrompt(record) ?? trimmed(fallbackPrompt)
             }
+            block = trimmed(appendedBlock)
         } else {
             prompt = nil
+            block = nil
         }
-        guard !overrides.isEmpty || prompt != nil else { return payload }
+        guard !overrides.isEmpty || prompt != nil || block != nil else { return payload }
         guard var fields = objectFields(payload) else { return payload }
         for (key, value) in overrides where fields[key] == nil {
             fields[key] = value
         }
-        if let prompt, case .array(let turns)? = fields["messages"] {
-            fields["messages"] = prepending(prompt, to: turns)
+        if prompt != nil || block != nil, case .array(let turns)? = fields["messages"] {
+            fields["messages"] = seeded(prompt: prompt, block: block, turns: turns)
         }
         return .object(fields)
     }
@@ -62,15 +66,28 @@ enum ModelConfiguration {
         }
     }
 
-    private static func prepending(_ prompt: String, to turns: [JSONValue]) -> JSONValue {
-        let hasSystemTurn = turns.contains { turn in
+    private static func seeded(
+        prompt: String?, block: String?, turns: [JSONValue]
+    ) -> JSONValue {
+        let systemIndex = turns.firstIndex { turn in
             guard case .object(let fields) = turn else { return false }
             return fields["role"] == .string("system")
         }
-        guard !hasSystemTurn else { return .array(turns) }
+        if let systemIndex {
+            guard let block, case .object(var fields) = turns[systemIndex],
+                case .string(let existing)? = fields["content"]
+            else { return .array(turns) }
+            fields["content"] = .string(
+                [existing, block].filter { !$0.isEmpty }.joined(separator: "\n\n"))
+            var updated = turns
+            updated[systemIndex] = .object(fields)
+            return .array(updated)
+        }
+        let content = [prompt, block].compactMap { $0 }.joined(separator: "\n\n")
+        guard !content.isEmpty else { return .array(turns) }
         let systemTurn = JSONValue.object([
             "role": .string("system"),
-            "content": .string(prompt),
+            "content": .string(content),
         ])
         return .array([systemTurn] + turns)
     }

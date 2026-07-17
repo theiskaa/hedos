@@ -49,7 +49,9 @@ struct ChatFlow: Sendable {
             TurnDraft(role: .user, content: text, attachmentRefs: attachmentRefs), to: sessionID)
         var history = projected(transcript.turns)
         history.append(
-            ChatMessage(role: .user, content: text, attachments: messageAttachments))
+            ChatMessage(
+                role: .user, content: text, attachments: messageAttachments,
+                attachmentRefs: attachmentRefs))
 
         let mentioned = Self.mentionedFiles(in: text, place: transcript.session.place)
         if !mentioned.isEmpty {
@@ -387,7 +389,8 @@ struct ChatFlow: Sendable {
 
     static func messages(
         from turns: [ChatTurn],
-        attachmentLoader: (@Sendable ([String]) -> [ChatAttachment])? = nil
+        attachmentLoader: (@Sendable ([String]) -> [(ref: String, attachment: ChatAttachment)])? =
+            nil
     ) -> [ChatMessage] {
         let active = turns.filter { $0.supersededBy == nil }
         var messages: [ChatMessage] = []
@@ -401,8 +404,9 @@ struct ChatFlow: Sendable {
                 continue
             }
             let calls = turn.toolCalls
-            let attachments =
+            let pairs =
                 turn.attachmentRefs.isEmpty ? [] : (attachmentLoader?(turn.attachmentRefs) ?? [])
+            let attachments = pairs.map(\.attachment)
             if turn.role == .tool {
                 messages.append(
                     ChatMessage(
@@ -422,16 +426,21 @@ struct ChatFlow: Sendable {
                     content = (blocks + [content]).filter { !$0.isEmpty }
                         .joined(separator: "\n\n")
                 }
-                let images = attachments.filter { $0.kind == .image }
+                let imagePairs = pairs.filter { $0.attachment.kind == .image }
+                let images = imagePairs.map(\.attachment)
+                let imageRefs = imagePairs.map(\.ref)
                 if let last = messages.last, last.role == role, last.toolCalls.isEmpty,
                     last.toolCallID == nil
                 {
                     messages[messages.count - 1] = ChatMessage(
                         role: role, content: last.content + Self.mergeBoundary + content,
-                        attachments: last.attachments + images)
+                        attachments: last.attachments + images,
+                        attachmentRefs: last.attachmentRefs + imageRefs)
                 } else {
                     messages.append(
-                        ChatMessage(role: role, content: content, attachments: images))
+                        ChatMessage(
+                            role: role, content: content, attachments: images,
+                            attachmentRefs: imageRefs))
                 }
             }
             index += 1
@@ -441,7 +450,9 @@ struct ChatFlow: Sendable {
 
     private func projected(_ turns: [ChatTurn]) -> [ChatMessage] {
         guard let store = attachments else { return Self.messages(from: turns) }
-        let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+        let loader: @Sendable ([String]) -> [(ref: String, attachment: ChatAttachment)] = {
+            store.loadPairs($0)
+        }
         return Self.messages(from: turns, attachmentLoader: loader)
     }
 }
