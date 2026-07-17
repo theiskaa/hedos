@@ -22,7 +22,7 @@ struct HomePane: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Design.Space.pane) {
                 topStrip
-                if let summary, summary.totalCount == 0 {
+                if DebugFlags.forceEmpty || summary?.totalCount == 0 {
                     FirstRunDiscovery(shell: shell)
                         .transition(.opacity)
                 } else if summary == nil, let failure = shell.library.errorMessage {

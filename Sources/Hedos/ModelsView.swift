@@ -85,7 +85,7 @@ struct ModelsPane: View {
 
     var body: some View {
         Group {
-            if shell.library.records.isEmpty {
+            if DebugFlags.forceEmpty || shell.library.records.isEmpty {
                 emptyPane
             } else {
                 dashboard
