@@ -556,7 +556,8 @@ struct InkMenu<Content: View>: View {
         .help(help ?? "")
         .popover(isPresented: open, arrowEdge: .top) {
             InkPopoverBody(
-                width: Design.Popover.menuWidth, maxHeight: Design.Popover.menuMaxHeight
+                width: Design.Popover.menuWidth, maxHeight: Design.Popover.menuMaxHeight,
+                onDismiss: { open.wrappedValue = false }
             ) {
                 menu
             }
@@ -585,14 +586,24 @@ struct InkMenuRow: View {
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @Environment(\.inkMenuDismiss) private var dismissMenu
+    @Environment(\.keyNav) private var keyNav
     @State private var hovering = false
+    @State private var rowID = UUID()
+
+    private var keyHighlighted: Bool {
+        keyNav == nil ? hovering : keyNav?.highlightedID == rowID
+    }
+
+    private func trigger() {
+        action()
+        if dismisses {
+            dismissMenu()
+        }
+    }
 
     var body: some View {
         Button {
-            action()
-            if dismisses {
-                dismissMenu()
-            }
+            trigger()
         } label: {
             HStack(spacing: Design.Space.s) {
                 if let glyph {
@@ -645,13 +656,21 @@ struct InkMenuRow: View {
             .background(
                 selected
                     ? Design.ink.opacity(0.08)
-                    : hovering && !disabled ? Design.ink.opacity(0.04) : .clear,
+                    : keyHighlighted && !disabled ? Design.ink.opacity(0.04) : .clear,
                 in: RoundedRectangle.soft(Design.Radius.card))
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .onHover { hovering = $0 }
+        .onHover { value in
+            hovering = value
+            if value {
+                keyNav?.highlight(rowID)
+            }
+        }
+        .keyNavRow(
+            id: rowID, disabled: disabled, chevron: chevron, initial: selected,
+            trigger: trigger)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -731,7 +750,8 @@ struct InkDropdown: View {
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .popover(isPresented: $open, arrowEdge: .top) {
             InkPopoverBody(
-                width: Design.Popover.dropdownWidth, maxHeight: Design.Popover.dropdownMaxHeight
+                width: Design.Popover.dropdownWidth, maxHeight: Design.Popover.dropdownMaxHeight,
+                onDismiss: { open = false }
             ) {
                 rows
             }
@@ -740,25 +760,19 @@ struct InkDropdown: View {
     }
 
     private var rows: some View {
-        ScrollViewReader { proxy in
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                if allowsAuto {
-                    dropdownRow(title: placeholder, value: nil, faint: true)
-                    Rectangle()
-                        .fill(Design.line)
-                        .frame(height: Design.hairlineWidth)
-                        .padding(.vertical, Design.Space.xxs)
-                }
-                ForEach(options, id: \.self) { candidate in
-                    dropdownRow(title: candidate, value: candidate, faint: false)
-                        .id(candidate)
-                }
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            if allowsAuto {
+                dropdownRow(title: placeholder, value: nil, faint: true)
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(height: Design.hairlineWidth)
+                    .padding(.vertical, Design.Space.xxs)
             }
-            .padding(Design.Space.s)
-            .onAppear {
-                if let selection { proxy.scrollTo(selection, anchor: .center) }
+            ForEach(options, id: \.self) { candidate in
+                dropdownRow(title: candidate, value: candidate, faint: false)
             }
         }
+        .padding(Design.Space.s)
     }
 
     private func dropdownRow(title: String, value: String?, faint: Bool) -> some View {
@@ -788,7 +802,13 @@ private struct DropdownRow: View {
     var annotation: String? = nil
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
+    @Environment(\.keyNav) private var keyNav
     @State private var hovering = false
+    @State private var rowID = UUID()
+
+    private var keyHighlighted: Bool {
+        keyNav == nil ? hovering : keyNav?.highlightedID == rowID
+    }
 
     var body: some View {
         Button(action: action) {
@@ -829,13 +849,19 @@ private struct DropdownRow: View {
             .background(
                 selected
                     ? Design.ink.opacity(0.08)
-                    : hovering && !disabled ? Design.ink.opacity(0.04) : .clear,
+                    : keyHighlighted && !disabled ? Design.ink.opacity(0.04) : .clear,
                 in: RoundedRectangle.soft(Design.Radius.card))
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .onHover { hovering = $0 }
+        .onHover { value in
+            hovering = value
+            if value {
+                keyNav?.highlight(rowID)
+            }
+        }
+        .keyNavRow(id: rowID, disabled: disabled, initial: selected, trigger: action)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
