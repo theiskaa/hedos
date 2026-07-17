@@ -1,0 +1,15 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hedos"
+path = "src/main.rs"
+
+[dependencies]
+kernel.workspace = true
+runtime.workspace = true
+gateway.workspace = true

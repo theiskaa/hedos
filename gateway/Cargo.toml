@@ -1,0 +1,10 @@
+[package]
+name = "gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kernel.workspace = true
+runtime.workspace = true

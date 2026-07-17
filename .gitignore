@@ -1,0 +1,18 @@
+# Rust build output
+/target/
+
+# Private docs & working rules
+CLAUDE.md
+internal/
+.claude/
+
+# macOS
+.DS_Store
+
+# Local scratch
+*.local.*
+
+# Stray Swift-era output (pre-Rust, not part of this branch)
+.build/
+dist/
+packaging/
