@@ -34,6 +34,7 @@ public enum Harness {
         let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
         guard firstLine.hasPrefix("["),
             let dash = firstLine.range(of: " — data from the user's disk")
+                ?? firstLine.range(of: " — output from a granted model")
         else { return firstLine }
         return String(firstLine[firstLine.index(after: firstLine.startIndex)..<dash.lowerBound])
     }
@@ -51,6 +52,14 @@ public enum Harness {
     }
 
     public static func actionSummary(_ call: ToolCall) -> String {
+        if BenchTools.isBenchTool(call.name) {
+            let detail =
+                BenchTools.stringArgument(call, "prompt")
+                ?? BenchTools.stringArgument(call, "text")
+                ?? BenchTools.stringArgument(call, "artifact") ?? ""
+            let clipped = detail.count > 60 ? String(detail.prefix(60)) + "…" : detail
+            return clipped.isEmpty ? call.name : "\(call.name) \(clipped)"
+        }
         if call.name == HarnessActTools.runCommandName,
             case .object(let arguments) = call.arguments,
             case .array(let argv)? = arguments["argv"]

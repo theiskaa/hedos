@@ -75,7 +75,7 @@ public actor ChatStore {
             """
             SELECT id, title, created_at, updated_at, model_id, capability_tags,
                    turn_count, pinned, archived, deleted_at, place, system_prompt, titled_by,
-                   intent, image_model_id, voice_model_id
+                   intent, image_model_id, voice_model_id, bench
             FROM sessions
             WHERE \(condition)
             ORDER BY updated_at DESC, id
@@ -122,7 +122,8 @@ public actor ChatStore {
                     """
                     SELECT id, title, created_at, updated_at, model_id, capability_tags,
                            turn_count, pinned, archived, deleted_at, place,
-                           system_prompt, titled_by, intent, image_model_id, voice_model_id
+                           system_prompt, titled_by, intent, image_model_id, voice_model_id,
+                           bench
                     FROM sessions
                     WHERE id = ? AND deleted_at IS NULL
                     """, [.text(id)]
@@ -321,6 +322,13 @@ public actor ChatStore {
         }
     }
 
+    public func setBench(id: String, bench: [String]) throws {
+        let now = Self.now()
+        try mutateSession(id: id, at: now, write: .setBench(id: id, bench: bench, at: now)) {
+            $0.bench = bench
+        }
+    }
+
     public func deleteSession(id: String) throws {
         let now = Self.now()
         try mutateSession(id: id, at: now, write: .tombstoneSession(id: id, at: now)) {
@@ -386,7 +394,8 @@ public actor ChatStore {
             updatedAt: old.updatedAt, modelID: old.modelID, capabilityTags: old.capabilityTags,
             turnCount: old.turnCount, pinned: old.pinned, archived: old.archived, deletedAt: nil,
             place: old.place, systemPrompt: old.systemPrompt, titledBy: old.titledBy,
-            intent: old.intent, imageModelID: old.imageModelID, voiceModelID: old.voiceModelID)
+            intent: old.intent, imageModelID: old.imageModelID, voiceModelID: old.voiceModelID,
+            bench: old.bench)
         let turns = transcript.turns.map { turn -> ChatTurn in
             let supersededBy = turn.supersededBy.map { idMap[$0] ?? $0 }
             return ChatTurn(

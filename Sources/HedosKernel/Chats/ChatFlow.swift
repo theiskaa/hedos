@@ -6,7 +6,9 @@ struct ChatFlow: Sendable {
         -> AsyncThrowingStream<CapabilityChunk, Error>
     let shelf: @Sendable () async throws -> [ModelRecord]
     var toolbox: @Sendable (ChatSession) async -> [ToolSpec] = { _ in [] }
-    var execute: @Sendable (String, ToolCall) async -> String = { _, _ in "" }
+    var execute: @Sendable (String, ToolCall) async -> ToolOutcome = { _, _ in
+        ToolOutcome(text: "")
+    }
     var attachments: AttachmentStore?
     var gate = ChatSessionGate()
 
@@ -63,7 +65,7 @@ struct ChatFlow: Sendable {
                 to: sessionID)
             history.append(ChatMessage(role: .assistant, content: "", toolCalls: calls))
             for call in calls {
-                let result = Self.truncatedToolResult(await execute(sessionID, call))
+                let result = Self.truncatedToolResult(await execute(sessionID, call).text)
                 _ = try await chats.appendTurn(
                     TurnDraft(
                         role: .tool, content: result, stats: nil,
@@ -287,6 +289,7 @@ struct ChatFlow: Sendable {
                         ]
                         for call in calls {
                             var result: String
+                            var producedArtifacts: [String] = []
                             if executedCalls >= toolCallCap {
                                 result =
                                     "[skipped: the tool-call limit of "
@@ -298,8 +301,9 @@ struct ChatFlow: Sendable {
                                     .status(
                                         "step \(executedCalls + 1) of \(toolCallCap): "
                                         + Harness.actionSummary(call)))
-                                result = await execute(sessionID, call)
-                                result = Self.truncatedToolResult(result)
+                                let outcome = await execute(sessionID, call)
+                                result = Self.truncatedToolResult(outcome.text)
+                                producedArtifacts = outcome.artifactRefs
                                 executedCalls += 1
                                 if executedCalls >= toolCallCap {
                                     result +=
@@ -313,6 +317,7 @@ struct ChatFlow: Sendable {
                                     role: .tool,
                                     content: result,
                                     stats: nil,
+                                    artifactRefs: producedArtifacts,
                                     toolCallID: call.id,
                                     toolName: call.name),
                                 to: sessionID)

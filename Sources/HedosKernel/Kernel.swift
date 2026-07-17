@@ -779,24 +779,83 @@ public actor Kernel {
                 try await self.shelf()
             },
             toolbox: { session in
-                guard let place = session.place, let modelID = session.modelID else {
-                    return []
-                }
+                guard let modelID = session.modelID else { return [] }
                 let supported = (try? await self.supportsTools(modelID: modelID)) ?? false
-                return Harness.toolbox(place: place, supportsTools: supported)
+                guard supported else { return [] }
+                var tools = Harness.toolbox(place: session.place, supportsTools: supported)
+                if !session.bench.isEmpty {
+                    tools += BenchTools.specs(bench: await self.benchRecords(session.bench))
+                }
+                return tools
             },
             execute: { sessionID, call in
                 let transcript = try? await self.chats.session(id: sessionID)
+                if BenchTools.isBenchTool(call.name) {
+                    let bench = await self.benchRecords(transcript?.session.bench ?? [])
+                    return await BenchTools.execute(
+                        call, bench: bench, context: self.benchContext(sessionID: sessionID))
+                }
                 guard let place = transcript?.session.place else {
-                    return "This conversation has no folder."
+                    return ToolOutcome(text: "This conversation has no folder.")
                 }
                 let context = HarnessActContext(
                     sessionID: sessionID, ask: await self.currentConsentAsk(),
                     state: self.harnessActState)
-                return await Harness.execute(call, place: place, context: context)
+                return ToolOutcome(
+                    text: await Harness.execute(call, place: place, context: context))
             },
             attachments: attachmentStore,
             gate: chatSessionGate)
+    }
+
+    func benchRecords(_ ids: [String]) async -> [ModelRecord] {
+        var records: [ModelRecord] = []
+        for id in ids {
+            if let record = try? await registry.get(id: id) {
+                records.append(record)
+            }
+        }
+        return records
+    }
+
+    func benchContext(sessionID: String) -> BenchContext {
+        BenchContext(
+            invoke: { try await self.invoke($0, $1, payload: $2) },
+            submit: { try await self.submit($0, $1, payload: $2) },
+            jobEvents: { await self.jobEvents(id: $0) },
+            cancelJob: { await self.cancel(jobID: $0) },
+            persistSpeech: { modelID, voice, text, pcm, sampleRate in
+                let artifact = try await self.saveSpeech(
+                    modelID: modelID, voice: voice, text: text, speed: 1.0,
+                    sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
+                return artifact.id
+            },
+            voices: { try await self.voices(for: $0) },
+            imageData: { ref in
+                guard let transcript = try? await self.chats.session(id: sessionID) else {
+                    return nil
+                }
+                let referenced = transcript.turns.reduce(into: Set<String>()) {
+                    $0.formUnion($1.artifactRefs)
+                }
+                guard referenced.contains(ref),
+                    let artifact = try? await self.artifactStore.get(id: ref),
+                    artifact.capability == .image
+                else { return nil }
+                return try await self.artifactData(id: ref)
+            })
+    }
+
+    public func setChatBench(sessionID: String, modelIDs: [String]) async throws {
+        var seen = Set<String>()
+        var bench: [String] = []
+        for modelID in modelIDs where seen.insert(modelID).inserted {
+            guard try await registry.get(id: modelID) != nil else {
+                throw KernelError.modelNotFound(modelID)
+            }
+            bench.append(modelID)
+        }
+        try await chats.setBench(id: sessionID, bench: bench)
     }
 
     public func setChatPlace(sessionID: String, path: String?) async throws {

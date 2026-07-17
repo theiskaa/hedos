@@ -23,6 +23,7 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
     public var intent: ChatIntent
     public var imageModelID: String?
     public var voiceModelID: String?
+    public var bench: [String]
 
     public init(
         id: String,
@@ -40,7 +41,8 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         titledBy: String? = nil,
         intent: ChatIntent = .text,
         imageModelID: String? = nil,
-        voiceModelID: String? = nil
+        voiceModelID: String? = nil,
+        bench: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -58,12 +60,13 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         self.intent = intent
         self.imageModelID = imageModelID
         self.voiceModelID = voiceModelID
+        self.bench = bench
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, createdAt, updatedAt, modelID, capabilityTags, turnCount
         case pinned, archived, deletedAt, place, systemPrompt, titledBy
-        case intent, imageModelID, voiceModelID
+        case intent, imageModelID, voiceModelID, bench
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,6 +87,7 @@ public struct ChatSession: Codable, Sendable, Hashable, Identifiable {
         intent = try container.decodeIfPresent(ChatIntent.self, forKey: .intent) ?? .text
         imageModelID = try container.decodeIfPresent(String.self, forKey: .imageModelID)
         voiceModelID = try container.decodeIfPresent(String.self, forKey: .voiceModelID)
+        bench = try container.decodeIfPresent([String].self, forKey: .bench) ?? []
     }
 
     public static let defaultTitle = "New Chat"
