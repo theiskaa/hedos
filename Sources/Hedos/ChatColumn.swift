@@ -303,19 +303,26 @@ struct ChatSessionsColumn: View {
             }
         }
         .onMoveCommand { direction in
-            let ordered = orderedSessions
-            guard !ordered.isEmpty else { return }
-            let current = ordered.firstIndex { $0.id == shell.chatSelection }
-            switch direction {
-            case .up:
-                let next = current.map { max(0, $0 - 1) } ?? ordered.count - 1
-                shell.selectChat(ordered[next].id)
-            case .down:
-                let next = current.map { min(ordered.count - 1, $0 + 1) } ?? 0
-                shell.selectChat(ordered[next].id)
-            default:
-                break
-            }
+            stepSession(direction)
+        }
+        .vimMoveCommand(when: listFocused) { direction in
+            stepSession(direction)
+        }
+    }
+
+    private func stepSession(_ direction: MoveCommandDirection) {
+        let ordered = orderedSessions
+        guard !ordered.isEmpty else { return }
+        let current = ordered.firstIndex { $0.id == shell.chatSelection }
+        switch direction {
+        case .up:
+            let next = current.map { max(0, $0 - 1) } ?? ordered.count - 1
+            shell.selectChat(ordered[next].id)
+        case .down:
+            let next = current.map { min(ordered.count - 1, $0 + 1) } ?? 0
+            shell.selectChat(ordered[next].id)
+        default:
+            break
         }
     }
 
