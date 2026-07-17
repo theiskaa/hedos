@@ -29,7 +29,6 @@ final class ShellModel {
     var galleryFocusID: String?
     var pendingLaunch: PendingLaunch?
     var voiceSelection: String?
-    var pipelineSelection: String?
     var librarySelection: String?
     var sessions: [ChatSession] = []
     var usageByDay: [DayUsage] = []
@@ -138,7 +137,7 @@ final class ShellModel {
 
     static func surfaced(_ mode: AppMode) -> AppMode {
         switch mode {
-        case .images, .voice, .pipelines: .chat
+        case .images, .voice: .chat
         default: mode
         }
     }
@@ -180,7 +179,6 @@ final class ShellModel {
         chatSelection = restored.chatSessionID
         imagesSelection = restored.imagesSelection
         voiceSelection = restored.voiceModelID
-        pipelineSelection = restored.pipelineSelection
         librarySelection = restored.libraryModelID
         sidebarCollapsed = restored.sidebarCollapsed
         if !settings.general.restoreLastSession {
@@ -432,7 +430,6 @@ final class ShellModel {
             chatSessionID: chatSelection,
             imagesSelection: imagesSelection,
             voiceModelID: voiceSelection,
-            pipelineSelection: pipelineSelection,
             libraryModelID: librarySelection,
             sidebarCollapsed: sidebarCollapsed)
         let kernel = kernel
@@ -518,9 +515,6 @@ struct ShellView: View {
                 .transition(.opacity)
         case .chat, .images, .voice:
             ChatPane(shell: shell)
-                .transition(.opacity)
-        case .pipelines:
-            PipelinesPane(shell: shell)
                 .transition(.opacity)
         case .library:
             ModelsPane(shell: shell)

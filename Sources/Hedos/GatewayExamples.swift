@@ -43,15 +43,6 @@ enum GatewayExamples {
         """
     }
 
-    static func pipelineRunCurl(port: Int, pipelineID: String, token: String) -> String {
-        """
-        curl -N http://127.0.0.1:\(port)/v1/pipelines/run \\
-          -H "Authorization: Bearer \(token)" \\
-          -H "Content-Type: application/json" \\
-          -d '{"pipeline":"\(pipelineID)","input":{"text":"say hello"}}'
-        """
-    }
-
     static func openAISDK(port: Int, model: String, token: String) -> String {
         """
         from openai import OpenAI
