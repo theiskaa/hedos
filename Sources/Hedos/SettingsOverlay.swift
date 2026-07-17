@@ -38,6 +38,7 @@ struct SettingsOverlay: ViewModifier {
             guard event.keyCode == UInt16(kVK_Escape),
                 shell.settingsOpen,
                 !shell.commandPaletteOpen,
+                !KeyNavCoordinator.capturing,
                 !(NSApp.keyWindow is NSPanel)
             else { return event }
             shell.requestSettingsDismiss()

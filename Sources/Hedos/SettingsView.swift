@@ -682,10 +682,12 @@ struct SettingsRoot: View {
     let dismissAttempts: Int
     let onClose: () -> Void
     @State private var query = ""
+    @FocusState private var sidebarFocused: Bool
     @State private var highlighted: String?
     @State private var selected: SettingsSection = .general
     @State private var hoveredSection: SettingsSection?
     @State private var orchestraToolSupport: [String: Bool] = [:]
+    @State private var searchNav = KeyNavCoordinator()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var model: SettingsModel { shell.settings }
@@ -791,7 +793,10 @@ struct SettingsRoot: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            InkSearchField(placeholder: "Search settings", query: $query)
+            InkSearchField(
+                placeholder: "Search settings", query: $query,
+                onMove: { searchNav.move($0) },
+                onCommit: { searchNav.activateHighlighted() })
                 .padding(.bottom, Design.Space.l)
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xs) {
@@ -804,6 +809,15 @@ struct SettingsRoot: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.hidden)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($sidebarFocused)
+            .onMoveCommand { direction in
+                stepSection(direction)
+            }
+            .vimMoveCommand(when: sidebarFocused) { direction in
+                stepSection(direction)
+            }
         }
         .padding(.top, Design.Space.xl)
         .padding(.horizontal, Design.Space.l)
@@ -811,6 +825,23 @@ struct SettingsRoot: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Design.panel, in: Rectangle())
         .accessibilityIdentifier("settings-sidebar")
+    }
+
+    private func stepSection(_ direction: MoveCommandDirection) {
+        let order: [SettingsSection] = [
+            .general, .appearance, .chat, .voice, .models, .prompts, .gateway, .advanced,
+        ]
+        guard let index = order.firstIndex(of: selected) else { return }
+        let next: Int
+        switch direction {
+        case .up: next = max(0, index - 1)
+        case .down: next = min(order.count - 1, index + 1)
+        default: return
+        }
+        query = ""
+        withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+            selected = order[next]
+        }
     }
 
     @ViewBuilder
@@ -990,6 +1021,11 @@ struct SettingsRoot: View {
         }
         .padding(Design.Space.tile)
         .surfaceCard(radius: Design.Radius.tile)
+        .keyNavigableList(coordinator: searchNav, capturesKeys: false)
+        .onChange(of: searchNav.highlightedID) { _, id in
+            guard let id else { return }
+            proxy.scrollTo(id, anchor: .center)
+        }
     }
 
     private func flash(_ id: String) {
