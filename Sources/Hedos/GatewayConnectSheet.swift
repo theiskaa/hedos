@@ -7,7 +7,6 @@ struct GatewayConnectSheet: View {
     let onClose: () -> Void
 
     @State private var sampleModel: String?
-    @State private var pipelineID: String?
     @State private var copiedBase = false
 
     private var port: Int {
@@ -49,7 +48,7 @@ struct GatewayConnectSheet: View {
                     baseSection
                     curlSection
                     clientSection
-                    if speakModel != nil || imageModel != nil || pipelineID != nil {
+                    if speakModel != nil || imageModel != nil {
                         moreSection
                     }
                     caveats
@@ -64,9 +63,6 @@ struct GatewayConnectSheet: View {
                 .padding(.vertical, Design.Space.l)
         }
         .frame(width: 680, height: 640)
-        .task {
-            pipelineID = await shell.kernel.pipelineStore.list().first?.id
-        }
     }
 
     private var header: some View {
@@ -173,12 +169,6 @@ struct GatewayConnectSheet: View {
                     title: "generate an image",
                     code: GatewayExamples.imagesCurl(
                         port: port, model: image.displayName, token: token))
-            }
-            if let pipelineID {
-                GatewayCodeBlock(
-                    title: "run a pipeline",
-                    code: GatewayExamples.pipelineRunCurl(
-                        port: port, pipelineID: pipelineID, token: token))
             }
         }
     }

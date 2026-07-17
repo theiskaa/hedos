@@ -34,9 +34,7 @@ struct FakeGatewayPort: GatewayPort {
     var jobFailure: String?
     var artifacts: [String: Data] = [:]
     var admission: GatewayAdmissionState = .ready
-    var pipelinesList: [Pipeline] = []
-    var pipelineEventScript: [PipelineEvent] = []
-    var pipelineHangs = false
+    var streamHangs = false
     var toolCapableModels: Set<String> = []
     var streamFailure: String?
     var honoredKeys: Set<String> = [
@@ -59,6 +57,15 @@ struct FakeGatewayPort: GatewayPort {
         _ modelID: String, _ capability: Capability, payload: JSONValue
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         recorder.record(modelID, capability, payload)
+        if streamHangs {
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    try? await Task.sleep(for: .seconds(3600))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
         if let record = records.first(where: { $0.id == modelID }),
             !record.capabilities.contains(capability)
         {
@@ -133,31 +140,6 @@ struct FakeGatewayPort: GatewayPort {
         modelID: String, footprintMB: Int?, kind: GatewayWorkKind
     ) async -> GatewayAdmissionState {
         admission
-    }
-
-    func pipelines() async -> [Pipeline] { pipelinesList }
-
-    func pipeline(id: String) async -> Pipeline? {
-        pipelinesList.first { $0.id == id }
-    }
-
-    func runPipeline(id: String, input: PipelineInput) async throws
-        -> AsyncStream<PipelineEvent>
-    {
-        let script = pipelineEventScript
-        guard pipelineHangs else {
-            return AsyncStream { continuation in
-                for event in script { continuation.yield(event) }
-                continuation.finish()
-            }
-        }
-        return AsyncStream { continuation in
-            let task = Task {
-                try? await Task.sleep(for: .seconds(3600))
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
     }
 }
 

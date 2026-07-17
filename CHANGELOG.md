@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.4 - 2026-07-17
+
+- Orchestra — one conversation, several models. A chat can now be given a small ensemble: a main model you talk to, plus specialists it calls when the conversation needs them — one to generate images, one to speak replies aloud, one to look at images you share. The main model calls them the way it calls any tool (so it has to be a tool-capable model), every call appears inline in the transcript as it happens, and generated images and audio land right there in the conversation and the gallery. This also gives a model senses it doesn't have on its own: paste a screenshot into a text-only coder model and, as long as the orchestra has a vision model, it hands the image over and answers from what that model reports back. Set it per chat from the Orchestra control above the composer, or set a default ensemble in Settings > Chat > Orchestra.
+- Full keyboard navigation. Arrows, Enter, and Escape now drive the whole app — every menu and dropdown, the orchestra picker, settings search and its sidebar, and the models, home, and gallery grids (Enter opens or launches the highlighted card). Vim keys (`h` `j` `k` `l`) work everywhere the arrows do. Typing fields are left alone.
+- Redesigned chat composer. The composer is now a single surface — attachments sit inside the field, and the controls adapt to what you're doing: a paperclip to attach in a normal chat, image-parameter sliders in image mode. The model picker and the folder and orchestra controls sit in a clean header row, and switching modes animates in place instead of snapping.
+- New first-run and empty states. The home first-run screen leads with getting your first model, with an install section front and center; the Models screen, when empty, offers to install right where the grid would be; and the install browser now opens from anywhere in the app, not only the Models screen.
+- The Pipelines feature has been retired — the orchestra replaces it. The Pipelines pane and its two gateway endpoints are gone; any pipelines saved by an earlier version are simply no longer used.
+
 ## v0.1.3 - 2026-07-16
 
 - Install models from inside hedos: the Models screen gains an Install browser with a curated catalog fitted to the Mac's hardware, Hugging Face search, and direct entry — paste a `huggingface.co` or `ollama.com` link, an `org/repo`, or a `name:tag` and it resolves. A confirm page shows exactly what will land on disk (size, file manifest, destination, pinned revision) before anything downloads.

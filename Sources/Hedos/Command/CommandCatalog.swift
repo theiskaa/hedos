@@ -43,6 +43,17 @@ enum CommandCatalog {
                         shell.openSettings(at: SettingsDestination(section: section, anchor: nil))
                     }))
         }
+        if !CLITool.isInstalled {
+            items.append(
+                CommandItem(
+                    id: "settings.installCLI",
+                    title: "Install command-line tool…",
+                    subtitle: "Adds the hedos command to your terminal",
+                    glyph: "terminal",
+                    keywords: ["cli", "command line", "terminal", "install", "hedos", "shell"],
+                    section: .settings,
+                    perform: { CLITool.installFromMenu() }))
+        }
 
         items.append(
             CommandItem(

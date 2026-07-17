@@ -462,6 +462,8 @@ struct InkMenu<Content: View>: View {
     enum Trigger {
         case standard
         case chip
+        case quiet
+        case glyph(String)
     }
 
     let title: String
@@ -481,7 +483,8 @@ struct InkMenu<Content: View>: View {
     private var triggerShape: AnyInsettableShape {
         switch trigger {
         case .standard: AnyInsettableShape(RoundedRectangle.soft(Design.Radius.control))
-        case .chip: AnyInsettableShape(Capsule())
+        case .chip, .quiet: AnyInsettableShape(Capsule())
+        case .glyph: AnyInsettableShape(Circle())
         }
     }
 
@@ -489,6 +492,8 @@ struct InkMenu<Content: View>: View {
         switch trigger {
         case .standard: hovering ? Design.inkWash : Design.surface
         case .chip: hovering ? Design.ink.opacity(0.10) : Design.inkWash
+        case .quiet: hovering ? Design.inkWash : .clear
+        case .glyph: hovering ? Design.inkWash : Design.surface
         }
     }
 
@@ -497,8 +502,10 @@ struct InkMenu<Content: View>: View {
         case .standard:
             open.wrappedValue
                 ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line)
-        case .chip:
+        case .chip, .glyph:
             AnyShapeStyle(Design.line)
+        case .quiet:
+            AnyShapeStyle(Color.clear)
         }
     }
 
@@ -506,25 +513,36 @@ struct InkMenu<Content: View>: View {
         Button {
             open.wrappedValue = true
         } label: {
-            HStack(spacing: Design.Space.xs) {
-                if let readyDot {
-                    Circle()
-                        .fill(
-                            readyDot
-                                ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.inkFaint)
-                        )
-                        .frame(width: 6, height: 6)
+            Group {
+                if case .glyph(let name) = trigger {
+                    Image(systemName: name)
+                        .font(Design.caption.weight(.semibold))
+                        .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: Design.Control.size, height: Design.Control.size)
+                } else {
+                    HStack(spacing: Design.Space.xs) {
+                        if let readyDot {
+                            Circle()
+                                .fill(
+                                    readyDot
+                                        ? AnyShapeStyle(Design.accent)
+                                        : AnyShapeStyle(Design.inkFaint)
+                                )
+                                .frame(width: 6, height: 6)
+                        }
+                        Text(title)
+                            .font(Design.label)
+                            .lineLimit(1)
+                            .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(Design.glyphSmall)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    .padding(.horizontal, Design.Space.chipX)
+                    .frame(height: Design.Control.size)
                 }
-                Text(title)
-                    .font(Design.label)
-                    .lineLimit(1)
-                    .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(Design.glyphSmall)
-                    .foregroundStyle(Design.inkFaint)
             }
-            .padding(.horizontal, Design.Space.chipX)
-            .frame(height: Design.Control.size)
             .background(triggerFill, in: triggerShape)
             .overlay(
                 triggerShape.strokeBorder(triggerBorder, lineWidth: Design.hairlineWidth))
@@ -538,7 +556,8 @@ struct InkMenu<Content: View>: View {
         .help(help ?? "")
         .popover(isPresented: open, arrowEdge: .top) {
             InkPopoverBody(
-                width: Design.Popover.menuWidth, maxHeight: Design.Popover.menuMaxHeight
+                width: Design.Popover.menuWidth, maxHeight: Design.Popover.menuMaxHeight,
+                onDismiss: { open.wrappedValue = false }
             ) {
                 menu
             }
@@ -558,20 +577,41 @@ struct InkMenu<Content: View>: View {
 struct InkMenuRow: View {
     let title: String
     var annotation: String? = nil
+    var glyph: String? = nil
     var selected = false
     var disabled = false
     var previewing = false
+    var dismisses = true
+    var chevron = false
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @Environment(\.inkMenuDismiss) private var dismissMenu
+    @Environment(\.keyNav) private var keyNav
     @State private var hovering = false
+    @State private var rowID = UUID()
+
+    private var keyHighlighted: Bool {
+        keyNav == nil ? hovering : keyNav?.highlightedID == rowID
+    }
+
+    private func trigger() {
+        action()
+        if dismisses {
+            dismissMenu()
+        }
+    }
 
     var body: some View {
         Button {
-            action()
-            dismissMenu()
+            trigger()
         } label: {
             HStack(spacing: Design.Space.s) {
+                if let glyph {
+                    Image(systemName: glyph)
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(disabled ? Design.inkFaint : Design.inkSoft)
+                        .frame(width: 16)
+                }
                 Text(title)
                     .font(Design.caption)
                     .lineLimit(1)
@@ -604,6 +644,11 @@ struct InkMenuRow: View {
                         .foregroundStyle(Design.ink)
                         .symbolEffect(.bounce, value: selected)
                 }
+                if chevron {
+                    Image(systemName: "chevron.right")
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(hovering ? Design.inkSoft : Design.inkFaint)
+                }
             }
             .padding(.horizontal, Design.Space.chipX)
             .padding(.vertical, Design.Space.s)
@@ -611,13 +656,21 @@ struct InkMenuRow: View {
             .background(
                 selected
                     ? Design.ink.opacity(0.08)
-                    : hovering && !disabled ? Design.ink.opacity(0.04) : .clear,
+                    : keyHighlighted && !disabled ? Design.ink.opacity(0.04) : .clear,
                 in: RoundedRectangle.soft(Design.Radius.card))
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .onHover { hovering = $0 }
+        .onHover { value in
+            hovering = value
+            if value {
+                keyNav?.highlight(rowID)
+            }
+        }
+        .keyNavRow(
+            id: rowID, disabled: disabled, chevron: chevron, initial: selected,
+            trigger: trigger)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -652,6 +705,8 @@ struct InkDropdown: View {
     var width: CGFloat? = nil
     var size: InkControlSize = .compact
     var rowFont: ((String) -> Font)? = nil
+    var disabledOptions: Set<String> = []
+    var optionAnnotations: [String: String] = [:]
     var onPreview: ((String) -> Void)? = nil
     let onSelect: (String?) -> Void
     @State private var open = false
@@ -695,7 +750,8 @@ struct InkDropdown: View {
         .inkFocusRing(RoundedRectangle.soft(Design.Radius.control))
         .popover(isPresented: $open, arrowEdge: .top) {
             InkPopoverBody(
-                width: Design.Popover.dropdownWidth, maxHeight: Design.Popover.dropdownMaxHeight
+                width: Design.Popover.dropdownWidth, maxHeight: Design.Popover.dropdownMaxHeight,
+                onDismiss: { open = false }
             ) {
                 rows
             }
@@ -704,25 +760,19 @@ struct InkDropdown: View {
     }
 
     private var rows: some View {
-        ScrollViewReader { proxy in
-            VStack(alignment: .leading, spacing: Design.Space.xxs) {
-                if allowsAuto {
-                    dropdownRow(title: placeholder, value: nil, faint: true)
-                    Rectangle()
-                        .fill(Design.line)
-                        .frame(height: Design.hairlineWidth)
-                        .padding(.vertical, Design.Space.xxs)
-                }
-                ForEach(options, id: \.self) { candidate in
-                    dropdownRow(title: candidate, value: candidate, faint: false)
-                        .id(candidate)
-                }
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            if allowsAuto {
+                dropdownRow(title: placeholder, value: nil, faint: true)
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(height: Design.hairlineWidth)
+                    .padding(.vertical, Design.Space.xxs)
             }
-            .padding(Design.Space.s)
-            .onAppear {
-                if let selection { proxy.scrollTo(selection, anchor: .center) }
+            ForEach(options, id: \.self) { candidate in
+                dropdownRow(title: candidate, value: candidate, faint: false)
             }
         }
+        .padding(Design.Space.s)
     }
 
     private func dropdownRow(title: String, value: String?, faint: Bool) -> some View {
@@ -731,6 +781,8 @@ struct InkDropdown: View {
             selected: selection == value,
             faint: faint,
             font: value.flatMap { rowFont?($0) } ?? Design.caption,
+            disabled: value.map { disabledOptions.contains($0) } ?? false,
+            annotation: value.flatMap { optionAnnotations[$0] },
             onPreview: value.flatMap { candidate in
                 onPreview.map { preview in { preview(candidate) } }
             }
@@ -746,9 +798,17 @@ private struct DropdownRow: View {
     let selected: Bool
     let faint: Bool
     var font: Font = Design.caption
+    var disabled = false
+    var annotation: String? = nil
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
+    @Environment(\.keyNav) private var keyNav
     @State private var hovering = false
+    @State private var rowID = UUID()
+
+    private var keyHighlighted: Bool {
+        keyNav == nil ? hovering : keyNav?.highlightedID == rowID
+    }
 
     var body: some View {
         Button(action: action) {
@@ -756,8 +816,15 @@ private struct DropdownRow: View {
                 Text(title)
                     .font(font)
                     .lineLimit(1)
-                    .foregroundStyle(faint ? Design.inkSoft : Design.ink)
+                    .foregroundStyle(
+                        disabled ? Design.inkFaint : faint ? Design.inkSoft : Design.ink)
                 Spacer(minLength: Design.Space.s)
+                if let annotation {
+                    Text(annotation)
+                        .font(Design.label)
+                        .foregroundStyle(Design.inkFaint)
+                        .lineLimit(1)
+                }
                 if let onPreview {
                     Button(action: onPreview) {
                         Image(systemName: "play.circle")
@@ -782,12 +849,19 @@ private struct DropdownRow: View {
             .background(
                 selected
                     ? Design.ink.opacity(0.08)
-                    : hovering ? Design.ink.opacity(0.04) : .clear,
+                    : keyHighlighted && !disabled ? Design.ink.opacity(0.04) : .clear,
                 in: RoundedRectangle.soft(Design.Radius.card))
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .disabled(disabled)
+        .onHover { value in
+            hovering = value
+            if value {
+                keyNav?.highlight(rowID)
+            }
+        }
+        .keyNavRow(id: rowID, disabled: disabled, initial: selected, trigger: action)
         .accessibilityLabel(title)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }

@@ -77,7 +77,9 @@ private func pngBytes(_ marker: UInt8) -> Data {
             id: "2", sessionID: "s", seq: 1, role: .user, content: "second",
             attachmentRefs: refsB, contentHash: "h2", createdAt: now, updatedAt: now),
     ]
-    let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+    let loader: @Sendable ([String]) -> [(ref: String, attachment: ChatAttachment)] = {
+        store.loadPairs($0)
+    }
     let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
     #expect(messages.count == 1)
     #expect(messages.first?.attachments.count == 2)
@@ -95,7 +97,9 @@ private func pngBytes(_ marker: UInt8) -> Data {
             id: "1", sessionID: "s", seq: 0, role: .user, content: "",
             attachmentRefs: refs, contentHash: "h", createdAt: now, updatedAt: now)
     ]
-    let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+    let loader: @Sendable ([String]) -> [(ref: String, attachment: ChatAttachment)] = {
+        store.loadPairs($0)
+    }
     let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
     #expect(messages.count == 1)
     #expect(messages.first?.attachments.count == 1)
@@ -289,7 +293,9 @@ private func textBytes(_ text: String) -> Data {
             id: "2", sessionID: "s", seq: 1, role: .user, content: "second",
             attachmentRefs: refsB, contentHash: "h2", createdAt: now, updatedAt: now),
     ]
-    let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+    let loader: @Sendable ([String]) -> [(ref: String, attachment: ChatAttachment)] = {
+        store.loadPairs($0)
+    }
     let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
     #expect(messages.count == 1)
     #expect(messages.first?.attachments.isEmpty == true)
@@ -326,7 +332,9 @@ private func textBytes(_ text: String) -> Data {
             id: "1", sessionID: "s", seq: 0, role: .user, content: "",
             attachmentRefs: refs, contentHash: "h", createdAt: now, updatedAt: now)
     ]
-    let loader: @Sendable ([String]) -> [ChatAttachment] = { store.load($0) }
+    let loader: @Sendable ([String]) -> [(ref: String, attachment: ChatAttachment)] = {
+        store.loadPairs($0)
+    }
     let messages = ChatFlow.messages(from: turns, attachmentLoader: loader)
     #expect(messages.count == 1)
     #expect(messages.first?.content.contains("just the doc") == true)

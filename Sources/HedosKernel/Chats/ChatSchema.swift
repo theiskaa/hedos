@@ -90,5 +90,8 @@ extension ChatStore {
         ALTER TABLE sessions ADD COLUMN image_model_id TEXT;
         ALTER TABLE sessions ADD COLUMN voice_model_id TEXT;
         """,
+        """
+        ALTER TABLE sessions ADD COLUMN bench TEXT NOT NULL DEFAULT '';
+        """,
     ]
 }

@@ -1,7 +1,8 @@
 import Foundation
 
 struct OpenAIChatHandler: GatewayHandling {
-    static let runTimeoutSeconds = 600
+    static let defaultRunTimeoutSeconds = 600
+    var runTimeoutSeconds = OpenAIChatHandler.defaultRunTimeoutSeconds
 
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
@@ -32,7 +33,7 @@ struct OpenAIChatHandler: GatewayHandling {
         if chatRequest.stream {
             let body = try await responder.beginStream(contentType: "text/event-stream")
             do {
-                let timedOut = try await StreamTimeout.race(seconds: Self.runTimeoutSeconds) {
+                let timedOut = try await StreamTimeout.race(seconds: runTimeoutSeconds) {
                     var first = true
                     var finalStats: GenerationStats?
                     var toolCallCount = 0
@@ -88,7 +89,7 @@ struct OpenAIChatHandler: GatewayHandling {
                 }
                 if timedOut {
                     try await StreamFailure.timeout(
-                        surface: .openAI, body: body, seconds: Self.runTimeoutSeconds)
+                        surface: .openAI, body: body, seconds: runTimeoutSeconds)
                 }
             } catch {
                 try await StreamFailure.write(error, surface: .openAI, body: body)

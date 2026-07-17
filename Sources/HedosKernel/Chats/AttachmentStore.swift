@@ -52,6 +52,10 @@ struct AttachmentStore: Sendable {
     }
 
     func load(_ refs: [String]) -> [ChatAttachment] {
+        loadPairs(refs).map(\.attachment)
+    }
+
+    func loadPairs(_ refs: [String]) -> [(ref: String, attachment: ChatAttachment)] {
         refs.compactMap { ref in
             guard Self.isSafeRef(ref),
                 let data = try? Data(contentsOf: directory.appendingPathComponent(ref))
@@ -59,15 +63,18 @@ struct AttachmentStore: Sendable {
             let ext = (ref as NSString).pathExtension
             let mimeType = Self.mimeType(for: ext)
             if Self.imageExtensions.contains(ext.lowercased()) {
-                return ChatAttachment(kind: .image, data: data, mimeType: mimeType)
+                return (ref, ChatAttachment(kind: .image, data: data, mimeType: mimeType))
             }
             if Self.textExtensions.contains(ext.lowercased()) {
                 let stem = (ref as NSString).deletingPathExtension
                 let slug = (stem as NSString).pathExtension
                 let name = slug.isEmpty ? nil : "\(slug).\(ext)"
-                return ChatAttachment(kind: .document, data: data, mimeType: mimeType, name: name)
+                return (
+                    ref,
+                    ChatAttachment(kind: .document, data: data, mimeType: mimeType, name: name)
+                )
             }
-            return ChatAttachment(kind: .image, data: data, mimeType: mimeType)
+            return (ref, ChatAttachment(kind: .image, data: data, mimeType: mimeType))
         }
     }
 

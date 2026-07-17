@@ -216,20 +216,6 @@ struct VoiceLoopBackendAdapter: PipelineBackend {
         }
     }
 
-    func submit(_ modelID: String, _ capability: Capability, payload: JSONValue) async throws
-        -> String
-    {
-        throw KernelError.runtimeFailed("voice loop stages do not run jobs")
-    }
-
-    func jobEvents(id: String) async -> AsyncStream<JobEvent> {
-        AsyncStream { $0.finish() }
-    }
-
-    func cancel(jobID: String) async {}
-
-    func artifactData(id: String) async throws -> Data? { nil }
-
     static func userText(_ payload: JSONValue) -> String {
         guard case .object(let object) = payload,
             case .array(let messages)? = object["messages"]
@@ -366,7 +352,7 @@ public actor VoiceLoop {
             case .failed(let message):
                 continuation?.yield(.failed(message))
                 continuation?.yield(.listening)
-            case .stageStarted, .status, .artifact, .vector:
+            case .stageStarted, .status:
                 break
             }
         }

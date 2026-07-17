@@ -5,6 +5,9 @@ struct HomePane: View {
     @Bindable var shell: ShellModel
     @State private var chatDraft = ""
     @State private var denyCount = 0
+    @State private var keyedReady: String?
+    @State private var readyGridWidth: CGFloat = 0
+    @FocusState private var readyGridFocused: Bool
     @FocusState private var chatFieldFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var subtitle = HomePane.subtitles.randomElement() ?? HomePane.subtitles[0]
@@ -19,6 +22,12 @@ struct HomePane: View {
     ]
 
     var body: some View {
+        ScrollViewReader { scrollProxy in
+            scrollBody(scrollProxy)
+        }
+    }
+
+    private func scrollBody(_ scrollProxy: ScrollViewProxy) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Design.Space.pane) {
                 topStrip
@@ -35,7 +44,7 @@ struct HomePane: View {
                         activityCard
                             .staggeredArrival(2)
                         if !readyModels.isEmpty {
-                            readySection
+                            readySection(scrollProxy)
                         }
                     }
                     .transition(.opacity)
@@ -575,6 +584,7 @@ struct HomePane: View {
     }
 
     private static let readyGridLimit = 6
+    private static let minReadyCard: CGFloat = 200
 
     private var readyModels: [ModelRecord] {
         shell.library.records
@@ -585,7 +595,7 @@ struct HomePane: View {
             .sorted(by: Fit.prefers)
     }
 
-    private var readySection: some View {
+    private func readySection(_ proxy: ScrollViewProxy) -> some View {
         VStack(alignment: .leading, spacing: Design.Space.m) {
             HStack {
                 MicroHeader(title: "Ready to run · \(readyModels.count)")
@@ -601,7 +611,9 @@ struct HomePane: View {
             }
             LazyVGrid(
                 columns: [
-                    GridItem(.adaptive(minimum: 200), spacing: Design.Space.l, alignment: .top)
+                    GridItem(
+                        .adaptive(minimum: Self.minReadyCard), spacing: Design.Space.l,
+                        alignment: .top)
                 ],
                 spacing: Design.Space.l
             ) {
@@ -609,13 +621,59 @@ struct HomePane: View {
                     ReadyModelCard(record: record, warm: isWarm(record)) {
                         shell.launch(record)
                     }
+                    .keyedGridRing(readyGridFocused && keyedReady == record.id)
+                    .id(record.id)
                 }
+            }
+            .background(
+                GeometryReader { geometry in
+                    Color.clear.onAppear { readyGridWidth = geometry.size.width }
+                        .onChange(of: geometry.size.width) { _, width in
+                            readyGridWidth = width
+                        }
+                })
+            .focusable()
+            .focusEffectDisabled()
+            .focused($readyGridFocused)
+            .onMoveCommand { direction in
+                moveReadySelection(direction, proxy: proxy)
+            }
+            .vimMoveCommand(when: readyGridFocused) { direction in
+                moveReadySelection(direction, proxy: proxy)
+            }
+            .onKeyPress(.return) {
+                guard readyGridFocused, let keyedReady,
+                    let record = readyModels.prefix(Self.readyGridLimit)
+                        .first(where: { $0.id == keyedReady })
+                else { return .ignored }
+                shell.launch(record)
+                return .handled
             }
         }
     }
 
     private func isWarm(_ record: ModelRecord) -> Bool {
         shell.isWarm(record)
+    }
+
+    private func moveReadySelection(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard readyGridFocused else { return }
+        let ordered = Array(readyModels.prefix(Self.readyGridLimit))
+        guard !ordered.isEmpty else { return }
+        let cols = GridKeyNav.columns(
+            width: readyGridWidth, minItem: Self.minReadyCard, spacing: Design.Space.l)
+        let current = keyedReady.flatMap { id in
+            ordered.firstIndex { $0.id == id }
+        }
+        let next =
+            current.map {
+                GridKeyNav.move(
+                    index: $0, direction: direction, columns: cols, count: ordered.count)
+            } ?? 0
+        keyedReady = ordered[next].id
+        withAnimation(reduceMotion ? nil : Design.snap) {
+            proxy.scrollTo(ordered[next].id, anchor: .center)
+        }
     }
 }
 

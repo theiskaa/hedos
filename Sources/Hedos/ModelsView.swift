@@ -80,6 +80,11 @@ struct ModelsPane: View {
     @State private var query = ""
     @State private var showFolders = false
     @State private var presented: String?
+    @State private var keyedModel: String?
+    @State private var gridWidth: CGFloat = 0
+    @FocusState private var gridFocused: Bool
+
+    private static let minCard: CGFloat = 280
 
     private static let contentWidth: CGFloat = 1080
 
@@ -108,21 +113,74 @@ struct ModelsPane: View {
     }
 
     private var dashboard: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Design.Space.pane) {
-                hero
-                contextRow
-                InstallInviteBanner(shell: shell) {
-                    shell.installBrowserOpen = true
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: Design.Space.pane) {
+                    hero
+                    contextRow
+                    InstallInviteBanner(shell: shell) {
+                        shell.installBrowserOpen = true
+                    }
+                    filterRow
+                    gridContent
+                        .background(
+                            GeometryReader { geometry in
+                                Color.clear.onAppear { gridWidth = geometry.size.width }
+                                    .onChange(of: geometry.size.width) { _, width in
+                                        gridWidth = width
+                                    }
+                            })
                 }
-                filterRow
-                gridContent
+                .padding(.horizontal, Design.Space.gutter)
+                .padding(.top, Design.Space.xxl)
+                .padding(.bottom, Design.Space.pane)
+                .frame(maxWidth: Self.contentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .padding(.horizontal, Design.Space.gutter)
-            .padding(.top, Design.Space.xxl)
-            .padding(.bottom, Design.Space.pane)
-            .frame(maxWidth: Self.contentWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($gridFocused)
+            .onMoveCommand { direction in
+                moveGridSelection(direction, proxy: proxy)
+            }
+            .vimMoveCommand(when: gridFocused) { direction in
+                moveGridSelection(direction, proxy: proxy)
+            }
+            .onKeyPress(.return) {
+                guard gridFocused, let keyedModel,
+                    keyOrder.contains(where: { $0.id == keyedModel })
+                else { return .ignored }
+                presented = keyedModel
+                shell.selectLibrary(keyedModel)
+                return .handled
+            }
+        }
+    }
+
+    private var keyOrder: [ModelRecord] {
+        sourceGroups.count <= 1 ? filtered : sourceGroups.flatMap(\.records)
+    }
+
+    private func moveGridSelection(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard gridFocused else { return }
+        let ordered = keyOrder
+        guard !ordered.isEmpty else { return }
+        let cols = GridKeyNav.columns(
+            width: gridWidth, minItem: Self.minCard, spacing: Design.Space.l)
+        let groupCounts =
+            sourceGroups.count <= 1
+            ? [ordered.count] : sourceGroups.map(\.records.count)
+        let current = keyedModel.flatMap { id in
+            ordered.firstIndex { $0.id == id }
+        }
+        let next =
+            current.map {
+                GridKeyNav.move(
+                    index: $0, direction: direction, columns: cols, sections: groupCounts)
+            } ?? 0
+        keyedModel = ordered[next].id
+        withAnimation(reduceMotion ? nil : Design.snap) {
+            proxy.scrollTo(ordered[next].id, anchor: .center)
         }
     }
 
@@ -538,7 +596,8 @@ struct ModelsPane: View {
     private func modelGrid(_ records: [ModelRecord]) -> some View {
         LazyVGrid(
             columns: [
-                GridItem(.adaptive(minimum: 280), spacing: Design.Space.l, alignment: .top)
+                GridItem(
+                    .adaptive(minimum: Self.minCard), spacing: Design.Space.l, alignment: .top)
             ],
             spacing: Design.Space.l
         ) {
@@ -550,6 +609,8 @@ struct ModelsPane: View {
                     presented = record.id
                     shell.selectLibrary(record.id)
                 }
+                .keyedGridRing(gridFocused && keyedModel == record.id)
+                .id(record.id)
             }
         }
         .animation(

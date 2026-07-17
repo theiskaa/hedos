@@ -21,7 +21,7 @@ public struct GatewayEndpointInfo: Sendable, Hashable, Identifiable {
 }
 
 public enum GatewayEndpoints {
-    public static let groupOrder = ["OpenAI", "Ollama", "Pipelines"]
+    public static let groupOrder = ["OpenAI", "Ollama"]
 
     public static var catalog: [GatewayEndpointInfo] {
         GatewayRouter.standardRoutes().map { route in

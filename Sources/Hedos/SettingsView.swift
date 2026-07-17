@@ -32,8 +32,17 @@ enum SettingsIndex {
             id: "general.startMode", section: "General", title: "Start in",
             keywords: ["launch", "startup", "mode", "default screen"]),
         .init(
-            id: "general.defaultModel", section: "General", title: "Default chat model",
-            keywords: ["model", "chat", "new chat"]),
+            id: "chat.orchestraMain", section: "Chat", title: "Main model",
+            keywords: ["orchestra", "main", "conductor", "default", "model"]),
+        .init(
+            id: "chat.orchestraImages", section: "Chat", title: "Orchestra images model",
+            keywords: ["orchestra", "images", "generate", "flux", "draw"]),
+        .init(
+            id: "chat.orchestraVoice", section: "Chat", title: "Orchestra voice model",
+            keywords: ["orchestra", "voice", "speak", "tts"]),
+        .init(
+            id: "chat.orchestraEyes", section: "Chat", title: "Orchestra eyes model",
+            keywords: ["orchestra", "eyes", "vision", "see", "describe"]),
         .init(
             id: "general.quickAsk", section: "General", title: "Quick Ask shortcut",
             keywords: ["hotkey", "shortcut", "global", "keyboard", "panel", "spotlight"]),
@@ -673,9 +682,12 @@ struct SettingsRoot: View {
     let dismissAttempts: Int
     let onClose: () -> Void
     @State private var query = ""
+    @FocusState private var sidebarFocused: Bool
     @State private var highlighted: String?
     @State private var selected: SettingsSection = .general
     @State private var hoveredSection: SettingsSection?
+    @State private var orchestraToolSupport: [String: Bool] = [:]
+    @State private var searchNav = KeyNavCoordinator()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var model: SettingsModel { shell.settings }
@@ -781,7 +793,10 @@ struct SettingsRoot: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            InkSearchField(placeholder: "Search settings", query: $query)
+            InkSearchField(
+                placeholder: "Search settings", query: $query,
+                onMove: { searchNav.move($0) },
+                onCommit: { searchNav.activateHighlighted() })
                 .padding(.bottom, Design.Space.l)
             ScrollView {
                 VStack(alignment: .leading, spacing: Design.Space.xs) {
@@ -794,6 +809,15 @@ struct SettingsRoot: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .scrollIndicators(.hidden)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($sidebarFocused)
+            .onMoveCommand { direction in
+                stepSection(direction)
+            }
+            .vimMoveCommand(when: sidebarFocused) { direction in
+                stepSection(direction)
+            }
         }
         .padding(.top, Design.Space.xl)
         .padding(.horizontal, Design.Space.l)
@@ -801,6 +825,23 @@ struct SettingsRoot: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Design.panel, in: Rectangle())
         .accessibilityIdentifier("settings-sidebar")
+    }
+
+    private func stepSection(_ direction: MoveCommandDirection) {
+        let order: [SettingsSection] = [
+            .general, .appearance, .chat, .voice, .models, .prompts, .gateway, .advanced,
+        ]
+        guard let index = order.firstIndex(of: selected) else { return }
+        let next: Int
+        switch direction {
+        case .up: next = max(0, index - 1)
+        case .down: next = min(order.count - 1, index + 1)
+        default: return
+        }
+        query = ""
+        withAnimation(Design.motion(reduceMotion: reduceMotion)) {
+            selected = order[next]
+        }
     }
 
     @ViewBuilder
@@ -980,6 +1021,11 @@ struct SettingsRoot: View {
         }
         .padding(Design.Space.tile)
         .surfaceCard(radius: Design.Radius.tile)
+        .keyNavigableList(coordinator: searchNav, capturesKeys: false)
+        .onChange(of: searchNav.highlightedID) { _, id in
+            guard let id else { return }
+            proxy.scrollTo(id, anchor: .center)
+        }
     }
 
     private func flash(_ id: String) {
@@ -1033,23 +1079,6 @@ struct SettingsRoot: View {
                 Design.motion(reduceMotion: reduceMotion),
                 value: model.general.restoreLastSession)
             }
-            group("Defaults") {
-            settingRow(
-                "general.defaultModel", "Default chat model",
-                caption: "New chats start bound to this model.") {
-                InkDropdown(
-                    options: readyChatModels.map(\.displayName),
-                    selection: defaultChatModelName,
-                    placeholder: "None",
-                    accessibilityName: "default chat model",
-                    size: .settings,
-                    onSelect: { name in
-                        let record = readyChatModels.first { $0.displayName == name }
-                        model.chat.defaultModelID = record?.id
-                        model.saveChat()
-                    })
-            }
-        }
             group("Anywhere") {
                 settingRow(
                     "general.quickAsk", "Quick Ask shortcut",
@@ -1348,6 +1377,18 @@ struct SettingsRoot: View {
     }
 
     private var chatSection: some View {
+        chatSectionContent
+            .task(id: shell.library.shelfSignature) {
+                var probed: [String: Bool] = [:]
+                for record in readyChatModels {
+                    probed[record.id] =
+                        (try? await shell.kernel.supportsTools(modelID: record.id)) ?? false
+                }
+                orchestraToolSupport = probed
+            }
+    }
+
+    private var chatSectionContent: some View {
         @Bindable var model = shell.settings
         return VStack(alignment: .leading, spacing: Design.Space.xxl) {
             group("System prompt") {
@@ -1365,6 +1406,44 @@ struct SettingsRoot: View {
                 .padding(.vertical, Design.Space.m)
                 .id("chat.prompt")
                 .background(highlightBackground("chat.prompt"))
+            }
+            group("Orchestra") {
+                settingRow(
+                    "chat.orchestraMain", "Main model",
+                    caption: "New chats start bound to this model; it decides when to "
+                        + "call the others.") {
+                    InkDropdown(
+                        options: readyChatModels.map(\.displayName),
+                        selection: defaultChatModelName,
+                        placeholder: "None",
+                        accessibilityName: "main model",
+                        size: .settings,
+                        disabledOptions: mutedMainNames,
+                        optionAnnotations: Dictionary(
+                            uniqueKeysWithValues: mutedMainNames.map { ($0, "can't use tools") }),
+                        onSelect: { name in
+                            let record = readyChatModels.first { $0.displayName == name }
+                            model.chat.defaultModelID = record?.id
+                            model.saveChat()
+                        })
+                }
+                RowRule()
+                orchestraRoleRow(
+                    "chat.orchestraImages", "Images",
+                    caption: "Draws when a chat asks for an image.", capability: .image)
+                RowRule()
+                orchestraRoleRow(
+                    "chat.orchestraVoice", "Voice",
+                    caption: "Speaks replies and narrations aloud.", capability: .speak)
+                RowRule()
+                orchestraRoleRow(
+                    "chat.orchestraEyes", "Eyes",
+                    caption: "Looks at images and reports what they actually show.",
+                    capability: .see)
+                Text("New chats start with this orchestra. Every call shows in the conversation.")
+                    .font(Design.micro)
+                    .foregroundStyle(Design.inkFaint)
+                    .padding(.bottom, Design.Space.m)
             }
             group("Behavior") {
                 settingRow("chat.send", "Send with Return") {
@@ -1805,6 +1884,50 @@ struct SettingsRoot: View {
     private var defaultChatModelName: String? {
         guard let id = shell.settings.chat.defaultModelID else { return nil }
         return shell.library.record(id: id)?.displayName
+    }
+
+    private var mutedMainNames: Set<String> {
+        Set(
+            readyChatModels
+                .filter { orchestraToolSupport[$0.id] == false }
+                .map(\.displayName))
+    }
+
+    private func orchestraCandidates(for capability: Capability) -> [ModelRecord] {
+        shell.library.records.filter {
+            $0.state == .ready && $0.capabilities.contains(capability)
+        }
+    }
+
+    private func orchestraMemberName(for capability: Capability) -> String? {
+        let records = shell.library.records
+        let members = shell.settings.chat.defaultBench.compactMap { id in
+            records.first { $0.id == id }
+        }
+        return BenchTools.member(for: capability, in: members)?.displayName
+    }
+
+    private func orchestraRoleRow(
+        _ id: String, _ title: String, caption: String, capability: Capability
+    ) -> some View {
+        @Bindable var model = shell.settings
+        let candidates = orchestraCandidates(for: capability)
+        return settingRow(id, title, caption: caption) {
+            InkDropdown(
+                options: ["None"] + candidates.map(\.displayName),
+                selection: orchestraMemberName(for: capability) ?? "None",
+                placeholder: "None",
+                accessibilityName: "\(title) model",
+                size: .settings,
+                onSelect: { name in
+                    let record = candidates.first { $0.displayName == name }
+                    model.chat.defaultBench = BenchTools.assigning(
+                        capability, to: record?.id,
+                        in: model.chat.defaultBench,
+                        records: shell.library.records)
+                    model.saveChat()
+                })
+        }
     }
 
     private func keepWarmLabel(_ policy: KeepWarmPolicy) -> String {

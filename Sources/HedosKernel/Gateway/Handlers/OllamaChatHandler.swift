@@ -1,6 +1,8 @@
 import Foundation
 
 struct OllamaChatHandler: GatewayHandling {
+    var runTimeoutSeconds = OpenAIChatHandler.defaultRunTimeoutSeconds
+
     func handle(
         _ request: GatewayRequest, identity: GatewayIdentity, port: any GatewayPort,
         responder: GatewayResponder
@@ -24,9 +26,7 @@ struct OllamaChatHandler: GatewayHandling {
         if chatRequest.stream {
             let body = try await responder.beginStream(contentType: "application/x-ndjson")
             do {
-                let timedOut = try await StreamTimeout.race(
-                    seconds: OpenAIChatHandler.runTimeoutSeconds
-                ) {
+                let timedOut = try await StreamTimeout.race(seconds: runTimeoutSeconds) {
                     var finalStats: GenerationStats?
                     var sawToolCall = false
                     for try await chunk in stream {
@@ -60,8 +60,7 @@ struct OllamaChatHandler: GatewayHandling {
                 }
                 if timedOut {
                     try await StreamFailure.timeout(
-                        surface: .ollama, body: body,
-                        seconds: OpenAIChatHandler.runTimeoutSeconds)
+                        surface: .ollama, body: body, seconds: runTimeoutSeconds)
                 }
             } catch {
                 try await StreamFailure.write(error, surface: .ollama, body: body)

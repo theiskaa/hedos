@@ -24,6 +24,8 @@ struct InkSearchField: View {
     @Binding var query: String
     var fill: Color = Design.paper
     var focusTick: Int = 0
+    var onMove: ((Int) -> Void)? = nil
+    var onCommit: (() -> Void)? = nil
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -39,6 +41,21 @@ struct InkSearchField: View {
             .font(Design.caption)
             .foregroundStyle(Design.ink)
             .focused($focused)
+            .onKeyPress(.upArrow) {
+                guard let onMove, !query.isEmpty else { return .ignored }
+                onMove(-1)
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                guard let onMove, !query.isEmpty else { return .ignored }
+                onMove(1)
+                return .handled
+            }
+            .onKeyPress(.return) {
+                guard let onCommit, !query.isEmpty else { return .ignored }
+                onCommit()
+                return .handled
+            }
             if !query.isEmpty {
                 Button {
                     query = ""

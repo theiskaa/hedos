@@ -107,7 +107,7 @@ public struct GatewayError: Error, Sendable, Hashable {
         }
         if let kernel = error as? KernelError {
             switch kernel {
-            case .modelNotFound, .artifactNotFound, .pipelineNotFound:
+            case .modelNotFound, .artifactNotFound:
                 return GatewayError(.notFound, kernel.errorDescription ?? "not found")
             case .capabilityUnsupported, .paramUnsupported, .noBoundModel, .payloadInvalid,
                 .sessionBusy:

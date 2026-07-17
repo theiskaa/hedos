@@ -15,8 +15,4 @@ public protocol GatewayPort: Sendable {
     func artifactData(id: String) async throws -> Data?
     func admissionState(modelID: String, footprintMB: Int?, kind: GatewayWorkKind) async
         -> GatewayAdmissionState
-    func pipelines() async -> [Pipeline]
-    func pipeline(id: String) async -> Pipeline?
-    func runPipeline(id: String, input: PipelineInput) async throws
-        -> AsyncStream<PipelineEvent>
 }

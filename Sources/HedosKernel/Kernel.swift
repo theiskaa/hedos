@@ -4,7 +4,6 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case notImplemented(String)
     case modelNotFound(String)
     case artifactNotFound(String)
-    case pipelineNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case paramUnsupported(model: String, key: String)
     case runtimeUnavailable(hint: String)
@@ -25,8 +24,6 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "No model with id \(id) is registered."
         case .artifactNotFound(let id):
             "No artifact with id \(id) is stored."
-        case .pipelineNotFound(let id):
-            "No pipeline with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
             "\(model) has no runtime for \(capability.rawValue)."
         case .paramUnsupported(let model, let key):
@@ -78,7 +75,6 @@ public actor Kernel {
 
     func currentConsentAsk() -> ConsentAsk { chatConsentAsk }
     public let promptStore: PromptStore
-    public let pipelineStore: PipelineStore
     public nonisolated let runtimeCatalog: RuntimeCatalog
     private let baseAdapters: [any RuntimeAdapter]
     private var adapters: [any RuntimeAdapter]
@@ -136,9 +132,6 @@ public actor Kernel {
         self.chats = ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
         self.promptStore = PromptStore(
             directory: directory.appendingPathComponent("prompts", isDirectory: true))
-        self.pipelineStore = PipelineStore(
-            directory: directory.appendingPathComponent("pipelines", isDirectory: true),
-            shelf: { try await registry.list() })
         self.secrets = secrets
         let base =
             adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets, registry: registry)
@@ -703,7 +696,7 @@ public actor Kernel {
         let systemPrompt = record.systemPrompt ?? fallbackPrompt
         let store = attachmentStore
         let messages = ChatFlow.messages(
-            from: transcript.turns, attachmentLoader: { store.load($0) })
+            from: transcript.turns, attachmentLoader: { store.loadPairs($0) })
         let characters =
             messages.reduce(0) { total, message in
                 total + message.content.count
@@ -786,24 +779,92 @@ public actor Kernel {
                 try await self.shelf()
             },
             toolbox: { session in
-                guard let place = session.place, let modelID = session.modelID else {
-                    return []
-                }
+                guard let modelID = session.modelID else { return [] }
                 let supported = (try? await self.supportsTools(modelID: modelID)) ?? false
-                return Harness.toolbox(place: place, supportsTools: supported)
+                guard supported else { return [] }
+                var tools = Harness.toolbox(place: session.place, supportsTools: supported)
+                if !session.bench.isEmpty {
+                    tools += BenchTools.specs(bench: await self.benchRecords(session.bench))
+                }
+                return tools
             },
             execute: { sessionID, call in
                 let transcript = try? await self.chats.session(id: sessionID)
+                if BenchTools.isBenchTool(call.name) {
+                    let bench = await self.benchRecords(transcript?.session.bench ?? [])
+                    return await BenchTools.execute(
+                        call, bench: bench, context: self.benchContext(sessionID: sessionID))
+                }
                 guard let place = transcript?.session.place else {
-                    return "This conversation has no folder."
+                    return ToolOutcome(text: "This conversation has no folder.")
                 }
                 let context = HarnessActContext(
                     sessionID: sessionID, ask: await self.currentConsentAsk(),
                     state: self.harnessActState)
-                return await Harness.execute(call, place: place, context: context)
+                return ToolOutcome(
+                    text: await Harness.execute(call, place: place, context: context))
             },
             attachments: attachmentStore,
             gate: chatSessionGate)
+    }
+
+    func benchRecords(_ ids: [String]) async -> [ModelRecord] {
+        var records: [ModelRecord] = []
+        for id in ids {
+            if let record = try? await registry.get(id: id) {
+                records.append(record)
+            }
+        }
+        return records
+    }
+
+    func benchContext(sessionID: String) -> BenchContext {
+        BenchContext(
+            invoke: { try await self.invoke($0, $1, payload: $2) },
+            submit: { try await self.submit($0, $1, payload: $2) },
+            jobEvents: { await self.jobEvents(id: $0) },
+            cancelJob: { await self.cancel(jobID: $0) },
+            persistSpeech: { modelID, voice, text, pcm, sampleRate in
+                let artifact = try await self.saveSpeech(
+                    modelID: modelID, voice: voice, text: text, speed: 1.0,
+                    sampleRate: sampleRate, pcm: pcm, sessionID: sessionID)
+                return artifact.id
+            },
+            voices: { try await self.voices(for: $0) },
+            imageData: { ref in
+                guard let transcript = try? await self.chats.session(id: sessionID) else {
+                    return nil
+                }
+                let artifactRefs = transcript.turns.reduce(into: Set<String>()) {
+                    $0.formUnion($1.artifactRefs)
+                }
+                if artifactRefs.contains(ref),
+                    let artifact = try? await self.artifactStore.get(id: ref),
+                    artifact.capability == .image
+                {
+                    return try await self.artifactData(id: ref)
+                }
+                let attachmentRefs = transcript.turns.reduce(into: Set<String>()) {
+                    $0.formUnion($1.attachmentRefs)
+                }
+                guard attachmentRefs.contains(ref),
+                    let attachment = self.attachmentStore.load([ref]).first,
+                    attachment.kind == .image
+                else { return nil }
+                return attachment.data
+            })
+    }
+
+    public func setChatBench(sessionID: String, modelIDs: [String]) async throws {
+        var seen = Set<String>()
+        var bench: [String] = []
+        for modelID in modelIDs where seen.insert(modelID).inserted {
+            guard try await registry.get(id: modelID) != nil else {
+                throw KernelError.modelNotFound(modelID)
+            }
+            bench.append(modelID)
+        }
+        try await chats.setBench(id: sessionID, bench: bench)
     }
 
     public func setChatPlace(sessionID: String, path: String?) async throws {
@@ -895,7 +956,7 @@ public actor Kernel {
 
     public func invoke(
         _ modelID: String, _ capability: Capability, payload: JSONValue,
-        systemPromptOverride: String?
+        systemPromptOverride: String?, promptSuffix: String? = nil
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
         guard let record = try await registry.get(id: modelID) else {
             throw KernelError.modelNotFound(modelID)
@@ -910,7 +971,8 @@ public actor Kernel {
         let fallback = capability == .chat ? await settings.chat().defaultSystemPrompt : nil
         var configured = ModelConfiguration.merged(
             record: record, capability: capability, payload: payload,
-            fallbackPrompt: fallback, sessionPrompt: systemPromptOverride)
+            fallbackPrompt: fallback, sessionPrompt: systemPromptOverride,
+            appendedBlock: promptSuffix)
         if capability == .chat || capability == .complete,
             case .object(var object) = configured,
             let window = ContextBudget.effectiveWindow(
@@ -948,8 +1010,19 @@ public actor Kernel {
         capabilityTags: [String] = []
     ) async throws -> ChatSession {
         let prompt = try await effectiveSystemPrompt(modelID: modelID)
-        return try await chats.createSession(
+        let session = try await chats.createSession(
             title: title, modelID: modelID, capabilityTags: capabilityTags, systemPrompt: prompt)
+        let defaultBench = await settings.chat().defaultBench
+        if !defaultBench.isEmpty {
+            var known: [String] = []
+            for id in defaultBench where (try? await registry.get(id: id)) != nil {
+                known.append(id)
+            }
+            if !known.isEmpty {
+                try? await chats.setBench(id: session.id, bench: known)
+            }
+        }
+        return try await chats.session(id: session.id)?.session ?? session
     }
 
     public func setChatSystemPrompt(sessionID: String, prompt: String?) async throws {
@@ -993,15 +1066,27 @@ public actor Kernel {
         _ modelID: String, messages: [ChatMessage], tools: [ToolSpec],
         systemPromptOverride: String? = nil
     ) async throws -> AsyncThrowingStream<CapabilityChunk, Error> {
+        var outbound = messages
+        if let record = try await registry.get(id: modelID),
+            let adapter = adapters.first(where: { $0.canServe(record, .chat) }),
+            !adapter.canServe(record, .see)
+        {
+            outbound = BenchTools.borrowedEyes(
+                messages: outbound,
+                describeOffered: tools.contains {
+                    $0.name == BenchTools.describeImageName
+                })
+        }
         var object: [String: JSONValue] = [
-            "messages": .array(messages.map(\.payloadValue))
+            "messages": .array(outbound.map(\.payloadValue))
         ]
         if !tools.isEmpty {
             object["tools"] = .array(tools.map(\.payloadValue))
         }
         return try await invoke(
             modelID, .chat, payload: .object(object),
-            systemPromptOverride: systemPromptOverride)
+            systemPromptOverride: systemPromptOverride,
+            promptSuffix: tools.isEmpty ? nil : BenchTools.systemBlock(tools: tools))
     }
 
     public func submit(
