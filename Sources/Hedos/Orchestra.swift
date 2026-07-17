@@ -8,6 +8,7 @@ struct OrchestraMenu: View {
     let onClose: () -> Void
     let onInstallModels: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.keyNav) private var keyNav
     @State private var savedAsDefault = false
     @State private var saveFailed = false
     @State private var toolSupport: [String: Bool] = [:]
@@ -61,6 +62,8 @@ struct OrchestraMenu: View {
         .padding(Design.Space.s)
         .animation(Design.motion(reduceMotion: reduceMotion), value: page)
         .environment(\.inkMenuDismiss) { onClose() }
+        .onAppear { syncKeyHooks() }
+        .onChange(of: page) { _, _ in syncKeyHooks() }
         .task(id: library.shelfSignature) {
             var probed: [String: Bool] = [:]
             let candidates = mainCandidates.map(\.id) + [model.boundModelID].compactMap { $0 }
@@ -170,6 +173,21 @@ struct OrchestraMenu: View {
                     }
                 }
             }
+        }
+    }
+
+    private func syncKeyHooks() {
+        guard let keyNav else { return }
+        if page == .overview {
+            keyNav.escapeOverride = nil
+            keyNav.leftOverride = nil
+        } else {
+            let back: () -> Bool = {
+                page = .overview
+                return true
+            }
+            keyNav.escapeOverride = back
+            keyNav.leftOverride = back
         }
     }
 
