@@ -1000,8 +1000,19 @@ public actor Kernel {
         capabilityTags: [String] = []
     ) async throws -> ChatSession {
         let prompt = try await effectiveSystemPrompt(modelID: modelID)
-        return try await chats.createSession(
+        let session = try await chats.createSession(
             title: title, modelID: modelID, capabilityTags: capabilityTags, systemPrompt: prompt)
+        let defaultBench = await settings.chat().defaultBench
+        if !defaultBench.isEmpty {
+            var known: [String] = []
+            for id in defaultBench where (try? await registry.get(id: id)) != nil {
+                known.append(id)
+            }
+            if !known.isEmpty {
+                try? await chats.setBench(id: session.id, bench: known)
+            }
+        }
+        return try await chats.session(id: session.id)?.session ?? session
     }
 
     public func setChatSystemPrompt(sessionID: String, prompt: String?) async throws {

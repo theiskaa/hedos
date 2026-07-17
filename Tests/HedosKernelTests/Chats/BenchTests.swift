@@ -38,6 +38,20 @@ private func makeStore(in directory: URL) -> ChatStore {
     #expect(try await store.session(id: imported.id)?.session.bench == ["flux"])
 }
 
+@Test func chatSettingsDefaultBenchDefaultsEmptyAndDecodesLeniently() throws {
+    #expect(ChatSettings().defaultBench == [])
+    let legacy = Data(#"{"showStats": true, "sendWithEnter": false}"#.utf8)
+    let decoded = try JSONDecoder().decode(ChatSettings.self, from: legacy)
+    #expect(decoded.defaultBench == [])
+    #expect(decoded.sendWithEnter == false)
+
+    var settings = ChatSettings()
+    settings.defaultBench = ["flux", "kokoro"]
+    let encoded = try JSONEncoder().encode(settings)
+    let roundTripped = try JSONDecoder().decode(ChatSettings.self, from: encoded)
+    #expect(roundTripped.defaultBench == ["flux", "kokoro"])
+}
+
 @Test func sessionJSONWithoutBenchDecodesToEmpty() throws {
     let json = """
         {"id":"s1","title":"t","createdAt":0,"updatedAt":0}

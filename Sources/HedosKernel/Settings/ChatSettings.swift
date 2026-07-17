@@ -13,6 +13,7 @@ public struct ChatSettings: SettingsDomain {
     public var showStats: Bool
     public var sendWithEnter: Bool
     public var exportFormat: ChatExportFormat
+    public var defaultBench: [String]
 
     public init() {
         defaultModelID = nil
@@ -20,22 +21,25 @@ public struct ChatSettings: SettingsDomain {
         showStats = true
         sendWithEnter = true
         exportFormat = .markdown
+        defaultBench = []
     }
 
     public init(
         defaultModelID: String? = nil, defaultSystemPrompt: String? = nil,
         showStats: Bool = true, sendWithEnter: Bool = true,
-        exportFormat: ChatExportFormat = .markdown
+        exportFormat: ChatExportFormat = .markdown, defaultBench: [String] = []
     ) {
         self.defaultModelID = defaultModelID
         self.defaultSystemPrompt = defaultSystemPrompt
         self.showStats = showStats
         self.sendWithEnter = sendWithEnter
         self.exportFormat = exportFormat
+        self.defaultBench = defaultBench
     }
 
     enum CodingKeys: String, CodingKey {
         case defaultModelID, defaultSystemPrompt, showStats, sendWithEnter, exportFormat
+        case defaultBench
     }
 
     public init(from decoder: any Decoder) throws {
@@ -51,6 +55,8 @@ public struct ChatSettings: SettingsDomain {
             Bool.self, .sendWithEnter, fallback: defaults.sendWithEnter)
         exportFormat = container.lenient(
             ChatExportFormat.self, .exportFormat, fallback: defaults.exportFormat)
+        defaultBench = container.lenient(
+            [String].self, .defaultBench, fallback: defaults.defaultBench)
     }
 
     public static func compatibilityRead(from directory: URL) -> ChatSettings? {
