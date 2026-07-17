@@ -127,15 +127,78 @@ struct ModelsPane: View {
     }
 
     private var emptyPane: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Design.Space.s) {
-                Spacer(minLength: 0)
-                controls
+        ScrollView {
+            VStack(alignment: .leading, spacing: Design.Space.pane) {
+                hero
+                emptyContent
             }
             .padding(.horizontal, Design.Space.gutter)
             .padding(.top, Design.Space.xxl)
-            heroEmptyState
+            .padding(.bottom, Design.Space.pane)
+            .frame(maxWidth: Self.contentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
+    }
+
+    private var heroSubtitle: String {
+        if shell.library.errorMessage != nil {
+            return "The scan hit a problem."
+        }
+        if !DebugFlags.forceEmpty && !shell.library.records.isEmpty {
+            return "Everything installed on this Mac, ready when you are."
+        }
+        if shell.library.summary == nil {
+            return "Looking for models on this Mac…"
+        }
+        return "Nothing installed yet. Pull your first one below."
+    }
+
+    @ViewBuilder
+    private var emptyContent: some View {
+        if let failure = shell.library.errorMessage {
+            scanFailedCard(failure)
+            getStartedSection
+        } else if shell.library.summary == nil && !DebugFlags.forceEmpty {
+            scanningCard
+        } else {
+            getStartedSection
+        }
+    }
+
+    private var getStartedSection: some View {
+        VStack(alignment: .leading, spacing: Design.Space.l) {
+            MicroHeader(title: "Install models to get started")
+            InstallInviteBanner(shell: shell, prominent: true) {
+                shell.installBrowserOpen = true
+            }
+        }
+    }
+
+    private var scanningCard: some View {
+        VStack(alignment: .leading, spacing: Design.Space.l) {
+            MicroHeader(title: "Install models to get started")
+            SkeletonPulse(radius: Design.Radius.card)
+                .frame(maxWidth: .infinity, minHeight: 116)
+        }
+    }
+
+    private func scanFailedCard(_ failure: String) -> some View {
+        VStack(alignment: .leading, spacing: Design.Space.l) {
+            MicroHeader(title: "Scan")
+            Text(failure)
+                .font(Design.caption)
+                .foregroundStyle(Design.inkSoft)
+                .lineSpacing(Design.bodyLineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Scan again") {
+                Task { await shell.library.rescan() }
+            }
+            .buttonStyle(InkButtonStyle())
+            .disabled(shell.library.isScanning)
+        }
+        .padding(Design.Space.xxl)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .surfaceCard(radius: Design.Radius.tile)
     }
 
     @ViewBuilder
@@ -184,7 +247,7 @@ struct ModelsPane: View {
                     Text("Models")
                         .font(Design.hero)
                         .foregroundStyle(Design.ink)
-                    Text("Everything installed on this Mac, ready when you are.")
+                    Text(heroSubtitle)
                         .font(Design.readingBody)
                         .foregroundStyle(Design.inkSoft)
                 }
@@ -513,49 +576,6 @@ struct ModelsPane: View {
             guard let records = buckets[title], !records.isEmpty else { return nil }
             return (title: title, records: records)
         }
-    }
-
-    private var heroEmptyState: some View {
-        VStack(spacing: 0) {
-            Spacer()
-            HedosLogo(size: 52, color: Design.inkSoft)
-                .padding(.bottom, Design.Space.pane)
-            if let failure = shell.library.errorMessage {
-                Text("The scan hit a problem.")
-                    .font(Design.title)
-                    .tracking(Design.tightTracking)
-                    .foregroundStyle(Design.ink)
-                Text(failure)
-                    .font(Design.caption)
-                    .foregroundStyle(Design.inkSoft)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(Design.bodyLineSpacing)
-                    .frame(maxWidth: 420)
-                    .padding(.top, Design.Space.s)
-            } else if let summary = shell.library.summary {
-                Text(summary.headline)
-                    .font(Design.paneTitle)
-                    .tracking(Design.tightTracking)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(5)
-                    .frame(maxWidth: 430)
-            } else {
-                ShimmerText(
-                    text: "Looking for models on this Mac…",
-                    font: Design.paneTitle, tracked: false)
-            }
-            if shell.library.summary != nil || shell.library.errorMessage != nil {
-                Button("Install models…") {
-                    shell.installBrowserOpen = true
-                }
-                .buttonStyle(QuietButtonStyle())
-                .padding(.top, Design.Space.xl)
-            }
-            Spacer()
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(Design.Space.pane)
     }
 
     nonisolated static func storeTitle(_ kind: SourceKind) -> String { kind.storeTitle }
