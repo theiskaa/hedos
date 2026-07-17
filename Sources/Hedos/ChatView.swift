@@ -150,6 +150,7 @@ final class ChatViewModel {
     var isVisible = true
     var notice: String?
     var place: String?
+    var bench: [String] = []
     var canStartOllama = false
     var boundModelID: String?
     var defaultModelID: String?
@@ -215,6 +216,7 @@ final class ChatViewModel {
         }
 
         place = stored.session.place
+        bench = stored.session.bench
         let active = stored.turns.filter {
             $0.supersededBy == nil && $0.role != .system
                 && !($0.role == .assistant && $0.content.isEmpty && $0.toolCallsJSON != nil)
@@ -1241,6 +1243,31 @@ final class ChatViewModel {
         }
     }
 
+    func setBench(_ modelIDs: [String]) {
+        bench = modelIDs
+        Task {
+            do {
+                try await kernel.setChatBench(sessionID: sessionID, modelIDs: modelIDs)
+                await load()
+            } catch {
+                notice = error.localizedDescription
+                await load()
+            }
+        }
+    }
+
+    func clearBench() {
+        focusComposer()
+        setBench([])
+    }
+
+    func benchCandidates(in records: [ModelRecord]) -> [ModelRecord] {
+        records.filter { record in
+            record.state == .ready
+                && !Set(record.capabilities).isDisjoint(with: [.image, .speak, .see])
+        }
+    }
+
     private func dropEmptyAssistantTail() {
         if let last = transcript.last, last.role == .assistant, last.text.isEmpty {
             transcript.removeLast()
@@ -1395,6 +1422,7 @@ struct ChatView: View {
     @State private var modelMenuOpen = false
     @State private var voiceConversation = VoiceConversationController()
     @State private var showParams = false
+    @State private var showingBenchPicker = false
 
     init(
         session: ChatSession, model: ChatViewModel, library: LibraryViewModel,
@@ -1532,12 +1560,14 @@ struct ChatView: View {
             HStack(spacing: Design.Space.s) {
                 modelChip
                 folderControl
+                benchControl
                 Spacer(minLength: Design.Space.s)
                 modeSelector
             }
         }
         .padding(.horizontal, Design.Space.xs)
         .animation(Design.wash, value: model.place)
+        .animation(Design.wash, value: model.bench)
         .animation(
             Design.motion(reduceMotion: reduceMotion), value: model.pendingAttachments.map(\.id))
     }
@@ -1572,6 +1602,154 @@ struct ChatView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var benchControl: some View {
+        if model.intent == .text {
+            if model.bench.isEmpty {
+                if !model.benchCandidates(in: library.records).isEmpty {
+                    CircleControl(
+                        glyph: "square.stack.3d.up",
+                        label: "Let the model use other models"
+                    ) {
+                        showingBenchPicker = true
+                    }
+                    .popover(isPresented: $showingBenchPicker) { benchPicker }
+                }
+            } else {
+                Button {
+                    showingBenchPicker = true
+                } label: {
+                    HStack(spacing: Design.Space.xs) {
+                        Image(systemName: "square.stack.3d.up")
+                            .font(Design.glyphSmall)
+                        Text(benchLabel)
+                            .font(Design.label.weight(.medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        ChipCloseButton(
+                            action: { model.clearBench() },
+                            label: "Revoke this chat's models")
+                    }
+                    .foregroundStyle(Design.inkSoft)
+                    .padding(.leading, Design.Space.chipX)
+                    .padding(.trailing, Design.Space.xs)
+                    .frame(height: Design.Control.size)
+                    .background(Design.inkWash, in: Capsule())
+                    .hairlineBorder(Capsule())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingBenchPicker) { benchPicker }
+                .help(
+                    "This chat's model can call the granted models as tools — generate "
+                        + "images, speak, or look at images. Every call shows in the "
+                        + "conversation.")
+            }
+        }
+    }
+
+    private var benchLabel: String {
+        if model.bench.count == 1, let only = model.bench.first {
+            return library.records.first { $0.id == only }?.displayName ?? "1 model"
+        }
+        return "\(model.bench.count) models"
+    }
+
+    private var benchPicker: some View {
+        let candidates = model.benchCandidates(in: library.records)
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("Models this chat can use")
+                .font(Design.micro)
+                .tracking(Design.microTracking)
+                .foregroundStyle(Design.inkFaint)
+                .padding(.bottom, Design.Space.s)
+            ForEach(candidates) { record in
+                Button {
+                    toggleBenchMember(record)
+                } label: {
+                    HStack(spacing: Design.Space.s) {
+                        Image(systemName: benchGlyph(record))
+                            .font(Design.glyphSmall)
+                            .foregroundStyle(Design.inkSoft)
+                            .frame(width: 16)
+                        Text(record.displayName)
+                            .font(Design.label)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: Design.Space.m)
+                        if model.bench.contains(record.id) {
+                            Image(systemName: "checkmark")
+                                .font(Design.glyphSmall)
+                        }
+                    }
+                    .foregroundStyle(Design.ink)
+                    .padding(.vertical, Design.Space.xs)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            let unavailable = model.bench.filter { id in
+                !candidates.contains { $0.id == id }
+            }
+            ForEach(unavailable, id: \.self) { id in
+                Button {
+                    model.setBench(model.bench.filter { $0 != id })
+                } label: {
+                    HStack(spacing: Design.Space.s) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(Design.glyphSmall)
+                            .foregroundStyle(Design.inkFaint)
+                            .frame(width: 16)
+                        Text(library.records.first { $0.id == id }?.displayName ?? id)
+                            .font(Design.label)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text("unavailable")
+                            .font(Design.micro)
+                            .foregroundStyle(Design.inkFaint)
+                        Spacer(minLength: Design.Space.m)
+                        Image(systemName: "checkmark")
+                            .font(Design.glyphSmall)
+                    }
+                    .foregroundStyle(Design.inkSoft)
+                    .padding(.vertical, Design.Space.xs)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Text("Every call a model makes shows in the conversation.")
+                .font(Design.micro)
+                .foregroundStyle(Design.inkFaint)
+                .padding(.top, Design.Space.s)
+        }
+        .padding(Design.Space.l)
+        .frame(width: 280, alignment: .leading)
+    }
+
+    private func benchGlyph(_ record: ModelRecord) -> String {
+        if record.capabilities.contains(.image) { return "photo" }
+        if record.capabilities.contains(.speak) { return "speaker.wave.2" }
+        return "eye"
+    }
+
+    private func toggleBenchMember(_ record: ModelRecord) {
+        var ids = model.bench
+        if ids.contains(record.id) {
+            ids.removeAll { $0 == record.id }
+        } else {
+            let slots: Set<Capability> = [.image, .speak, .see]
+            let claimed = Set(record.capabilities).intersection(slots)
+            ids.removeAll { id in
+                guard let existing = library.records.first(where: { $0.id == id }) else {
+                    return false
+                }
+                return !Set(existing.capabilities).intersection(slots)
+                    .isDisjoint(with: claimed)
+            }
+            ids.append(record.id)
+        }
+        model.setBench(ids)
     }
 
     @ViewBuilder
@@ -1860,12 +2038,44 @@ struct ChatView: View {
     }
 
     private func toolTurn(_ entry: ChatViewModel.Entry, at index: Int) -> some View {
-        ToolTimelineRow(
-            summary: Harness.summary(fromFramed: entry.text),
-            connectsUp: index > 0 && model.transcript[index - 1].role == .tool,
-            connectsDown: index + 1 < model.transcript.count
-                && model.transcript[index + 1].role == .tool,
-            gap: transcriptSpacing)
+        let connectsUp =
+            index > 0 && model.transcript[index - 1].role == .tool
+            && model.transcript[index - 1].artifactRefs.isEmpty
+        let connectsDown =
+            index + 1 < model.transcript.count
+            && model.transcript[index + 1].role == .tool
+            && entry.artifactRefs.isEmpty
+        return VStack(alignment: .leading, spacing: Design.Space.m) {
+            ToolTimelineRow(
+                summary: Harness.summary(fromFramed: entry.text),
+                connectsUp: connectsUp,
+                connectsDown: connectsDown,
+                gap: transcriptSpacing)
+            if !entry.artifactRefs.isEmpty {
+                ForEach(entry.artifactRefs, id: \.self) { reference in
+                    toolArtifactCard(reference)
+                        .frame(
+                            maxWidth: Design.Column.transcriptProse, alignment: .leading)
+                }
+                .padding(.bottom, Design.Space.m)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func toolArtifactCard(_ reference: String) -> some View {
+        ArtifactExchangeView(
+            reference: reference,
+            kernel: kernel,
+            session: audio,
+            onRerun: nil,
+            onVary: nil
+        )
+        .contextMenu {
+            Button("Show in gallery") {
+                onOpenArtifacts?(reference)
+            }
+        }
     }
 
     @ViewBuilder
