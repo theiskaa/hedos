@@ -105,22 +105,6 @@ struct ModelsPane: View {
                 }
             }
         }
-        .modalScrim(
-            isPresented: shell.installBrowserOpen,
-            handlesEscape: false,
-            onDismiss: {
-                if shell.installs.stagedPlan != nil || shell.installs.stagingID != nil {
-                    shell.installs.discardStagedPlan()
-                } else {
-                    shell.installBrowserOpen = false
-                }
-            }
-        ) {
-            InstallBrowser(shell: shell) {
-                shell.installs.discardStagedPlan()
-                shell.installBrowserOpen = false
-            }
-        }
     }
 
     private var dashboard: some View {
@@ -697,8 +681,38 @@ struct ModelCard: View {
     }
 }
 
+struct InstallBrowserOverlay: ViewModifier {
+    @Bindable var shell: ShellModel
+
+    func body(content: Content) -> some View {
+        content.modalScrim(
+            isPresented: shell.installBrowserOpen,
+            handlesEscape: false,
+            onDismiss: {
+                if shell.installs.stagedPlan != nil || shell.installs.stagingID != nil {
+                    shell.installs.discardStagedPlan()
+                } else {
+                    shell.installBrowserOpen = false
+                }
+            }
+        ) {
+            InstallBrowser(shell: shell) {
+                shell.installs.discardStagedPlan()
+                shell.installBrowserOpen = false
+            }
+        }
+    }
+}
+
+extension View {
+    func installBrowserOverlay(shell: ShellModel) -> some View {
+        modifier(InstallBrowserOverlay(shell: shell))
+    }
+}
+
 struct InstallInviteBanner: View {
     @Bindable var shell: ShellModel
+    var prominent = false
     let onOpen: () -> Void
     @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

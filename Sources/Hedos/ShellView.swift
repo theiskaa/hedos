@@ -506,6 +506,7 @@ struct ShellView: View {
         }
         .task { await shell.start() }
         .settingsOverlay(shell: shell)
+        .installBrowserOverlay(shell: shell)
         .commandPalette(isPresented: $shell.commandPaletteOpen, shell: shell)
     }
 
