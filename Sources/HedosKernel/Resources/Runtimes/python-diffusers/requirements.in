@@ -1,8 +1,0 @@
-torch
-diffusers
-transformers
-accelerate
-safetensors
-pillow
-sentencepiece
-protobuf
