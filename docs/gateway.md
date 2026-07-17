@@ -1,6 +1,6 @@
 # The local endpoint
 
-Hedos can serve your shelf to the rest of your machine over HTTP. The gateway is a **loopback-only** server (bound to `127.0.0.1`, default port `43367`) that speaks two familiar dialects — OpenAI-compatible under `/v1` and Ollama-compatible under `/api` — plus a small pipelines surface. Anything on your Mac that already talks to either API can point at Hedos and reach the models you own, tools included. Nothing is exposed off the machine.
+Hedos can serve your shelf to the rest of your machine over HTTP. The gateway is a **loopback-only** server (bound to `127.0.0.1`, default port `43367`) that speaks two familiar dialects — OpenAI-compatible under `/v1` and Ollama-compatible under `/api`. Anything on your Mac that already talks to either API can point at Hedos and reach the models you own, tools included. Nothing is exposed off the machine.
 
 ## Enabling it
 
@@ -42,7 +42,6 @@ The full route table:
 
 - **OpenAI** — `POST /v1/chat/completions`, `POST /v1/completions`, `GET /v1/models`, `POST /v1/embeddings`, `POST /v1/audio/speech`, `POST /v1/audio/transcriptions`, `POST /v1/images/generations`
 - **Ollama** — `POST /api/chat`, `POST /api/generate`, `POST /api/embed`, `POST /api/embeddings`, `GET /api/tags`, `GET /api/version`, `POST /api/show`
-- **Pipelines** — `GET /v1/pipelines`, `POST /v1/pipelines/run`
 
 Chat streams over SSE on the OpenAI surface and NDJSON on the Ollama surface. Tool calls ride the chat routes on both dialects — OpenAI takes function arguments as a JSON string, Ollama as an object. Image inputs are accepted where a model can see: on the OpenAI surface as `image_url` `data:` URIs, on the Ollama surface as base64 `images` on a message. Inference routes share a concurrency cap (four by default); a request over the cap gets a `503` with `Retry-After` rather than being queued forever.
 
