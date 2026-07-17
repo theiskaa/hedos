@@ -847,6 +847,22 @@ struct MicroHeader: View {
     }
 }
 
+struct GlyphPlaque: View {
+    let glyph: String
+
+    var body: some View {
+        Image(systemName: glyph)
+            .font(.system(size: 22, weight: .regular))
+            .foregroundStyle(Design.inkSoft)
+            .frame(width: 60, height: 60)
+            .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
+            .overlay(
+                RoundedRectangle.soft(Design.Radius.card)
+                    .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+            .shade(Design.Elevation.raised)
+    }
+}
+
 struct ConfirmableIconButton: View {
     var glyph = "xmark.circle.fill"
     let label: String

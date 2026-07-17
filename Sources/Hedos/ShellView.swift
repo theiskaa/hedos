@@ -928,15 +928,7 @@ struct ModeEmptyState<Extra: View>: View {
     var body: some View {
         VStack(spacing: Design.Space.l) {
             if let glyph {
-                Image(systemName: glyph)
-                    .font(.system(size: 22, weight: .regular))
-                    .foregroundStyle(Design.inkSoft)
-                    .frame(width: 60, height: 60)
-                    .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
-                    .overlay(
-                        RoundedRectangle.soft(Design.Radius.card)
-                            .strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-                    .shade(Design.Elevation.raised)
+                GlyphPlaque(glyph: glyph)
                     .staggeredArrival(0)
             }
             VStack(spacing: Design.Space.m) {
