@@ -304,7 +304,7 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     #expect(ChatFlow.maxToolCallsActing > ChatFlow.maxToolCallsReadOnly)
 }
 
-@Test func theLoopYieldsAVisibleStepCount() async throws {
+@Test func theLoopYieldsPlainActionStatuses() async throws {
     let (store, dir) = try loopStore()
     defer { try? FileManager.default.removeItem(at: dir) }
     let session = try await store.createSession(modelID: "model-a")
@@ -318,7 +318,8 @@ private func timeCall(id: String = "call-1") -> ToolCall {
     for try await chunk in try await flow.send(sessionID: session.id, text: "time?") {
         if case .status(let text) = chunk { statuses.append(text) }
     }
-    #expect(statuses.contains { $0.contains("step 1 of \(ChatFlow.maxToolCallsReadOnly)") })
+    #expect(statuses.contains { $0.hasPrefix("get_time") })
+    #expect(!statuses.contains { $0.contains("step 1 of") })
 }
 
 @Test func consentIsAwaitedInsideTheLoopWithoutDeadlockingCancellation() async throws {

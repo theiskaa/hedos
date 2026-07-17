@@ -299,10 +299,7 @@ struct ChatFlow: Sendable {
                                     + "was reached — answer with what you have]"
                             } else {
                                 try Task.checkCancellation()
-                                continuation.yield(
-                                    .status(
-                                        "step \(executedCalls + 1) of \(toolCallCap): "
-                                        + Harness.actionSummary(call)))
+                                continuation.yield(.status(Harness.actionSummary(call)))
                                 let outcome = await execute(sessionID, call)
                                 result = Self.truncatedToolResult(outcome.text)
                                 producedArtifacts = outcome.artifactRefs
@@ -329,7 +326,6 @@ struct ChatFlow: Sendable {
                                     role: .tool, content: result,
                                     toolCallID: resultTurn.toolCallID,
                                     toolName: resultTurn.toolName))
-                            continuation.yield(.status("tool: \(Harness.actionSummary(call))"))
                         }
                         history.append(contentsOf: projections)
                         try Task.checkCancellation()
