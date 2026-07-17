@@ -725,16 +725,16 @@ struct InstallInviteBanner: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(alignment: .center, spacing: Design.Space.l) {
+            HStack(alignment: .center, spacing: prominent ? Design.Space.xl : Design.Space.l) {
                 marks
-                VStack(alignment: .leading, spacing: Design.Space.xxs) {
+                VStack(alignment: .leading, spacing: prominent ? Design.Space.xs : Design.Space.xxs) {
                     Text(title)
-                        .font(Design.body.weight(.medium))
+                        .font(prominent ? Design.title : Design.body.weight(.medium))
                         .tracking(Design.tightTracking)
                         .foregroundStyle(Design.ink)
                         .lineLimit(1)
                     Text(subtitle)
-                        .font(Design.data(11))
+                        .font(prominent ? Design.caption : Design.data(11))
                         .monospacedDigit()
                         .foregroundStyle(Design.inkFaint)
                         .lineLimit(1)
@@ -742,10 +742,13 @@ struct InstallInviteBanner: View {
                 }
                 Spacer(minLength: Design.Space.l)
                 trailing
+                if downloading {
+                    Color.clear.frame(width: cancelDiameter, height: cancelDiameter)
+                }
             }
-            .padding(.horizontal, Design.Space.xl)
-            .padding(.vertical, Design.Space.l)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, prominent ? Design.Space.xxl : Design.Space.xl)
+            .padding(.vertical, prominent ? Design.Space.xl : Design.Space.l)
+            .frame(maxWidth: .infinity, minHeight: prominent ? 116 : nil, alignment: .leading)
             .background(Design.surface, in: RoundedRectangle.soft(Design.Radius.card))
             .overlay(
                 RoundedRectangle.soft(Design.Radius.card)
@@ -755,32 +758,62 @@ struct InstallInviteBanner: View {
             .contentShape(RoundedRectangle.soft(Design.Radius.card))
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(Design.wash, value: hovering)
-        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: downloading)
-        .animation(
-            Design.motion(reduceMotion: reduceMotion),
-            value: installs.aggregateProgress?.bytesDownloaded)
         .help("Browse and install models")
         .accessibilityLabel(
             downloading
                 ? "Downloading \(installs.active.count) models, open the install browser"
                 : "Install models")
         .accessibilityIdentifier("models-install-invite")
+        .overlay(alignment: .trailing) {
+            if downloading {
+                cancelButton
+                    .padding(.trailing, prominent ? Design.Space.xxl : Design.Space.xl)
+                    .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+            }
+        }
+        .onHover { hovering = $0 }
+        .animation(Design.wash, value: hovering)
+        .animation(Design.snapMotion(reduceMotion: reduceMotion), value: downloading)
+        .animation(
+            Design.motion(reduceMotion: reduceMotion),
+            value: installs.aggregateProgress?.bytesDownloaded)
         .task { await installs.load() }
     }
 
+    private let cancelDiameter: CGFloat = 24
+
     private var marks: some View {
-        HStack(spacing: -Design.Space.xs) {
+        HStack(spacing: prominent ? -Design.Space.s : -Design.Space.xs) {
             markPlaque(.ollama)
             markPlaque(.huggingfaceCache)
         }
     }
 
+    private var cancelButton: some View {
+        Button {
+            Task {
+                for install in installs.active {
+                    await installs.cancel(installID: install.id)
+                }
+            }
+        } label: {
+            Image(systemName: "xmark")
+                .font(Design.glyphSmall.weight(.bold))
+                .foregroundStyle(Design.inkSoft)
+                .frame(width: cancelDiameter, height: cancelDiameter)
+                .background(Design.surface, in: Circle())
+                .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+                .contentShape(Circle())
+        }
+        .buttonStyle(PressDipStyle())
+        .help(installs.active.count == 1 ? "Cancel this download" : "Cancel all downloads")
+        .accessibilityLabel("Cancel download")
+    }
+
     private func markPlaque(_ kind: SourceKind) -> some View {
-        SourceMark(kind: kind, size: 13)
+        SourceMark(kind: kind, size: prominent ? 20 : 13)
             .foregroundStyle(Design.inkSoft)
-            .frame(width: 24, height: 24)
+            .frame(width: prominent ? 38 : 24, height: prominent ? 38 : 24)
             .background(Design.panel, in: Circle())
             .overlay(Circle().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
     }
@@ -804,8 +837,21 @@ struct InstallInviteBanner: View {
     private var trailing: some View {
         if downloading {
             InstallProgressBar(fraction: installs.aggregateProgress?.fraction)
-                .frame(width: 180)
+                .frame(width: prominent ? 220 : 180)
                 .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
+        } else if prominent {
+            HStack(spacing: Design.Space.s) {
+                Image(systemName: "arrow.down.circle")
+                    .font(Design.glyphSmall)
+                Text("Browse")
+                    .font(Design.body.weight(.medium))
+            }
+            .foregroundStyle(Design.paper)
+            .padding(.horizontal, Design.Space.xl)
+            .padding(.vertical, Design.Space.s + 1)
+            .background(Design.ink, in: RoundedRectangle.soft(Design.Radius.control))
+            .offset(y: hovering ? -1 : 0)
+            .transition(.arrive(from: .trailing, reduceMotion: reduceMotion))
         } else {
             HStack(spacing: Design.Space.m) {
                 TintChip(text: "Browse", glyph: "arrow.down.circle")
