@@ -8,7 +8,7 @@ struct MentionSetup {
     let files: () async -> [String]
 }
 
-struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: View>: View {
+struct ConversationScaffold<Transcript: View, Header: View, Attachments: View, Leading: View, Trailing: View>: View {
     let placeholder: String
     @Binding var draft: String
     let isWorking: Bool
@@ -27,8 +27,9 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
     var onAttachPasteboard: ((NSPasteboard) -> Bool)? = nil
     @ViewBuilder let transcript: () -> Transcript
     @ViewBuilder let header: () -> Header
-    @ViewBuilder let aux: () -> Aux
-    @ViewBuilder let chip: () -> Chip
+    @ViewBuilder let attachments: () -> Attachments
+    @ViewBuilder let leading: () -> Leading
+    @ViewBuilder let trailing: () -> Trailing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.sendWithEnter) private var sendWithEnter
@@ -82,17 +83,18 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
             header()
                 .padding(.horizontal, Design.Space.s)
             VStack(alignment: .leading, spacing: 0) {
-                if accessoryActive {
-                    composerAccessory
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(Design.Space.s)
-                        .transition(.opacity)
-                    Rectangle()
-                        .fill(Design.line)
-                        .frame(height: Design.hairlineWidth)
-                        .transition(.opacity)
-                }
-                VStack(alignment: .leading, spacing: Design.Space.m) {
+            if accessoryActive {
+                composerAccessory
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Design.Space.s)
+                    .transition(.opacity)
+                Rectangle()
+                    .fill(Design.line)
+                    .frame(height: Design.hairlineWidth)
+                    .transition(.opacity)
+            }
+            attachments()
+            VStack(alignment: .leading, spacing: Design.Space.m) {
                     ZStack(alignment: .topLeading) {
                         if draft.isEmpty {
                             Text(placeholder)
@@ -122,8 +124,7 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                     .padding(.top, Design.Space.xs)
                     .padding(.horizontal, Design.Space.xs)
                     HStack(spacing: Design.Space.m) {
-                        micControl
-                        aux()
+                        leading()
                         if let notice = dictationController.notice {
                             Text(notice)
                                 .font(Design.label)
@@ -132,7 +133,8 @@ struct ConversationScaffold<Transcript: View, Header: View, Aux: View, Chip: Vie
                                 .truncationMode(.tail)
                         }
                         Spacer(minLength: 0)
-                        chip()
+                        trailing()
+                        micControl
                         ZStack {
                             if isWorking {
                                 Button("Stop", action: onStop)
@@ -392,10 +394,53 @@ struct TranscriptEmptyState: View {
     }
 }
 
+struct CapsuleControl: View {
+    let glyph: String
+    let title: String
+    let label: String
+    var removeLabel: String? = nil
+    var onRemove: (() -> Void)? = nil
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Design.Space.xs) {
+                Image(systemName: glyph)
+                    .font(Design.caption.weight(.semibold))
+                Text(title)
+                    .font(Design.label.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let onRemove {
+                    ChipCloseButton(action: onRemove, label: removeLabel ?? "Remove")
+                }
+            }
+            .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+            .padding(.leading, Design.Space.chipX)
+            .padding(.trailing, onRemove == nil ? Design.Space.chipX : Design.Space.xs)
+            .frame(height: Design.Control.size)
+            .background(
+                hovering ? AnyShapeStyle(Design.inkWash) : AnyShapeStyle(Design.surface),
+                in: Capsule())
+            .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(PressDipStyle())
+        .onHover { hovering = $0 }
+        .inkFocusRing(Capsule())
+        .fixedSize()
+        .animation(Design.wash, value: hovering)
+        .help(label)
+        .accessibilityLabel(label)
+    }
+}
+
 struct CircleControl: View {
     let glyph: String
     var prominent = false
     var live = false
+    var glyphAngle: Angle = .zero
     let label: String
     let action: () -> Void
     @Environment(\.isEnabled) private var isEnabled
@@ -412,6 +457,8 @@ struct CircleControl: View {
                         ? Design.paper
                         : hovering ? Design.ink : Design.inkSoft)
                 .contentTransition(.symbolEffect(.replace))
+                .rotationEffect(glyphAngle)
+                .animation(Design.snap, value: glyphAngle)
                 .frame(width: Design.Control.size, height: Design.Control.size)
                 .background(
                     live

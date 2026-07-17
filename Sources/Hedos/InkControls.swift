@@ -462,6 +462,8 @@ struct InkMenu<Content: View>: View {
     enum Trigger {
         case standard
         case chip
+        case quiet
+        case glyph(String)
     }
 
     let title: String
@@ -481,7 +483,8 @@ struct InkMenu<Content: View>: View {
     private var triggerShape: AnyInsettableShape {
         switch trigger {
         case .standard: AnyInsettableShape(RoundedRectangle.soft(Design.Radius.control))
-        case .chip: AnyInsettableShape(Capsule())
+        case .chip, .quiet: AnyInsettableShape(Capsule())
+        case .glyph: AnyInsettableShape(Circle())
         }
     }
 
@@ -489,6 +492,8 @@ struct InkMenu<Content: View>: View {
         switch trigger {
         case .standard: hovering ? Design.inkWash : Design.surface
         case .chip: hovering ? Design.ink.opacity(0.10) : Design.inkWash
+        case .quiet: hovering ? Design.inkWash : .clear
+        case .glyph: hovering ? Design.inkWash : Design.surface
         }
     }
 
@@ -497,8 +502,10 @@ struct InkMenu<Content: View>: View {
         case .standard:
             open.wrappedValue
                 ? AnyShapeStyle(Design.accent.opacity(0.55)) : AnyShapeStyle(Design.line)
-        case .chip:
+        case .chip, .glyph:
             AnyShapeStyle(Design.line)
+        case .quiet:
+            AnyShapeStyle(Color.clear)
         }
     }
 
@@ -506,25 +513,36 @@ struct InkMenu<Content: View>: View {
         Button {
             open.wrappedValue = true
         } label: {
-            HStack(spacing: Design.Space.xs) {
-                if let readyDot {
-                    Circle()
-                        .fill(
-                            readyDot
-                                ? AnyShapeStyle(Design.accent) : AnyShapeStyle(Design.inkFaint)
-                        )
-                        .frame(width: 6, height: 6)
+            Group {
+                if case .glyph(let name) = trigger {
+                    Image(systemName: name)
+                        .font(Design.caption.weight(.semibold))
+                        .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: Design.Control.size, height: Design.Control.size)
+                } else {
+                    HStack(spacing: Design.Space.xs) {
+                        if let readyDot {
+                            Circle()
+                                .fill(
+                                    readyDot
+                                        ? AnyShapeStyle(Design.accent)
+                                        : AnyShapeStyle(Design.inkFaint)
+                                )
+                                .frame(width: 6, height: 6)
+                        }
+                        Text(title)
+                            .font(Design.label)
+                            .lineLimit(1)
+                            .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(Design.glyphSmall)
+                            .foregroundStyle(Design.inkFaint)
+                    }
+                    .padding(.horizontal, Design.Space.chipX)
+                    .frame(height: Design.Control.size)
                 }
-                Text(title)
-                    .font(Design.label)
-                    .lineLimit(1)
-                    .foregroundStyle(hovering ? Design.ink : Design.inkSoft)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(Design.glyphSmall)
-                    .foregroundStyle(Design.inkFaint)
             }
-            .padding(.horizontal, Design.Space.chipX)
-            .frame(height: Design.Control.size)
             .background(triggerFill, in: triggerShape)
             .overlay(
                 triggerShape.strokeBorder(triggerBorder, lineWidth: Design.hairlineWidth))
@@ -558,9 +576,11 @@ struct InkMenu<Content: View>: View {
 struct InkMenuRow: View {
     let title: String
     var annotation: String? = nil
+    var glyph: String? = nil
     var selected = false
     var disabled = false
     var previewing = false
+    var dismisses = true
     var onPreview: (() -> Void)? = nil
     let action: () -> Void
     @Environment(\.inkMenuDismiss) private var dismissMenu
@@ -569,9 +589,17 @@ struct InkMenuRow: View {
     var body: some View {
         Button {
             action()
-            dismissMenu()
+            if dismisses {
+                dismissMenu()
+            }
         } label: {
             HStack(spacing: Design.Space.s) {
+                if let glyph {
+                    Image(systemName: glyph)
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(disabled ? Design.inkFaint : Design.inkSoft)
+                        .frame(width: 16)
+                }
                 Text(title)
                     .font(Design.caption)
                     .lineLimit(1)

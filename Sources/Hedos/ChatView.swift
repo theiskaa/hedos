@@ -1421,8 +1421,13 @@ struct ChatView: View {
     @State private var editText = ""
     @State private var modelMenuOpen = false
     @State private var voiceConversation = VoiceConversationController()
-    @State private var showParams = false
-    @State private var showingBenchPicker = false
+    @State private var composerMenuOpen = false
+    @State private var composerMenuSection: ComposerMenuSection?
+    @State private var showingOrchestra = false
+
+    private enum ComposerMenuSection {
+        case params
+    }
 
     init(
         session: ChatSession, model: ChatViewModel, library: LibraryViewModel,
@@ -1479,10 +1484,18 @@ struct ChatView: View {
                 records: { [weak library] in library?.records ?? [] }),
             onAttachPasteboard: { model.attachPasteboard($0) },
             transcript: { transcript },
-            header: { composerHeader },
-            aux: { composerAux },
-            chip: { EmptyView() }
+            header: { composerContext },
+            attachments: { composerAttachments },
+            leading: { composerLeading },
+            trailing: { composerTrailing }
         )
+        .modalScrim(
+            isPresented: showingOrchestra, onDismiss: { showingOrchestra = false }
+        ) {
+            OrchestraSheet(
+                library: library, model: model, kernel: kernel,
+                onClose: { showingOrchestra = false })
+        }
         .task(id: session.id) {
             model.resumeUI()
             await model.load()
@@ -1549,105 +1562,154 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private var composerHeader: some View {
-        VStack(alignment: .leading, spacing: Design.Space.s) {
+    private var composerAttachments: some View {
+        Group {
             if !model.pendingAttachments.isEmpty {
                 PendingAttachmentStrip(attachments: model.pendingAttachments) {
                     model.removeAttachment($0)
                 }
+                .padding(.horizontal, Design.Space.l)
+                .padding(.top, Design.Space.l)
                 .transition(.arrive(from: .bottom, reduceMotion: reduceMotion))
             }
-            HStack(spacing: Design.Space.s) {
-                modelChip
-                folderControl
-                benchControl
-                Spacer(minLength: Design.Space.s)
-                modeSelector
-            }
         }
-        .padding(.horizontal, Design.Space.xs)
-        .animation(Design.wash, value: model.place)
-        .animation(Design.wash, value: model.bench)
         .animation(
             Design.motion(reduceMotion: reduceMotion), value: model.pendingAttachments.map(\.id))
     }
 
+    private var composerLeading: some View {
+        plusControl
+    }
+
     @ViewBuilder
-    private var folderControl: some View {
-        if model.intent == .text {
-            if let place = model.place {
-                HStack(spacing: Design.Space.xs) {
-                    Image(systemName: "folder")
-                        .font(Design.glyphSmall)
-                    Text(URL(fileURLWithPath: place).lastPathComponent)
-                        .font(Design.label.weight(.medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    ChipCloseButton(
-                        action: { model.clearPlace() }, label: "Stop reading this folder")
+    private var plusControl: some View {
+        if plusVisible {
+            CircleControl(
+                glyph: reduceMotion && composerMenuOpen ? "xmark" : "plus",
+                glyphAngle: !reduceMotion && composerMenuOpen ? .degrees(45) : .zero,
+                label: "Add to this chat"
+            ) {
+                if composerMenuOpen {
+                    composerMenuOpen = false
+                } else {
+                    openComposerMenu(section: model.intent == .image ? .params : nil)
                 }
-                .foregroundStyle(Design.inkSoft)
-                .padding(.leading, Design.Space.chipX)
-                .padding(.trailing, Design.Space.xs)
-                .frame(height: Design.Control.size)
-                .background(Design.inkWash, in: Capsule())
-                .hairlineBorder(Capsule())
-                .help(
-                    "The model can list, read, and search inside \(place). "
-                        + "It cannot touch anything outside it, and it cannot write or run anything."
-                )
-            } else {
-                CircleControl(glyph: "folder", label: "Let the model read a folder") {
-                    pickPlace()
-                }
+            }
+            .inkPopover(
+                isPresented: $composerMenuOpen,
+                width: Design.Popover.form.width,
+                maxHeight: Design.Popover.form.height
+            ) {
+                composerMenu
             }
         }
     }
 
-    @ViewBuilder
-    private var benchControl: some View {
-        if model.intent == .text {
-            if model.bench.isEmpty {
-                if !model.benchCandidates(in: library.records).isEmpty {
-                    CircleControl(
-                        glyph: "square.stack.3d.up",
-                        label: "Let the model use other models"
-                    ) {
-                        showingBenchPicker = true
-                    }
-                    .popover(isPresented: $showingBenchPicker) { benchPicker }
-                }
-            } else {
-                Button {
-                    showingBenchPicker = true
-                } label: {
-                    HStack(spacing: Design.Space.xs) {
-                        Image(systemName: "square.stack.3d.up")
-                            .font(Design.glyphSmall)
-                        Text(benchLabel)
-                            .font(Design.label.weight(.medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        ChipCloseButton(
-                            action: { model.clearBench() },
-                            label: "Revoke this chat's models")
-                    }
-                    .foregroundStyle(Design.inkSoft)
-                    .padding(.leading, Design.Space.chipX)
-                    .padding(.trailing, Design.Space.xs)
-                    .frame(height: Design.Control.size)
-                    .background(Design.inkWash, in: Capsule())
-                    .hairlineBorder(Capsule())
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingBenchPicker) { benchPicker }
-                .help(
-                    "This chat's model can call the granted models as tools — generate "
-                        + "images, speak, or look at images. Every call shows in the "
-                        + "conversation.")
-            }
+    private var plusVisible: Bool {
+        switch model.intent {
+        case .text: true
+        case .image: !model.form.schema.isEmpty || voiceStartAvailable
+        case .speak: voiceStartAvailable
         }
     }
+
+    private var voiceStartAvailable: Bool {
+        VoiceConversationController.participants(in: library.records) != nil
+            && !voiceConversation.active
+    }
+
+    private func openComposerMenu(section: ComposerMenuSection?) {
+        composerMenuSection = section
+        composerMenuOpen = true
+    }
+
+    @ViewBuilder
+    private var composerContext: some View {
+        if model.intent == .text {
+            HStack(spacing: Design.Space.s) {
+                if let place = model.place {
+                    CapsuleControl(
+                        glyph: "folder",
+                        title: URL(fileURLWithPath: place).lastPathComponent,
+                        label: "The model can list, read, and search inside \(place). "
+                            + "It cannot touch anything outside it, and it cannot write or "
+                            + "run anything.",
+                        removeLabel: "Stop reading this folder",
+                        onRemove: { model.clearPlace() }
+                    ) {
+                        pickPlace()
+                    }
+                } else {
+                    CapsuleControl(
+                        glyph: "folder",
+                        title: "Read a folder",
+                        label: "Let the model read a folder"
+                    ) {
+                        pickPlace()
+                    }
+                }
+                if !model.bench.isEmpty {
+                    CapsuleControl(
+                        glyph: "square.stack.3d.up",
+                        title: benchLabel,
+                        label: "This chat's model can call the granted models as tools — "
+                            + "generate images, speak, or look at images. Every call shows "
+                            + "in the conversation.",
+                        removeLabel: "Disband this chat's orchestra",
+                        onRemove: { model.clearBench() }
+                    ) {
+                        showingOrchestra = true
+                    }
+                } else if !model.benchCandidates(in: library.records).isEmpty {
+                    CapsuleControl(
+                        glyph: "square.stack.3d.up",
+                        title: "Orchestra",
+                        label: "Set up this chat's orchestra"
+                    ) {
+                        showingOrchestra = true
+                    }
+                }
+            }
+            .animation(Design.wash, value: model.place)
+            .animation(Design.wash, value: model.bench)
+        }
+    }
+
+    private var composerMenu: some View {
+        VStack(alignment: .leading, spacing: Design.Space.xxs) {
+            if model.intent == .image, !model.form.schema.isEmpty {
+                InkMenuRow(
+                    title: "Image parameters", glyph: "slider.horizontal.3",
+                    selected: composerMenuSection == .params, dismisses: false
+                ) {
+                    composerMenuSection = composerMenuSection == .params ? nil : .params
+                }
+                if composerMenuSection == .params {
+                    ParamsForm(form: Bindable(model).form, disabled: model.isWorking)
+                        .padding(.leading, Design.Space.l)
+                        .transition(.arrive(from: .top, reduceMotion: reduceMotion))
+                }
+            }
+            if model.intent == .text {
+                InkMenuRow(
+                    title: "Attach a file", glyph: "paperclip",
+                    disabled: model.isWorking, dismisses: false
+                ) {
+                    composerMenuOpen = false
+                    DispatchQueue.main.async { pickAttachment() }
+                }
+            }
+            if voiceStartAvailable {
+                InkMenuRow(title: "Start a voice conversation", glyph: "waveform") {
+                    toggleVoiceConversation()
+                }
+            }
+        }
+        .padding(Design.Space.s)
+        .animation(Design.motion(reduceMotion: reduceMotion), value: composerMenuSection)
+        .environment(\.inkMenuDismiss) { composerMenuOpen = false }
+    }
+
 
     private var benchLabel: String {
         if model.bench.count == 1, let only = model.bench.first {
@@ -1656,139 +1718,58 @@ struct ChatView: View {
         return "\(model.bench.count) models"
     }
 
-    private var benchPicker: some View {
-        let candidates = model.benchCandidates(in: library.records)
-        return VStack(alignment: .leading, spacing: 0) {
-            Text("Models this chat can use")
-                .font(Design.micro)
-                .tracking(Design.microTracking)
-                .foregroundStyle(Design.inkFaint)
-                .padding(.bottom, Design.Space.s)
-            ForEach(candidates) { record in
-                Button {
-                    toggleBenchMember(record)
-                } label: {
-                    HStack(spacing: Design.Space.s) {
-                        Image(systemName: benchGlyph(record))
-                            .font(Design.glyphSmall)
-                            .foregroundStyle(Design.inkSoft)
-                            .frame(width: 16)
-                        Text(record.displayName)
-                            .font(Design.label)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: Design.Space.m)
-                        if model.bench.contains(record.id) {
-                            Image(systemName: "checkmark")
-                                .font(Design.glyphSmall)
-                        }
-                    }
-                    .foregroundStyle(Design.ink)
-                    .padding(.vertical, Design.Space.xs)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            let unavailable = model.bench.filter { id in
-                !candidates.contains { $0.id == id }
-            }
-            ForEach(unavailable, id: \.self) { id in
-                Button {
-                    model.setBench(model.bench.filter { $0 != id })
-                } label: {
-                    HStack(spacing: Design.Space.s) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(Design.glyphSmall)
-                            .foregroundStyle(Design.inkFaint)
-                            .frame(width: 16)
-                        Text(library.records.first { $0.id == id }?.displayName ?? id)
-                            .font(Design.label)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Text("unavailable")
-                            .font(Design.micro)
-                            .foregroundStyle(Design.inkFaint)
-                        Spacer(minLength: Design.Space.m)
-                        Image(systemName: "checkmark")
-                            .font(Design.glyphSmall)
-                    }
-                    .foregroundStyle(Design.inkSoft)
-                    .padding(.vertical, Design.Space.xs)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            Text("Every call a model makes shows in the conversation.")
-                .font(Design.micro)
-                .foregroundStyle(Design.inkFaint)
-                .padding(.top, Design.Space.s)
-        }
-        .padding(Design.Space.l)
-        .frame(width: 280, alignment: .leading)
-    }
-
-    private func benchGlyph(_ record: ModelRecord) -> String {
-        if record.capabilities.contains(.image) { return "photo" }
-        if record.capabilities.contains(.speak) { return "speaker.wave.2" }
-        return "eye"
-    }
-
-    private func toggleBenchMember(_ record: ModelRecord) {
-        var ids = model.bench
-        if ids.contains(record.id) {
-            ids.removeAll { $0 == record.id }
-        } else {
-            let slots: Set<Capability> = [.image, .speak, .see]
-            let claimed = Set(record.capabilities).intersection(slots)
-            ids.removeAll { id in
-                guard let existing = library.records.first(where: { $0.id == id }) else {
-                    return false
-                }
-                return !Set(existing.capabilities).intersection(slots)
-                    .isDisjoint(with: claimed)
-            }
-            ids.append(record.id)
-        }
-        model.setBench(ids)
-    }
-
     @ViewBuilder
-    private var modeSelector: some View {
+    private var intentControl: some View {
         let imageAvailable = !model.imageModels(in: library.records).isEmpty
         let speakAvailable = !model.voiceModels(in: library.records).isEmpty
         if imageAvailable || speakAvailable || model.intent != .text {
-            ModeSelector(
-                intent: model.intent,
-                imageAvailable: imageAvailable,
-                speakAvailable: speakAvailable,
-                disabled: model.isWorking
-            ) { target in
-                model.setIntent(target)
-                model.focusComposer()
+            InkMenu(
+                title: "",
+                accessibilityName: "composer mode",
+                trigger: .glyph(intentGlyph),
+                help: "Switch between writing, image generation, and speech"
+            ) {
+                InkMenuRow(title: "Text", glyph: "text.bubble", selected: model.intent == .text) {
+                    model.setIntent(.text)
+                    model.focusComposer()
+                }
+                if imageAvailable {
+                    InkMenuRow(title: "Image", glyph: "photo", selected: model.intent == .image) {
+                        model.setIntent(.image)
+                        model.focusComposer()
+                    }
+                }
+                if speakAvailable {
+                    InkMenuRow(
+                        title: "Speech", glyph: "speaker.wave.2",
+                        selected: model.intent == .speak
+                    ) {
+                        model.setIntent(.speak)
+                        model.focusComposer()
+                    }
+                }
             }
+            .disabled(model.isWorking)
+        }
+    }
+
+    private var intentGlyph: String {
+        switch model.intent {
+        case .text: "text.bubble"
+        case .image: "photo"
+        case .speak: "speaker.wave.2"
         }
     }
 
     @ViewBuilder
-    private var composerAux: some View {
-        attachControl
-        paramsControl
+    private var composerTrailing: some View {
         voiceLoopControl
+        modelChip
+        intentControl
     }
 
     private var acceptsImages: Bool {
         model.intent == .text && boundRecord?.capabilities.contains(.see) == true
-    }
-
-    @ViewBuilder
-    private var attachControl: some View {
-        if model.intent == .text {
-            CircleControl(glyph: "paperclip", label: "Attach a file") {
-                pickAttachment()
-            }
-            .disabled(model.isWorking)
-            .accessibilityIdentifier("composer-attach")
-        }
     }
 
     private func pickAttachment() {
@@ -1822,43 +1803,30 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private var paramsControl: some View {
-        if model.intent == .image && !model.form.schema.isEmpty {
-            CircleControl(glyph: "slider.horizontal.3", label: "Generation parameters") {
-                showParams.toggle()
-            }
-            .inkPopover(
-                isPresented: $showParams,
-                width: Design.Popover.form.width,
-                maxHeight: Design.Popover.form.height
-            ) {
-                ParamsForm(form: Bindable(model).form, disabled: model.isWorking)
-            }
-        }
-    }
-
-    @ViewBuilder
     private var voiceLoopControl: some View {
-        if VoiceConversationController.participants(in: library.records) != nil {
-            if voiceConversation.active, let status = voiceConversation.status {
+        if voiceConversation.active {
+            if let status = voiceConversation.status {
                 ShimmerText(text: status, tracked: false)
                     .truncationMode(.tail)
                     .frame(maxWidth: Design.Column.control, alignment: .trailing)
             }
             CircleControl(
-                glyph: voiceConversation.active ? "waveform.slash" : "waveform",
-                prominent: voiceConversation.active,
-                label: voiceConversation.active
-                    ? "End voice conversation" : "Start voice conversation"
+                glyph: "waveform.slash",
+                prominent: true,
+                label: "End voice conversation"
             ) {
-                voiceConversation.toggle(
-                    sessionID: session.id, kernel: kernel, records: library.records,
-                    audio: audio
-                ) { [weak model] in
-                    Task { await model?.load() }
-                }
+                toggleVoiceConversation()
             }
             .accessibilityIdentifier("voice-conversation")
+        }
+    }
+
+    private func toggleVoiceConversation() {
+        voiceConversation.toggle(
+            sessionID: session.id, kernel: kernel, records: library.records,
+            audio: audio
+        ) { [weak model] in
+            Task { await model?.load() }
         }
     }
 
@@ -2421,19 +2389,19 @@ struct ChatView: View {
         switch model.intent {
         case .text:
             guard let record = boundRecord else {
-                return "Every ready chat model on this Mac lives in the chip below the composer."
+                return "Every ready chat model on this Mac lives in the model name inside the composer."
             }
             if !boundReady {
-                return "\(record.displayName) isn't ready to run — pick another model from the chip below the composer."
+                return "\(record.displayName) isn't ready to run — pick another model from the name inside the composer."
             }
-            return "\(record.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, or tap the mic to dictate."
+            return "\(record.displayName) is loaded and listening. Nothing you type leaves this Mac. Type / for saved prompts, press + to attach files, or give this chat a folder and an orchestra above."
         case .image:
             return activeRecord != nil
-                ? "A sentence in, an image out — right here in the conversation. Steps, size, and seed live next to the send button."
+                ? "A sentence in, an image out — right here in the conversation. Steps, size, and seed live behind the + button."
                 : "When an image model lands on your shelf, it draws into this conversation."
         case .speak:
             return activeRecord.map {
-                "\($0.displayName) speaks your text into this conversation, playable and saveable. Preview voices from the chip below."
+                "\($0.displayName) speaks your text into this conversation, playable and saveable. Preview voices from the voice menu."
             } ?? "When a voice model lands on your shelf, it speaks from here."
         }
     }
@@ -2460,7 +2428,7 @@ struct ChatView: View {
             accessibilityName: "Chat model",
             readyDot: boundRecord != nil ? boundReady : nil,
             externalOpen: $modelMenuOpen,
-            trigger: .chip,
+            trigger: .quiet,
             help: chatChipTitle
         ) {
             if chatGroups.isEmpty {
@@ -2494,7 +2462,7 @@ struct ChatView: View {
             title: activeRecord?.displayName ?? "Choose model",
             accessibilityName: "Image model",
             readyDot: activeRecord != nil ? true : nil,
-            trigger: .chip
+            trigger: .quiet
         ) {
             let runnable = model.imageModels(in: library.records)
             let waiting = model.waitingImageModels(in: library.records)
@@ -2526,7 +2494,7 @@ struct ChatView: View {
             title: activeRecord?.displayName ?? "Choose model",
             accessibilityName: "Voice model",
             readyDot: activeRecord != nil ? true : nil,
-            trigger: .chip
+            trigger: .quiet
         ) {
             let runnable = model.voiceModels(in: library.records)
             if runnable.isEmpty {
@@ -2546,7 +2514,7 @@ struct ChatView: View {
     }
 
     private var voicePickerChip: some View {
-        InkMenu(title: model.voice, accessibilityName: "Voice", trigger: .chip) {
+        InkMenu(title: model.voice, accessibilityName: "Voice", trigger: .quiet) {
             ForEach(model.voices, id: \.self) { candidate in
                 InkMenuRow(
                     title: candidate,
@@ -2616,74 +2584,6 @@ struct ChatView: View {
     }
 }
 
-
-private struct ModeSelector: View {
-    let intent: ChatViewModel.Intent
-    let imageAvailable: Bool
-    let speakAvailable: Bool
-    let disabled: Bool
-    let onSelect: (ChatViewModel.Intent) -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private struct Segment: Identifiable {
-        let id: ChatViewModel.Intent
-        let glyph: String
-        let label: String
-    }
-
-    private var segments: [Segment] {
-        var out: [Segment] = []
-        if imageAvailable || intent == .image {
-            out.append(Segment(id: .image, glyph: "photo", label: "Image"))
-        }
-        if speakAvailable || intent == .speak {
-            out.append(Segment(id: .speak, glyph: "speaker.wave.2", label: "Speech"))
-        }
-        return out
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(segments) { segment in
-                segmentButton(segment)
-            }
-        }
-        .padding(2)
-        .background(Design.inkWash, in: Capsule())
-        .overlay(Capsule().strokeBorder(Design.line, lineWidth: Design.hairlineWidth))
-        .opacity(disabled ? 0.5 : 1)
-        .animation(reduceMotion ? nil : Design.snap, value: intent)
-    }
-
-    private func segmentButton(_ segment: Segment) -> some View {
-        let active = intent == segment.id
-        return Button {
-            onSelect(active ? .text : segment.id)
-        } label: {
-            HStack(spacing: Design.Space.xs) {
-                Image(systemName: segment.glyph)
-                    .font(Design.glyphSmall)
-                Text(segment.label)
-                    .font(Design.label.weight(.medium))
-                    .fixedSize()
-            }
-            .foregroundStyle(active ? Design.paper : Design.inkSoft)
-            .padding(.horizontal, Design.Space.chipX)
-            .frame(height: Design.Control.size - 4)
-            .background {
-                Capsule()
-                    .fill(Design.ink)
-                    .opacity(active ? 1 : 0)
-            }
-            .contentShape(Capsule())
-        }
-        .buttonStyle(PressDipStyle())
-        .disabled(disabled)
-        .help(active ? "Back to chat" : "\(segment.label) mode")
-        .accessibilityLabel(active ? "\(segment.label) mode, selected" : "\(segment.label) mode")
-        .accessibilityIdentifier("intent-\(segment.id == .image ? "image" : "speak")")
-    }
-}
 
 private struct VersionSwitcher: View {
     let index: Int
