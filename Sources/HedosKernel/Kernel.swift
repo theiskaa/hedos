@@ -4,7 +4,6 @@ public enum KernelError: Error, Sendable, LocalizedError {
     case notImplemented(String)
     case modelNotFound(String)
     case artifactNotFound(String)
-    case pipelineNotFound(String)
     case capabilityUnsupported(model: String, capability: Capability)
     case paramUnsupported(model: String, key: String)
     case runtimeUnavailable(hint: String)
@@ -25,8 +24,6 @@ public enum KernelError: Error, Sendable, LocalizedError {
             "No model with id \(id) is registered."
         case .artifactNotFound(let id):
             "No artifact with id \(id) is stored."
-        case .pipelineNotFound(let id):
-            "No pipeline with id \(id) is stored."
         case .capabilityUnsupported(let model, let capability):
             "\(model) has no runtime for \(capability.rawValue)."
         case .paramUnsupported(let model, let key):
@@ -78,7 +75,6 @@ public actor Kernel {
 
     func currentConsentAsk() -> ConsentAsk { chatConsentAsk }
     public let promptStore: PromptStore
-    public let pipelineStore: PipelineStore
     public nonisolated let runtimeCatalog: RuntimeCatalog
     private let baseAdapters: [any RuntimeAdapter]
     private var adapters: [any RuntimeAdapter]
@@ -136,9 +132,6 @@ public actor Kernel {
         self.chats = ChatStore(databaseURL: directory.appendingPathComponent("chats.sqlite"))
         self.promptStore = PromptStore(
             directory: directory.appendingPathComponent("prompts", isDirectory: true))
-        self.pipelineStore = PipelineStore(
-            directory: directory.appendingPathComponent("pipelines", isDirectory: true),
-            shelf: { try await registry.list() })
         self.secrets = secrets
         let base =
             adapters ?? Self.defaultAdapters(governor: governor, secrets: secrets, registry: registry)

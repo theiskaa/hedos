@@ -1,12 +1,14 @@
 import Foundation
 
+public enum PipelineInput: Sendable {
+    case audio([Float])
+    case text(String)
+}
+
 public enum PipelineToken: Sendable, Hashable {
     case text(String)
     case audioPCM([Float])
     case audioFrame(AudioFrame)
-    case image(Data)
-    case artifact(String)
-    case vector([Double])
 }
 
 public enum PipelineEvent: Sendable {
@@ -15,8 +17,6 @@ public enum PipelineEvent: Sendable {
     case delta(index: Int, String)
     case transcript(index: Int, String)
     case audio(AudioFrame)
-    case artifact(id: String)
-    case vector([Double])
     case completed
     case cancelled
     case failed(String)

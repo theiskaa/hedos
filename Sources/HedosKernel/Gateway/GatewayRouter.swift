@@ -97,12 +97,6 @@ public struct GatewayRouter: Sendable {
             GatewayRoute(
                 "POST", "/api/show", OllamaShowHandler(),
                 group: "Ollama", summary: "Model details handshake"),
-            GatewayRoute(
-                "GET", "/v1/pipelines", PipelineListHandler(),
-                group: "Pipelines", summary: "List your saved pipelines"),
-            GatewayRoute(
-                "POST", "/v1/pipelines/run", PipelineRunHandler(), inference: true,
-                group: "Pipelines", summary: "Run a saved pipeline by id"),
         ]
     }
 

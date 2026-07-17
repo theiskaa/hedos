@@ -58,11 +58,7 @@ public struct PipelineExecutor: Sendable {
                                 switch token {
                                 case .audioFrame(let frame):
                                     sink(.audio(frame))
-                                case .artifact(let id):
-                                    sink(.artifact(id: id))
-                                case .vector(let values):
-                                    sink(.vector(values))
-                                case .text, .audioPCM, .image:
+                                case .text, .audioPCM:
                                     break
                                 }
                             }

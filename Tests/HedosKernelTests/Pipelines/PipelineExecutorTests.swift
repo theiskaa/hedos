@@ -31,15 +31,10 @@ final class FakePipelineBackend: PipelineBackend, @unchecked Sendable {
 
     private let lock = NSLock()
     private(set) var calls: [Call] = []
-    var cancelledJobs: [String] = []
 
     var transcribeText: [String] = ["hello there"]
     var chatDeltas: [String] = ["Hi. ", "How are you?"]
     var speakFramesPerSentence = 2
-    var jobArtifacts: [String] = ["artifact-1"]
-    var jobFailure: String?
-    var chatHang = false
-    var embedVectors: [[Double]] = [[0.25, -0.5], [0.75]]
 
     func record(_ call: Call) {
         lock.lock()
@@ -59,61 +54,10 @@ final class FakePipelineBackend: PipelineBackend, @unchecked Sendable {
         switch capability {
         case .transcribe: return textStream(transcribeText)
         case .speak: return audioStream(speakFramesPerSentence)
-        case .chat, .complete:
-            if chatHang {
-                return AsyncThrowingStream { continuation in
-                    Task {
-                        try? await Task.sleep(for: .seconds(30))
-                        continuation.finish()
-                    }
-                }
-            }
-            return textStream(chatDeltas)
-        case .embed:
-            let vectors = embedVectors
-            return AsyncThrowingStream { continuation in
-                for vector in vectors {
-                    continuation.yield(.vector(vector))
-                }
-                continuation.yield(.done(nil))
-                continuation.finish()
-            }
+        case .chat, .complete: return textStream(chatDeltas)
         default: return textStream([])
         }
     }
-
-    func submit(_ modelID: String, _ capability: Capability, payload: JSONValue) async throws
-        -> String
-    {
-        record(Call(modelID: modelID, capability: capability, payload: payload))
-        return "job-fake"
-    }
-
-    func jobEvents(id: String) async -> AsyncStream<JobEvent> {
-        let failure = jobFailure
-        let artifacts = jobArtifacts
-        return AsyncStream { continuation in
-            continuation.yield(.running)
-            if let failure {
-                continuation.yield(.failed(message: failure))
-            } else {
-                continuation.yield(.done(result: artifacts))
-            }
-            continuation.finish()
-        }
-    }
-
-    func recordCancel(_ jobID: String) {
-        lock.lock()
-        cancelledJobs.append(jobID)
-        lock.unlock()
-    }
-
-    func cancel(jobID: String) async {
-        recordCancel(jobID)
-    }
-
-    func artifactData(id: String) async throws -> Data? { Data([1, 2, 3]) }
 }
 
 private func collect(_ stream: AsyncStream<PipelineEvent>) async -> [PipelineEvent] {
@@ -212,48 +156,31 @@ private func collect(_ stream: AsyncStream<PipelineEvent>) async -> [PipelineEve
     #expect(backend.speakCallCount >= 2)
 }
 
-@Test func imageTailAggregatesTextThenEmitsArtifact() async throws {
-    let backend = FakePipelineBackend()
-    let runners = [
-        PipelineRunnerFactory.textToText(
-            index: 0, modelID: "chat", capability: .chat, params: [:], backend: backend),
-        PipelineRunnerFactory.image(
-            index: 1, modelID: "flux", params: [:], backend: backend),
-    ]
-    let events = await collect(PipelineExecutor(stages: runners).run(input: .text("draw")))
-    let artifacts = events.compactMap { event -> String? in
-        if case .artifact(let id) = event { return id }
-        return nil
+final class CancelWitness: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func mark() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
-    #expect(artifacts == ["artifact-1"])
+
+    var wasCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
 }
 
-@Test func imageJobFailurePropagatesAsFailedEvent() async throws {
-    let backend = FakePipelineBackend()
-    backend.jobFailure = "diffusion exploded"
-    let runner = PipelineRunnerFactory.image(
-        index: 0, modelID: "flux", params: [:], backend: backend)
-    let events = await collect(PipelineExecutor(stages: [runner]).run(input: .text("boom")))
-    let failed = events.compactMap { event -> String? in
-        if case .failed(let m) = event { return m }
-        return nil
-    }
-    #expect(failed.count == 1)
-    #expect(failed[0].contains("diffusion exploded"))
-}
-
-@Test func cancellationTearsDownAndCancelsJob() async throws {
-    let backend = FakePipelineBackend()
-    backend.jobFailure = nil
-    let slowRunner = PipelineStageRunner(
-        index: 0, capability: .image, input: .text, output: .image
-    ) { _, downstream, _ in
-        let jobID = try await backend.submit("flux", .image, payload: .null)
+@Test func consumerTeardownCancelsARunningStage() async throws {
+    let witness = CancelWitness()
+    let slowRunner = PipelineStageRunner(index: 0, capability: .chat) { _, downstream, _ in
         try await withTaskCancellationHandler {
             try await Task.sleep(for: .seconds(30))
-            downstream(.artifact(jobID))
+            downstream(.text("never"))
         } onCancel: {
-            Task { await backend.cancel(jobID: jobID) }
+            witness.mark()
         }
     }
     let stream = PipelineExecutor(stages: [slowRunner]).run(input: .text("x"))
@@ -262,13 +189,11 @@ private func collect(_ stream: AsyncStream<PipelineEvent>) async -> [PipelineEve
     consume.cancel()
     _ = await consume.value
     try await Task.sleep(for: .milliseconds(200))
-    #expect(backend.cancelledJobs == ["job-fake"])
+    #expect(witness.wasCancelled)
 }
 
 @Test func stageCancellationYieldsACancelledTerminalEvent() async throws {
-    let cancellingRunner = PipelineStageRunner(
-        index: 0, capability: .chat, input: .text, output: .text
-    ) { _, _, _ in
+    let cancellingRunner = PipelineStageRunner(index: 0, capability: .chat) { _, _, _ in
         throw CancellationError()
     }
     let events = await collect(

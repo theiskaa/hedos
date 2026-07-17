@@ -58,17 +58,20 @@ private func failingModel() -> ModelRecord {
 
 @Test func overLimitConnectionReceives503WithRetryAfter() async throws {
     var port = FakeGatewayPort(records: [failingModel()])
-    port.pipelineHangs = true
-    port.pipelinesList = [Pipeline(id: "p1", name: "hang", stages: [])]
+    port.streamHangs = true
     let stack = try await GatewayHarness.stack(
         port: port, routes: GatewayRouter.standardRoutes(),
         configuration: GatewayServer.Configuration(port: 0, maxConnections: 1))
 
     let occupier = URLSession(configuration: .ephemeral)
-    let holdBody = GatewayHarness.json(["pipeline": "p1", "input": ["text": "hi"]])
+    let holdBody = GatewayHarness.json([
+        "model": "failing:latest",
+        "messages": [["role": "user", "content": "hi"]],
+        "stream": true,
+    ])
     async let held: (Data, URLResponse) = occupier.data(
         for: GatewayHarness.request(
-            "POST", stack.url("/v1/pipelines/run"), token: stack.token, body: holdBody))
+            "POST", stack.url("/api/chat"), token: stack.token, body: holdBody))
 
     var status = 0
     for _ in 0..<40 {
@@ -89,6 +92,65 @@ private func failingModel() -> ModelRecord {
     #expect(status == 503)
     occupier.invalidateAndCancel()
     _ = try? await held
+    await stack.stop()
+}
+
+@Test func hungOpenAIChatStreamTimesOutAndServerStaysResponsive() async throws {
+    var port = FakeGatewayPort(records: [failingModel()])
+    port.streamHangs = true
+    let routes = [
+        GatewayRoute(
+            "POST", "/v1/chat/completions", OpenAIChatHandler(runTimeoutSeconds: 1),
+            inference: true, group: "OpenAI", summary: "chat"),
+        GatewayRoute("GET", "/api/version", OllamaVersionHandler(), group: "Ollama", summary: "v"),
+    ]
+    let stack = try await GatewayHarness.stack(port: port, routes: routes)
+    let body = GatewayHarness.json([
+        "model": "failing:latest",
+        "messages": [["role": "user", "content": "hi"]],
+        "stream": true,
+    ])
+    let (data, _) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/v1/chat/completions"), token: stack.token, body: body))
+    let events = String(data: data, encoding: .utf8)!.split(separator: "\n")
+        .filter { $0.hasPrefix("data: ") }.map { String($0.dropFirst(6)) }
+    #expect(events.last == "[DONE]")
+    let errorFrame = events.dropLast().compactMap {
+        (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any]
+    }.first { $0["error"] != nil }
+    let error = errorFrame?["error"] as? [String: Any]
+    #expect(error?["message"] as? String == "the request timed out after 1s")
+    #expect(error?["code"] as? String == "timeout")
+
+    let (_, response) = try await URLSession.shared.data(
+        for: GatewayHarness.request("GET", stack.url("/api/version"), token: stack.token))
+    #expect((response as? HTTPURLResponse)?.statusCode == 200)
+    await stack.stop()
+}
+
+@Test func hungOllamaChatStreamTimesOutWithErrorLine() async throws {
+    var port = FakeGatewayPort(records: [failingModel()])
+    port.streamHangs = true
+    let routes = [
+        GatewayRoute(
+            "POST", "/api/chat", OllamaChatHandler(runTimeoutSeconds: 1),
+            inference: true, group: "Ollama", summary: "chat")
+    ]
+    let stack = try await GatewayHarness.stack(port: port, routes: routes)
+    let body = GatewayHarness.json([
+        "model": "failing:latest",
+        "messages": [["role": "user", "content": "hi"]],
+        "stream": true,
+    ])
+    let (data, _) = try await URLSession.shared.data(
+        for: GatewayHarness.request(
+            "POST", stack.url("/api/chat"), token: stack.token, body: body))
+    let lines = String(data: data, encoding: .utf8)!.split(separator: "\n").map {
+        (try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any] ?? [:]
+    }
+    let errorLine = lines.first { $0["error"] != nil }
+    #expect(errorLine?["error"] as? String == "the request timed out after 1s")
     await stack.stop()
 }
 

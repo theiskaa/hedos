@@ -19,11 +19,10 @@ import Testing
 
 @Test func groupedEndpointsAreOrderedAndComplete() {
     let grouped = GatewayEndpoints.grouped
-    #expect(grouped.map(\.group) == ["OpenAI", "Ollama", "Pipelines"])
+    #expect(grouped.map(\.group) == ["OpenAI", "Ollama"])
     let flattened = grouped.flatMap { $0.endpoints }
     #expect(flattened.count == GatewayEndpoints.catalog.count)
     #expect(grouped.contains { $0.endpoints.contains { $0.path == "/v1/chat/completions" } })
-    #expect(grouped.contains { $0.endpoints.contains { $0.path == "/v1/pipelines/run" } })
 }
 
 @Test func streamingFlagMatchesInferenceRoutes() {

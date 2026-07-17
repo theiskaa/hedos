@@ -21,22 +21,6 @@ import Testing
     #expect(siblings.contains { $0.lastPathComponent.contains(".corrupt-") })
 }
 
-@Test func corruptPipelineFileIsQuarantinedNotSkipped() async throws {
-    let dir = try Fixtures.tempDirectory()
-    defer { try? FileManager.default.removeItem(at: dir) }
-    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    let corrupt = dir.appendingPathComponent("broken.json")
-    try Data("]".utf8).write(to: corrupt)
-
-    let store = PipelineStore(directory: dir)
-    let listed = await store.list()
-    #expect(listed.isEmpty)
-    #expect(!FileManager.default.fileExists(atPath: corrupt.path))
-    let siblings = try FileManager.default.contentsOfDirectory(
-        at: dir, includingPropertiesForKeys: nil)
-    #expect(siblings.contains { $0.lastPathComponent.contains(".corrupt-") })
-}
-
 @Test func storeDecoderReadsBothPlainAndFractionalISO8601Dates() throws {
     struct Dated: Codable, Equatable {
         var at: Date

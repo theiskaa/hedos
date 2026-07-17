@@ -18,14 +18,6 @@ extension Kernel: GatewayPort {
         await scheduler.cancel(jobID)
     }
 
-    public func pipelines() async -> [Pipeline] {
-        await pipelineStore.list()
-    }
-
-    public func pipeline(id: String) async -> Pipeline? {
-        await pipelineStore.get(id: id)
-    }
-
     public func admissionState(
         modelID: String, footprintMB: Int?, kind: GatewayWorkKind
     ) async -> GatewayAdmissionState {

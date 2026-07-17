@@ -11,5 +11,4 @@ public enum GatewayDefaults {
     static let inferenceQueueDepthCap = 4
     static let saturatedRetryAfterSeconds = 1
     static let queuedRetryAfterSeconds = 5
-    static let pipelineRunTimeout: Duration = .seconds(300)
 }
