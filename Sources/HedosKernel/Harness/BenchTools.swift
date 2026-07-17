@@ -137,6 +137,22 @@ public enum BenchTools {
         bench.first { $0.capabilities.contains(capability) }
     }
 
+    public static func assigning(
+        _ capability: Capability, to newID: String?, in bench: [String],
+        records: [ModelRecord]
+    ) -> [String] {
+        var ids = bench
+        let members = bench.compactMap { id in records.first { $0.id == id } }
+        if let current = member(for: capability, in: members) {
+            ids.removeAll { $0 == current.id }
+        }
+        if let newID {
+            ids.removeAll { $0 == newID }
+            ids.append(newID)
+        }
+        return ids
+    }
+
     public static func specs(bench: [ModelRecord]) -> [ToolSpec] {
         var specs: [ToolSpec] = []
         if let imager = granted(for: .image, in: bench) {

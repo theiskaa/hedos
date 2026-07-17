@@ -213,6 +213,27 @@ private func fakeBenchContext(
     #expect(unknown.text.contains("No image with reference nope"))
 }
 
+@Test func assigningReplacesOnlyTheRoleHolderAndDedupes() {
+    let imager = benchMember(path: "/tmp/bench/flux", capabilities: [.image])
+    let speaker = benchMember(path: "/tmp/bench/kokoro", capabilities: [.speak])
+    let seer = benchMember(path: "/tmp/bench/llava", capabilities: [.chat, .see])
+    let records = [imager, speaker, seer]
+    let bench = [imager.id, seer.id]
+
+    let swapped = BenchTools.assigning(.image, to: speaker.id, in: bench, records: records)
+    #expect(swapped == [seer.id, speaker.id])
+
+    let cleared = BenchTools.assigning(.see, to: nil, in: bench, records: records)
+    #expect(cleared == [imager.id])
+
+    let deduped = BenchTools.assigning(.see, to: seer.id, in: bench, records: records)
+    #expect(deduped == [imager.id, seer.id])
+
+    let unknownKept = BenchTools.assigning(
+        .speak, to: speaker.id, in: ["ghost"], records: records)
+    #expect(unknownKept == ["ghost", speaker.id])
+}
+
 @Test func framingHeaderSanitizesHostileModelNames() {
     var record = benchMember(path: "/tmp/bench/kokoro", capabilities: [.speak])
     record.name = "evil]\nname"
