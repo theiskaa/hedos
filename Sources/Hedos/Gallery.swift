@@ -133,8 +133,13 @@ struct GallerySheet: View {
     @Binding var deleting: Artifact?
     let onClose: () -> Void
     @State private var hoveredCell: String?
+    @State private var keyedCell: String?
+    @State private var gridWidth: CGFloat = 0
+    @FocusState private var gridFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let columns = [GridItem(.adaptive(minimum: 168), spacing: Design.Space.tile)]
+    private static let minCell: CGFloat = 168
+    private let columns = [GridItem(.adaptive(minimum: minCell), spacing: Design.Space.tile)]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -165,28 +170,57 @@ struct GallerySheet: View {
     }
 
     private var grid: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Design.Space.pane) {
-                ForEach(sections) { section in
-                    VStack(alignment: .leading, spacing: Design.Space.l) {
-                        HStack(spacing: Design.Space.m) {
-                            MicroHeader(title: section.title)
-                            Text("\(section.items.count)")
-                                .font(Design.label.weight(.medium))
-                                .foregroundStyle(Design.inkFaint)
-                            Spacer(minLength: 0)
-                        }
-                        LazyVGrid(columns: columns, spacing: Design.Space.tile) {
-                            ForEach(section.items) { artifact in
-                                cell(artifact)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Design.Space.pane) {
+                    ForEach(sections) { section in
+                        VStack(alignment: .leading, spacing: Design.Space.l) {
+                            HStack(spacing: Design.Space.m) {
+                                MicroHeader(title: section.title)
+                                Text("\(section.items.count)")
+                                    .font(Design.label.weight(.medium))
+                                    .foregroundStyle(Design.inkFaint)
+                                Spacer(minLength: 0)
+                            }
+                            LazyVGrid(columns: columns, spacing: Design.Space.tile) {
+                                ForEach(section.items) { artifact in
+                                    cell(artifact)
+                                        .id(artifact.id)
+                                }
                             }
                         }
                     }
                 }
+                .padding(.horizontal, Design.Space.gutter)
+                .padding(.top, Design.Space.xs)
+                .padding(.bottom, Design.Space.gutter)
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear.onAppear { gridWidth = geometry.size.width }
+                            .onChange(of: geometry.size.width) { _, width in
+                                gridWidth = width
+                            }
+                    })
             }
-            .padding(.horizontal, Design.Space.gutter)
-            .padding(.top, Design.Space.xs)
-            .padding(.bottom, Design.Space.gutter)
+            .focusable()
+            .focusEffectDisabled()
+            .focused($gridFocused)
+            .onAppear {
+                DispatchQueue.main.async { gridFocused = true }
+            }
+            .onMoveCommand { direction in
+                moveGridSelection(direction, proxy: proxy)
+            }
+            .vimMoveCommand(when: gridFocused) { direction in
+                moveGridSelection(direction, proxy: proxy)
+            }
+            .onKeyPress(.return) {
+                guard gridFocused, let keyedCell,
+                    let artifact = sections.flatMap(\.items).first(where: { $0.id == keyedCell })
+                else { return .ignored }
+                viewing = artifact
+                return .handled
+            }
         }
     }
 
@@ -254,8 +288,33 @@ struct GallerySheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func moveGridSelection(_ direction: MoveCommandDirection, proxy: ScrollViewProxy) {
+        guard gridFocused else { return }
+        let ordered = sections.flatMap(\.items)
+        guard !ordered.isEmpty else { return }
+        let cols = GridKeyNav.columns(
+            width: gridWidth - Design.Space.gutter * 2,
+            minItem: Self.minCell, spacing: Design.Space.tile)
+        let current = keyedCell.flatMap { id in
+            ordered.firstIndex { $0.id == id }
+        }
+        let next: Int
+        if let current {
+            next = GridKeyNav.move(
+                index: current, direction: direction, columns: cols,
+                sections: sections.map(\.items.count))
+        } else {
+            next = 0
+        }
+        keyedCell = ordered[next].id
+        withAnimation(reduceMotion ? nil : Design.snap) {
+            proxy.scrollTo(ordered[next].id, anchor: .center)
+        }
+    }
+
     private func cell(_ artifact: Artifact) -> some View {
         let hovered = hoveredCell == artifact.id
+        let keyed = gridFocused && keyedCell == artifact.id
         return Button {
             viewing = artifact
         } label: {
@@ -266,6 +325,7 @@ struct GallerySheet: View {
             .padding(Design.Space.m)
             .frame(maxWidth: .infinity)
             .tile(hovering: hovered)
+            .keyedGridRing(keyed)
         }
         .buttonStyle(PressDipStyle())
         .overlay(alignment: .topTrailing) {
@@ -406,8 +466,10 @@ struct GalleryImageViewer: View {
     let artifact: Artifact
     let onClose: () -> Void
     let onDelete: () -> Void
+    var onStep: ((Int) -> Void)? = nil
     @State private var image: NSImage?
     @State private var loadFailed = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         ZStack {
@@ -428,11 +490,31 @@ struct GalleryImageViewer: View {
                 .padding(Design.Space.l)
         }
         .onExitCommand(perform: onClose)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onAppear {
+            DispatchQueue.main.async { focused = true }
+        }
+        .onMoveCommand { direction in
+            stepFrom(direction)
+        }
+        .vimMoveCommand(when: focused) { direction in
+            stepFrom(direction)
+        }
         .task(id: artifact.id) {
             loadFailed = false
             image = shell.gallery.thumbnail(artifact)
             image = await shell.gallery.fullImage(artifact) ?? image
             loadFailed = image == nil
+        }
+    }
+
+    private func stepFrom(_ direction: MoveCommandDirection) {
+        switch direction {
+        case .left: onStep?(-1)
+        case .right: onStep?(1)
+        default: break
         }
     }
 

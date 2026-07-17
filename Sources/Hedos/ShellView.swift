@@ -844,7 +844,15 @@ struct ChatPane: View {
                     shell: shell,
                     artifact: artifact,
                     onClose: { galleryViewing = nil },
-                    onDelete: { galleryDeleting = artifact })
+                    onDelete: { galleryDeleting = artifact },
+                    onStep: { delta in
+                        let arranged = shell.gallery.arranged
+                        guard let index = arranged.firstIndex(where: { $0.id == artifact.id })
+                        else { return }
+                        let target = index + delta
+                        guard arranged.indices.contains(target) else { return }
+                        galleryViewing = arranged[target]
+                    })
                     .transition(.opacity)
             }
         }
