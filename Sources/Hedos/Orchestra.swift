@@ -6,8 +6,10 @@ struct OrchestraSheet: View {
     let model: ChatViewModel
     let kernel: Kernel
     let onClose: () -> Void
+    let onInstallModels: () -> Void
     @State private var savedAsDefault = false
     @State private var saveFailed = false
+    @State private var toolSupport: [String: Bool] = [:]
 
     private struct Role: Identifiable {
         let id: String
@@ -35,6 +37,14 @@ struct OrchestraSheet: View {
     var body: some View {
         sheetContent
             .frame(width: Design.Sheet.orchestraWidth, alignment: .leading)
+            .task(id: library.shelfSignature) {
+                var probed: [String: Bool] = [:]
+                let candidates = mainCandidates.map(\.id) + [model.boundModelID].compactMap { $0 }
+                for id in Set(candidates) {
+                    probed[id] = (try? await kernel.supportsTools(modelID: id)) ?? false
+                }
+                toolSupport = probed
+            }
     }
 
     private var sheetContent: some View {
@@ -48,6 +58,24 @@ struct OrchestraSheet: View {
                 .padding(.top, Design.Space.xxs)
             mainRow
                 .padding(.top, Design.Space.xl)
+            if let id = model.boundModelID, let record = library.record(id: id),
+                toolSupport[id] == false
+            {
+                HStack(spacing: Design.Space.s) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(Design.glyphSmall)
+                        .foregroundStyle(Design.inkFaint)
+                        .frame(width: 20)
+                    Text(
+                        "\(record.displayName) can't call other models — pick a different "
+                            + "main model to make the orchestra play."
+                    )
+                    .font(Design.caption)
+                    .foregroundStyle(Design.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, Design.Space.xs)
+            }
             Rectangle()
                 .fill(Design.line)
                 .frame(height: Design.hairlineWidth)
@@ -93,41 +121,58 @@ struct OrchestraSheet: View {
             title: "Main",
             detail: "Runs the conversation and decides when to call the others."
         ) {
-            InkMenu(
-                title: mainTitle,
-                accessibilityName: "Main model",
-                readyDot: mainRecord?.state == .ready
-            ) {
-                ForEach(mainCandidates) { record in
-                    InkMenuRow(
-                        title: record.displayName,
-                        selected: record.id == model.boundModelID
-                    ) {
-                        model.rebind(to: record)
-                        savedAsDefault = false
+            if noMainIsSelectable {
+                Button("Install a model…", action: onInstallModels)
+                    .buttonStyle(QuietButtonStyle())
+            } else {
+                InkMenu(
+                    title: mainTitle,
+                    accessibilityName: "Main model",
+                    readyDot: mainRecord?.state == .ready
+                ) {
+                    ForEach(mainCandidates) { record in
+                        InkMenuRow(
+                            title: record.displayName,
+                            annotation: toolSupport[record.id] == false
+                                ? "can't use tools" : nil,
+                            selected: record.id == model.boundModelID,
+                            disabled: toolSupport[record.id] == false
+                        ) {
+                            model.rebind(to: record)
+                            savedAsDefault = false
+                        }
                     }
                 }
             }
         }
     }
 
+    private var noMainIsSelectable: Bool {
+        mainCandidates.allSatisfy { toolSupport[$0.id] == false }
+    }
+
     private func roleRow(_ role: Role) -> some View {
         let candidates = candidates(for: role.capability)
         let current = member(for: role.capability)
         return row(glyph: role.glyph, title: role.title, detail: role.detail) {
-            InkMenu(
-                title: current?.displayName ?? "None",
-                accessibilityName: "\(role.title) model"
-            ) {
-                InkMenuRow(title: "None", selected: current == nil) {
-                    assign(role.capability, to: nil)
-                }
-                ForEach(candidates) { record in
-                    InkMenuRow(
-                        title: record.displayName,
-                        selected: record.id == current?.id
-                    ) {
-                        assign(role.capability, to: record)
+            if candidates.isEmpty {
+                Button("Install a model…", action: onInstallModels)
+                    .buttonStyle(QuietButtonStyle())
+            } else {
+                InkMenu(
+                    title: current?.displayName ?? "None",
+                    accessibilityName: "\(role.title) model"
+                ) {
+                    InkMenuRow(title: "None", selected: current == nil) {
+                        assign(role.capability, to: nil)
+                    }
+                    ForEach(candidates) { record in
+                        InkMenuRow(
+                            title: record.displayName,
+                            selected: record.id == current?.id
+                        ) {
+                            assign(role.capability, to: record)
+                        }
                     }
                 }
             }

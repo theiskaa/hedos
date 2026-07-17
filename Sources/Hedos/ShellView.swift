@@ -891,6 +891,10 @@ struct ChatPane: View {
                 },
                 onLaunchConsumed: { [weak shell] in
                     shell?.pendingLaunch = nil
+                },
+                onInstallModels: { [weak shell] in
+                    shell?.mode = .library
+                    shell?.installBrowserOpen = true
                 }
             )
             .id(session.id)

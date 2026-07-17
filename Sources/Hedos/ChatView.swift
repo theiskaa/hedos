@@ -153,6 +153,7 @@ final class ChatViewModel {
     var bench: [String] = []
     var canStartOllama = false
     var boundModelID: String?
+    var boundSupportsTools = false
     var defaultModelID: String?
     var intent: Intent = .text
     var imageModelID: String?
@@ -192,8 +193,26 @@ final class ChatViewModel {
         }
         defaultModelID = await kernel.settings.defaultChatModelID()
         refreshDocumentBudget()
+        await refreshBoundSupportsTools()
         if await kernel.chats.persistenceDegraded() {
             notice = "This conversation isn't being saved right now."
+        }
+    }
+
+    func refreshBoundSupportsTools() async {
+        guard let boundModelID else {
+            boundSupportsTools = false
+            return
+        }
+        let supported = (try? await kernel.supportsTools(modelID: boundModelID)) ?? false
+        if self.boundModelID == boundModelID {
+            boundSupportsTools = supported
+            if !supported, !boundSupportsVision, benchHasEyes,
+                pendingAttachments.contains(where: { $0.kind == .image })
+            {
+                pendingAttachments.removeAll { $0.kind == .image }
+                notice = "This model can't use tools, so attached images were removed."
+            }
         }
     }
 
@@ -415,6 +434,7 @@ final class ChatViewModel {
     }
 
     func adoptBindings(in records: [ModelRecord]) async {
+        await refreshBoundSupportsTools()
         let images = imageModels(in: records)
         if let wanted = imageModelID, let record = images.first(where: { $0.id == wanted }) {
             if form.schema.isEmpty {
@@ -601,15 +621,27 @@ final class ChatViewModel {
         recordsProvider?().first { $0.id == boundModelID }?.capabilities.contains(.see) == true
     }
 
+    var benchHasEyes: Bool {
+        let records = recordsProvider?() ?? []
+        let members = bench.compactMap { id in records.first { $0.id == id } }
+        return BenchTools.member(for: .see, in: members) != nil
+    }
+
     var acceptsImagesNow: Bool {
-        intent == .text && boundSupportsVision
+        intent == .text && (boundSupportsVision || (benchHasEyes && boundSupportsTools))
     }
 
     func rejectImageDrop() {
         if intent != .text, boundSupportsVision {
             notice = "Switch back to chat to attach an image."
+        } else if benchHasEyes, !boundSupportsTools {
+            notice =
+                "This model can't use tools, so the orchestra's Eyes can't help it — "
+                + "pick a tool-capable or vision-capable model."
         } else {
-            notice = "This model can't read images — pick a vision-capable model to attach them."
+            notice =
+                "This model can't read images — pick a vision-capable model, "
+                + "or add Eyes to the orchestra to borrow them."
         }
     }
 
@@ -889,7 +921,7 @@ final class ChatViewModel {
         guard record.id != boundModelID else { return }
         let previous = boundModelID
         boundModelID = record.id
-        if !record.capabilities.contains(.see) {
+        if !record.capabilities.contains(.see), !benchHasEyes {
             pendingAttachments.removeAll { $0.kind == .image }
         }
         let kernel = kernel
@@ -911,6 +943,7 @@ final class ChatViewModel {
             if boundModelID == recordID {
                 documentBudget = budget
             }
+            await refreshBoundSupportsTools()
             let assessment =
                 (try? await kernel.chatContextAssessment(
                     sessionID: sessionID, modelID: recordID)) ?? nil
@@ -1408,6 +1441,7 @@ struct ChatView: View {
     let onOpenArtifacts: ((String) -> Void)?
     let onNewChat: (() -> Void)?
     let onLaunchConsumed: (() -> Void)?
+    let onInstallModels: (() -> Void)?
     @Environment(\.chatShowsStats) private var showsStats
     @Environment(\.conversationWidth) private var conversationWidth
     @Environment(\.transcriptSpacing) private var transcriptSpacing
@@ -1436,7 +1470,8 @@ struct ChatView: View {
         launch: ShellModel.PendingLaunch? = nil,
         onOpenArtifacts: ((String) -> Void)? = nil,
         onNewChat: (() -> Void)? = nil,
-        onLaunchConsumed: (() -> Void)? = nil
+        onLaunchConsumed: (() -> Void)? = nil,
+        onInstallModels: (() -> Void)? = nil
     ) {
         self.session = session
         self.model = model
@@ -1447,6 +1482,7 @@ struct ChatView: View {
         self.onOpenArtifacts = onOpenArtifacts
         self.onNewChat = onNewChat
         self.onLaunchConsumed = onLaunchConsumed
+        self.onInstallModels = onInstallModels
     }
 
     private var boundRecord: ModelRecord? {
@@ -1494,7 +1530,11 @@ struct ChatView: View {
         ) {
             OrchestraSheet(
                 library: library, model: model, kernel: kernel,
-                onClose: { showingOrchestra = false })
+                onClose: { showingOrchestra = false },
+                onInstallModels: {
+                    showingOrchestra = false
+                    onInstallModels?()
+                })
         }
         .task(id: session.id) {
             model.resumeUI()
@@ -1769,7 +1809,7 @@ struct ChatView: View {
     }
 
     private var acceptsImages: Bool {
-        model.intent == .text && boundRecord?.capabilities.contains(.see) == true
+        model.acceptsImagesNow
     }
 
     private func pickAttachment() {
