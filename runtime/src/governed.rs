@@ -15,10 +15,9 @@ use crate::governor::{GateGuard, GpuProducer, MemoryGovernor, RamVerdict, RawUnl
 use crate::sidecar::{SidecarError, SidecarSpec, SidecarSupervisor};
 
 /// A status reporter for a governed load — a wait reason or a loading step. The
-/// same shape as the governor's `OnWait`. It is `Sync` but not `Send`; when these
-/// helpers are wired into a spawned engine loop the bound will need `+ Send`
-/// (and the governor's `OnWait` with it) so the future is `Send`.
-pub type StatusFn<'a> = &'a (dyn Fn(&str) + Sync);
+/// same shape as the governor's `OnWait` (`Send + Sync` so a holder can be
+/// spawned).
+pub type StatusFn<'a> = &'a (dyn Fn(&str) + Send + Sync);
 
 /// Run `body` as a one-shot governed generation: take a generation lease, admit
 /// the model, hold the producer gate for the body, then release the gate and end

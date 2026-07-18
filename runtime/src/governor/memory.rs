@@ -21,7 +21,8 @@ const FALLBACK_TOTAL_MB: i64 = 8192;
 pub type RawUnloader = Arc<dyn Fn() -> BoxFuture<()> + Send + Sync>;
 
 /// A status callback invoked while admission waits to evict a busy model.
-pub type OnWait<'a> = &'a (dyn Fn(&str) + Sync);
+/// `Send + Sync` so a caller holding it across `.await` stays spawnable.
+pub type OnWait<'a> = &'a (dyn Fn(&str) + Send + Sync);
 
 /// An unloader that does nothing — used to reserve a model before its weights
 /// exist.
