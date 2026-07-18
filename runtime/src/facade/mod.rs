@@ -16,16 +16,18 @@ pub use artifact_writer::ProvenanceArtifactWriter;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use kernel::Registry;
 use kernel::artifacts::{Artifact, ArtifactStore};
+use kernel::discovery::{DiscoveryService, DiscoverySummary, StoreScanner};
 use kernel::jobs::{JobHistoryStore, reseeded, seeded};
 use kernel::profiles::{Verdict, assess, merged, prompt_characters};
 use kernel::records::{Capability, JsonValue, ModelRecord, SourceKind};
+use kernel::{Registry, RegistryError};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::adapters::{ChunkStream, JobRunning, JobStream, RuntimeAdapter, RuntimeError};
 use crate::governor::MemoryGovernor;
 use crate::jobs::{JobError, JobScheduler, Runner, RunnerStream};
+use crate::resolution::{ResolutionEngine, ResolutionExplanation};
 
 /// A model window's implicit completion length when the caller sets no
 /// `max_tokens`. A clamp at or above this is only written back when the caller
@@ -68,6 +70,12 @@ pub enum KernelError {
     /// The artifact store failed.
     #[error("{0}")]
     Storage(String),
+}
+
+impl From<RegistryError> for KernelError {
+    fn from(error: RegistryError) -> Self {
+        KernelError::Storage(error.to_string())
+    }
 }
 
 /// A resident model as reported to callers: the governor's accounting of what
@@ -374,6 +382,54 @@ impl Kernel {
                 footprint_mb: resident.footprint_mb,
             })
             .collect()
+    }
+
+    /// A fresh resolution engine over the current adapter set. Built per call
+    /// (cheap: `Arc` clones + the builtin profile table), matching the Swift
+    /// kernel, which also constructed `ResolutionEngine(adapters:)` on demand.
+    fn engine(&self) -> ResolutionEngine {
+        let adapters = self
+            .adapters
+            .iter()
+            .map(|entry| Arc::clone(&entry.adapter))
+            .collect();
+        ResolutionEngine::new(adapters)
+    }
+
+    /// Run `scanners` over the machine, reconcile what they find into the registry,
+    /// then resolve every record to a runtime. Returns the discovery summary; the
+    /// resolved runtimes are written onto the records. This is the discover→serve
+    /// path — a model found on disk comes out with a runtime the dispatch layer
+    /// can pick. (The Swift `Kernel.discover()` assembled the scanners from the
+    /// settings store internally; here the caller passes them, since settings
+    /// ownership lives above the runtime crate.)
+    ///
+    /// Discovery and resolution share one registry-lock hold so the shelf is never
+    /// observed half-reconciled. The scanners' blocking filesystem work runs inside
+    /// that hold; off-loading it (Swift gated scans behind a separate turnstile) is
+    /// deferred — it needs a `Send` bound on `StoreScanner` to cross a task boundary.
+    pub async fn discover(
+        &self,
+        scanners: Vec<Box<dyn StoreScanner>>,
+    ) -> Result<DiscoverySummary, KernelError> {
+        let mut registry = self.registry.lock().await;
+        let summary = DiscoveryService::new(scanners).discover(&mut registry)?;
+        self.engine().resolve_all(&mut registry, None)?;
+        Ok(summary)
+    }
+
+    /// Re-run the resolution auction over the whole registry, writing each record's
+    /// winning runtime. Returns the records that changed.
+    pub async fn resolve(&self) -> Result<Vec<ModelRecord>, KernelError> {
+        let mut registry = self.registry.lock().await;
+        Ok(self.engine().resolve_all(&mut registry, None)?)
+    }
+
+    /// Explain how every registered model would resolve, without changing
+    /// anything — the identification and each adapter's bid, winner-first.
+    pub async fn explain(&self) -> Vec<ResolutionExplanation> {
+        let registry = self.registry.lock().await;
+        self.engine().explain_all(&registry)
     }
 }
 
