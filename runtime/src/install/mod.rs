@@ -7,5 +7,6 @@ pub mod transport;
 
 pub use hf_hub::{HFHubAPI, HFModelInfo};
 pub use transport::{
-    InstallRequest, InstallResponse, InstallTransport, ReqwestTransport, TransportFuture,
+    InstallRequest, InstallResponse, InstallTransport, ReqwestTransport, StreamFuture, StreamStart,
+    TransportFuture,
 };
