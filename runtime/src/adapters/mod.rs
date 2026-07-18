@@ -10,8 +10,10 @@
 //! [`RuntimeAdapter::can_serve`].
 
 mod ollama;
+mod openai;
 
 pub use ollama::OllamaAdapter;
+pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};
 
 use std::collections::HashSet;
 
