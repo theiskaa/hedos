@@ -4,6 +4,7 @@
 pub mod adapters;
 pub mod audio;
 pub mod environment;
+pub mod facade;
 pub mod frame_codec;
 pub mod governed;
 pub mod governor;
@@ -11,3 +12,6 @@ pub mod jobs;
 pub mod process;
 pub mod python_runtime;
 pub mod sidecar;
+mod time;
+
+pub use facade::Kernel;

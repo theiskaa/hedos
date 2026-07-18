@@ -9,6 +9,7 @@ use kernel::records::{Capability, JsonValue};
 use tokio::sync::{Notify, mpsc};
 
 use crate::governor::{RamVerdict, lock};
+use crate::time::now_millis;
 
 use super::{ArtifactWriting, ImmediateAdmission, JobAdmission, JobError, OnWait, Runner};
 
@@ -525,13 +526,6 @@ fn replay(job: &Job) -> Vec<JobEvent> {
         events.push(JobEvent::Preview(preview.clone()));
     }
     events
-}
-
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn new_job_id() -> String {
