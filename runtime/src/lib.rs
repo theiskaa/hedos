@@ -4,3 +4,4 @@
 pub mod audio;
 pub mod frame_codec;
 pub mod governor;
+pub mod process;
