@@ -94,3 +94,24 @@ pub fn ollama_vision_profile() -> GgufArchitectureProfile {
         execution: ExecutionMode::Stream,
     }
 }
+
+/// The profile for an Ollama model: vision when it ships a projector, otherwise
+/// the GGUF architecture's profile (read from `weight_path`) if recognized, else
+/// the plain chat default.
+///
+/// `weight_path` must be absolute — unlike the Swift original this does not
+/// expand a leading `~` (the Ollama scanner always passes a resolved blob path;
+/// a `~`-relative path would fail to open and fall through to the chat default).
+pub fn ollama_profile(has_projector: bool, weight_path: Option<&str>) -> GgufArchitectureProfile {
+    if has_projector {
+        return ollama_vision_profile();
+    }
+    if let Some(path) = weight_path
+        && let Some(architecture) =
+            crate::resolution::gguf::gguf_general_architecture(std::path::Path::new(path))
+        && let Some(profile) = gguf_architecture_profile(&architecture)
+    {
+        return profile;
+    }
+    ollama_chat_profile()
+}

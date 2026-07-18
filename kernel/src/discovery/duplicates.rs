@@ -84,6 +84,14 @@ fn file_size(path: &Path) -> std::io::Result<i64> {
     Ok(std::fs::metadata(path)?.len() as i64)
 }
 
+/// A content fingerprint for the file at `path`: the lowercase-hex SHA-256 of its
+/// first and last megabyte (or the whole file, if small). `None` if unreadable.
+/// Two files with the same fingerprint and size are treated as the same weights.
+pub fn content_fingerprint(path: &Path) -> Option<String> {
+    let size = std::fs::metadata(path).ok()?.len();
+    fingerprint(path, size).map(|digest| crate::util::hex_encode(&digest))
+}
+
 fn fingerprint(path: &Path, size: u64) -> Option<[u8; 32]> {
     let mut file = File::open(path).ok()?;
     let mut hasher = Sha256::new();
