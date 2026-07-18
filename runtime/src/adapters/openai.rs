@@ -22,8 +22,9 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_IN_FLIGHT_LIMIT: usize = 4;
 
-/// The request params an OpenAI endpoint honors (forwarded verbatim).
-const OPTION_KEYS: [&str; 8] = [
+/// The request params an OpenAI endpoint honors (forwarded verbatim). Shared with
+/// the `llama-server` adapter, which proxies through the same request body.
+pub(crate) const OPTION_KEYS: [&str; 8] = [
     "temperature",
     "top_p",
     "max_tokens",
@@ -236,7 +237,10 @@ impl RuntimeAdapter for OpenAiEndpointAdapter {
     }
 }
 
-async fn stream_completions(
+/// Stream an OpenAI-compatible `/v1/chat/completions` response, parsing SSE lines
+/// into capability chunks. Shared with the local `llama-server` adapter, which
+/// speaks the same wire protocol.
+pub(crate) async fn stream_completions(
     client: &reqwest::Client,
     base: &str,
     key: Option<&str>,
@@ -365,7 +369,7 @@ fn normalized_base(raw: &str) -> String {
 /// Build the `/v1/chat/completions` request body: a streaming request carrying the
 /// model, the wire-shaped messages (or a prompt), any tools, and the honored
 /// sampling options.
-fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError> {
+pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError> {
     let JsonValue::Object(object) = payload else {
         return Err(RuntimeError::Failed(
             "chat payload must be an object".to_owned(),
