@@ -4,6 +4,7 @@
 
 pub mod capabilities;
 pub mod discovery;
+pub mod jobs;
 pub mod persistence;
 pub mod profiles;
 pub mod records;

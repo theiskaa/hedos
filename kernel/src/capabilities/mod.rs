@@ -2,9 +2,11 @@
 //! visible text, and detecting stop sequences. Both hold back a partial-tag
 //! suffix so a delimiter split across chunk boundaries is still recognized.
 
+pub mod chunk;
 pub mod stop_matcher;
 pub mod think_splitter;
 
+pub use chunk::{AudioFrame, CapabilityChunk, GenerationStats};
 pub use stop_matcher::{StopMatcher, stop_strings};
 pub use think_splitter::{Piece, TagPair, ThinkSplitter, has_visible_tags};
 
