@@ -9,6 +9,7 @@ pub mod frame_codec;
 pub mod governed;
 pub mod governor;
 pub mod jobs;
+pub mod manifests;
 pub mod process;
 pub mod python_runtime;
 pub mod resolution;
