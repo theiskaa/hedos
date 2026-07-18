@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::records::{Capability, ExecutionMode, Modality};
 
-/// A recognized on-disk model format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// A recognized model format — the on-disk weight formats plus the logical
+/// sources (a diffusers pipeline directory, an Ollama store entry, a built-in or
+/// remote-endpoint model), and `Unknown` for anything unrecognized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelFormat {
     /// A GGUF weight file (llama.cpp).
@@ -16,6 +18,16 @@ pub enum ModelFormat {
     Safetensors,
     /// An MLX-format safetensors weight directory.
     MlxSafetensors,
+    /// A diffusers pipeline directory (a `model_index.json`).
+    Diffusers,
+    /// An entry in a local Ollama store.
+    OllamaStore,
+    /// A built-in (platform-provided) model.
+    Builtin,
+    /// A remote inference endpoint.
+    Endpoint,
+    /// An unrecognized format.
+    Unknown,
 }
 
 /// The modality, capabilities, and execution shape implied by a GGUF

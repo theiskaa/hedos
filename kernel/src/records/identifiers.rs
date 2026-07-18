@@ -176,33 +176,33 @@ pub struct BidPreference;
 
 impl BidPreference {
     /// llama.cpp GGUF text runtime.
-    pub const LLAMA_CPP: i32 = 10;
+    pub const LLAMA_CPP: i64 = 10;
     /// whisper.cpp transcription runtime.
-    pub const WHISPER_CPP: i32 = 10;
+    pub const WHISPER_CPP: i64 = 10;
     /// OpenAI-compatible remote endpoint.
-    pub const ENDPOINT: i32 = 10;
+    pub const ENDPOINT: i64 = 10;
     /// mlx-vlm vision-language sidecar.
-    pub const MLX_VLM: i32 = 14;
+    pub const MLX_VLM: i64 = 14;
     /// in-process MLX-Swift text runtime.
-    pub const MLX_SWIFT: i32 = 15;
+    pub const MLX_SWIFT: i64 = 15;
     /// Apple Foundation Models.
-    pub const APPLE_FOUNDATION: i32 = 15;
+    pub const APPLE_FOUNDATION: i64 = 15;
     /// Ollama daemon.
-    pub const OLLAMA: i32 = 20;
+    pub const OLLAMA: i64 = 20;
     /// mflux FLUX image runtime.
-    pub const MFLUX: i32 = 25;
+    pub const MFLUX: i64 = 25;
     /// diffusers image runtime.
-    pub const DIFFUSERS: i32 = 26;
+    pub const DIFFUSERS: i64 = 26;
     /// ComfyUI daemon.
-    pub const COMFY_UI: i32 = 27;
+    pub const COMFY_UI: i64 = 27;
     /// Automatic1111 daemon.
-    pub const A1111: i32 = 28;
+    pub const A1111: i64 = 28;
     /// mlx-audio speech runtime.
-    pub const MLX_AUDIO: i32 = 30;
+    pub const MLX_AUDIO: i64 = 30;
     /// embeddings sidecar.
-    pub const EMBEDDINGS: i32 = 32;
+    pub const EMBEDDINGS: i64 = 32;
     /// mlx-lm text sidecar.
-    pub const MLX_LM: i32 = 40;
+    pub const MLX_LM: i64 = 40;
     /// Manifest-declared runtime (lowest priority).
-    pub const MANIFEST: i32 = 100;
+    pub const MANIFEST: i64 = 100;
 }

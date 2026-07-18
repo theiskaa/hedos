@@ -1,13 +1,14 @@
 //! Modality/capability hints derived from a Hugging Face model's `config.json`:
 //! a first guess (architecture list, a vision block, or a few speech config keys)
-//! at what a downloaded model can do, before full identification. The diffusers
-//! `model_index.json` path (`from_model_index`) is deferred with the pipeline
-//! registry it needs.
+//! at what a downloaded model can do, before full identification. A diffusers
+//! `model_index.json` is hinted through the pipeline-family registry
+//! ([`from_model_index`]).
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::records::{Capability, ExecutionMode, JsonValue, Modality};
+use crate::resolution::pipelines::{PipelineFamilyRegistry, diffusers_pipeline_class};
 
 /// A best-effort guess at a model's shape from its config metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +102,23 @@ pub fn gguf_hint() -> Hint {
 /// The default hint for a whisper `.bin` (transcription).
 pub fn whisper_bin_hint() -> Hint {
     audio_hint()
+}
+
+/// The hint for a diffusers `model_index.json`: its pipeline family's modality and
+/// capabilities as a job. An unknown or absent `_class_name` yields an empty job
+/// hint (still a job — a diffusers bundle is never a streaming model).
+pub fn from_model_index(path: &Path) -> Hint {
+    if let Some(class) = diffusers_pipeline_class(path)
+        && let Some(family) = PipelineFamilyRegistry::shared().family(&class)
+    {
+        return Hint {
+            modality: Some(family.modality.clone()),
+            capabilities: family.capabilities.clone(),
+            execution: ExecutionMode::Job,
+            context_length: None,
+        };
+    }
+    Hint::unknown(ExecutionMode::Job)
 }
 
 /// Architecture-name substrings that mark a vision-language model when a

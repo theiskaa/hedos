@@ -145,8 +145,7 @@ fn folder_bundle(dir: &Path) -> Option<DiscoveredModel> {
     let mut hint = modality_hints::from_config_json(&dir.join("config.json"))
         .unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync));
     if names.contains("model_index.json") {
-        // Diffusers pipeline identification is deferred → a generic job.
-        hint = Hint::unknown(ExecutionMode::Job);
+        hint = modality_hints::from_model_index(&dir.join("model_index.json"));
     }
 
     let total: i64 = entries.iter().map(|(_, size)| size).sum();

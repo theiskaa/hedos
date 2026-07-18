@@ -2,7 +2,7 @@
 
 mod support;
 
-use kernel::discovery::modality_hints::{from_config, from_config_json};
+use kernel::discovery::modality_hints::{from_config, from_config_json, from_model_index};
 use kernel::records::{Capability, ExecutionMode, JsonValue, Modality};
 use support::TempDir;
 
@@ -202,4 +202,44 @@ fn from_config_json_reads_and_parses_a_file() {
     let bad = dir.join("bad.json");
     std::fs::write(&bad, b"{ not json").unwrap();
     assert_eq!(from_config_json(&bad), None);
+}
+
+#[test]
+fn from_model_index_maps_a_known_class_to_an_image_job() {
+    let dir = TempDir::new();
+    let path = dir.join("model_index.json");
+    std::fs::write(&path, br#"{"_class_name":"FluxPipeline"}"#).unwrap();
+    let hint = from_model_index(&path);
+    assert_eq!(hint.modality, Some(Modality::image()));
+    assert!(hint.capabilities.contains(&Capability::image()));
+    assert_eq!(hint.execution, ExecutionMode::Job);
+}
+
+#[test]
+fn from_model_index_maps_a_video_class_to_a_video_job() {
+    let dir = TempDir::new();
+    let path = dir.join("model_index.json");
+    std::fs::write(&path, br#"{"_class_name":"CogVideoXPipeline"}"#).unwrap();
+    let hint = from_model_index(&path);
+    assert_eq!(hint.modality, Some(Modality::video()));
+    // Video/edit families carry no capabilities, only a modality.
+    assert!(hint.capabilities.is_empty());
+    assert_eq!(hint.execution, ExecutionMode::Job);
+}
+
+#[test]
+fn from_model_index_is_a_bare_job_for_an_unknown_or_absent_class() {
+    let dir = TempDir::new();
+    // Unknown class → empty job hint (still a job).
+    let unknown = dir.join("model_index.json");
+    std::fs::write(&unknown, br#"{"_class_name":"MysteryPipeline"}"#).unwrap();
+    let hint = from_model_index(&unknown);
+    assert_eq!(hint.modality, None);
+    assert!(hint.capabilities.is_empty());
+    assert_eq!(hint.execution, ExecutionMode::Job);
+
+    // A missing/unparseable file is also a bare job, not a panic.
+    let hint = from_model_index(&dir.join("nope.json"));
+    assert_eq!(hint.modality, None);
+    assert_eq!(hint.execution, ExecutionMode::Job);
 }

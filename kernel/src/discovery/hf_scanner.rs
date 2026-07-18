@@ -196,9 +196,7 @@ fn snapshot_file_names(snapshot: &Path) -> BTreeSet<String> {
 /// sentence-transformers and missing-tokenizer refinements.
 fn resolve_hint(snapshot: &Path, names: &BTreeSet<String>, diagnostics: &mut Vec<String>) -> Hint {
     let mut hint = if names.contains("model_index.json") {
-        // Diffusers pipeline identification is deferred; a model_index model is a
-        // job of not-yet-known shape.
-        Hint::unknown(ExecutionMode::Job)
+        modality_hints::from_model_index(&snapshot.join("model_index.json"))
     } else if names.contains("config.json") {
         modality_hints::from_config_json(&snapshot.join("config.json"))
             .unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync))
