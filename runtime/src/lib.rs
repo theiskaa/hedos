@@ -13,6 +13,7 @@ pub mod jobs;
 pub mod manifests;
 pub mod process;
 pub mod python_runtime;
+pub mod removal;
 pub mod resolution;
 pub mod settings;
 pub mod sidecar;

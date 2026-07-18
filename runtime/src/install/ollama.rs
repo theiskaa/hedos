@@ -313,7 +313,7 @@ async fn fold_line(
     Ok(LineOutcome::Continue)
 }
 
-async fn daemon_reachable(client: &reqwest::Client, base_url: &str) -> bool {
+pub(crate) async fn daemon_reachable(client: &reqwest::Client, base_url: &str) -> bool {
     let url = format!("{base_url}/api/tags");
     match tokio::time::timeout(PROBE_TIMEOUT, client.get(&url).send()).await {
         Ok(Ok(response)) => response.status().as_u16() == 200,
@@ -323,7 +323,7 @@ async fn daemon_reachable(client: &reqwest::Client, base_url: &str) -> bool {
 
 /// Spawn `ollama serve` and wait (up to ~50s: 20 polls, each a 500 ms sleep plus a
 /// reachability probe capped at [`PROBE_TIMEOUT`]) for it to answer.
-async fn start_daemon(
+pub(crate) async fn start_daemon(
     client: &reqwest::Client,
     base_url: &str,
     environment: &HashMap<String, String>,
@@ -367,7 +367,7 @@ async fn start_daemon(
 }
 
 /// Find an `ollama` executable in the well-known locations, then on `PATH`.
-fn daemon_binary(environment: &HashMap<String, String>) -> Option<PathBuf> {
+pub(crate) fn daemon_binary(environment: &HashMap<String, String>) -> Option<PathBuf> {
     let home = home_dir(environment);
     let mut candidates = vec![
         PathBuf::from("/usr/local/bin/ollama"),
@@ -438,7 +438,7 @@ fn display_models_path(environment: &HashMap<String, String>) -> String {
 }
 
 /// Turn an error body/status into a user-facing message.
-fn error_message(body: &[u8], code: i64) -> String {
+pub(crate) fn error_message(body: &[u8], code: i64) -> String {
     #[derive(Deserialize)]
     struct ErrorBody {
         error: Option<String>,

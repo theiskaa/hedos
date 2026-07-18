@@ -12,6 +12,7 @@ pub mod persistence;
 pub mod profiles;
 pub mod records;
 pub mod registry;
+pub mod removal;
 pub mod resolution;
 
 mod util;
