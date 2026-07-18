@@ -169,6 +169,17 @@ impl HFHubAPI {
         url.to_string()
     }
 
+    /// The authorized download request for `path` from `repo` at `revision` — the
+    /// resolve URL plus the bearer token, when set. The download provider streams it.
+    pub fn resolve_request(&self, repo: &str, revision: &str, path: &str) -> InstallRequest {
+        self.authorized(InstallRequest::get(self.resolve_url(repo, revision, path)))
+    }
+
+    /// Whether a token is attached (a gated repo needs one).
+    pub fn has_token(&self) -> bool {
+        self.token.is_some()
+    }
+
     fn parse_url(&self, raw: &str) -> Result<reqwest::Url, InstallError> {
         reqwest::Url::parse(raw)
             .map_err(|error| InstallError::TransferFailed(format!("bad url {raw}: {error}")))
