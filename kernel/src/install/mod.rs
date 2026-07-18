@@ -3,8 +3,11 @@
 //! and the install service build on this foundation.
 
 pub mod error;
+pub mod event;
+pub mod ollama_pull;
 pub mod provider;
 pub mod reference;
 
 pub use error::InstallError;
+pub use event::{InstallEvent, InstallProgress, InstallStreamEvent};
 pub use provider::{InstallAvailability, InstallProviderId};
