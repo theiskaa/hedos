@@ -2,6 +2,7 @@
 //! and manages local models. Pure logic and the filesystem — no async runtime,
 //! no UI. Higher layers (gateway, cli) are thin shells over this crate.
 
+pub mod capabilities;
 pub mod discovery;
 pub mod persistence;
 pub mod profiles;
