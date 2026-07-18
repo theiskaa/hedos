@@ -27,7 +27,7 @@ impl JobState {
 }
 
 /// A job's progress: a `[0, 1]` fraction plus the raw step counts it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct JobProgress {
     pub fraction: f64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -43,16 +43,6 @@ impl JobProgress {
             fraction,
             step,
             total_steps,
-        }
-    }
-}
-
-impl Default for JobProgress {
-    fn default() -> Self {
-        Self {
-            fraction: 0.0,
-            step: None,
-            total_steps: None,
         }
     }
 }
