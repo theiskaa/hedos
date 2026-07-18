@@ -8,4 +8,5 @@ pub mod governed;
 pub mod governor;
 pub mod jobs;
 pub mod process;
+pub mod python_runtime;
 pub mod sidecar;
