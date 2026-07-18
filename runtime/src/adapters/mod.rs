@@ -8,6 +8,10 @@
 //! model at identification time) lands with the resolution unit; the invoke path
 //! selects by [`RuntimeAdapter::can_serve`].
 
+mod ollama;
+
+pub use ollama::OllamaAdapter;
+
 use std::collections::HashSet;
 
 use kernel::capabilities::CapabilityChunk;
