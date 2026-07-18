@@ -3,6 +3,7 @@
 
 pub mod configuration;
 pub mod context_budget;
+pub mod fit;
 pub mod profile;
 
 pub use configuration::{dropping_vanished_param_values, merged, normalized_param_values};
@@ -10,4 +11,5 @@ pub use context_budget::{
     COMPLETION_FLOOR, Verdict, assess, effective_window, estimated_tokens, prompt_characters,
     stored_context_length,
 };
+pub use fit::{FitAssessment, FitVerdict};
 pub use profile::{ModelProfile, ProfileRegistry, context_length_spec};
