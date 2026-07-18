@@ -27,15 +27,26 @@ pub struct HFSibling {
     pub rfilename: String,
     /// The file's size in bytes, if the listing reported it.
     pub bytes: Option<i64>,
+    /// The LFS object's SHA-256 (`lfs.oid`), when the file is stored in LFS. The
+    /// download path uses it as the content-addressed blob name and to verify the
+    /// bytes; plain (non-LFS) files don't report one.
+    pub sha256: Option<String>,
 }
 
 impl HFSibling {
-    /// A sibling for `rfilename`.
+    /// A sibling for `rfilename` with no known LFS hash.
     pub fn new(rfilename: impl Into<String>, bytes: Option<i64>) -> Self {
         Self {
             rfilename: rfilename.into(),
             bytes,
+            sha256: None,
         }
+    }
+
+    /// This sibling with its LFS SHA-256 set.
+    pub fn with_sha256(mut self, sha256: Option<String>) -> Self {
+        self.sha256 = sha256;
+        self
     }
 
     /// Whether this file is a model weight (by extension).

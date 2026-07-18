@@ -130,9 +130,14 @@ impl HFHubAPI {
             .unwrap_or_default()
             .into_iter()
             .map(|sibling| {
-                // The listed size, else the LFS pointer's size (Swift `size ?? lfs?.size`).
-                let bytes = sibling.size.or(sibling.lfs.and_then(|lfs| lfs.size));
-                HFSibling::new(sibling.rfilename, bytes)
+                // The listed size, else the LFS pointer's size (Swift `size ?? lfs?.size`);
+                // the LFS oid is the content SHA-256 the download path keys blobs on.
+                let (size, oid) = sibling
+                    .lfs
+                    .map(|lfs| (lfs.size, lfs.oid))
+                    .unwrap_or((None, None));
+                let bytes = sibling.size.or(size);
+                HFSibling::new(sibling.rfilename, bytes).with_sha256(oid)
             })
             .collect();
         Ok(HFModelInfo {
@@ -204,6 +209,7 @@ struct RawSibling {
 #[derive(Deserialize)]
 struct RawLfs {
     size: Option<i64>,
+    oid: Option<String>,
 }
 
 /// The hub reports `gated` as either a bool or a mode string (`"auto"`/`"manual"`/

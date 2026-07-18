@@ -180,6 +180,20 @@ fn resolve_url_percent_encodes_special_characters() {
 }
 
 #[tokio::test]
+async fn an_lfs_oid_becomes_the_sibling_sha256() {
+    let body = r#"{"siblings":[
+        {"rfilename":"model.safetensors","lfs":{"size":900,"oid":"deadbeef"}},
+        {"rfilename":"config.json","size":10}
+    ]}"#;
+    let (transport, _) = MockTransport::new(200, body);
+    let info = hub(transport).model_info("org/m").await.unwrap();
+    // The LFS file carries its content hash; the plain file has none.
+    assert_eq!(info.siblings[0].sha256, Some("deadbeef".to_owned()));
+    assert_eq!(info.siblings[0].bytes, Some(900));
+    assert_eq!(info.siblings[1].sha256, None);
+}
+
+#[tokio::test]
 async fn a_size_wins_over_an_lfs_size() {
     let body = r#"{"siblings":[{"rfilename":"w.bin","size":100,"lfs":{"size":999}}]}"#;
     let (transport, _) = MockTransport::new(200, body);
