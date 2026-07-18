@@ -5,10 +5,12 @@
 pub mod chunk;
 pub mod stop_matcher;
 pub mod think_splitter;
+pub mod tools;
 
 pub use chunk::{AudioFrame, CapabilityChunk, GenerationStats};
 pub use stop_matcher::{StopMatcher, stop_strings};
 pub use think_splitter::{Piece, TagPair, ThinkSplitter, has_visible_tags};
+pub use tools::{ToolCall, ToolSpec};
 
 /// The byte index at which the last `chars_from_end` characters of `text` begin.
 /// Defined for `chars_from_end >= 1`; returns 0 when `text` has fewer characters

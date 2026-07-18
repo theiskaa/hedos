@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::tools::ToolCall;
+
 /// A chunk of a raw binary audio payload plus the sample rate it was produced
 /// at (captured from the sidecar's ready handshake).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,8 +43,7 @@ pub struct GenerationStats {
 }
 
 /// One item in a capability stream (chat, vision, speech, transcription,
-/// embeddings). The sidecar's tool-call vocabulary is not yet ported, so there
-/// is no tool-call variant here.
+/// embeddings).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CapabilityChunk {
     /// Visible generated text.
@@ -59,6 +60,8 @@ pub enum CapabilityChunk {
     Audio(AudioFrame),
     /// An embedding vector.
     Vector(Vec<f64>),
+    /// A tool call the model emitted.
+    ToolCall(ToolCall),
     /// A free-text status notice.
     Status(String),
     /// The terminal marker, carrying stats when the runtime reported any.
