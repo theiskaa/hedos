@@ -6,3 +6,4 @@ pub mod environment;
 pub mod frame_codec;
 pub mod governor;
 pub mod process;
+pub mod sidecar;
