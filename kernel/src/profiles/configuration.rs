@@ -5,19 +5,21 @@ use std::collections::BTreeMap;
 
 use crate::records::{Capability, JsonValue, ModelRecord};
 
-/// The record's parameter values, filtered to those whose key still appears in
-/// the current parameter schema. Values for parameters the model no longer
-/// exposes are dropped.
-///
-/// Full range-clamping / type-coercion (the Swift `ParamForm` normalization) is
-/// not applied yet; this keeps membership only.
+/// The record's parameter values, each run through its spec: a value is kept
+/// only when its key still has a spec in the current schema AND the value
+/// coerces/clamps to that spec (see `ParamSpec::normalized`). Values for
+/// vanished parameters and wrong-typed / unnormalizable values are dropped, so
+/// nothing out-of-range or off-type can reach a runtime.
 pub fn normalized_param_values(record: &ModelRecord) -> BTreeMap<String, JsonValue> {
-    record
-        .param_values
-        .iter()
-        .filter(|(key, _)| record.params.iter().any(|spec| &spec.key == *key))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect()
+    let mut kept = BTreeMap::new();
+    for (key, value) in &record.param_values {
+        if let Some(spec) = record.params.iter().find(|spec| &spec.key == key)
+            && let Some(normalized) = spec.normalized(value)
+        {
+            kept.insert(key.clone(), normalized);
+        }
+    }
+    kept
 }
 
 /// A copy of `record` with parameter values for vanished parameters removed.

@@ -136,6 +136,23 @@ fn normalized_param_values_drops_vanished_keys() {
 }
 
 #[test]
+fn normalized_param_values_drops_a_wrong_typed_value() {
+    let mut record = chat_record_on(RuntimeId::llama_cpp());
+    record.params.push(ParamSpec {
+        key: "mode".into(),
+        param_type: ParamType::Enum,
+        default_value: None,
+        range: None,
+        values: Some(vec!["fast".into(), "slow".into()]),
+    });
+    // A spec'd key whose saved value can't be normalized (an int for an enum, an
+    // off-list string) is dropped, not passed through to the runtime.
+    record.param_values.insert("mode".into(), JsonValue::Int(1));
+
+    assert!(!normalized_param_values(&record).contains_key("mode"));
+}
+
+#[test]
 fn stored_context_length_reads_a_recognized_value() {
     let mut record = chat_record_on(RuntimeId::llama_cpp());
     record.params.push(ParamSpec {
