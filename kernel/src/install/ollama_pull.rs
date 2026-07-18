@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::install::bytes::saturating_sum;
 use crate::install::error::InstallError;
 use crate::install::event::InstallProgress;
 
@@ -80,13 +81,6 @@ impl Aggregator {
             current_file: None,
         }
     }
-}
-
-// The non-negative values summed with saturation (never overflows past i64::MAX).
-fn saturating_sum(values: impl Iterator<Item = i64>) -> i64 {
-    values.fold(0i64, |accumulated, value| {
-        accumulated.saturating_add(value.max(0))
-    })
 }
 
 #[derive(Deserialize)]
