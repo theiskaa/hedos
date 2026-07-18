@@ -3,6 +3,7 @@
 //! no UI. Higher layers (gateway, cli) are thin shells over this crate.
 
 pub mod persistence;
+pub mod profiles;
 pub mod records;
 pub mod registry;
 
