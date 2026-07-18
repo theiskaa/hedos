@@ -4,5 +4,8 @@
 
 pub mod persistence;
 pub mod records;
+pub mod registry;
 
 mod util;
+
+pub use registry::{Registry, RegistryError};
