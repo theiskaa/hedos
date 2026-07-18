@@ -6,6 +6,7 @@ pub mod artifacts;
 pub mod capabilities;
 pub mod discovery;
 pub mod jobs;
+pub mod manifests;
 pub mod persistence;
 pub mod profiles;
 pub mod records;
