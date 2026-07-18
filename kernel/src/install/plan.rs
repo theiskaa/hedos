@@ -51,6 +51,30 @@ pub struct InstallPlan {
     pub requires_auth: bool,
 }
 
+/// A search result: a model the user could install, with its popularity signals.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct InstallSearchHit {
+    /// The provider that would install it.
+    pub provider: InstallProviderId,
+    /// The reference (repo or tag).
+    pub reference: String,
+    /// The name to show (the last path segment, usually).
+    pub name: String,
+    /// The download count, if reported.
+    pub downloads: Option<i64>,
+    /// The like count, if reported.
+    pub likes: Option<i64>,
+    /// When it was last updated, epoch milliseconds (Swift `Date`).
+    pub updated_at: Option<i64>,
+}
+
+impl InstallSearchHit {
+    /// A stable id: `provider|reference`.
+    pub fn id(&self) -> String {
+        format!("{}|{}", self.provider.as_str(), self.reference)
+    }
+}
+
 impl InstallPlan {
     /// A plan with the required fields; the optional fields default to empty.
     pub fn new(

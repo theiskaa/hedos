@@ -8,6 +8,7 @@ pub mod facade;
 pub mod frame_codec;
 pub mod governed;
 pub mod governor;
+pub mod install;
 pub mod jobs;
 pub mod manifests;
 pub mod process;

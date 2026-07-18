@@ -14,5 +14,5 @@ pub mod reference;
 pub use error::InstallError;
 pub use event::{InstallEvent, InstallProgress, InstallStreamEvent};
 pub use file_selection::{HFSibling, file_extension, is_weight_path, select};
-pub use plan::{InstallPlan, InstallPlanFile};
+pub use plan::{InstallPlan, InstallPlanFile, InstallSearchHit};
 pub use provider::{InstallAvailability, InstallProviderId};
