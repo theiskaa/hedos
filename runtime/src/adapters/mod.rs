@@ -9,10 +9,12 @@
 //! resolution unit ([`crate::resolution`]). The invoke path selects an adapter by
 //! [`RuntimeAdapter::can_serve`].
 
+mod llama_pool;
 mod llama_server;
 mod ollama;
 mod openai;
 
+pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
 pub use ollama::OllamaAdapter;
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};

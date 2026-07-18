@@ -176,6 +176,16 @@ fn wire_model_name(record: &ModelRecord) -> String {
         .unwrap_or_else(|| record.name.clone())
 }
 
+/// The GGUF path a `llama-server` is launched with: the primary weight file when
+/// one dominates, else the source path. Returned as stored (no `~` expansion —
+/// discovery passes absolute paths).
+pub(crate) fn model_gguf_path(record: &ModelRecord) -> &str {
+    record
+        .primary_weight_path
+        .as_deref()
+        .unwrap_or(&record.source.path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
