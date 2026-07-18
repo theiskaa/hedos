@@ -4,12 +4,14 @@
 
 pub mod hf_cache;
 pub mod hf_hub;
+pub mod huggingface;
 pub mod ollama;
 pub mod provider;
 pub mod transport;
 
 pub use hf_cache::{HFCacheLayout, HFCacheWriter};
 pub use hf_hub::{HFHubAPI, HFModelInfo};
+pub use huggingface::HuggingFaceInstallProvider;
 pub use ollama::OllamaInstallProvider;
 pub use provider::{InstallEventStream, InstallFuture, InstallProvider, InstallProviderStatus};
 pub use transport::{

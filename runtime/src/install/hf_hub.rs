@@ -26,6 +26,7 @@ pub struct HFModelInfo {
 }
 
 /// A client for the Hugging Face hub, over an injectable transport.
+#[derive(Clone)]
 pub struct HFHubAPI {
     base_url: String,
     transport: Arc<dyn InstallTransport>,

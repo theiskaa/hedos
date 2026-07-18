@@ -111,6 +111,26 @@ impl HFCacheWriter {
         format!("tmp-{}", hex(&hasher.finalize()))
     }
 
+    /// Bytes of `selection` already on disk at `revision`: a completed
+    /// content-addressed blob counts its full size; otherwise the saved
+    /// `.incomplete`'s current length. Drives a plan's remaining-bytes estimate.
+    pub fn present_bytes(&self, selection: &[HFSibling], revision: &str) -> i64 {
+        selection.iter().fold(0i64, |present, sibling| {
+            if let Some(sha) = &sibling.sha256
+                && self.layout.blob_url(sha).exists()
+            {
+                return present.saturating_add(sibling.bytes.unwrap_or(0).max(0));
+            }
+            let pending = self
+                .layout
+                .incomplete_url(&Self::pending_blob_name(sibling, revision));
+            let size = fs::metadata(&pending)
+                .map(|meta| meta.len() as i64)
+                .unwrap_or(0);
+            present.saturating_add(size.max(0))
+        })
+    }
+
     /// Create the `blobs`/`snapshots/<rev>`/`refs` skeleton, write `refs/main` if
     /// absent, and lay down a placeholder `.incomplete` for the first weight so an
     /// interrupted install is recognizably in-progress.
@@ -143,7 +163,7 @@ impl HFCacheWriter {
         sibling: &HFSibling,
         revision: &str,
         request: InstallRequest,
-        on_bytes: &mut dyn FnMut(i64),
+        on_bytes: &mut (dyn FnMut(i64) + Send),
     ) -> Result<(), InstallError> {
         let pending_name = Self::pending_blob_name(sibling, revision);
 
