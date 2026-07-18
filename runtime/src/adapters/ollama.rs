@@ -5,7 +5,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use kernel::capabilities::{CapabilityChunk, GenerationStats, ToolCall};
-use kernel::records::{Capability, JsonValue, ModelRecord, RuntimeId, SourceKind};
+use kernel::records::{
+    BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId, SourceKind,
+};
+use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 use tokio::sync::mpsc;
 
 use super::{ChunkStream, RuntimeAdapter, RuntimeError};
@@ -119,6 +122,13 @@ impl RuntimeAdapter for OllamaAdapter {
             Some(runtime_id) => *runtime_id == self.id,
             None => record.source.kind == SourceKind::ollama(),
         }
+    }
+
+    fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
+        if identified.format != ModelFormat::OllamaStore {
+            return None;
+        }
+        Some(RuntimeBid::new(RunTier::Native, BidPreference::OLLAMA))
     }
 
     fn invoke(

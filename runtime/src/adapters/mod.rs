@@ -4,9 +4,10 @@
 //! `CapabilityChunk` (or `JobRuntimeEvent`) stream, so the layers above don't
 //! care what runs underneath.
 //!
-//! The `bid`/auction side of the Swift protocol (which picks an adapter for a
-//! model at identification time) lands with the resolution unit; the invoke path
-//! selects by [`RuntimeAdapter::can_serve`].
+//! Each adapter offers a [`RuntimeAdapter::bid`] for a model at identification
+//! time; the ranking engine that runs the auction over those bids lives in the
+//! resolution unit ([`crate::resolution`]). The invoke path selects an adapter by
+//! [`RuntimeAdapter::can_serve`].
 
 mod ollama;
 
@@ -17,6 +18,7 @@ use std::collections::HashSet;
 use kernel::capabilities::CapabilityChunk;
 use kernel::jobs::JobRuntimeEvent;
 use kernel::records::{Capability, JsonValue, ModelRecord, RuntimeId};
+use kernel::resolution::{IdentifiedModel, RuntimeBid};
 use tokio::sync::mpsc;
 
 use crate::sidecar::SidecarError;
@@ -94,6 +96,14 @@ pub trait RuntimeAdapter: Send + Sync {
 
     /// Whether this adapter can serve `capability` for `record`.
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool;
+
+    /// This adapter's offer to serve `record` given its [`IdentifiedModel`], or
+    /// `None` if it cannot run it. The resolution auction ranks these bids to
+    /// pick the winning runtime. Adapters that never win a model unprompted (the
+    /// endpoint/manifest kinds) leave the default `None`.
+    fn bid(&self, _record: &ModelRecord, _identified: &IdentifiedModel) -> Option<RuntimeBid> {
+        None
+    }
 
     /// Serve a streaming request, yielding capability chunks. `capability` is
     /// taken by value so the adapter can move it into its feeder task; `can_serve`
