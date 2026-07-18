@@ -62,7 +62,8 @@ pub struct ResidentModel {
 
 /// How long a model's weights are kept warm after its last use before an idle
 /// unload is scheduled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KeepWarmPolicy {
     /// Keep warm for five minutes.
     FiveMinutes,
@@ -87,7 +88,8 @@ impl KeepWarmPolicy {
 }
 
 /// How the governor makes room when a model needs to load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EvictionPolicy {
     /// At most one heavy model resident at a time.
     StrictSingle,
