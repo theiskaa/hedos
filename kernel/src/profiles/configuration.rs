@@ -23,6 +23,11 @@ pub fn normalized_param_values(record: &ModelRecord) -> BTreeMap<String, JsonVal
 }
 
 /// A copy of `record` with parameter values for vanished parameters removed.
+///
+/// This is an optional at-rest cleanup, not a correctness requirement: request
+/// handling normalizes through [`merged`]/[`normalized_param_values`] on every
+/// call, so a stale stored value never reaches a runtime. A caller uses this only
+/// to tidy the persisted shelf (e.g. before displaying or re-saving a record).
 pub fn dropping_vanished_param_values(record: &ModelRecord) -> ModelRecord {
     let mut record = record.clone();
     record.param_values = normalized_param_values(&record);
