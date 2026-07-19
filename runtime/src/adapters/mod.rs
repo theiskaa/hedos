@@ -9,6 +9,9 @@
 //! resolution unit ([`crate::resolution`]). The invoke path selects an adapter by
 //! [`RuntimeAdapter::can_serve`].
 
+mod a1111;
+mod comfy_ui;
+mod daemon_liveness;
 mod diffusers;
 mod embeddings;
 mod grammar;
@@ -25,6 +28,9 @@ mod sidecar_job_adapter;
 mod sidecar_stream;
 mod tool_scanner;
 
+pub use a1111::A1111Adapter;
+pub use comfy_ui::ComfyUiAdapter;
+pub use daemon_liveness::{Daemon, DaemonLiveness, DaemonState, Snapshot};
 pub use diffusers::DiffusersAdapter;
 pub use embeddings::EmbeddingsAdapter;
 pub use grammar::{
