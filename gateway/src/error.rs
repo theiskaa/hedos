@@ -4,6 +4,7 @@
 //! `type`/`code` strings OpenAI clients expect, and serializes to the right
 //! shape for whichever [`GatewaySurface`] served the request.
 
+use runtime::facade::KernelError;
 use serde_json::{Value, json};
 
 use crate::surface::GatewaySurface;
@@ -182,9 +183,38 @@ impl GatewayError {
     }
 }
 
+/// Map a kernel failure onto the wire, choosing a status and, for internal
+/// failures, a generic message that doesn't leak runtime internals.
+impl From<KernelError> for GatewayError {
+    fn from(error: KernelError) -> Self {
+        match &error {
+            KernelError::ModelNotFound(_) | KernelError::ArtifactNotFound(_) => {
+                GatewayError::new(GatewayErrorKind::NotFound, error.to_string())
+            }
+            KernelError::CapabilityUnsupported { .. } | KernelError::PayloadInvalid(_) => {
+                GatewayError::new(GatewayErrorKind::BadRequest, error.to_string())
+            }
+            KernelError::ContextExceeded { .. } => {
+                GatewayError::new(GatewayErrorKind::BadRequest, error.to_string())
+                    .with_code("context_length_exceeded")
+            }
+            // The runtime's own message may carry internals, so a generic one is
+            // returned for server failures.
+            KernelError::RuntimeFailed(_) => GatewayError::new(
+                GatewayErrorKind::ServerError,
+                "the runtime failed to complete the request",
+            ),
+            KernelError::Storage(_) => {
+                GatewayError::new(GatewayErrorKind::ServerError, "internal error")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kernel::records::Capability;
 
     #[test]
     fn status_and_labels_track_the_kind() {
@@ -246,5 +276,49 @@ mod tests {
         let error = GatewayError::new(GatewayErrorKind::ServerError, "boom");
         let body = error.body(GatewaySurface::Ollama);
         assert_eq!(body, json!({ "error": "boom" }));
+    }
+
+    #[test]
+    fn not_found_kernel_errors_map_to_404() {
+        let error: GatewayError = KernelError::ModelNotFound("m".to_owned()).into();
+        assert_eq!(error.kind, GatewayErrorKind::NotFound);
+        let error: GatewayError = KernelError::ArtifactNotFound("a".to_owned()).into();
+        assert_eq!(error.kind, GatewayErrorKind::NotFound);
+    }
+
+    #[test]
+    fn client_kernel_errors_map_to_400() {
+        let error: GatewayError = KernelError::PayloadInvalid("bad".to_owned()).into();
+        assert_eq!(error.kind, GatewayErrorKind::BadRequest);
+        assert_eq!(error.message, "bad");
+        let error: GatewayError = KernelError::CapabilityUnsupported {
+            model: "m".to_owned(),
+            capability: Capability::embed(),
+        }
+        .into();
+        assert_eq!(error.kind, GatewayErrorKind::BadRequest);
+    }
+
+    #[test]
+    fn a_context_exceeded_error_carries_the_openai_code() {
+        let error: GatewayError = KernelError::ContextExceeded {
+            model: "m".to_owned(),
+        }
+        .into();
+        assert_eq!(error.kind, GatewayErrorKind::BadRequest);
+        assert_eq!(
+            error.wire_code().as_deref(),
+            Some("context_length_exceeded")
+        );
+    }
+
+    #[test]
+    fn server_kernel_errors_are_generic_and_do_not_leak() {
+        let error: GatewayError = KernelError::RuntimeFailed("secret path /x".to_owned()).into();
+        assert_eq!(error.kind, GatewayErrorKind::ServerError);
+        assert!(!error.message.contains("secret"));
+        let error: GatewayError = KernelError::Storage("disk /y full".to_owned()).into();
+        assert_eq!(error.kind, GatewayErrorKind::ServerError);
+        assert!(!error.message.contains("disk"));
     }
 }
