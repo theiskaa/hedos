@@ -48,7 +48,9 @@ pub use ollama::OllamaAdapter;
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};
 pub use tool_scanner::ToolCallScanner;
 pub use whisper::{
-    TranscriptionAudio, TranscriptionError, TranscriptionOptions, TranscriptionSegment,
+    MissingWhisperBackend, SidecarWhisperBackend, TranscriptionAudio, TranscriptionError,
+    TranscriptionJob, TranscriptionOptions, TranscriptionSegment, WhisperBackend,
+    WhisperCppAdapter, WhisperEngine,
 };
 
 use std::collections::HashSet;

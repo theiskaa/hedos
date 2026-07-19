@@ -1,9 +1,19 @@
 //! Small crate-internal helpers, hand-rolled to avoid pulling in dependencies for
 //! trivial work — matching the kernel's own hand-rolled `base64_encode`.
 
+use std::path::Path;
+
+/// The size of the file at `path` in whole mebibytes, or `None` if it can't be
+/// stat'd.
+pub(crate) fn weights_mb(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.len() / (1 << 20)) as i64)
+}
+
 /// Decode a standard RFC 4648 (`+`/`/` alphabet) base64 string, or `None` if it
 /// is malformed. Strict: length a multiple of four, padding only at the end, no
-/// stray characters — matching Swift's default `Data(base64Encoded:)`.
+/// stray characters.
 pub(crate) fn base64_decode(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     if bytes.is_empty() {

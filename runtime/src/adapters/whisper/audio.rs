@@ -1,11 +1,11 @@
-//! Decoding the audio a transcribe request carries into mono float samples. A
-//! faithful port of Swift's `TranscriptionAudio` — deliberately its own strict
-//! WAV decoder (16-bit integer PCM and 32-bit float only, rejecting everything
-//! else) rather than the more permissive `crate::audio` decoder, so transcription
-//! accepts exactly what the Swift original did.
+//! Decoding the audio a transcribe request carries into mono float samples.
+//! Deliberately its own strict WAV decoder — 16-bit integer PCM and 32-bit float
+//! only, rejecting everything else — rather than the more permissive
+//! `crate::audio` decoder, so transcription accepts a tightly-defined input set.
 
 use kernel::records::JsonValue;
 
+use super::expand_tilde;
 use crate::util::base64_decode;
 
 /// Why a transcribe payload could not be turned into audio.
@@ -50,9 +50,8 @@ impl TranscriptionAudio {
                     "transcribe pcm payload is not valid base64".to_owned(),
                 ));
             };
-            // Strict: only an integer `sampleRate` is accepted, matching Swift's
-            // `guard case .int(let rate)?` — a float-typed rate is rejected, not
-            // coerced (`as_i64` would truncate a `Double`).
+            // Strict: only an integer `sampleRate` is accepted — a float-typed
+            // rate is rejected, not coerced (`as_i64` would truncate a `Double`).
             let rate = match fields.get("sampleRate") {
                 Some(JsonValue::Int(rate)) if *rate > 0 => *rate,
                 _ => {
@@ -199,20 +198,6 @@ fn read_u32(data: &[u8], offset: usize) -> u32 {
     ])
 }
 
-fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{home}/{rest}");
-    }
-    if path == "~"
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return home;
-    }
-    path.to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,7 +283,7 @@ mod tests {
 
     #[test]
     fn from_rejects_a_float_typed_sample_rate() {
-        // Swift matches only `.int`; a float-typed rate is rejected, not coerced.
+        // Only an integer rate is accepted; a float-typed rate is rejected.
         let mut fields = BTreeMap::new();
         fields.insert("pcm".to_owned(), JsonValue::String("AAAAAA==".to_owned()));
         fields.insert("sampleRate".to_owned(), JsonValue::Double(22_050.0));
