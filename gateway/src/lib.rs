@@ -9,6 +9,7 @@ pub mod admission;
 pub mod defaults;
 pub mod error;
 pub mod identity;
+pub mod kernel_gateway;
 pub mod param_guard;
 pub mod port;
 pub mod request;
