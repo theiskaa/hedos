@@ -18,6 +18,7 @@ mod grammar;
 mod llama_pool;
 mod llama_server;
 mod manifest_command;
+mod manifest_sidecar;
 mod mflux;
 mod mlx_audio;
 mod mlx_lm;
@@ -42,6 +43,7 @@ pub use grammar::{
 pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
 pub use manifest_command::ManifestCommandAdapter;
+pub use manifest_sidecar::ManifestSidecarAdapter;
 pub use mflux::MfluxAdapter;
 pub use mlx_audio::MlxAudioAdapter;
 pub use mlx_lm::MlxLmAdapter;
