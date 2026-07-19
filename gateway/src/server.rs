@@ -3,6 +3,7 @@
 //! [`GatewayResponder`], and streams the responder's parts back as the response.
 
 use std::convert::Infallible;
+use std::future::Future;
 use std::sync::Arc;
 
 use axum::Router;
@@ -25,7 +26,24 @@ pub fn app(router: Arc<GatewayRouter>) -> Router {
 
 /// Serve the gateway on an already-bound `listener` until it stops.
 pub async fn serve(listener: TcpListener, router: Arc<GatewayRouter>) -> std::io::Result<()> {
-    axum::serve(listener, app(router)).await
+    serve_with_shutdown(listener, router, std::future::pending()).await
+}
+
+/// Serve on `listener` until `shutdown` resolves, then drain in-flight requests
+/// and flush the audit log so a pending coalesced summary is not lost at exit.
+pub async fn serve_with_shutdown<S>(
+    listener: TcpListener,
+    router: Arc<GatewayRouter>,
+    shutdown: S,
+) -> std::io::Result<()>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
+    let result = axum::serve(listener, app(Arc::clone(&router)))
+        .with_graceful_shutdown(shutdown)
+        .await;
+    router.flush_audit();
+    result
 }
 
 /// Bind loopback on `port` (0 picks a free port) and serve until stopped.

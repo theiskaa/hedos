@@ -4,9 +4,10 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::MockPort;
-use gateway::audit::NoopAudit;
+use gateway::audit::{Auditing, GatewayAuditEntry, NoopAudit};
 use gateway::auth::OpenAuth;
 use gateway::port::GatewayPort;
 use gateway::router::{GatewayRouter, standard_routes};
@@ -86,4 +87,32 @@ async fn an_unknown_route_is_404_over_http() {
     let base = start(MockPort::default()).await;
     let response = reqwest::get(format!("{base}/nope")).await.unwrap();
     assert_eq!(response.status(), 404);
+}
+
+/// A `flush`-recording audit sink.
+struct FlagAudit(Arc<AtomicBool>);
+
+impl Auditing for FlagAudit {
+    fn append(&self, _entry: GatewayAuditEntry) {}
+    fn flush(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn a_graceful_shutdown_flushes_the_audit_log() {
+    let flushed = Arc::new(AtomicBool::new(false));
+    let router = Arc::new(GatewayRouter::new(
+        Arc::new(MockPort::default()) as Arc<dyn GatewayPort>,
+        Box::new(OpenAuth),
+        Box::new(FlagAudit(flushed.clone())),
+        standard_routes(),
+        4,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // An already-resolved shutdown makes the server drain and return at once.
+    server::serve_with_shutdown(listener, router, async {})
+        .await
+        .unwrap();
+    assert!(flushed.load(Ordering::SeqCst));
 }

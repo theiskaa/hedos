@@ -192,6 +192,12 @@ impl GatewayRouter {
             .unwrap_or(default)
     }
 
+    /// Flush buffered audit state (e.g. a pending coalesced-unauthorized
+    /// summary) so nothing is lost when the server shuts down.
+    pub fn flush_audit(&self) {
+        self.audit.flush();
+    }
+
     /// Serve one request: authenticate, route, audit, and render an error if the
     /// handler failed before it began responding.
     pub async fn dispatch(&self, request: GatewayRequest, responder: &GatewayResponder) {
