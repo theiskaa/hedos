@@ -2,6 +2,7 @@
 //! the sandbox root to grant read access to, and the snapshot directory holding
 //! the weights (a Hugging Face revision snapshot, or the model root itself).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use kernel::records::{ModelRecord, SourceKind};
@@ -41,6 +42,44 @@ impl SidecarModelPaths {
     }
 }
 
+/// Weight-file extensions that name a bundled speech voice.
+const VOICE_WEIGHT_EXTENSIONS: &[&str] = &["safetensors", "pt", "bin", "npz"];
+
+/// The speech voices bundled with `record`: the weight-file stems in its
+/// snapshot's `voices/` directory, de-duplicated and sorted. Empty when the
+/// model bundles no `voices/` directory (or it cannot be read).
+pub fn speech_voices(record: &ModelRecord) -> Vec<String> {
+    let snapshot = SidecarModelPaths::resolve(record).snapshot;
+    let directory = Path::new(&snapshot).join("voices");
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return Vec::new();
+    };
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let path = Path::new(file_name);
+        let is_weight = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| VOICE_WEIGHT_EXTENSIONS.contains(&ext.to_lowercase().as_str()));
+        if !is_weight {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
+            && !stem.is_empty()
+        {
+            names.insert(stem.to_owned());
+        }
+    }
+    names.into_iter().collect()
+}
+
 fn expand_tilde(path: &str) -> PathBuf {
     match std::env::var("HOME") {
         Ok(home) => kernel::fs::expand_tilde(path, Path::new(&home)),
@@ -78,6 +117,34 @@ mod tests {
         assert!(
             paths.snapshot.ends_with("plain") || paths.snapshot.contains("hedos-sidecar-paths")
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn speech_voices_lists_sorted_deduped_weight_stems() {
+        let dir = temp_dir("voices");
+        let voices = dir.join("voices");
+        std::fs::create_dir_all(&voices).unwrap();
+        for file in [
+            "af_heart.safetensors",
+            "am_onyx.pt",
+            "bf_emma.bin",
+            "cf_yue.npz",
+            ".hidden.safetensors", // dot-prefixed → skipped
+            "readme.txt",          // non-weight → skipped
+        ] {
+            std::fs::write(voices.join(file), b"x").unwrap();
+        }
+        let names = speech_voices(&record(SourceKind::folder(), dir.to_str().unwrap(), None));
+        assert_eq!(names, ["af_heart", "am_onyx", "bf_emma", "cf_yue"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn speech_voices_is_empty_without_a_voices_directory() {
+        let dir = temp_dir("no-voices");
+        let names = speech_voices(&record(SourceKind::folder(), dir.to_str().unwrap(), None));
+        assert!(names.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

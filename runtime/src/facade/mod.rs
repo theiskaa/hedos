@@ -206,6 +206,14 @@ impl Kernel {
             .ok_or_else(|| KernelError::ModelNotFound(model_id.to_owned()))
     }
 
+    /// The speech voices available for a speak-capable model, from its bundled
+    /// `voices/` directory. Empty for a model that bundles none; errors if the
+    /// model is unknown.
+    pub async fn voices(&self, model_id: &str) -> Result<Vec<String>, KernelError> {
+        let record = self.record(model_id).await?;
+        Ok(crate::sidecar::speech_voices(&record))
+    }
+
     fn adapter_for(
         &self,
         record: &ModelRecord,

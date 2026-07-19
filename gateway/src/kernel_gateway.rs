@@ -64,13 +64,8 @@ impl GatewayPort for KernelGateway {
         Box::pin(async move { self.kernel.scheduler().cancel(job_id) })
     }
 
-    fn voices<'a>(
-        &'a self,
-        _model_id: &'a str,
-    ) -> PortFuture<'a, Result<Vec<String>, KernelError>> {
-        // Speech-adapter voice enumeration isn't wired yet, so no voices are
-        // reported; this becomes real when a speech runtime lands.
-        Box::pin(async { Ok(Vec::new()) })
+    fn voices<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, Result<Vec<String>, KernelError>> {
+        Box::pin(self.kernel.voices(model_id))
     }
 
     fn supports_tools<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, bool> {
