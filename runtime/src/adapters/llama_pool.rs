@@ -199,9 +199,10 @@ impl LlamaBackend for LlamaServerPool {
 }
 
 /// Ensure a ready server exists for `model_id` (weights at `gguf`), returning its
-/// base URL. Reuses a live server whose context window covers `context_tokens`;
-/// otherwise allocates a port, spawns, and waits for readiness (a too-small server
-/// is replaced — dropping the old `Running` reaps it).
+/// base URL. Reuses a live server whose context window covers `context_tokens`
+/// and still answers `/health`; otherwise allocates a port, spawns, and waits for
+/// readiness (a too-small or wedged server is replaced — dropping the old
+/// `Running` reaps it).
 async fn ensure(
     spawner: &Arc<dyn ServerSpawner>,
     client: &reqwest::Client,
@@ -222,6 +223,7 @@ async fn ensure(
     if let Some(running) = guard.as_ref()
         && running.process.is_alive()
         && running.context_tokens >= context_tokens
+        && health_ok(client, &running.base_url).await
     {
         return Ok(running.base_url.clone());
     }
@@ -248,6 +250,19 @@ fn free_port() -> Result<u16, RuntimeError> {
         .local_addr()
         .map(|addr| addr.port())
         .map_err(|error| RuntimeError::Unavailable(format!("no free port: {error}")))
+}
+
+/// A single `/health` probe: `true` only if the server answers success promptly.
+/// A warm server whose process is alive but whose HTTP layer has wedged fails
+/// this, so [`ensure`] drops through to a respawn instead of recycling it.
+async fn health_ok(client: &reqwest::Client, base_url: &str) -> bool {
+    client
+        .get(format!("{base_url}/health"))
+        .timeout(HEALTH_REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
 }
 
 /// Poll `{base}/health` until it answers success, the process exits, or the timeout

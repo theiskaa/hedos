@@ -25,6 +25,7 @@ struct MockSpawner {
     count: Arc<AtomicUsize>,
     healthy: bool,
     alive_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
+    health_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
 }
 
 impl MockSpawner {
@@ -33,6 +34,7 @@ impl MockSpawner {
             count: Arc::new(AtomicUsize::new(0)),
             healthy,
             alive_flags: Arc::new(Mutex::new(Vec::new())),
+            health_flags: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -52,13 +54,15 @@ impl ServerSpawner for MockSpawner {
             .map_err(|error| RuntimeError::Unavailable(error.to_string()))?;
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .map_err(|error| RuntimeError::Unavailable(error.to_string()))?;
-        let healthy = self.healthy;
+        let health = Arc::new(AtomicBool::new(self.healthy));
+        self.health_flags.lock().unwrap().push(Arc::clone(&health));
         let accept = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     return;
                 };
-                tokio::spawn(async move { serve(&mut stream, healthy).await });
+                let health = Arc::clone(&health);
+                tokio::spawn(async move { serve(&mut stream, &health).await });
             }
         })
         .abort_handle();
@@ -69,7 +73,7 @@ impl ServerSpawner for MockSpawner {
     }
 }
 
-async fn serve(stream: &mut tokio::net::TcpStream, healthy: bool) {
+async fn serve(stream: &mut tokio::net::TcpStream, healthy: &AtomicBool) {
     let mut buffer = Vec::new();
     let mut tmp = [0u8; 2048];
     loop {
@@ -92,7 +96,7 @@ async fn serve(stream: &mut tokio::net::TcpStream, healthy: bool) {
         .unwrap_or("/");
 
     let (status, body): (u16, String) = if path == "/health" {
-        if healthy {
+        if healthy.load(Ordering::SeqCst) {
             (200, "OK".to_owned())
         } else {
             (503, "loading".to_owned())
@@ -166,6 +170,24 @@ async fn reuses_a_running_server_for_the_same_model() {
     assert_eq!(first, second);
     // Only one process was ever spawned.
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn respawns_a_wedged_but_alive_server() {
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+    let rec = record("a");
+
+    let first = pool.base_url(&rec, 4096).await.expect("ready");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
+
+    // The server wedges: its process stays alive but `/health` stops answering.
+    spawner.health_flags.lock().unwrap()[0].store(false, Ordering::SeqCst);
+
+    // The next request must not recycle it — a fresh (healthy) server is spawned.
+    let second = pool.base_url(&rec, 4096).await.expect("respawn");
+    assert_ne!(first, second);
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
