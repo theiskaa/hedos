@@ -6,9 +6,11 @@
 mod artifact;
 mod gallery;
 mod provenance;
+mod speech_text;
 mod store;
 
 pub use artifact::{Artifact, ArtifactDraft};
 pub use gallery::{Gallery, GalleryModel, GallerySort};
 pub use provenance::Provenance;
+pub use speech_text::speakable;
 pub use store::{ArtifactStore, ArtifactStoreError};
