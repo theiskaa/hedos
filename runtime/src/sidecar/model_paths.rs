@@ -3,7 +3,7 @@
 //! the weights (a Hugging Face revision snapshot, or the model root itself).
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use kernel::records::{ModelRecord, SourceKind};
 
@@ -21,7 +21,7 @@ impl SidecarModelPaths {
     /// Hugging Face cache with a revision ref, the snapshot is that revision's
     /// directory when it exists; otherwise both are the (symlink-resolved) root.
     pub fn resolve(record: &ModelRecord) -> Self {
-        let base = expand_tilde(&record.source.path);
+        let base = kernel::fs::expand_tilde_env(&record.source.path);
         let root = std::fs::canonicalize(&base).unwrap_or(base);
         if record.source.kind == SourceKind::huggingface_cache()
             && let Some(reference) = &record.source.reference
@@ -80,19 +80,14 @@ pub fn speech_voices(record: &ModelRecord) -> Vec<String> {
     names.into_iter().collect()
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
-    match std::env::var("HOME") {
-        Ok(home) => kernel::fs::expand_tilde(path, Path::new(&home)),
-        Err(_) => PathBuf::from(path),
-    }
-}
-
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use kernel::records::{Modality, ModelSource};
 

@@ -467,7 +467,7 @@ fn exact_hit(repo: &str) -> InstallSearchHit {
 }
 
 fn default_now_millis() -> i64 {
-    kernel::time::now_millis()
+    crate::time::now_millis()
 }
 
 /// The default free-disk probe: the bytes available on the filesystem holding

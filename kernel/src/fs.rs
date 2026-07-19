@@ -14,6 +14,16 @@ pub fn expand_tilde(path: &str, home: &Path) -> PathBuf {
     }
 }
 
+/// Expand a leading `~`/`~/` in `path` against `$HOME`, read from the process
+/// environment. A path without a tilde segment — or when `$HOME` is unset —
+/// passes through unchanged.
+pub fn expand_tilde_env(path: &str) -> PathBuf {
+    match std::env::var("HOME") {
+        Ok(home) => expand_tilde(path, Path::new(&home)),
+        Err(_) => PathBuf::from(path),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

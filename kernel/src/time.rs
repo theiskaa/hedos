@@ -67,7 +67,7 @@ pub fn millis_from_iso8601(text: &str) -> Option<i64> {
 /// Convert a `(year, month, day)` civil date to days since the Unix epoch, via
 /// Howard Hinnant's `days_from_civil` algorithm (the inverse of
 /// [`civil_from_days`]).
-pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = if year >= 0 { year } else { year - 399 } / 400;
     let year_of_era = year - era * 400; // [0, 399]
@@ -80,7 +80,7 @@ pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 
 /// Convert a count of days since the Unix epoch to a `(year, month, day)` civil
 /// date, via Howard Hinnant's `civil_from_days` algorithm.
-pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     // Shift the epoch to 0000-03-01 so leap days fall at the end of the cycle.
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
