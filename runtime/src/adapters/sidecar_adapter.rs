@@ -13,7 +13,7 @@ use super::ChunkStream;
 use super::sidecar_stream::bridge;
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
-use crate::python_runtime::{Descriptor, PythonSidecarRuntime};
+use crate::python_runtime::{Descriptor, PrepareEnvironment, PythonSidecarRuntime};
 use crate::sidecar::{RuntimeBundle, SidecarError, bundle_spec};
 
 /// How long to wait for a cooperatively-cancelled sidecar to acknowledge before
@@ -130,27 +130,18 @@ pub(crate) fn sidecar_descriptor(
 ) -> Descriptor {
     let bundle_name = spec.bundle_name;
     let cooperative = spec.cancel.is_cooperative();
-    let prepare_id = spec.id.clone();
-    let prepare_roots = Arc::clone(&search_roots);
     let spec_id = spec.id.clone();
     Descriptor {
         runtime_id: spec.id.as_str().to_owned(),
         preparing_status: spec.preparing_status.to_owned(),
         starting_status: spec.starting_status.to_owned(),
         warm_window: spec.warm_window,
-        prepare_environment: Arc::new(move |status| {
-            let environments = environments.clone();
-            let roots = Arc::clone(&prepare_roots);
-            let id = prepare_id.clone();
-            Box::pin(async move {
-                let bundle = RuntimeBundle::require(bundle_name, &roots, &id)?;
-                let env_dir = environments
-                    .prepare(id.as_str(), &bundle.join("requirements.lock"), status)
-                    .await
-                    .map_err(|error| SidecarError::RuntimeFailed(error.to_string()))?;
-                Ok(Some(env_dir))
-            })
-        }),
+        prepare_environment: prepare_environment(
+            bundle_name,
+            spec.id.clone(),
+            environments,
+            Arc::clone(&search_roots),
+        ),
         make_spec: Arc::new(move |record: &ModelRecord, env_dir: Option<&Path>| {
             let bundle = RuntimeBundle::require(bundle_name, &search_roots, &spec_id)?;
             bundle_spec(
@@ -166,6 +157,30 @@ pub(crate) fn sidecar_descriptor(
             )
         }),
     }
+}
+
+/// Build the shared `prepare_environment` step: locate `bundle_name` under
+/// `search_roots` for runtime `id`, then prepare its Python environment from the
+/// bundle's lockfile. Identical for every sidecar runtime, streaming or job.
+pub(crate) fn prepare_environment(
+    bundle_name: &'static str,
+    id: RuntimeId,
+    environments: EnvironmentManager,
+    search_roots: Arc<Vec<PathBuf>>,
+) -> PrepareEnvironment {
+    Arc::new(move |status| {
+        let environments = environments.clone();
+        let roots = Arc::clone(&search_roots);
+        let id = id.clone();
+        Box::pin(async move {
+            let bundle = RuntimeBundle::require(bundle_name, &roots, &id)?;
+            let env_dir = environments
+                .prepare(id.as_str(), &bundle.join("requirements.lock"), status)
+                .await
+                .map_err(|error| SidecarError::RuntimeFailed(error.to_string()))?;
+            Ok(Some(env_dir))
+        })
+    })
 }
 
 #[cfg(test)]

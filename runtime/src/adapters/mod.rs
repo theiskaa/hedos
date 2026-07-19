@@ -9,19 +9,23 @@
 //! resolution unit ([`crate::resolution`]). The invoke path selects an adapter by
 //! [`RuntimeAdapter::can_serve`].
 
+mod diffusers;
 mod embeddings;
 mod grammar;
 mod llama_pool;
 mod llama_server;
+mod mflux;
 mod mlx_audio;
 mod mlx_lm;
 mod mlx_vlm;
 mod ollama;
 mod openai;
 mod sidecar_adapter;
+mod sidecar_job_adapter;
 mod sidecar_stream;
 mod tool_scanner;
 
+pub use diffusers::DiffusersAdapter;
 pub use embeddings::EmbeddingsAdapter;
 pub use grammar::{
     CALL_CLOSE, CALL_OPEN, GENERIC_JSON_GRAMMAR, ToolGrammarError, grammar_for_response_format,
@@ -29,6 +33,7 @@ pub use grammar::{
 };
 pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
+pub use mflux::MfluxAdapter;
 pub use mlx_audio::MlxAudioAdapter;
 pub use mlx_lm::MlxLmAdapter;
 pub use mlx_vlm::MlxVlmAdapter;

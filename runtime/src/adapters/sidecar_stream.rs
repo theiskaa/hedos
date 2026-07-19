@@ -9,7 +9,9 @@ use crate::sidecar::SidecarStream;
 
 /// Forward a sidecar stream as a runtime stream, mapping sidecar errors. Dropping
 /// the returned stream drops the sidecar stream, triggering its cancellation.
-pub(crate) fn bridge(mut sidecar: SidecarStream<CapabilityChunk>) -> ChunkStream {
+/// Generic over the item type so both capability-chunk and job-event streams
+/// share it.
+pub(crate) fn bridge<T: Send + 'static>(mut sidecar: SidecarStream<T>) -> RuntimeStream<T> {
     let (tx, stream) = RuntimeStream::channel();
     tokio::spawn(async move {
         while let Some(item) = sidecar.recv().await {
