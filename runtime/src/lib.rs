@@ -18,5 +18,6 @@ pub mod resolution;
 pub mod settings;
 pub mod sidecar;
 mod time;
+pub mod utf8_stream;
 
 pub use facade::Kernel;
