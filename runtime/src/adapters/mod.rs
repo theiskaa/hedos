@@ -15,6 +15,7 @@ mod llama_server;
 mod mlx_lm;
 mod ollama;
 mod openai;
+mod sidecar_stream;
 mod tool_scanner;
 
 pub use grammar::{
