@@ -18,6 +18,7 @@ use crate::handlers::models::{
     OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
 };
 use crate::handlers::speech::OpenAISpeechHandler;
+use crate::handlers::transcriptions::OpenAITranscriptionsHandler;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
@@ -69,11 +70,18 @@ impl GatewayRoute {
         self.summary = summary.to_owned();
         self
     }
+
+    /// Cap this route's request body at `bytes`, overriding the server default
+    /// (for upload endpoints that carry more than a small JSON body).
+    pub fn max_body(mut self, bytes: usize) -> Self {
+        self.max_body_bytes = Some(bytes);
+        self
+    }
 }
 
-/// The routes served today: chat, embeddings, completions, image, and speech on
-/// both surfaces plus the model-listing and handshake endpoints. Transcription
-/// lands as its handler does.
+/// The full route table: chat, completions, embeddings, image, speech, and
+/// transcription on the OpenAI surface, chat/generate/embed on the Ollama
+/// surface, plus the model-listing and handshake endpoints.
 pub fn standard_routes() -> Vec<GatewayRoute> {
     vec![
         GatewayRoute::new(
@@ -123,6 +131,14 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         GatewayRoute::new("POST", "/v1/audio/speech", Box::new(OpenAISpeechHandler))
             .inference()
             .described("OpenAI", "Synthesize speech from text"),
+        GatewayRoute::new(
+            "POST",
+            "/v1/audio/transcriptions",
+            Box::new(OpenAITranscriptionsHandler),
+        )
+        .inference()
+        .described("OpenAI", "Transcribe an audio file to text")
+        .max_body(32 * 1024 * 1024),
     ]
 }
 

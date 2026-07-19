@@ -19,6 +19,7 @@ pub mod images;
 pub mod models;
 pub mod speech;
 pub mod stream;
+pub mod transcriptions;
 
 /// The generic server error shown when a runtime stream fails mid-flight; the
 /// runtime's own message may carry internals, so it is not surfaced.
