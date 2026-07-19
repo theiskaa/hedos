@@ -223,7 +223,7 @@ async fn ensure(
     if let Some(running) = guard.as_ref()
         && running.process.is_alive()
         && running.context_tokens >= context_tokens
-        && health_ok(client, &running.base_url).await
+        && healthy_for_reuse(client, &running.base_url).await
     {
         return Ok(running.base_url.clone());
     }
@@ -252,9 +252,16 @@ fn free_port() -> Result<u16, RuntimeError> {
         .map_err(|error| RuntimeError::Unavailable(format!("no free port: {error}")))
 }
 
+/// A reuse-time health gate tolerant of a single transient stall: a warm server
+/// is condemned only after failing `/health` twice in a row. A server that is
+/// merely busy (its HTTP layer still answers) passes the first probe in
+/// milliseconds; requiring two consecutive misses keeps a one-off blip under load
+/// from evicting — and SIGKILL-ing — a server that is actively serving a request.
+async fn healthy_for_reuse(client: &reqwest::Client, base_url: &str) -> bool {
+    health_ok(client, base_url).await || health_ok(client, base_url).await
+}
+
 /// A single `/health` probe: `true` only if the server answers success promptly.
-/// A warm server whose process is alive but whose HTTP layer has wedged fails
-/// this, so [`ensure`] drops through to a respawn instead of recycling it.
 async fn health_ok(client: &reqwest::Client, base_url: &str) -> bool {
     client
         .get(format!("{base_url}/health"))
