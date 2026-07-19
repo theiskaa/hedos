@@ -23,6 +23,8 @@ pub struct MockPort {
     pub supports_tools: bool,
     pub honored: HashSet<String>,
     pub admission: GatewayAdmissionState,
+    /// Voices returned by `voices`, first one used as the speech default.
+    pub voices: Vec<String>,
     /// Events replayed, in order, from `job_events`.
     pub job_events: Vec<JobEvent>,
     /// Artifact bytes keyed by id, served by `artifact_data`.
@@ -37,6 +39,7 @@ impl Default for MockPort {
             supports_tools: false,
             honored: HashSet::new(),
             admission: GatewayAdmissionState::Ready,
+            voices: Vec::new(),
             job_events: Vec::new(),
             artifacts: HashMap::new(),
         }
@@ -142,7 +145,8 @@ impl GatewayPort for MockPort {
         &'a self,
         _model_id: &'a str,
     ) -> PortFuture<'a, Result<Vec<String>, KernelError>> {
-        Box::pin(async { Ok(Vec::new()) })
+        let voices = self.voices.clone();
+        Box::pin(async move { Ok(voices) })
     }
 
     fn supports_tools<'a>(&'a self, _model_id: &'a str) -> PortFuture<'a, bool> {

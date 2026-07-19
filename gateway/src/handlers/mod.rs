@@ -17,6 +17,7 @@ pub mod embeddings;
 pub mod generate;
 pub mod images;
 pub mod models;
+pub mod speech;
 pub mod stream;
 
 /// The generic server error shown when a runtime stream fails mid-flight; the

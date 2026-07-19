@@ -17,6 +17,7 @@ use crate::handlers::images::OpenAIImagesHandler;
 use crate::handlers::models::{
     OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
 };
+use crate::handlers::speech::OpenAISpeechHandler;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
@@ -70,9 +71,9 @@ impl GatewayRoute {
     }
 }
 
-/// The routes served today: chat on both surfaces plus the model-listing and
-/// handshake endpoints. Embeddings, completions, speech, transcription, and image
-/// routes land as their handlers do.
+/// The routes served today: chat, embeddings, completions, image, and speech on
+/// both surfaces plus the model-listing and handshake endpoints. Transcription
+/// lands as its handler does.
 pub fn standard_routes() -> Vec<GatewayRoute> {
     vec![
         GatewayRoute::new(
@@ -119,6 +120,9 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         )
         .inference()
         .described("OpenAI", "Generate an image from a prompt"),
+        GatewayRoute::new("POST", "/v1/audio/speech", Box::new(OpenAISpeechHandler))
+            .inference()
+            .described("OpenAI", "Synthesize speech from text"),
     ]
 }
 
