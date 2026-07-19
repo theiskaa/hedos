@@ -1,7 +1,10 @@
 //! The per-route request handlers, plus the streaming helpers they share.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
+
+use kernel::records::JsonValue;
 
 use crate::error::GatewayError;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
@@ -11,6 +14,7 @@ use crate::responder::GatewayResponder;
 
 pub mod chat;
 pub mod embeddings;
+pub mod generate;
 pub mod models;
 pub mod stream;
 
@@ -26,6 +30,14 @@ pub(crate) fn runtime_failed(_: runtime::adapters::RuntimeError) -> GatewayError
 /// A `400 Bad Request` carrying `message`.
 pub(crate) fn bad_request(message: impl Into<String>) -> GatewayError {
     GatewayError::new(crate::error::GatewayErrorKind::BadRequest, message)
+}
+
+/// The non-empty `model` field of a request body, or a `400`.
+pub(crate) fn required_model(body: &BTreeMap<String, JsonValue>) -> Result<&str, GatewayError> {
+    body.get("model")
+        .and_then(JsonValue::as_str)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| bad_request("model is required"))
 }
 
 /// Send `value` as a `200` JSON response.

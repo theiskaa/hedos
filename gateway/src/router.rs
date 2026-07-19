@@ -12,6 +12,7 @@ use crate::error::{GatewayError, GatewayErrorKind};
 use crate::handlers::GatewayHandling;
 use crate::handlers::chat::{OllamaChatHandler, OpenAIChatHandler};
 use crate::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
+use crate::handlers::generate::{OllamaGenerateHandler, OpenAICompletionsHandler};
 use crate::handlers::models::{
     OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
 };
@@ -100,6 +101,16 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         GatewayRoute::new("POST", "/api/embeddings", Box::new(OllamaEmbedHandler))
             .inference()
             .described("Ollama", "Embed text (legacy endpoint)"),
+        GatewayRoute::new(
+            "POST",
+            "/v1/completions",
+            Box::new(OpenAICompletionsHandler),
+        )
+        .inference()
+        .described("OpenAI", "Complete a text prompt"),
+        GatewayRoute::new("POST", "/api/generate", Box::new(OllamaGenerateHandler))
+            .inference()
+            .described("Ollama", "Generate from a prompt, Ollama-style"),
     ]
 }
 

@@ -166,7 +166,7 @@ fn decode_message(raw: &BTreeMap<String, JsonValue>) -> Result<ChatMessage, Gate
     Ok(message)
 }
 
-fn decode_options(
+pub(crate) fn decode_options(
     body: &BTreeMap<String, JsonValue>,
 ) -> Result<BTreeMap<String, JsonValue>, GatewayError> {
     let mut options = BTreeMap::new();

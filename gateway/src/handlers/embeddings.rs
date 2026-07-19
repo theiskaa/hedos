@@ -10,7 +10,9 @@ use kernel::records::{Capability, JsonValue, ModelRecord};
 use runtime::facade::KernelError;
 use serde_json::{Value, json};
 
-use super::{GatewayHandling, HandlerFuture, bad_request, respond_json, runtime_failed};
+use super::{
+    GatewayHandling, HandlerFuture, bad_request, required_model, respond_json, runtime_failed,
+};
 use crate::admission::GatewayWorkKind;
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::identity::{GatewayIdentity, GatewayOutcome};
@@ -88,13 +90,6 @@ fn vector_base64(vector: &[f64]) -> String {
         bytes.extend_from_slice(&(value as f32).to_le_bytes());
     }
     BASE64_STANDARD.encode(&bytes)
-}
-
-fn required_model(body: &BTreeMap<String, JsonValue>) -> Result<&str, GatewayError> {
-    body.get("model")
-        .and_then(JsonValue::as_str)
-        .filter(|model| !model.is_empty())
-        .ok_or_else(|| bad_request("model is required"))
 }
 
 fn string_list(items: &[JsonValue]) -> Option<Vec<String>> {

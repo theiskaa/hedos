@@ -179,7 +179,7 @@ fn int_param(body: &BTreeMap<String, JsonValue>, key: &str) -> Result<Option<i64
     }
 }
 
-fn decode_sampling(
+pub(crate) fn decode_sampling(
     body: &BTreeMap<String, JsonValue>,
 ) -> Result<BTreeMap<String, JsonValue>, GatewayError> {
     let mut sampling = BTreeMap::new();
@@ -552,6 +552,54 @@ pub fn usage(stats: Option<&GenerationStats>) -> Value {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "total_tokens": prompt + completion,
+    })
+}
+
+/// A streaming `text_completion` chunk (the legacy `/v1/completions` shape).
+pub fn text_completion_chunk(
+    id: &str,
+    created: i64,
+    model: &str,
+    text: &str,
+    finish_reason: Option<&str>,
+) -> Value {
+    json!({
+        "id": id,
+        "object": "text_completion",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "text": text,
+            "index": 0,
+            "logprobs": Value::Null,
+            "finish_reason": finish_reason.map_or(Value::Null, Value::from),
+        }],
+    })
+}
+
+/// A non-streaming `text_completion` response object.
+pub fn text_completion(
+    id: &str,
+    created: i64,
+    model: &str,
+    text: &str,
+    stats: Option<&GenerationStats>,
+) -> Value {
+    let finish = stats
+        .and_then(|stats| stats.finish_reason.as_deref())
+        .unwrap_or("stop");
+    json!({
+        "id": id,
+        "object": "text_completion",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "text": text,
+            "index": 0,
+            "logprobs": Value::Null,
+            "finish_reason": finish,
+        }],
+        "usage": usage(stats),
     })
 }
 
@@ -1123,6 +1171,39 @@ mod tests {
             value["choices"][0]["message"]["tool_calls"][0]["id"],
             "call_1"
         );
+    }
+
+    #[test]
+    fn a_text_completion_chunk_nulls_logprobs_and_toggles_finish_reason() {
+        let delta = text_completion_chunk("cmpl-1", 1, "m", "Hi", None);
+        assert_eq!(delta["object"], "text_completion");
+        assert_eq!(delta["choices"][0]["text"], "Hi");
+        assert_eq!(delta["choices"][0]["index"], 0);
+        assert!(delta["choices"][0]["logprobs"].is_null());
+        assert!(delta["choices"][0]["finish_reason"].is_null());
+
+        let last = text_completion_chunk("cmpl-1", 1, "m", "", Some("stop"));
+        assert_eq!(last["choices"][0]["finish_reason"], "stop");
+    }
+
+    #[test]
+    fn a_text_completion_carries_usage_and_defaults_finish_to_stop() {
+        let value = text_completion("cmpl-1", 1, "m", "Hi there", None);
+        assert_eq!(value["object"], "text_completion");
+        assert_eq!(value["choices"][0]["text"], "Hi there");
+        assert!(value["choices"][0]["logprobs"].is_null());
+        assert_eq!(value["choices"][0]["finish_reason"], "stop");
+        assert_eq!(value["usage"]["total_tokens"], 0);
+
+        let stats = GenerationStats {
+            finish_reason: Some("length".to_owned()),
+            prompt_tokens: Some(3),
+            completion_tokens: Some(2),
+            ..Default::default()
+        };
+        let value = text_completion("cmpl-1", 1, "m", "Hi", Some(&stats));
+        assert_eq!(value["choices"][0]["finish_reason"], "length");
+        assert_eq!(value["usage"]["total_tokens"], 5);
     }
 
     #[test]
