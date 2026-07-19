@@ -42,17 +42,10 @@ impl SidecarModelPaths {
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return PathBuf::from(home).join(rest);
+    match std::env::var("HOME") {
+        Ok(home) => kernel::fs::expand_tilde(path, Path::new(&home)),
+        Err(_) => PathBuf::from(path),
     }
-    if path == "~"
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return PathBuf::from(home);
-    }
-    PathBuf::from(path)
 }
 
 fn path_string(path: &Path) -> String {

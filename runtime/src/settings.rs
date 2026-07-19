@@ -393,17 +393,12 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 
 /// Expand a leading `~` against `$HOME`; other paths pass through unchanged.
 fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{}/{rest}", home.trim_end_matches('/'));
+    match std::env::var("HOME") {
+        Ok(home) => kernel::fs::expand_tilde(path, Path::new(&home))
+            .to_string_lossy()
+            .into_owned(),
+        Err(_) => path.to_owned(),
     }
-    if path == "~"
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return home;
-    }
-    path.to_owned()
 }
 
 /// `<config-dir>/hedos.toml`, where the config dir is `XDG_CONFIG_HOME`, else

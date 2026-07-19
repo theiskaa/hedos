@@ -5,6 +5,7 @@
 pub mod artifacts;
 pub mod capabilities;
 pub mod discovery;
+pub mod fs;
 pub mod install;
 pub mod jobs;
 pub mod manifests;

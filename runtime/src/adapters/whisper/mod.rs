@@ -8,6 +8,8 @@ mod backend;
 mod engine;
 mod options;
 
+use std::path::Path;
+
 pub use adapter::WhisperCppAdapter;
 pub use audio::{TranscriptionAudio, TranscriptionError};
 pub use backend::{MissingWhisperBackend, SidecarWhisperBackend, WhisperBackend};
@@ -17,15 +19,10 @@ pub use options::{TranscriptionOptions, TranscriptionSegment};
 /// Expand a leading `~` or `~/` in `path` against `$HOME`, leaving it unchanged
 /// if `$HOME` is unset or the path is not tilde-prefixed.
 pub(super) fn expand_tilde(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return format!("{home}/{rest}");
+    match std::env::var("HOME") {
+        Ok(home) => kernel::fs::expand_tilde(path, Path::new(&home))
+            .to_string_lossy()
+            .into_owned(),
+        Err(_) => path.to_owned(),
     }
-    if path == "~"
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return home;
-    }
-    path.to_owned()
 }

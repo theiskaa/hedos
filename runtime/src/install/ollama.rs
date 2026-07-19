@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kernel::fs::expand_tilde;
 use kernel::install::ollama_pull::{Aggregator, Outcome};
 use kernel::install::reference::ollama_install_tag;
 use kernel::install::{
@@ -413,16 +414,6 @@ fn models_root(environment: &HashMap<String, String>) -> PathBuf {
         return expand_tilde(custom, &home_dir(environment));
     }
     home_dir(environment).join(".ollama/models")
-}
-
-fn expand_tilde(raw: &str, home: &Path) -> PathBuf {
-    if let Some(rest) = raw.strip_prefix("~/") {
-        home.join(rest)
-    } else if raw == "~" {
-        home.to_path_buf()
-    } else {
-        PathBuf::from(raw)
-    }
 }
 
 /// The models directory to show the user, with the home prefix collapsed to `~`.

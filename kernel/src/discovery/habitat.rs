@@ -14,6 +14,7 @@ use crate::discovery::lm_studio_scanner::LMStudioScanner;
 use crate::discovery::loose_file_scanner::LooseFileScanner;
 use crate::discovery::ollama_scanner::OllamaStoreScanner;
 use crate::discovery::scanner::StoreScanner;
+use crate::fs::expand_tilde;
 use crate::records::SourceKind;
 
 /// The discovery-relevant model settings: user-added folders to watch and extra
@@ -167,17 +168,6 @@ fn loose_directories(home: &Path) -> Vec<PathBuf> {
 
 fn is_hub_directory(url: &Path) -> bool {
     url.is_dir()
-}
-
-/// Expand a leading `~`/`~/` against `home`; other paths pass through.
-fn expand_tilde(path: &str, home: &Path) -> PathBuf {
-    if path == "~" {
-        home.to_path_buf()
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        home.join(rest)
-    } else {
-        PathBuf::from(path)
-    }
 }
 
 /// De-duplicate paths, preserving first-seen order.
