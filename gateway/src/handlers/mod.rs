@@ -13,6 +13,15 @@ pub mod chat;
 pub mod models;
 pub mod stream;
 
+/// The generic server error shown when a runtime stream fails mid-flight; the
+/// runtime's own message may carry internals, so it is not surfaced.
+pub(crate) fn runtime_failed(_: runtime::adapters::RuntimeError) -> GatewayError {
+    GatewayError::new(
+        crate::error::GatewayErrorKind::ServerError,
+        "the runtime failed to complete the request",
+    )
+}
+
 /// The future a [`GatewayHandling::handle`] returns, borrowing its inputs.
 pub type HandlerFuture<'a> =
     Pin<Box<dyn Future<Output = Result<GatewayOutcome, GatewayError>> + Send + 'a>>;

@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
 use kernel::records::{Capability, JsonValue, ModelRecord};
-use runtime::adapters::{ChunkStream, RuntimeError};
+use runtime::adapters::ChunkStream;
 use serde_json::json;
 
+use super::runtime_failed;
 use super::stream::{race_timeout, write_failure, write_timeout};
 use super::{GatewayHandling, HandlerFuture, completion_id};
 use crate::admission::GatewayWorkKind;
@@ -30,14 +31,6 @@ const DEFAULT_RUN_TIMEOUT_SECONDS: u64 = 600;
 
 fn bad_request(message: impl Into<String>) -> GatewayError {
     GatewayError::new(GatewayErrorKind::BadRequest, message)
-}
-
-/// A runtime stream error, rendered generically so it doesn't leak internals.
-fn runtime_failed(_: RuntimeError) -> GatewayError {
-    GatewayError::new(
-        GatewayErrorKind::ServerError,
-        "the runtime failed to complete the request",
-    )
 }
 
 /// The shared chat prefix: resolve and admit the model, reject tools it can't

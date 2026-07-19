@@ -12,7 +12,7 @@ use super::daemon_liveness::{
     Daemon, DaemonError, DaemonLiveness, daemon_error, dimensions, run_daemon_job,
 };
 use super::{ChunkStream, JobRunning, JobStream, RuntimeAdapter, RuntimeError, RuntimeStream};
-use crate::util::base64_decode;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 
 /// The AUTOMATIC1111 daemon adapter.
 pub struct A1111Adapter {
@@ -116,9 +116,9 @@ impl JobRunning for A1111Adapter {
                     .and_then(|images| images.first())
                     .and_then(Value::as_str)
                     .ok_or_else(|| DaemonError::Failed("A1111 returned no image".to_owned()))?;
-                base64_decode(encoded).ok_or_else(|| {
-                    DaemonError::Failed("A1111 returned malformed base64".to_owned())
-                })
+                BASE64_STANDARD
+                    .decode(encoded)
+                    .map_err(|_| DaemonError::Failed("A1111 returned malformed base64".to_owned()))
             }),
         )
     }

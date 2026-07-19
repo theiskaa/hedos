@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 use kernel::manifests::{RuntimeManifest, RuntimeProvenance};
 use sha2::{Digest, Sha256};
 
-use crate::util::hex;
-
 /// The manifests a load produced and the human-readable issues it skipped or
 /// warned on.
 #[derive(Debug, Default)]
@@ -148,7 +146,7 @@ fn consent_hash(text: &str, directory: Option<&Path>, manifest: &RuntimeManifest
     let Some(directory) = directory else {
         let mut hasher = Sha256::new();
         hasher.update(text.as_bytes());
-        return hex(&hasher.finalize());
+        return hex::encode(hasher.finalize());
     };
 
     let mut hasher = Sha256::new();
@@ -170,7 +168,7 @@ fn consent_hash(text: &str, directory: Option<&Path>, manifest: &RuntimeManifest
         let content = std::fs::read(&path).ok();
         absorb(&mut hasher, &relative, content.as_deref());
     }
-    hex(&hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Fold one `(path, content)` pair into the consent hash: the path bytes, a NUL

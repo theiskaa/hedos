@@ -6,7 +6,7 @@
 use kernel::records::JsonValue;
 
 use super::expand_tilde;
-use crate::util::base64_decode;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 
 /// Why a transcribe payload could not be turned into audio.
 #[derive(Debug, thiserror::Error)]
@@ -45,7 +45,7 @@ impl TranscriptionAudio {
             return Self::from_wav_file(&expand_tilde(path));
         }
         if let Some(base64) = fields.get("pcm").and_then(JsonValue::as_str) {
-            let Some(data) = base64_decode(base64) else {
+            let Ok(data) = BASE64_STANDARD.decode(base64) else {
                 return Err(TranscriptionError::PayloadInvalid(
                     "transcribe pcm payload is not valid base64".to_owned(),
                 ));
@@ -264,7 +264,7 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&1.0f32.to_le_bytes());
         bytes.extend_from_slice(&(-1.0f32).to_le_bytes());
-        let base64 = encode_base64(&bytes);
+        let base64 = BASE64_STANDARD.encode(&bytes);
         let mut fields = BTreeMap::new();
         fields.insert("pcm".to_owned(), JsonValue::String(base64));
         fields.insert("sampleRate".to_owned(), JsonValue::Int(22_050));
@@ -302,31 +302,5 @@ mod tests {
         assert_eq!(resampled.len(), 2);
         // Same rate is a passthrough.
         assert_eq!(audio.mono_samples(8_000), audio.samples);
-    }
-
-    /// Standard base64 encode, for building test payloads.
-    fn encode_base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] =
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let b0 = chunk[0] as u32;
-            let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-            let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-            let triple = (b0 << 16) | (b1 << 8) | b2;
-            out.push(ALPHABET[((triple >> 18) & 0x3f) as usize] as char);
-            out.push(ALPHABET[((triple >> 12) & 0x3f) as usize] as char);
-            out.push(if chunk.len() > 1 {
-                ALPHABET[((triple >> 6) & 0x3f) as usize] as char
-            } else {
-                '='
-            });
-            out.push(if chunk.len() > 2 {
-                ALPHABET[(triple & 0x3f) as usize] as char
-            } else {
-                '='
-            });
-        }
-        out
     }
 }

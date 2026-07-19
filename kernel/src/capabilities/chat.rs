@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::capabilities::{ToolCall, ToolSpec};
 use crate::records::JsonValue;
-use crate::util::base64_encode;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 
 const TOOL_SHAPE_HINT: &str = "each tool must be {type: \"function\", function: {name}}";
 const TOOLS_ARRAY_HINT: &str = "tools must be an array of function tools";
@@ -174,7 +174,7 @@ impl ChatMessage {
             .attachments
             .iter()
             .filter(|attachment| attachment.kind == AttachmentKind::Image)
-            .map(|attachment| JsonValue::String(base64_encode(&attachment.data)))
+            .map(|attachment| JsonValue::String(BASE64_STANDARD.encode(&attachment.data)))
             .collect();
         if !images.is_empty() {
             object.insert("images".to_owned(), JsonValue::Array(images));

@@ -15,7 +15,8 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
-use crate::wire::{base64, param_decoding, timestamp};
+use crate::wire::{param_decoding, timestamp};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 
 /// The number of bytes in a mebibyte, for the `size` field.
 const BYTES_PER_MIB: i64 = 1_048_576;
@@ -126,7 +127,7 @@ fn decode_message(raw: &BTreeMap<String, JsonValue>) -> Result<ChatMessage, Gate
         for image in images {
             let data = image
                 .as_str()
-                .and_then(base64::decode)
+                .and_then(|image| BASE64_STANDARD.decode(image).ok())
                 .ok_or_else(|| bad_request("each image must be a base64-encoded string"))?;
             attachments.push(ChatAttachment {
                 kind: AttachmentKind::Image,

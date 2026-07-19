@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::persistence;
-use crate::util::{hex_encode, now_millis};
+use crate::util::now_millis;
 
 use super::artifact::{Artifact, ArtifactDraft};
 
@@ -50,7 +50,7 @@ impl ArtifactStore {
     pub fn store(&mut self, draft: ArtifactDraft) -> Result<Artifact, ArtifactStoreError> {
         self.load_if_needed()?;
         let created_at = now_millis();
-        let hash = hex_encode(&Sha256::digest(&draft.data));
+        let hash = hex::encode(Sha256::digest(&draft.data));
         let slug = slug(&draft.model);
         let year = year_of(created_at);
         let path = format!("{year}/{slug}_{}.{}", &hash[..12], draft.file_extension);
@@ -148,7 +148,7 @@ impl ArtifactStore {
     }
 
     fn spill(&self, preview: &[u8]) -> Result<String, ArtifactStoreError> {
-        let hash = hex_encode(&Sha256::digest(preview));
+        let hash = hex::encode(Sha256::digest(preview));
         let path = format!("blobs/{hash}");
         self.write_if_absent(preview, &path)?;
         Ok(path)

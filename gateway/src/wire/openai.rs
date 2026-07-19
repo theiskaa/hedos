@@ -12,7 +12,8 @@ use kernel::records::{JsonValue, ModelRecord};
 use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
-use crate::wire::{base64, param_decoding};
+use crate::wire::param_decoding;
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 
 /// `i64::MIN`/`i64::MAX` as floats, for range-checking integer-valued floats.
 /// `i64::MAX as f64` rounds up to 2^63, one past the real max, so the upper
@@ -343,8 +344,8 @@ pub(crate) fn decode_image_data_uri(url: &str) -> Result<ChatAttachment, Gateway
     };
     let meta = &body[..comma];
     let encoded = &body[comma + 1..];
-    let data = match base64::decode(encoded) {
-        Some(data) if meta.contains("base64") => data,
+    let data = match BASE64_STANDARD.decode(encoded) {
+        Ok(data) if meta.contains("base64") => data,
         _ => return Err(bad_request("image data: URI must carry base64 content")),
     };
     let mediatype = meta.split(';').next().unwrap_or("");

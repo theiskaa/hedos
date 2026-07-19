@@ -9,7 +9,7 @@ use crate::records::identifiers::{
     Capability, ExecutionMode, Modality, ModelState, RunTier, RuntimeId, SourceKind,
 };
 use crate::records::json_value::JsonValue;
-use crate::util::{hex_encode, now_millis};
+use crate::util::now_millis;
 
 /// Where a model's weights live and how it is identified.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -239,5 +239,5 @@ pub fn stable_id(source: &ModelSource) -> String {
         hasher.update(field.as_bytes());
     }
     let digest = hasher.finalize();
-    hex_encode(&digest[..8])
+    hex::encode(&digest[..8])
 }

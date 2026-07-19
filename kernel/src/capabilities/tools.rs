@@ -6,7 +6,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::records::JsonValue;
-use crate::util::hex_encode;
 
 /// A tool a model may be offered: a name, a description, and a JSON-Schema
 /// parameter object.
@@ -136,5 +135,5 @@ fn new_call_id() -> String {
     let entropy = std::collections::hash_map::RandomState::new()
         .build_hasher()
         .finish();
-    format!("call_{}", hex_encode(&entropy.to_le_bytes()))
+    format!("call_{}", hex::encode(entropy.to_le_bytes()))
 }

@@ -108,7 +108,7 @@ impl HFCacheWriter {
         }
         let mut hasher = Sha256::new();
         hasher.update(format!("{revision}\n{}", sibling.rfilename).as_bytes());
-        format!("tmp-{}", hex(&hasher.finalize()))
+        format!("tmp-{}", hex::encode(hasher.finalize()))
     }
 
     /// Bytes of `selection` already on disk at `revision`: a completed
@@ -255,7 +255,7 @@ impl HFCacheWriter {
             )));
         }
 
-        let digest = hex(&hasher.finalize());
+        let digest = hex::encode(hasher.finalize());
         if let Some(sha) = &sibling.sha256
             && &digest != sha
         {
@@ -388,15 +388,6 @@ impl HFCacheWriter {
 
 fn io_err(error: std::io::Error) -> InstallError {
     InstallError::TransferFailed(error.to_string())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 /// A per-process counter so concurrent `write_atomic` calls (even for the same

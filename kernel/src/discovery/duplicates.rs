@@ -89,7 +89,7 @@ fn file_size(path: &Path) -> std::io::Result<i64> {
 /// Two files with the same fingerprint and size are treated as the same weights.
 pub fn content_fingerprint(path: &Path) -> Option<String> {
     let size = std::fs::metadata(path).ok()?.len();
-    fingerprint(path, size).map(|digest| crate::util::hex_encode(&digest))
+    fingerprint(path, size).map(hex::encode)
 }
 
 fn fingerprint(path: &Path, size: u64) -> Option<[u8; 32]> {
