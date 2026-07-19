@@ -1,17 +1,17 @@
 //! Support logic for manifest-declared runtimes: resolving a model's on-disk
 //! paths, substituting the `{model}`/`{prompt}`/`{workdir}`/`{outputs}`/`{python}`
-//! placeholders in a manifest command, and the small string/JSON helpers the
-//! manifest adapters share.
+//! placeholders in a manifest command, generating a starter manifest for a model,
+//! and the small string/JSON helpers the manifest adapters share.
 //!
-//! The sandbox-profile assembly, the VM-guest command form, and the workdir
-//! bundle helpers are Apple/sandbox-specific and are deferred with the
-//! `ManifestSidecarAdapter`/`VMCommandAdapter` units; this module is the pure,
-//! cross-platform core those adapters build on.
+//! The command runtimes launch the interpreter directly rather than through a
+//! macOS sandbox wrapper; this module is the cross-platform core the manifest
+//! adapters build on.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use kernel::records::{JsonValue, ModelRecord, SourceKind};
+use kernel::records::{Capability, JsonValue, Modality, ModelRecord, SourceKind};
+use kernel::resolution::{IdentifiedModel, ModelFormat, identify};
 
 /// The largest output file a manifest command may produce before it is refused
 /// (256 MiB), guarding against a runaway runtime filling memory.
@@ -224,4 +224,233 @@ pub fn substituted(
         ));
     }
     Ok(tokens)
+}
+
+/// The static tail of a starter manifest: the `[env]`/`[serve]` stanzas, the
+/// commented one-shot `[invoke]` alternative, and `[permissions]`. Flush-left so
+/// the generated TOML has no stray indentation.
+const TEMPLATE_BODY: &str = r#"
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+# or replace [env]+[serve] with a one-shot command:
+# [invoke]
+# command = "your-tool --model {model} --prompt {prompt} --out {outputs}"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]"#;
+
+/// A starter TOML manifest for `record` — the scaffolding a user fills in to
+/// declare a custom runtime: an id, the modality/capabilities/execution inferred
+/// from identification, a detect rule, and the `[env]`/`[serve]`/`[invoke]`
+/// stanzas.
+pub fn template_for(record: &ModelRecord) -> String {
+    render_template(record, &identify(record))
+}
+
+fn render_template(record: &ModelRecord, identified: &IdentifiedModel) -> String {
+    let slug = slug(&record.display_name().to_lowercase());
+    let modality = identified.modality.as_ref().unwrap_or(&record.modality);
+    let execution = if *modality == Modality::image() {
+        "job"
+    } else {
+        "stream"
+    };
+    let capabilities = default_capabilities(modality)
+        .iter()
+        .map(|capability| format!("\"{}\"", capability.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detect = detect_line(record, identified);
+    format!(
+        "id           = \"{slug}\"\n\
+         modalities   = [\"{}\"]\n\
+         capabilities = [{capabilities}]\n\
+         execution    = \"{execution}\"\n\
+         {detect}\n{TEMPLATE_BODY}",
+        modality.as_str(),
+    )
+}
+
+/// The capabilities a manifest starts with for `modality`.
+fn default_capabilities(modality: &Modality) -> Vec<Capability> {
+    if *modality == Modality::image() {
+        vec![Capability::image()]
+    } else if *modality == Modality::speech() {
+        vec![Capability::speak()]
+    } else if *modality == Modality::audio() {
+        vec![Capability::transcribe()]
+    } else {
+        vec![Capability::chat(), Capability::complete()]
+    }
+}
+
+/// The `detect = { … }` line that recognizes `record`: a diffusers pipeline
+/// class, else a weight-file extension, else a `config.json` architecture, else a
+/// bare `config.json` presence check.
+fn detect_line(record: &ModelRecord, identified: &IdentifiedModel) -> String {
+    if identified.format == ModelFormat::Diffusers
+        && let Some(pipeline_class) = &identified.pipeline_class
+    {
+        return format!(
+            "detect       = {{ file = \"model_index.json\", contains = \"{pipeline_class}\" }}"
+        );
+    }
+    if let Some(weight) = &record.primary_weight_path {
+        let extension = Path::new(weight)
+            .extension()
+            .map(|extension| extension.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !extension.is_empty() {
+            return format!("detect       = {{ extension = \"{extension}\" }}");
+        }
+    }
+    if let Some(architecture) = config_architecture(record) {
+        return format!(
+            "detect       = {{ file = \"config.json\", contains = \"{architecture}\" }}"
+        );
+    }
+    "detect       = { file = \"config.json\" }".to_owned()
+}
+
+/// The first `architectures` entry in the model's `config.json`, if readable.
+/// The whole array must be strings; a mixed array is rejected (falls back to a
+/// bare `config.json` detect rule).
+fn config_architecture(record: &ModelRecord) -> Option<String> {
+    let paths = SidecarModelPaths::resolve(record);
+    let data = std::fs::read(Path::new(&paths.snapshot).join("config.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    let architectures: Vec<&str> = json
+        .get("architectures")?
+        .as_array()?
+        .iter()
+        .map(serde_json::Value::as_str)
+        .collect::<Option<_>>()?;
+    architectures
+        .first()
+        .map(|architecture| architecture.to_string())
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+    use kernel::records::{ExecutionMode, ModelSource};
+    use kernel::resolution::ModelFormat;
+
+    fn record(name: &str, modality: Modality) -> ModelRecord {
+        ModelRecord::new(
+            name,
+            modality,
+            Vec::new(),
+            ModelSource::new(SourceKind::folder(), "/models/thing"),
+        )
+    }
+
+    fn identified(format: ModelFormat, modality: Option<Modality>) -> IdentifiedModel {
+        IdentifiedModel::new(format, modality, Vec::new(), ExecutionMode::Sync)
+    }
+
+    #[test]
+    fn a_text_model_renders_a_streaming_chat_manifest() {
+        let record = record("My Model", Modality::text());
+        let manifest = render_template(&record, &identified(ModelFormat::Gguf, None));
+        assert!(manifest.contains("id           = \"my-model\""));
+        assert!(manifest.contains("modalities   = [\"text\"]"));
+        assert!(manifest.contains("capabilities = [\"chat\", \"complete\"]"));
+        assert!(manifest.contains("execution    = \"stream\""));
+        assert!(manifest.contains("[permissions]"));
+        // The commented one-shot invoke placeholders survive literally.
+        assert!(manifest.contains("--model {model} --prompt {prompt}"));
+    }
+
+    #[test]
+    fn an_image_model_renders_a_job_manifest() {
+        let record = record("SDXL", Modality::image());
+        let manifest = render_template(&record, &identified(ModelFormat::Diffusers, None));
+        assert!(manifest.contains("execution    = \"job\""));
+        assert!(manifest.contains("capabilities = [\"image\"]"));
+    }
+
+    #[test]
+    fn the_detect_line_prefers_a_diffusers_pipeline_class() {
+        let record = record("m", Modality::image());
+        let mut identified = identified(ModelFormat::Diffusers, Some(Modality::image()));
+        identified.pipeline_class = Some("FluxPipeline".to_owned());
+        assert_eq!(
+            detect_line(&record, &identified),
+            "detect       = { file = \"model_index.json\", contains = \"FluxPipeline\" }"
+        );
+    }
+
+    #[test]
+    fn the_detect_line_falls_back_to_a_weight_extension() {
+        let mut record = record("m", Modality::text());
+        record.primary_weight_path = Some("/models/thing/weights.gguf".to_owned());
+        assert_eq!(
+            detect_line(&record, &identified(ModelFormat::Gguf, None)),
+            "detect       = { extension = \"gguf\" }"
+        );
+    }
+
+    #[test]
+    fn the_detect_line_falls_back_to_a_bare_config_check() {
+        let record = record("m", Modality::text());
+        assert_eq!(
+            detect_line(&record, &identified(ModelFormat::Safetensors, None)),
+            "detect       = { file = \"config.json\" }"
+        );
+    }
+
+    #[test]
+    fn config_architecture_requires_an_all_string_array() {
+        let dir = std::env::temp_dir().join(format!("hedos-manifest-arch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut record = record("m", Modality::text());
+        record.source.path = dir.to_string_lossy().into_owned();
+
+        // A mixed array is rejected whole, even though the first element is a string.
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"architectures": ["Foo", 123]}"#,
+        )
+        .unwrap();
+        assert_eq!(config_architecture(&record), None);
+
+        // An all-string array yields its first entry.
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"architectures": ["Bar", "Baz"]}"#,
+        )
+        .unwrap();
+        assert_eq!(config_architecture(&record), Some("Bar".to_owned()));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn default_capabilities_map_each_modality() {
+        assert_eq!(
+            default_capabilities(&Modality::image()),
+            vec![Capability::image()]
+        );
+        assert_eq!(
+            default_capabilities(&Modality::speech()),
+            vec![Capability::speak()]
+        );
+        assert_eq!(
+            default_capabilities(&Modality::audio()),
+            vec![Capability::transcribe()]
+        );
+        assert_eq!(
+            default_capabilities(&Modality::text()),
+            vec![Capability::chat(), Capability::complete()]
+        );
+    }
 }
