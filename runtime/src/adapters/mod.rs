@@ -9,11 +9,16 @@
 //! resolution unit ([`crate::resolution`]). The invoke path selects an adapter by
 //! [`RuntimeAdapter::can_serve`].
 
+mod grammar;
 mod llama_pool;
 mod llama_server;
 mod ollama;
 mod openai;
 
+pub use grammar::{
+    CALL_CLOSE, CALL_OPEN, GENERIC_JSON_GRAMMAR, ToolGrammarError, grammar_for_response_format,
+    tool_grammar, tool_system_block,
+};
 pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
 pub use ollama::OllamaAdapter;
