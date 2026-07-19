@@ -6,11 +6,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The current instant as an ISO 8601 UTC string.
 pub fn now_iso8601() -> String {
-    let millis = SystemTime::now()
+    iso8601(now_millis())
+}
+
+/// The current time in whole seconds since the Unix epoch (the OpenAI `created`
+/// field).
+pub fn now_unix_seconds() -> i64 {
+    now_millis() / 1000
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0);
-    iso8601(millis)
+        .unwrap_or(0)
 }
 
 /// Format `millis` since the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ` (UTC, no

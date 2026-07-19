@@ -8,6 +8,7 @@
 pub mod admission;
 pub mod defaults;
 pub mod error;
+pub mod handlers;
 pub mod identity;
 pub mod kernel_gateway;
 pub mod param_guard;

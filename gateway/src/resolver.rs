@@ -2,9 +2,12 @@
 //! shelf, honoring the caller's scopes. This is the pure matching core; the
 //! authorization and backpressure wrapper lands with the port bridge.
 
-use kernel::records::{ModelRecord, ModelState};
+use kernel::records::{Capability, ModelRecord, ModelState};
 
+use crate::admission::GatewayWorkKind;
 use crate::error::{GatewayError, GatewayErrorKind};
+use crate::identity::GatewayIdentity;
+use crate::port::{GatewayPort, require_admission};
 use crate::scopes::GatewayScopes;
 
 /// Resolve `requested` to a single ready, in-scope model.
@@ -58,6 +61,23 @@ pub fn resolve(
         GatewayErrorKind::NotFound,
         format!("no ready model matches {requested}"),
     ))
+}
+
+/// Resolve `requested` and authorize it: match it on the port's shelf within the
+/// caller's scopes, require the capability scope, and check the machine can admit
+/// the work now. The full gate a handler runs before dispatching.
+pub async fn resolve_authorized(
+    port: &dyn GatewayPort,
+    requested: &str,
+    capability: Capability,
+    kind: GatewayWorkKind,
+    identity: &GatewayIdentity,
+) -> Result<ModelRecord, GatewayError> {
+    let shelf = port.shelf().await;
+    let record = resolve(requested, &shelf, &identity.scopes)?;
+    identity.require(&record.id, &capability)?;
+    require_admission(port, &record, kind).await?;
+    Ok(record)
 }
 
 fn select<'a>(
