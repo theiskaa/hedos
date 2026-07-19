@@ -5,9 +5,11 @@
 use std::collections::BTreeMap;
 
 use kernel::capabilities::{
-    AttachmentKind, ChatAttachment, ChatMessage, ChatRole, ToolCall, ToolSpec, decode_tool_specs,
+    AttachmentKind, ChatAttachment, ChatMessage, ChatRole, GenerationStats, ToolCall, ToolSpec,
+    decode_tool_specs,
 };
 use kernel::records::JsonValue;
+use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::wire::{base64, param_decoding};
@@ -294,6 +296,125 @@ fn object<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonValue {
     )
 }
 
+/// One `tool_calls` entry for a `/api/chat` message: `{function: {name,
+/// arguments}}` with arguments as a nested object (the Ollama wire shape).
+fn tool_call_entry(call: &ToolCall) -> Value {
+    json!({
+        "function": {
+            "name": call.name,
+            "arguments": serde_json::to_value(&call.arguments).unwrap_or(Value::Null),
+        }
+    })
+}
+
+/// Serialize a value as a newline-terminated NDJSON line (the Ollama streaming
+/// frame format).
+pub fn line(value: &Value) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(value).unwrap_or_default();
+    bytes.push(b'\n');
+    bytes
+}
+
+/// A streaming `/api/chat` delta frame (`done: false`).
+pub fn delta(
+    model: &str,
+    created_at: &str,
+    content: Option<&str>,
+    thinking: Option<&str>,
+    tool_call: Option<&ToolCall>,
+) -> Value {
+    let mut message = serde_json::Map::new();
+    message.insert("role".to_owned(), json!("assistant"));
+    message.insert("content".to_owned(), json!(content.unwrap_or("")));
+    if let Some(thinking) = thinking {
+        message.insert("thinking".to_owned(), json!(thinking));
+    }
+    if let Some(call) = tool_call {
+        message.insert("tool_calls".to_owned(), json!([tool_call_entry(call)]));
+    }
+    json!({
+        "model": model,
+        "created_at": created_at,
+        "message": Value::Object(message),
+        "done": false,
+    })
+}
+
+/// The terminal `/api/chat` frame (`done: true`), carrying the finish reason and
+/// any generation stats.
+pub fn final_frame(
+    model: &str,
+    created_at: &str,
+    content: &str,
+    stats: Option<&GenerationStats>,
+    tool_calls: &[ToolCall],
+) -> Value {
+    let mut message = serde_json::Map::new();
+    message.insert("role".to_owned(), json!("assistant"));
+    message.insert("content".to_owned(), json!(content));
+    if !tool_calls.is_empty() {
+        let calls: Vec<Value> = tool_calls.iter().map(tool_call_entry).collect();
+        message.insert("tool_calls".to_owned(), Value::Array(calls));
+    }
+    let finish = stats.and_then(|stats| stats.finish_reason.as_deref());
+    // Ollama never reports tool_calls as a done_reason; it maps to "stop".
+    let done_reason = if !tool_calls.is_empty() || finish == Some("tool_calls") {
+        "stop"
+    } else {
+        finish.unwrap_or("stop")
+    };
+    let mut frame = serde_json::Map::new();
+    frame.insert("model".to_owned(), json!(model));
+    frame.insert("created_at".to_owned(), json!(created_at));
+    frame.insert("message".to_owned(), Value::Object(message));
+    frame.insert("done".to_owned(), json!(true));
+    frame.insert("done_reason".to_owned(), json!(done_reason));
+    insert_stats(&mut frame, stats);
+    Value::Object(frame)
+}
+
+/// A streaming `/api/generate` delta frame (`done: false`).
+pub fn generate_delta(model: &str, created_at: &str, response: &str) -> Value {
+    json!({
+        "model": model,
+        "created_at": created_at,
+        "response": response,
+        "done": false,
+    })
+}
+
+/// The terminal `/api/generate` frame (`done: true`).
+pub fn generate_final(model: &str, created_at: &str, stats: Option<&GenerationStats>) -> Value {
+    let done_reason = stats
+        .and_then(|stats| stats.finish_reason.as_deref())
+        .unwrap_or("stop");
+    let mut frame = serde_json::Map::new();
+    frame.insert("model".to_owned(), json!(model));
+    frame.insert("created_at".to_owned(), json!(created_at));
+    frame.insert("response".to_owned(), json!(""));
+    frame.insert("done".to_owned(), json!(true));
+    frame.insert("done_reason".to_owned(), json!(done_reason));
+    insert_stats(&mut frame, stats);
+    Value::Object(frame)
+}
+
+/// Add the optional `total_duration`/`prompt_eval_count`/`eval_count` fields for
+/// whichever stats are present. Duration is nanoseconds on the Ollama wire.
+fn insert_stats(frame: &mut serde_json::Map<String, Value>, stats: Option<&GenerationStats>) {
+    let Some(stats) = stats else {
+        return;
+    };
+    if let Some(duration_ms) = stats.duration_ms {
+        frame.insert("total_duration".to_owned(), json!(duration_ms * 1_000_000));
+    }
+    if let Some(prompt_tokens) = stats.prompt_tokens {
+        frame.insert("prompt_eval_count".to_owned(), json!(prompt_tokens));
+    }
+    if let Some(completion_tokens) = stats.completion_tokens {
+        frame.insert("eval_count".to_owned(), json!(completion_tokens));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +624,98 @@ mod tests {
         assert!(payload.contains_key("messages"));
         assert_eq!(payload.get("temperature"), Some(&JsonValue::Double(0.5)));
         assert!(!payload.contains_key("tools"));
+    }
+
+    fn tool_call(name: &str, args: &[(&str, JsonValue)]) -> ToolCall {
+        ToolCall::with_id("call_1", name, JsonValue::Object(map(args)))
+    }
+
+    #[test]
+    fn a_line_is_newline_terminated_ndjson() {
+        assert_eq!(line(&json!({"a": 1})), b"{\"a\":1}\n");
+    }
+
+    #[test]
+    fn a_delta_frame_carries_content_and_is_not_done() {
+        let value = delta("llama3", "2020-01-01T00:00:00Z", Some("hi"), None, None);
+        assert_eq!(value["model"], "llama3");
+        assert_eq!(value["created_at"], "2020-01-01T00:00:00Z");
+        assert_eq!(value["message"]["role"], "assistant");
+        assert_eq!(value["message"]["content"], "hi");
+        assert_eq!(value["done"], false);
+    }
+
+    #[test]
+    fn a_delta_defaults_content_and_can_carry_thinking_and_a_tool_call() {
+        let call = tool_call("adder", &[("a", JsonValue::Int(1))]);
+        let value = delta("m", "t", None, Some("hmm"), Some(&call));
+        assert_eq!(value["message"]["content"], "");
+        assert_eq!(value["message"]["thinking"], "hmm");
+        let entry = &value["message"]["tool_calls"][0];
+        assert_eq!(entry["function"]["name"], "adder");
+        // Arguments are a nested object, not a JSON string.
+        assert_eq!(entry["function"]["arguments"]["a"], 1);
+    }
+
+    #[test]
+    fn a_final_frame_maps_tool_calls_to_a_stop_reason_and_carries_stats() {
+        let call = tool_call("adder", &[]);
+        let stats = GenerationStats {
+            prompt_tokens: Some(3),
+            completion_tokens: Some(4),
+            duration_ms: Some(10),
+            ..Default::default()
+        };
+        let value = final_frame("m", "t", "", Some(&stats), std::slice::from_ref(&call));
+        assert_eq!(value["done"], true);
+        // Tool calls present → done_reason "stop", never "tool_calls".
+        assert_eq!(value["done_reason"], "stop");
+        assert_eq!(
+            value["message"]["tool_calls"][0]["function"]["name"],
+            "adder"
+        );
+        assert_eq!(value["total_duration"], 10_000_000i64);
+        assert_eq!(value["prompt_eval_count"], 3);
+        assert_eq!(value["eval_count"], 4);
+    }
+
+    #[test]
+    fn a_plain_final_frame_uses_the_stats_finish_reason() {
+        let stats = GenerationStats {
+            finish_reason: Some("length".to_owned()),
+            ..Default::default()
+        };
+        let value = final_frame("m", "t", "done", Some(&stats), &[]);
+        assert_eq!(value["done_reason"], "length");
+        assert_eq!(value["message"]["content"], "done");
+        // No duration/token stats → those keys are absent.
+        assert!(value.get("total_duration").is_none());
+    }
+
+    #[test]
+    fn a_tool_calls_finish_reason_from_stats_also_maps_to_stop() {
+        let stats = GenerationStats {
+            finish_reason: Some("tool_calls".to_owned()),
+            ..Default::default()
+        };
+        let value = final_frame("m", "t", "", Some(&stats), &[]);
+        assert_eq!(value["done_reason"], "stop");
+    }
+
+    #[test]
+    fn generate_frames_carry_the_response_field() {
+        let delta = generate_delta("m", "t", "chunk");
+        assert_eq!(delta["response"], "chunk");
+        assert_eq!(delta["done"], false);
+
+        let stats = GenerationStats {
+            completion_tokens: Some(9),
+            ..Default::default()
+        };
+        let final_frame = generate_final("m", "t", Some(&stats));
+        assert_eq!(final_frame["response"], "");
+        assert_eq!(final_frame["done"], true);
+        assert_eq!(final_frame["done_reason"], "stop");
+        assert_eq!(final_frame["eval_count"], 9);
     }
 }
