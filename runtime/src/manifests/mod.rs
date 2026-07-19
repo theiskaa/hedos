@@ -7,8 +7,10 @@
 //! macOS sandbox wrapper; this module is the cross-platform core the manifest
 //! adapters build on.
 
+mod community;
 mod store;
 
+pub use community::{CommunityLibrary, ManifestInstaller, Recipe, RuntimeInstallPreview};
 pub use store::{RuntimeCatalog, StoreLoad, UserRuntimeStore};
 
 use std::collections::BTreeMap;
