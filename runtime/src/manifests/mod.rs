@@ -14,6 +14,7 @@ pub use store::{RuntimeCatalog, StoreLoad, UserRuntimeStore};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use kernel::manifests::ManifestDetect;
 use kernel::records::{Capability, JsonValue, Modality, ModelRecord, SourceKind};
 use kernel::resolution::{IdentifiedModel, ModelFormat, identify};
 
@@ -93,6 +94,31 @@ pub fn error_summary(raw: &str) -> String {
             chars[start..].iter().collect()
         }
     }
+}
+
+/// Whether `detect` recognizes `record`: a weight-file extension match, or a
+/// marker file in the model's snapshot (optionally required to contain a string).
+pub fn detect_matches(detect: &ManifestDetect, record: &ModelRecord) -> bool {
+    if let Some(extension) = &detect.file_extension {
+        let candidate = record
+            .primary_weight_path
+            .as_deref()
+            .unwrap_or(&record.source.path);
+        return candidate
+            .to_lowercase()
+            .ends_with(&format!(".{}", extension.to_lowercase()));
+    }
+    let Some(file) = &detect.file else {
+        return false;
+    };
+    let target = Path::new(&SidecarModelPaths::resolve(record).snapshot).join(file);
+    if !target.exists() {
+        return false;
+    }
+    let Some(contains) = &detect.contains else {
+        return true;
+    };
+    std::fs::read_to_string(&target).is_ok_and(|content| content.contains(contains))
 }
 
 /// A filesystem-safe slug of `id`: every non-alphanumeric character becomes `-`.
