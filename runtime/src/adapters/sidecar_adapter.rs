@@ -88,6 +88,13 @@ impl SidecarAdapter {
         &self.spec.id
     }
 
+    /// The per-runtime constants this adapter was built with, for tests that pin
+    /// an adapter's own sidecar wiring (cancel mode, warm window).
+    #[cfg(test)]
+    pub(crate) fn spec(&self) -> &SidecarSpec {
+        &self.spec
+    }
+
     /// Serve `op` for `record`, bridging the sidecar stream into a runtime stream.
     pub(crate) fn stream(
         &self,

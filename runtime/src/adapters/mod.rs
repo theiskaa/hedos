@@ -13,6 +13,7 @@ mod embeddings;
 mod grammar;
 mod llama_pool;
 mod llama_server;
+mod mlx_audio;
 mod mlx_lm;
 mod mlx_vlm;
 mod ollama;
@@ -28,6 +29,7 @@ pub use grammar::{
 };
 pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
+pub use mlx_audio::MlxAudioAdapter;
 pub use mlx_lm::MlxLmAdapter;
 pub use mlx_vlm::MlxVlmAdapter;
 pub use ollama::OllamaAdapter;
