@@ -1,6 +1,33 @@
 //! The per-route request handlers, plus the streaming helpers they share.
 
+use std::future::Future;
+use std::pin::Pin;
+
+use crate::error::GatewayError;
+use crate::identity::{GatewayIdentity, GatewayOutcome};
+use crate::port::GatewayPort;
+use crate::request::GatewayRequest;
+use crate::responder::GatewayResponder;
+
+pub mod chat;
 pub mod stream;
+
+/// The future a [`GatewayHandling::handle`] returns, borrowing its inputs.
+pub type HandlerFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<GatewayOutcome, GatewayError>> + Send + 'a>>;
+
+/// A route handler: turn a request into a response written through `responder`,
+/// reporting the outcome for the audit log.
+pub trait GatewayHandling: Send + Sync {
+    /// Handle one request.
+    fn handle<'a>(
+        &'a self,
+        request: &'a GatewayRequest,
+        identity: &'a GatewayIdentity,
+        port: &'a dyn GatewayPort,
+        responder: &'a GatewayResponder,
+    ) -> HandlerFuture<'a>;
+}
 
 /// A fresh, opaque completion id with the given prefix (e.g. `chatcmpl-`). Uses
 /// process entropy rather than a UUID dependency; clients treat it as opaque.
