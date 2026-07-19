@@ -15,6 +15,11 @@ pub fn now_unix_seconds() -> i64 {
     now_millis() / 1000
 }
 
+/// The current time in milliseconds since the Unix epoch.
+pub fn now_unix_millis() -> i64 {
+    now_millis()
+}
+
 fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

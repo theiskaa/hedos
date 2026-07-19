@@ -6,6 +6,8 @@
 //! [`defaults`] — is what the routers, handlers, and server build on.
 
 pub mod admission;
+pub mod audit;
+pub mod auth;
 pub mod defaults;
 pub mod error;
 pub mod handlers;
@@ -16,6 +18,7 @@ pub mod port;
 pub mod request;
 pub mod resolver;
 pub mod responder;
+pub mod router;
 pub mod scopes;
 pub mod surface;
 pub mod wire;
