@@ -5,6 +5,7 @@
 //! wire [`surface`], the [`error`] type, per-client [`scopes`], and the fixed
 //! [`defaults`] — is what the routers, handlers, and server build on.
 
+pub mod admission;
 pub mod defaults;
 pub mod error;
 pub mod identity;
