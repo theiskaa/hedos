@@ -14,6 +14,7 @@ mod llama_pool;
 mod llama_server;
 mod ollama;
 mod openai;
+mod tool_scanner;
 
 pub use grammar::{
     CALL_CLOSE, CALL_OPEN, GENERIC_JSON_GRAMMAR, ToolGrammarError, grammar_for_response_format,
@@ -23,6 +24,7 @@ pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerS
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
 pub use ollama::OllamaAdapter;
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};
+pub use tool_scanner::ToolCallScanner;
 
 use std::collections::HashSet;
 
