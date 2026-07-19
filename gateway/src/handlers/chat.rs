@@ -3,24 +3,18 @@
 //! kernel, and stream the chunks back in their dialect (or accumulate them into a
 //! single response).
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
-use kernel::records::{Capability, JsonValue, ModelRecord};
-use runtime::adapters::ChunkStream;
-use serde_json::json;
+use kernel::records::{Capability, JsonValue};
 
+use super::runtime_failed;
 use super::stream::{race_timeout, write_failure, write_timeout};
-use super::{GatewayHandling, HandlerFuture, completion_id};
-use super::{bad_request, runtime_failed};
-use crate::admission::GatewayWorkKind;
+use super::{GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch};
 use crate::error::GatewayError;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
-use crate::param_guard;
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
-use crate::resolver::resolve_authorized;
 use crate::responder::GatewayResponder;
 use crate::surface::GatewaySurface;
 use crate::wire::timestamp::{now_iso8601, now_unix_seconds};
@@ -28,36 +22,6 @@ use crate::wire::{ollama, openai};
 
 /// The default run timeout, in seconds, for a streamed chat.
 const DEFAULT_RUN_TIMEOUT_SECONDS: u64 = 600;
-
-/// The shared chat prefix: resolve and admit the model, reject tools it can't
-/// serve, guard the parameters, and invoke it — yielding the record and its
-/// chunk stream.
-async fn dispatch_chat(
-    port: &dyn GatewayPort,
-    identity: &GatewayIdentity,
-    model: &str,
-    tools_present: bool,
-    params: &BTreeMap<String, JsonValue>,
-    payload: JsonValue,
-) -> Result<(ModelRecord, ChunkStream), GatewayError> {
-    let record = resolve_authorized(
-        port,
-        model,
-        Capability::chat(),
-        GatewayWorkKind::Stream,
-        identity,
-    )
-    .await?;
-    if tools_present && !port.supports_tools(&record.id).await {
-        return Err(bad_request(format!(
-            "{model} does not support tool calling"
-        )));
-    }
-    let honored = port.honored_params(&record.id, Capability::chat()).await?;
-    param_guard::require(params, &honored, record.runtime.id.as_ref())?;
-    let stream = port.invoke(&record.id, Capability::chat(), payload).await?;
-    Ok((record, stream))
-}
 
 /// The OpenAI chat-completions handler.
 pub struct OpenAIChatHandler {
@@ -88,10 +52,11 @@ impl GatewayHandling for OpenAIChatHandler {
                 chat.tools.clear();
             }
             let payload = openai::chat_payload(&chat);
-            let (record, mut stream) = dispatch_chat(
+            let (record, mut stream) = dispatch(
                 port,
                 identity,
                 &chat.model,
+                Capability::chat(),
                 !chat.tools.is_empty(),
                 &chat.sampling,
                 payload,
@@ -150,15 +115,13 @@ impl GatewayHandling for OpenAIChatHandler {
                     final_chunk.finish_reason = Some(&finish);
                     body.write(openai::sse_frame(&final_chunk.to_value()));
                     if include_usage {
-                        let usage = json!({
-                            "id": id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": served,
-                            "choices": [],
-                            "usage": openai::usage(final_stats.as_ref()),
-                        });
-                        body.write(openai::sse_frame(&usage));
+                        body.write(openai::sse_frame(&openai::usage_frame(
+                            &id,
+                            created,
+                            &served,
+                            "chat.completion.chunk",
+                            final_stats.as_ref(),
+                        )));
                     }
                     body.write(openai::SSE_DONE.to_vec());
                     body.end();
@@ -175,17 +138,7 @@ impl GatewayHandling for OpenAIChatHandler {
                     }
                 }
             } else {
-                let mut content = String::new();
-                let mut final_stats: Option<GenerationStats> = None;
-                let mut tool_calls = Vec::new();
-                while let Some(result) = stream.recv().await {
-                    match result.map_err(runtime_failed)? {
-                        CapabilityChunk::Text(text) => content.push_str(&text),
-                        CapabilityChunk::ToolCall(call) => tool_calls.push(call),
-                        CapabilityChunk::Done(stats) => final_stats = stats,
-                        _ => {}
-                    }
-                }
+                let (content, tool_calls, final_stats) = collect_completion(&mut stream).await?;
                 let body = openai::completion(
                     &id,
                     created,
@@ -234,10 +187,11 @@ impl GatewayHandling for OllamaChatHandler {
         Box::pin(async move {
             let chat = ollama::decode_chat_request(&request.decoded_json()?)?;
             let payload = ollama::chat_payload(&chat);
-            let (record, mut stream) = dispatch_chat(
+            let (record, mut stream) = dispatch(
                 port,
                 identity,
                 &chat.model,
+                Capability::chat(),
                 !chat.tools.is_empty(),
                 &chat.options,
                 payload,
@@ -299,17 +253,7 @@ impl GatewayHandling for OllamaChatHandler {
                     }
                 }
             } else {
-                let mut content = String::new();
-                let mut final_stats: Option<GenerationStats> = None;
-                let mut tool_calls = Vec::new();
-                while let Some(result) = stream.recv().await {
-                    match result.map_err(runtime_failed)? {
-                        CapabilityChunk::Text(text) => content.push_str(&text),
-                        CapabilityChunk::ToolCall(call) => tool_calls.push(call),
-                        CapabilityChunk::Done(stats) => final_stats = stats,
-                        _ => {}
-                    }
-                }
+                let (content, tool_calls, final_stats) = collect_completion(&mut stream).await?;
                 let body = ollama::final_frame(
                     &served,
                     &now_iso8601(),

@@ -9,16 +9,13 @@ use kernel::records::{Capability, JsonValue};
 use serde_json::json;
 
 use super::{
-    GatewayHandling, HandlerFuture, bad_request, completion_id, required_model, respond_json,
-    runtime_failed,
+    GatewayHandling, HandlerFuture, bad_request, collect_completion, completion_id, dispatch,
+    required_model, respond_json, runtime_failed,
 };
-use crate::admission::GatewayWorkKind;
 use crate::error::GatewayError;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
-use crate::param_guard;
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
-use crate::resolver::resolve_authorized;
 use crate::responder::GatewayResponder;
 use crate::wire::timestamp::{now_iso8601, now_unix_seconds};
 use crate::wire::{ollama, openai, param_decoding};
@@ -99,25 +96,17 @@ impl GatewayHandling for OpenAICompletionsHandler {
                 .and_then(JsonValue::as_bool)
                 .unwrap_or(false);
 
-            let record = resolve_authorized(
+            let payload = prompt_payload(prompt, &sampling);
+            let (record, mut out) = dispatch(
                 port,
+                identity,
                 model,
                 Capability::complete(),
-                GatewayWorkKind::Stream,
-                identity,
+                false,
+                &sampling,
+                payload,
             )
             .await?;
-            let honored = port
-                .honored_params(&record.id, Capability::complete())
-                .await?;
-            param_guard::require(&sampling, &honored, record.runtime.id.as_ref())?;
-            let mut out = port
-                .invoke(
-                    &record.id,
-                    Capability::complete(),
-                    prompt_payload(prompt, &sampling),
-                )
-                .await?;
 
             let id = completion_id("cmpl-");
             let created = now_unix_seconds();
@@ -145,27 +134,18 @@ impl GatewayHandling for OpenAICompletionsHandler {
                     Some(&finish),
                 )));
                 if include_usage {
-                    body.write(openai::sse_frame(&json!({
-                        "id": id,
-                        "object": "text_completion",
-                        "created": created,
-                        "model": model,
-                        "choices": [],
-                        "usage": openai::usage(final_stats.as_ref()),
-                    })));
+                    body.write(openai::sse_frame(&openai::usage_frame(
+                        &id,
+                        created,
+                        model,
+                        "text_completion",
+                        final_stats.as_ref(),
+                    )));
                 }
                 body.write(openai::SSE_DONE.to_vec());
                 body.end();
             } else {
-                let mut text = String::new();
-                let mut final_stats = None;
-                while let Some(result) = out.recv().await {
-                    match result.map_err(runtime_failed)? {
-                        CapabilityChunk::Text(chunk) => text.push_str(&chunk),
-                        CapabilityChunk::Done(stats) => final_stats = stats,
-                        _ => {}
-                    }
-                }
+                let (text, _tool_calls, final_stats) = collect_completion(&mut out).await?;
                 respond_json(
                     responder,
                     &openai::text_completion(&id, created, model, &text, final_stats.as_ref()),
@@ -206,25 +186,17 @@ impl GatewayHandling for OllamaGenerateHandler {
                 .and_then(JsonValue::as_bool)
                 .unwrap_or(true);
 
-            let record = resolve_authorized(
+            let payload = prompt_payload(prompt, &options);
+            let (record, mut out) = dispatch(
                 port,
+                identity,
                 model,
                 Capability::complete(),
-                GatewayWorkKind::Stream,
-                identity,
+                false,
+                &options,
+                payload,
             )
             .await?;
-            let honored = port
-                .honored_params(&record.id, Capability::complete())
-                .await?;
-            param_guard::require(&options, &honored, record.runtime.id.as_ref())?;
-            let mut out = port
-                .invoke(
-                    &record.id,
-                    Capability::complete(),
-                    prompt_payload(prompt, &options),
-                )
-                .await?;
 
             if stream {
                 let body = responder.begin_stream(200, "application/x-ndjson")?;
@@ -245,15 +217,7 @@ impl GatewayHandling for OllamaGenerateHandler {
                 )));
                 body.end();
             } else {
-                let mut response = String::new();
-                let mut final_stats = None;
-                while let Some(result) = out.recv().await {
-                    match result.map_err(runtime_failed)? {
-                        CapabilityChunk::Text(chunk) => response.push_str(&chunk),
-                        CapabilityChunk::Done(stats) => final_stats = stats,
-                        _ => {}
-                    }
-                }
+                let (response, _tool_calls, final_stats) = collect_completion(&mut out).await?;
                 let mut object =
                     ollama::generate_final(model, &now_iso8601(), final_stats.as_ref());
                 object["response"] = json!(response);

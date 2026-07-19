@@ -4,12 +4,17 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use kernel::records::JsonValue;
+use kernel::capabilities::{CapabilityChunk, GenerationStats, ToolCall};
+use kernel::records::{Capability, JsonValue, ModelRecord};
+use runtime::adapters::ChunkStream;
 
+use crate::admission::GatewayWorkKind;
 use crate::error::GatewayError;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
+use crate::param_guard;
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
+use crate::resolver::resolve_authorized;
 use crate::responder::GatewayResponder;
 
 pub mod chat;
@@ -47,6 +52,58 @@ pub(crate) fn required_model(body: &BTreeMap<String, JsonValue>) -> Result<&str,
         .and_then(JsonValue::as_str)
         .filter(|model| !model.is_empty())
         .ok_or_else(|| bad_request("model is required"))
+}
+
+/// The shared streaming prefix: resolve and admit `model` for `capability`,
+/// reject tools it can't serve (when `tools_present`), guard the parameters, and
+/// invoke it — yielding the record and its chunk stream. Chat passes
+/// [`Capability::chat`] with its tool flag; the prompt endpoints pass
+/// [`Capability::complete`] with `tools_present = false`.
+pub(crate) async fn dispatch(
+    port: &dyn GatewayPort,
+    identity: &GatewayIdentity,
+    model: &str,
+    capability: Capability,
+    tools_present: bool,
+    params: &BTreeMap<String, JsonValue>,
+    payload: JsonValue,
+) -> Result<(ModelRecord, ChunkStream), GatewayError> {
+    let record = resolve_authorized(
+        port,
+        model,
+        capability.clone(),
+        GatewayWorkKind::Stream,
+        identity,
+    )
+    .await?;
+    if tools_present && !port.supports_tools(&record.id).await {
+        return Err(bad_request(format!(
+            "{model} does not support tool calling"
+        )));
+    }
+    let honored = port.honored_params(&record.id, capability.clone()).await?;
+    param_guard::require(params, &honored, record.runtime.id.as_ref())?;
+    let stream = port.invoke(&record.id, capability, payload).await?;
+    Ok((record, stream))
+}
+
+/// Drain a non-streamed run to its accumulated text, tool calls, and final
+/// stats. The prompt endpoints ignore the (always empty) tool-call vector.
+pub(crate) async fn collect_completion(
+    stream: &mut ChunkStream,
+) -> Result<(String, Vec<ToolCall>, Option<GenerationStats>), GatewayError> {
+    let mut content = String::new();
+    let mut tool_calls = Vec::new();
+    let mut final_stats = None;
+    while let Some(result) = stream.recv().await {
+        match result.map_err(runtime_failed)? {
+            CapabilityChunk::Text(text) => content.push_str(&text),
+            CapabilityChunk::ToolCall(call) => tool_calls.push(call),
+            CapabilityChunk::Done(stats) => final_stats = stats,
+            _ => {}
+        }
+    }
+    Ok((content, tool_calls, final_stats))
 }
 
 /// Send `value` as a `200` JSON response.

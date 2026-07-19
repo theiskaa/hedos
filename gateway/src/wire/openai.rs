@@ -555,6 +555,26 @@ pub fn usage(stats: Option<&GenerationStats>) -> Value {
     })
 }
 
+/// The terminal usage-only streaming frame: an empty `choices` list plus the
+/// token `usage`, tagged with the given `object` (`chat.completion.chunk` for
+/// chat, `text_completion` for completions).
+pub fn usage_frame(
+    id: &str,
+    created: i64,
+    model: &str,
+    object: &str,
+    stats: Option<&GenerationStats>,
+) -> Value {
+    json!({
+        "id": id,
+        "object": object,
+        "created": created,
+        "model": model,
+        "choices": [],
+        "usage": usage(stats),
+    })
+}
+
 /// A streaming `text_completion` chunk (the legacy `/v1/completions` shape).
 pub fn text_completion_chunk(
     id: &str,
