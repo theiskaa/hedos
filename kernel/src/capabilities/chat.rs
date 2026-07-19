@@ -297,8 +297,8 @@ pub fn decode_tool_specs(value: Option<&JsonValue>) -> Result<Vec<ToolSpec>, Cha
     let JsonValue::Array(entries) = value else {
         return Err(ChatWireError::PayloadInvalid(TOOLS_ARRAY_HINT.to_owned()));
     };
-    // Swift casts the whole array to `[[String: Any]]`, so a non-object element
-    // fails the array shape wholesale (not the per-tool shape). Match that.
+    // A non-object element fails the array shape wholesale (not the per-tool
+    // shape): the array is validated all-or-nothing.
     if entries.iter().any(|entry| entry.as_object().is_none()) {
         return Err(ChatWireError::PayloadInvalid(TOOLS_ARRAY_HINT.to_owned()));
     }

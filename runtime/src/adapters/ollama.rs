@@ -565,8 +565,8 @@ fn parse_embed(bytes: &[u8]) -> Result<(Vec<Vec<f64>>, Option<i64>), RuntimeErro
         return Err(RuntimeError::Failed(format!("ollama: {message}")));
     }
     let understood = || RuntimeError::Failed("ollama embed response was not understood".to_owned());
-    // Strict, like the Swift `[[Double]]` decode: a non-array row or a
-    // non-numeric element fails the whole response rather than being dropped.
+    // Strict: a non-array row or a non-numeric element fails the whole response
+    // rather than being dropped.
     let mut vectors: Vec<Vec<f64>> = Vec::new();
     if let Some(rows) = object.get("embeddings").and_then(JsonValue::as_array) {
         for row in rows {

@@ -83,7 +83,7 @@ impl HFCacheScanner {
                 || index_references_missing_shard(&snapshot, &names)
                 || gguf_shards_incomplete(&snapshot, &names);
 
-            // Last non-empty path segment (Swift's `split` omits empty ones, so a
+            // Last non-empty path segment (empty segments are skipped, so a
             // trailing slash doesn't yield an empty name).
             let name = repo
                 .rsplit('/')
@@ -164,8 +164,7 @@ fn current_snapshot(repo_dir: &Path) -> Option<(PathBuf, String)> {
             .metadata()
             .and_then(|meta| meta.modified())
             .unwrap_or(std::time::UNIX_EPOCH);
-        // Strict `>` keeps the first of equal-mtime snapshots, matching Swift's
-        // `max(by: <)`.
+        // Strict `>` keeps the first of equal-mtime snapshots.
         if newest.as_ref().is_none_or(|(_, best)| modified > *best) {
             newest = Some((entry.path(), modified));
         }

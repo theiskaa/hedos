@@ -53,8 +53,8 @@ pub fn stop(
 }
 
 /// A value as a slice of its object elements, or `None` unless it is an array in
-/// which every element is an object (Swift's all-or-nothing `as? [[String: Any]]`
-/// cast). An absent or non-array value is also `None`.
+/// which every element is an object (all-or-nothing: any non-object element makes
+/// the whole value `None`). An absent or non-array value is also `None`.
 pub fn object_array(value: Option<&JsonValue>) -> Option<Vec<&BTreeMap<String, JsonValue>>> {
     let JsonValue::Array(items) = value? else {
         return None;
@@ -65,7 +65,7 @@ pub fn object_array(value: Option<&JsonValue>) -> Option<Vec<&BTreeMap<String, J
 /// Reject the first body key (in sorted order) that isn't in `honored`.
 ///
 /// The `BTreeMap` iterates keys in sorted order, so the offending key reported is
-/// deterministic and matches the Swift pass's `keys.sorted()`.
+/// deterministic.
 pub fn reject_unknown_keys(
     body: &BTreeMap<String, JsonValue>,
     honored: &[&str],

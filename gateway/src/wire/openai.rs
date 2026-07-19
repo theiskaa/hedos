@@ -133,7 +133,7 @@ pub fn decode_chat_request(
 }
 
 /// The `messages` value as a slice of objects, or `None` if it isn't an array of
-/// objects (matching Swift's `as? [[String: Any]]` all-or-nothing cast).
+/// objects (all-or-nothing: any non-object element makes the whole value `None`).
 fn message_objects(value: Option<&JsonValue>) -> Option<Vec<&BTreeMap<String, JsonValue>>> {
     let JsonValue::Array(items) = value? else {
         return None;
@@ -141,9 +141,8 @@ fn message_objects(value: Option<&JsonValue>) -> Option<Vec<&BTreeMap<String, Js
     items.iter().map(JsonValue::as_object).collect()
 }
 
-/// A numeric parameter as a float. Accepts an integer or a float, but — like
-/// Swift's exact `as? Double` bridging — rejects an integer too large to be
-/// represented in a float without loss.
+/// A numeric parameter as a float. Accepts an integer or a float, but rejects an
+/// integer too large to be represented in a float without loss.
 fn number_param(
     body: &BTreeMap<String, JsonValue>,
     key: &str,
@@ -164,8 +163,8 @@ fn number_param(
     }
 }
 
-/// An integer parameter. Accepts an integer or an integer-valued, in-range float
-/// (as Swift's `as? Int` does); a fractional or out-of-range float is rejected.
+/// An integer parameter. Accepts an integer or an integer-valued, in-range float;
+/// a fractional or out-of-range float is rejected.
 fn int_param(body: &BTreeMap<String, JsonValue>, key: &str) -> Result<Option<i64>, GatewayError> {
     match body.get(key) {
         None => Ok(None),
@@ -323,7 +322,7 @@ fn decode_message(raw: &BTreeMap<String, JsonValue>) -> Result<ChatMessage, Gate
 }
 
 /// The content value as a slice of part objects, or `None` if it isn't an array
-/// of objects (Swift's `as? [[String: Any]]`).
+/// of objects (any non-object element makes the whole value `None`).
 fn content_parts(value: Option<&JsonValue>) -> Option<Vec<&BTreeMap<String, JsonValue>>> {
     let JsonValue::Array(items) = value? else {
         return None;
@@ -380,8 +379,8 @@ fn decode_tool_calls(raw: Option<&JsonValue>) -> Result<Vec<ToolCall>, GatewayEr
             return Err(bad_request("each tool call must carry function.name"));
         };
         let arguments = decode_tool_arguments(function.get("arguments"))?;
-        // A present string id is honored verbatim, even if empty (Swift checks
-        // only for presence here); an absent one mints a fresh call id.
+        // A present string id is honored verbatim, even if empty (only presence
+        // is checked here); an absent one mints a fresh call id.
         let id = entry.get("id").and_then(JsonValue::as_str);
         calls.push(match id {
             Some(id) => ToolCall::with_id(id, name, arguments),
@@ -393,7 +392,7 @@ fn decode_tool_calls(raw: Option<&JsonValue>) -> Result<Vec<ToolCall>, GatewayEr
 
 /// A tool call's `arguments`: a JSON-encoded object string (rejected if it
 /// doesn't parse to an object), an inline object, or — when absent or any other
-/// type — an empty object (matching Swift's lenient fallback).
+/// type — an empty object (lenient fallback).
 fn decode_tool_arguments(raw: Option<&JsonValue>) -> Result<JsonValue, GatewayError> {
     match raw {
         Some(JsonValue::String(encoded)) => match serde_json::from_str::<JsonValue>(encoded) {
@@ -938,7 +937,7 @@ mod tests {
 
     #[test]
     fn a_present_but_empty_tool_call_id_is_kept_verbatim() {
-        // Swift honors an empty id rather than minting a fresh one, so a later
+        // An empty id is honored rather than minting a fresh one, so a later
         // tool result can still match it.
         let call = JsonValue::Object(object(&[
             ("id", string("")),
@@ -973,7 +972,7 @@ mod tests {
             Some("invalid_type")
         );
         // An integer too large to represent exactly as a float is rejected as a
-        // number param, matching Swift's exact bridging.
+        // number param.
         let body = minimal(&[("temperature", JsonValue::Int(9_007_199_254_740_993))]);
         assert_eq!(
             decode_chat_request(body)

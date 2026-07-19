@@ -32,7 +32,7 @@ use crate::resolution::{ResolutionEngine, ResolutionExplanation};
 /// A model window's implicit completion length when the caller sets no
 /// `max_tokens`. A clamp at or above this is only written back when the caller
 /// asked for a specific `max_tokens`; below it the window itself is the limit,
-/// so the clamp is always applied. Mirrors the Swift kernel's threshold.
+/// so the clamp is always applied.
 const IMPLICIT_MAX_TOKENS: i64 = 4096;
 
 /// A builtin model's fixed context window.
@@ -173,7 +173,7 @@ impl Kernel {
 
     /// Set the fallback chat system prompt applied when neither the record nor
     /// the session carries one. (Stands in for the not-yet-ported settings
-    /// store, whose `defaultSystemPrompt` the Swift kernel reads here.)
+    /// store's default system prompt.)
     pub fn set_default_system_prompt(&self, prompt: Option<String>) {
         if let Ok(mut slot) = self.default_prompt.lock() {
             *slot = prompt;
@@ -404,8 +404,8 @@ impl Kernel {
     }
 
     /// A fresh resolution engine over the current adapter set. Built per call
-    /// (cheap: `Arc` clones + the builtin profile table), matching the Swift
-    /// kernel, which also constructed `ResolutionEngine(adapters:)` on demand.
+    /// (cheap: `Arc` clones + the builtin profile table), so the engine is
+    /// constructed on demand rather than cached.
     fn engine(&self) -> ResolutionEngine {
         let adapters = self
             .adapters
@@ -419,14 +419,13 @@ impl Kernel {
     /// then resolve every record to a runtime. Returns the discovery summary; the
     /// resolved runtimes are written onto the records. This is the discover→serve
     /// path — a model found on disk comes out with a runtime the dispatch layer
-    /// can pick. (The Swift `Kernel.discover()` assembled the scanners from the
-    /// settings store internally; here the caller passes them, since settings
-    /// ownership lives above the runtime crate.)
+    /// can pick. (The caller passes the scanners, since settings ownership lives
+    /// above the runtime crate.)
     ///
     /// Discovery and resolution share one registry-lock hold so the shelf is never
     /// observed half-reconciled. The scanners' blocking filesystem work runs inside
-    /// that hold; off-loading it (Swift gated scans behind a separate turnstile) is
-    /// deferred — it needs a `Send` bound on `StoreScanner` to cross a task boundary.
+    /// that hold; off-loading it onto a separate turnstile is deferred — it needs a
+    /// `Send` bound on `StoreScanner` to cross a task boundary.
     pub async fn discover(
         &self,
         scanners: Vec<Box<dyn StoreScanner>>,

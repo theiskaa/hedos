@@ -4,8 +4,8 @@
 //! Server-sent-event `data:` lines are parsed into `CapabilityChunk`s.
 //!
 //! The API key comes from an injected [`SecretStore`] (default: an environment
-//! variable); the Swift original's macOS Keychain store is deferred, as is the
-//! registry reachability marking.
+//! variable); a macOS Keychain-backed store is deferred, as is the registry
+//! reachability marking.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -75,7 +75,7 @@ impl EndpointConcurrencyGate {
 
     /// The process-shared gate — every adapter built with the default constructor
     /// shares it, so one server's in-flight budget is enforced across all of them
-    /// (matching the Swift `.shared` singleton).
+    /// (a process-wide singleton).
     pub fn shared() -> Arc<EndpointConcurrencyGate> {
         static SHARED: LazyLock<Arc<EndpointConcurrencyGate>> =
             LazyLock::new(|| Arc::new(EndpointConcurrencyGate::default()));

@@ -4,9 +4,9 @@
 //! manifest adapters share.
 //!
 //! The sandbox-profile assembly, the VM-guest command form, and the workdir
-//! bundle helpers from the Swift original are Apple/sandbox-specific and are
-//! deferred with the `ManifestSidecarAdapter`/`VMCommandAdapter` units; this
-//! module is the pure, cross-platform core those adapters build on.
+//! bundle helpers are Apple/sandbox-specific and are deferred with the
+//! `ManifestSidecarAdapter`/`VMCommandAdapter` units; this module is the pure,
+//! cross-platform core those adapters build on.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,8 +38,8 @@ pub struct SidecarModelPaths {
 
 impl SidecarModelPaths {
     /// Resolve `record` to its sandbox root and snapshot directory. Symlinks in
-    /// the path are resolved when possible; unlike the Swift original a leading
-    /// `~` is not expanded (discovery passes absolute paths).
+    /// the path are resolved when possible; a leading `~` is not expanded
+    /// (discovery passes absolute paths).
     pub fn resolve(record: &ModelRecord) -> Self {
         let base = Path::new(&record.source.path);
         // canonicalize resolves symlinks but fails if the path is absent; fall
@@ -64,9 +64,9 @@ impl SidecarModelPaths {
     }
 }
 
-/// Whether `ch` is a line separator, matching Swift's `Character.isNewline` — not
-/// just `\n`, since sidecars emit `\r`-based progress bars (tqdm, download bars)
-/// whose final segment is the real error.
+/// Whether `ch` is a line separator — any Unicode newline, not just `\n`, since
+/// sidecars emit `\r`-based progress bars (tqdm, download bars) whose final
+/// segment is the real error.
 fn is_newline(ch: char) -> bool {
     matches!(
         ch,
@@ -212,7 +212,7 @@ pub fn substituted(
             env_dir.join("bin/python").to_string_lossy().into_owned(),
         );
     }
-    // Swift `split(separator: " ")` drops empty subsequences (runs of spaces).
+    // Splitting on spaces drops empty subsequences (runs of spaces).
     let tokens: Vec<String> = command
         .split(' ')
         .filter(|token| !token.is_empty())

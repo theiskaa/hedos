@@ -347,7 +347,7 @@ impl SettingsStore {
                         .insert(id, hash.clone());
                 }
             } else {
-                // Host-only: drop any prior network approval (matches Swift).
+                // Host-only: drop any prior network approval.
                 models.approved_network_runtimes.retain(|r| r != &id);
                 models.approved_network_runtime_hashes.remove(&id);
             }

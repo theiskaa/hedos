@@ -10,8 +10,8 @@
 //! The freshness signature is depth-1: it folds the model path and its immediate
 //! children, not files nested deeper (an HF-cache `snapshots/<ref>/config.json`
 //! or a diffusers `transformer/config.json`). An in-place edit *below* the top
-//! level is therefore not noticed — matching the Swift original. Adding, removing,
-//! or replacing an immediate child (the common re-download shape) is caught.
+//! level is therefore not noticed. Adding, removing, or replacing an immediate
+//! child (the common re-download shape) is caught.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -99,9 +99,9 @@ fn is_uncached(kind: &SourceKind) -> bool {
 
 /// The cache key for `record`. `identify` reads not just the path but — for
 /// HF-cache/diffusers records — the source `reference` (which snapshot) and `repo`
-/// (the pipeline repo hint), so two revisions sharing a path must not collide. The
-/// Swift original keyed on the path alone; this includes those fields to prevent a
-/// different revision being served the wrong identification.
+/// (the pipeline repo hint), so two revisions sharing a path must not collide.
+/// Keying on the path alone would collide, so these fields are included to prevent
+/// a different revision being served the wrong identification.
 fn cache_key(record: &ModelRecord) -> String {
     format!(
         "{}\u{1f}{}\u{1f}{}",
@@ -135,8 +135,8 @@ fn freshness_signature(path: &Path) -> Option<(SystemTime, i64)> {
             {
                 latest = child_mtime;
             }
-            // Wrapping like the Swift `&+`: the total is an identity signature,
-            // not a real byte count, so overflow only needs to stay consistent.
+            // Wrapping add: the total is an identity signature, not a real byte
+            // count, so overflow only needs to stay consistent.
             total = total.wrapping_add(child.len() as i64);
         }
     }

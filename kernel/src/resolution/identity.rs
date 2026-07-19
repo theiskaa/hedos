@@ -102,7 +102,7 @@ impl RuntimeBid {
 /// diffusers `model_index.json`, or a `config.json`+safetensors layout.
 ///
 /// `record.source.path` is taken as-is (callers pass an absolute path — discovery
-/// does); unlike the Swift original this does not expand a leading `~`.
+/// does); a leading `~` is not expanded.
 pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     let kind = &record.source.kind;
     if *kind == SourceKind::builtin() {
@@ -307,7 +307,7 @@ fn has_mmproj_companion(base: &Path) -> bool {
         let path = entry.path();
         let name = path.file_name().and_then(|name| name.to_str());
         name != base_name
-            // Skip hidden files, matching Swift's `.skipsHiddenFiles`.
+            // Skip hidden files.
             && name.is_some_and(|name| !name.starts_with('.') && is_mmproj_name(name))
             && path
                 .extension()

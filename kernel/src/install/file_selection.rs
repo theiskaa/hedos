@@ -2,8 +2,6 @@
 //! siblings; this picks the model weights (preferring one GGUF quantization, or the
 //! safetensors set, dropping duplicate/converted formats) plus the small companion
 //! config/tokenizer files, and drops docs, images, and non-model directories.
-//!
-//! Ports Swift `Install/HuggingFace/HFFileSelection.swift`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -96,8 +94,7 @@ pub fn select(siblings: &[HFSibling]) -> Vec<HFSibling> {
     transformers_selection(&kept)
 }
 
-/// The path split into non-empty `/`-segments (Swift `split(separator:)` omits
-/// empty subsequences).
+/// The path split into non-empty `/`-segments (empty segments are dropped).
 fn segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|part| !part.is_empty()).collect()
 }
@@ -177,7 +174,7 @@ fn gguf_selection(ggufs: &[HFSibling], others: &[HFSibling]) -> Vec<HFSibling> {
         .collect();
 
     // `BTreeMap` iteration is already ordered by `(directory, base, total)`, so the
-    // surviving candidate groups come out in the Swift-sorted order.
+    // surviving candidate groups come out in that sorted order.
     let ordered: Vec<Vec<HFSibling>> = groups
         .iter()
         .filter(|(key, _)| {

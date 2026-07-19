@@ -3,11 +3,10 @@
 //! ensures a server is running for the model's GGUF, then proxies the request
 //! through the shared OpenAI streaming path.
 //!
-//! The Swift original (`LlamaCppAdapter` + `LlamaEngine`) ran llama.cpp in-process
-//! over a Metal FFI binding. This port takes the subprocess route the roadmap
-//! allows, avoiding the FFI: the non-streaming surface (bid/can_serve/context/
-//! honored params) is faithful; the engine is replaced by a [`LlamaBackend`] that
-//! hands back a running server's base URL.
+//! Rather than running llama.cpp in-process over a Metal FFI binding, this takes
+//! the subprocess route and avoids the FFI: the non-streaming surface
+//! (bid/can_serve/context/honored params) lives here, and the engine is a
+//! [`LlamaBackend`] that hands back a running server's base URL.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -57,7 +56,7 @@ impl LlamaServerAdapter {
 
     /// The effective context window: the requested size (or a capped default)
     /// clamped into `[min(512, base), base]`, where `base` is the model's declared
-    /// context length or 4096. Faithful to the Swift `effectiveContextTokens`.
+    /// context length or 4096.
     pub fn effective_context_tokens(record: &ModelRecord, requested: Option<i64>) -> i64 {
         let base = record
             .context_length

@@ -1,7 +1,6 @@
 //! Locating a shipped Python runtime bundle and building the sidecar spec that
-//! launches it. The Swift build wraps the launch in a macOS `sandbox-exec`
-//! profile; this port launches the bundle's `python main.py` directly for
-//! cross-platform support (the sandbox is a macOS-only hardening layer, deferred),
+//! launches it. The launch runs the bundle's `python main.py` directly for
+//! cross-platform support (a macOS `sandbox-exec` hardening layer is deferred),
 //! keeping the same argument convention so a shipped bundle's `main.py` runs
 //! unchanged.
 

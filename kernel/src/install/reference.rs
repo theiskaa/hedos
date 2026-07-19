@@ -1,7 +1,7 @@
 //! Parsing a user-typed model reference — a bare id, a `hf.co/...` or
 //! `ollama.com/...` link — into a Hugging Face repo (`org/name`) or an Ollama tag
-//! (`name:version`). Pure string work; the ambiguity is resolved the same way the
-//! Swift original does so the CLI/gateway accept identical inputs.
+//! (`name:version`). Pure string work; the ambiguity is resolved consistently so
+//! the CLI and gateway accept identical inputs.
 
 use crate::install::provider::InstallProviderId;
 
@@ -201,7 +201,7 @@ fn cleaned(raw: &str) -> Option<String> {
     if text.is_empty() || text.chars().any(char::is_whitespace) {
         return None;
     }
-    // No `break`: Swift re-tests the remaining text against each scheme, so a
+    // No `break`: the remaining text is re-tested against each scheme, so a
     // stacked `https://http://…` prefix is fully stripped.
     for scheme in ["https://", "http://"] {
         if text.to_lowercase().starts_with(scheme) {

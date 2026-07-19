@@ -111,8 +111,8 @@ pub fn ollama_vision_profile() -> GgufArchitectureProfile {
 /// the GGUF architecture's profile (read from `weight_path`) if recognized, else
 /// the plain chat default.
 ///
-/// `weight_path` must be absolute — unlike the Swift original this does not
-/// expand a leading `~` (the Ollama scanner always passes a resolved blob path;
+/// `weight_path` must be absolute — a leading `~` is not expanded (the Ollama
+/// scanner always passes a resolved blob path;
 /// a `~`-relative path would fail to open and fall through to the chat default).
 pub fn ollama_profile(has_projector: bool, weight_path: Option<&str>) -> GgufArchitectureProfile {
     if has_projector {

@@ -45,9 +45,8 @@ fn seedable_fields(payload: &JsonValue) -> Option<BTreeMap<String, JsonValue>> {
     }
 }
 
-/// A pseudo-random value in `0..u32::MAX`, matching the Swift `Int.random(in:
-/// 0..<UInt32.max)` range. Drawn from `RandomState`'s OS-seeded hasher keys so
-/// no `rand` crate is needed.
+/// A pseudo-random value in `0..u32::MAX`. Drawn from `RandomState`'s OS-seeded
+/// hasher keys so no `rand` crate is needed.
 fn random_seed() -> i64 {
     let entropy = std::collections::hash_map::RandomState::new()
         .build_hasher()

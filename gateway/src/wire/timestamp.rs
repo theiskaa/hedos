@@ -28,7 +28,7 @@ fn now_millis() -> i64 {
 }
 
 /// Format `millis` since the Unix epoch as `YYYY-MM-DDTHH:MM:SSZ` (UTC, no
-/// fractional seconds), matching Swift's default `ISO8601DateFormatter`.
+/// fractional seconds) — RFC 3339 / ISO 8601.
 pub fn iso8601(millis: i64) -> String {
     let seconds = millis.div_euclid(1000);
     let days = seconds.div_euclid(86_400);

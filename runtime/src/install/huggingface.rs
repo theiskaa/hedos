@@ -4,7 +4,7 @@
 //! itself so a half-written repo doesn't masquerade as installed.
 //!
 //! The cache `root` and the auth token are supplied by the caller (the token via
-//! the [`HFHubAPI`]); Swift's env/settings/secret-store resolution
+//! the [`HFHubAPI`]); env/settings/secret-store resolution
 //! (`HF_HUB_CACHE`/`HF_HOME`/`HF_TOKEN`) lives in the composition layer, not here.
 
 use std::collections::HashSet;
@@ -234,7 +234,7 @@ async fn run_install(
 }
 
 /// Order files so the small support files land before the big weights, then by
-/// size and name — matching the Swift download order.
+/// size and name.
 fn download_order(mut selection: Vec<HFSibling>) -> Vec<HFSibling> {
     selection.sort_by(|first, second| {
         // `false` (non-weight) sorts before `true` (weight).

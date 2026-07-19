@@ -31,9 +31,9 @@ const PULL_IDLE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// How long to wait for a non-200 error body before reporting with what we have.
 const ERROR_BODY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ceiling on the ndjson we'll read from one pull, so a misbehaving server can't
-/// grow our buffers without bound (4 GiB, matching the Swift cap).
+/// grow our buffers without bound (4 GiB).
 const PULL_RESPONSE_CAP: usize = 4 << 30;
-/// Ceiling on a single unterminated line (2 MiB, matching the Swift default).
+/// Ceiling on a single unterminated line (2 MiB).
 const MAX_LINE_BYTES: usize = 2 << 20;
 /// How much of a non-200 body to read before giving up and reporting the error.
 const ERROR_BODY_CAP: usize = 64 * 1024;
@@ -240,9 +240,8 @@ async fn run_pull(
         let bytes = match chunk {
             Ok(Some(bytes)) => bytes,
             Ok(None) => {
-                // Fold a final line the server left unterminated (Swift's
-                // CappedLineReader yields the trailing buffer at EOF) — it may be
-                // the `success` line.
+                // Fold a final line the server left unterminated (the trailing
+                // buffer is yielded at EOF) — it may be the `success` line.
                 if !buffer.is_empty() {
                     let text = String::from_utf8_lossy(&buffer);
                     match fold_line(&mut aggregator, text.trim_end_matches('\r'), tx).await? {

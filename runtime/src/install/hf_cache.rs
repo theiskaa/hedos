@@ -76,7 +76,7 @@ impl HFCacheLayout {
 
     /// The relative symlink target from a snapshot file back to its blob. Empty
     /// path segments are ignored so the depth matches where the snapshot file
-    /// actually lands (Swift's `split(separator:)` drops them).
+    /// actually lands (empty segments are dropped).
     fn relative_blob_target(path: &str, blob_name: &str) -> String {
         let depth = path.split('/').filter(|part| !part.is_empty()).count() + 1;
         format!("{}blobs/{blob_name}", "../".repeat(depth))

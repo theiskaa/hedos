@@ -216,7 +216,7 @@ impl InstallService {
         let id = {
             let mut state = self.inner.lock();
             // Dedup before the disk check: an already-running install returns its
-            // id without re-probing disk (matching Swift's ordering).
+            // id without re-probing disk.
             if let Some(existing) = state.in_flight.get(&flight_key) {
                 return Ok(existing.clone());
             }
@@ -394,7 +394,7 @@ impl Inner {
         if let Some(subscribers) = state.subscribers.get_mut(id) {
             // Send to each live feed and prune any whose receiver has been dropped,
             // so a long install with churny subscribers can't accumulate dead
-            // senders (Swift did this via the continuation's `onTermination`).
+            // senders.
             subscribers.retain(|_, tx| {
                 let _ = tx.send(event.clone());
                 !tx.is_closed()

@@ -195,7 +195,7 @@ pub struct EngineLoad<'a, E> {
 /// Ensure an in-process engine holds `load`'s model as a governed resident, then
 /// acquire and return the generation producer gate to hold for the generation.
 /// Loops so that if the governor evicted the model between the load and the
-/// producer acquisition, it reloads. A port of Swift's `GovernedEngineLoad`.
+/// producer acquisition, it reloads.
 pub async fn acquire_loaded<E>(load: EngineLoad<'_, E>) -> Result<GateGuard, E> {
     loop {
         ensure_loaded(&load).await?;

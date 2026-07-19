@@ -25,8 +25,7 @@ pub(crate) fn bridge<T: Send + 'static>(mut sidecar: SidecarStream<T>) -> Runtim
 
 /// Run the stream's visible text through a [`ThinkSplitter`], emitting `Thinking`
 /// chunks for reasoning delimited by think tags. `Done` flushes any pending text
-/// (then carries its stats through); other chunks pass through unchanged. A port
-/// of the Swift `ThinkSplitter.separating`.
+/// (then carries its stats through); other chunks pass through unchanged.
 pub(crate) fn separating(mut upstream: ChunkStream) -> ChunkStream {
     let (tx, stream) = RuntimeStream::channel();
     tokio::spawn(async move {

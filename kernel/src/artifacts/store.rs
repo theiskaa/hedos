@@ -113,8 +113,7 @@ impl ArtifactStore {
 
     /// Delete `id`: remove its sidecar always, and its output/preview files only
     /// when no surviving artifact still references them (deduplicated files stay
-    /// until their last owner is gone). Files are unlinked permanently — unlike
-    /// the Swift app, which moved them to the macOS Trash (no such thing here).
+    /// until their last owner is gone). Files are unlinked permanently.
     pub fn delete(&mut self, id: &str) -> Result<(), ArtifactStoreError> {
         self.load_if_needed()?;
         let Some(artifact) = self.artifacts.remove(id) else {
@@ -244,9 +243,9 @@ fn slug(name: &str) -> String {
 }
 
 /// The Gregorian year for an epoch-millisecond timestamp, computed with the
-/// civil-from-days algorithm (no calendar crate). The year is in UTC; the Swift
-/// app used the machine's local calendar, so an artifact created near midnight in
-/// an offset zone can land in a different year directory. This is cosmetic — the
+/// civil-from-days algorithm (no calendar crate). The year is in UTC, so an
+/// artifact created near midnight in an offset zone can land in a different year
+/// directory than the machine's local calendar would pick. This is cosmetic — the
 /// store stays self-consistent and `load_if_needed` scans every year dir.
 fn year_of(millis: i64) -> i64 {
     let days = millis.div_euclid(86_400_000);

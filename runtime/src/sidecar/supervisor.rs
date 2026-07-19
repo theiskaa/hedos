@@ -114,7 +114,7 @@ impl SidecarSupervisor {
         let id = &spec.runtime_id;
         // Serialize spawn per id so a concurrent call cannot double-spawn: the
         // check-kill-insert-handshake sequence is not atomic (it drops the state
-        // lock and awaits), which the Swift actor got for free.
+        // lock and awaits).
         let spawn_lock = {
             let mut locks = lock(&self.inner.spawn_locks);
             Arc::clone(locks.entry(id.clone()).or_default())

@@ -48,8 +48,8 @@ impl JobProgress {
 }
 
 /// A discrete unit of work with progress and a persisted terminal result. Its
-/// on-disk form (in `jobs.json`) is internal, so field names are the Rust-native
-/// snake_case, not the Swift app's keys.
+/// on-disk form (in `jobs.json`) is internal, so field names are the native
+/// snake_case.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,

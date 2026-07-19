@@ -149,8 +149,8 @@ fn folder_bundle(dir: &Path) -> Option<DiscoveredModel> {
     }
 
     let total: i64 = entries.iter().map(|(_, size)| size).sum();
-    // First of equal-size safetensors wins (strict `>`), matching Swift's
-    // `size > (largest?.size ?? -1)` — `max_by_key` would keep the last.
+    // First of equal-size safetensors wins (strict `>`) — `max_by_key` would
+    // keep the last.
     let mut largest: Option<(&Path, i64)> = None;
     for (path, size) in entries.iter().filter(|(path, _)| is_safetensors(path)) {
         if largest.is_none_or(|(_, best)| *size > best) {
@@ -216,8 +216,7 @@ fn is_ggml_bin(path: &Path) -> bool {
     has_extension_ignoring_case(path, "bin") && has_ggml_magic(path)
 }
 
-/// A case-sensitive `.safetensors` check, matching the Swift original's exact
-/// `pathExtension == "safetensors"` comparison.
+/// A case-sensitive `.safetensors` extension check.
 fn is_safetensors(path: &Path) -> bool {
     path.extension().and_then(|ext| ext.to_str()) == Some("safetensors")
 }

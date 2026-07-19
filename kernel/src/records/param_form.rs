@@ -79,9 +79,8 @@ impl ParamSpec {
 fn int_scalar(value: &JsonValue) -> Option<i64> {
     match value {
         JsonValue::Int(raw) => Some(*raw),
-        // `round()` is half-away-from-zero, matching Swift's `Double.rounded()`.
-        // A non-finite or out-of-range double saturates here rather than trapping
-        // as Swift's `Int(_:)` would — `Double` is documented never to hold one.
+        // `round()` is half-away-from-zero. A non-finite or out-of-range double
+        // saturates here rather than trapping.
         JsonValue::Double(raw) => Some(raw.round() as i64),
         _ => None,
     }

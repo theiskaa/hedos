@@ -9,8 +9,7 @@ use regex::Regex;
 /// The inline markdown transforms, applied in order to each surviving line.
 ///
 /// Each entry is a compiled pattern and the replacement it substitutes (`$1`
-/// keeps the first capture). Compiled once, mirroring the Swift `stripInline`
-/// pass literal-for-literal.
+/// keeps the first capture). Compiled once.
 static INLINE: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     [
         (r"^\s{0,3}#{1,6}\s+", ""),
@@ -66,15 +65,15 @@ fn strip_inline(line: &str) -> String {
 }
 
 /// Trims horizontal whitespace — tab plus every Unicode space separator (Zs) —
-/// but never line breaks, matching Swift's `CharacterSet.whitespaces` so that a
-/// fence or table marker led by a non-breaking space is still detected.
+/// but never line breaks, so that a fence or table marker led by a non-breaking
+/// space is still detected.
 fn trim_spaces(line: &str) -> &str {
     line.trim_matches(is_horizontal_ws)
 }
 
-/// True for Swift `.whitespaces`: tab or a Zs space separator. `char::is_whitespace`
+/// True for horizontal whitespace: tab or a Zs space separator. `char::is_whitespace`
 /// (the Unicode White_Space set) adds line breaks and the VT/FF/NEL controls,
-/// which `.whitespaces` excludes — so those are filtered back out.
+/// which are excluded here — so those are filtered back out.
 fn is_horizontal_ws(c: char) -> bool {
     c.is_whitespace()
         && !matches!(

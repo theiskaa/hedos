@@ -44,8 +44,8 @@ pub fn write_failure(surface: GatewaySurface, body: &GatewayStreamBody, error: &
 }
 
 /// Write a timeout notice into an already-streaming response and end it. The
-/// OpenAI frame uses the `timeout_error`/`timeout` type/code the Swift gateway
-/// emits here (distinct from the generic wrapped-error type).
+/// OpenAI frame uses the `timeout_error`/`timeout` type/code (distinct from the
+/// generic wrapped-error type).
 pub fn write_timeout(surface: GatewaySurface, body: &GatewayStreamBody, seconds: u64) {
     let message = format!("the request timed out after {seconds}s");
     match surface {

@@ -1,4 +1,4 @@
-//! Saturating byte arithmetic (Swift `Install/ByteArithmetic.swift`).
+//! Saturating byte arithmetic.
 
 /// Sum the non-negative values, saturating at `i64::MAX` instead of overflowing.
 /// Negative inputs are treated as zero.

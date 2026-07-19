@@ -65,7 +65,7 @@ pub struct InstallSearchHit {
     pub downloads: Option<i64>,
     /// The like count, if reported.
     pub likes: Option<i64>,
-    /// When it was last updated, epoch milliseconds (Swift `Date`).
+    /// When it was last updated, epoch milliseconds.
     pub updated_at: Option<i64>,
 }
 
@@ -127,7 +127,7 @@ impl InstallBrowseResult {
 }
 
 /// A running install: identity, what's being fetched, live progress, and when it
-/// started (epoch milliseconds, from Swift's `Date`).
+/// started (epoch milliseconds).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ActiveInstall {
     /// The install's opaque id.

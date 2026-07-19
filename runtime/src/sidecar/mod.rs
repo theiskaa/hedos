@@ -4,10 +4,10 @@
 //! watchdogs, and the two pumps that turn frames into [`CapabilityChunk`] and
 //! [`JobRuntimeEvent`] streams.
 //!
-//! Like the governor, each Swift `actor` becomes a struct whose synchronous
-//! state lives behind a `std::sync::Mutex` that is **never held across an
-//! `.await`** — reader/writer/watchdog tasks and pumps lock, mutate, and drop
-//! the guard before awaiting.
+//! Like the governor, each subsystem is a struct whose synchronous state lives
+//! behind a `std::sync::Mutex` that is **never held across an `.await`** —
+//! reader/writer/watchdog tasks and pumps lock, mutate, and drop the guard
+//! before awaiting.
 
 mod bundle;
 mod model_paths;

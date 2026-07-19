@@ -156,8 +156,8 @@ fn value_rules(
     }
 }
 
-/// The grammar rules for an object schema, with required/optional property
-/// ordering matching the Swift builder.
+/// The grammar rules for an object schema, emitting required properties before
+/// optional ones.
 fn object_rules(
     name: &str,
     fields: &BTreeMap<String, JsonValue>,
@@ -189,7 +189,7 @@ fn object_rules(
         }
     }
 
-    // `properties` is a BTreeMap, so iteration is already key-sorted (Swift sorts).
+    // `properties` is a BTreeMap, so iteration is already key-sorted.
     let mut rules: Vec<String> = Vec::new();
     let mut pairs: Vec<(&str, String)> = Vec::new();
     for (position, (key, schema)) in properties.iter().enumerate() {
@@ -441,8 +441,7 @@ mod tests {
             ("required", JsonValue::Array(vec![string("q")])),
         ]);
         let grammar = tool_grammar(&[spec("t", params)]).unwrap();
-        // The enum value's inner quote is escaped for the GBNF literal (matching
-        // the Swift builder byte-for-byte).
+        // The enum value's inner quote is escaped for the GBNF literal.
         assert!(grammar.contains(r#""\"a\"b\"""#), "{grammar}");
     }
 }

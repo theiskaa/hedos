@@ -1,6 +1,6 @@
 //! The Hugging Face hub API: search for models, fetch a repo's metadata + file
-//! listing, and build file-download URLs. Ports Swift `Install/HuggingFace/
-//! HFHubAPI.swift` (over the injectable [`InstallTransport`], not `URLSession`).
+//! listing, and build file-download URLs. Runs over the injectable
+//! [`InstallTransport`].
 
 use std::sync::Arc;
 
@@ -81,7 +81,7 @@ impl HFHubAPI {
         Ok(hits
             .into_iter()
             .map(|hit| {
-                // The last non-empty path segment (Swift `split` drops empties, so a
+                // The last non-empty path segment (empty segments are dropped, so a
                 // trailing-slash id falls back to the segment before it).
                 let name = hit
                     .id
@@ -131,8 +131,8 @@ impl HFHubAPI {
             .unwrap_or_default()
             .into_iter()
             .map(|sibling| {
-                // The listed size, else the LFS pointer's size (Swift `size ?? lfs?.size`);
-                // the LFS oid is the content SHA-256 the download path keys blobs on.
+                // The listed size, else the LFS pointer's size; the LFS oid is the
+                // content SHA-256 the download path keys blobs on.
                 let (size, oid) = sibling
                     .lfs
                     .map(|lfs| (lfs.size, lfs.oid))
@@ -150,9 +150,9 @@ impl HFHubAPI {
     }
 
     /// The URL to download `path` from `repo` at `revision`. Each path segment is
-    /// percent-encoded (Swift `appendPathComponent`), so filenames with spaces or
-    /// unicode resolve correctly. Unlike the Swift original this returns a bare URL,
-    /// not an authorized request — the download provider attaches the bearer token.
+    /// percent-encoded, so filenames with spaces or unicode resolve correctly. This
+    /// returns a bare URL, not an authorized request — the download provider
+    /// attaches the bearer token.
     pub fn resolve_url(&self, repo: &str, revision: &str, path: &str) -> String {
         let Ok(mut url) = reqwest::Url::parse(&self.base_url) else {
             return format!("{}/{repo}/resolve/{revision}/{path}", self.base_url);
@@ -225,8 +225,8 @@ struct RawLfs {
 }
 
 /// The hub reports `gated` as either a bool or a mode string (`"auto"`/`"manual"`/
-/// `"false"`). Any other shape decodes to `Other` and reads as not-gated, matching
-/// the Swift decoder's fallback (rather than failing the whole response).
+/// `"false"`). Any other shape decodes to `Other` and reads as not-gated (rather
+/// than failing the whole response).
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum RawGated {

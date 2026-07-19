@@ -231,11 +231,11 @@ pub(crate) enum DaemonError {
     Failed(String),
 }
 
-/// Classify a `reqwest` error the way Swift's `URLError` boundary does: a body
-/// that failed to decode is a logical [`DaemonError::Failed`] (the daemon answered
-/// with something unparseable, Swift's `JSONSerialization` throw), while any other
-/// failure — connect, timeout, or a network drop mid-body — is a
-/// [`DaemonError::Transport`] that marks the daemon dead (Swift's `URLError`).
+/// Classify a `reqwest` error along the transport/logical boundary: a body that
+/// failed to decode is a logical [`DaemonError::Failed`] (the daemon answered with
+/// something unparseable), while any other failure — connect, timeout, or a
+/// network drop mid-body — is a [`DaemonError::Transport`] that marks the daemon
+/// dead.
 /// reqwest surfaces a mid-body drop at `.json()`/`.bytes()`, not at `send()`, so
 /// this must key on `is_decode()` rather than on which call failed.
 pub(crate) fn daemon_error(error: reqwest::Error) -> DaemonError {
@@ -358,8 +358,8 @@ pub(crate) fn dimensions(object: &BTreeMap<String, JsonValue>, fallback: i64) ->
     }
     if let Some(size) = object.get("size").and_then(JsonValue::as_str) {
         let lowered = size.to_lowercase();
-        // Swift's `split(separator:)` omits empty subsequences, so `"640xx480"`
-        // still parses as two components; match that by dropping empties.
+        // Empty subsequences are dropped, so `"640xx480"` still parses as two
+        // components.
         let parts: Vec<&str> = lowered.split('x').filter(|part| !part.is_empty()).collect();
         if let [width, height] = parts.as_slice()
             && let (Ok(width), Ok(height)) = (width.parse::<i64>(), height.parse::<i64>())

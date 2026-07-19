@@ -2,10 +2,10 @@
 //! per-model leases, and warm-window residency. Every engine funnels model
 //! loading and generation through here.
 //!
-//! Each Swift `actor` in the original maps to a struct whose synchronous state
-//! lives behind a `std::sync::Mutex` that is **never held across an `.await`** —
-//! sub-components (`gate`/`leases`/`residency`) are awaited with the lock
-//! dropped, reproducing the reentrancy a Swift actor gets for free.
+//! Each subsystem is a struct whose synchronous state lives behind a
+//! `std::sync::Mutex` that is **never held across an `.await`** — sub-components
+//! (`gate`/`leases`/`residency`) are awaited with the lock dropped, so a
+//! subsystem can safely re-enter itself.
 
 pub mod gate;
 pub mod generation_slot;

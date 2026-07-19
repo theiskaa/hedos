@@ -9,11 +9,11 @@
 //!
 //! The engine is synchronous — [`RuntimeAdapter::bid`] and `identify` are pure —
 //! so it operates directly on a borrowed [`Registry`] rather than through an async
-//! actor as the Swift original did.
+//! actor.
 //!
-//! The Swift original also backfilled modality/capabilities from the winner's
-//! runtime manifest when identification came up empty; that is deferred until the
-//! manifest-backed adapters are ported (none bid today).
+//! Backfilling modality/capabilities from the winner's runtime manifest when
+//! identification comes up empty is deferred until the manifest-backed adapters
+//! are ported (none bid today).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

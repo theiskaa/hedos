@@ -54,8 +54,7 @@ impl StoreScanner for OllamaStoreScanner {
             return result;
         }
         // Root exists but can't be listed (no search permission, or it isn't a
-        // directory) — that's a scan failure, not an empty store. Mirrors Swift's
-        // `isReadableFile(root)` branch.
+        // directory) — that's a scan failure, not an empty store.
         if std::fs::read_dir(&self.root).is_err() {
             result.failed_kinds.push(SourceKind::ollama());
             return result;
@@ -199,8 +198,8 @@ fn string_array(value: &JsonValue) -> Option<Vec<String>> {
     let JsonValue::Array(items) = value else {
         return None;
     };
-    // All-or-nothing, matching Swift's `as? [String]`: a single non-string
-    // element voids the whole array rather than being silently dropped.
+    // All-or-nothing: a single non-string element voids the whole array rather
+    // than being silently dropped.
     items
         .iter()
         .map(|item| item.as_str().map(str::to_owned))

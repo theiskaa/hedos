@@ -88,7 +88,7 @@ impl JobHistoryStore {
         }
         self.loaded = true;
         // A missing store, a corrupt one (quarantined inside read_json), or an io
-        // error all leave the store empty, matching the Swift best-effort load.
+        // error all leave the store empty (best-effort load).
         if let Ok(Some(envelope)) = persistence::read_json::<Envelope>(&self.store_file()) {
             self.jobs = envelope.jobs;
         }

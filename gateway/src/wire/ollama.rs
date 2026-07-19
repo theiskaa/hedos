@@ -170,7 +170,7 @@ fn decode_options(
 ) -> Result<BTreeMap<String, JsonValue>, GatewayError> {
     let mut options = BTreeMap::new();
     if let Some(JsonValue::Object(raw_options)) = body.get("options") {
-        // BTreeMap iterates in sorted key order, matching Swift's `keys.sorted()`.
+        // BTreeMap iterates in sorted key order (deterministic).
         for (key, value) in raw_options {
             if key == "stop" {
                 if let Some(stop) = param_decoding::stop(Some(value), None)? {
@@ -197,7 +197,7 @@ fn decode_options(
 }
 
 /// An option value as a number: an integer, or an integer-valued float as an
-/// integer (Swift tries `as? Int` first), else a float. Anything else is a bad
+/// integer (integer form is preferred), else a float. Anything else is a bad
 /// request.
 fn option_number(key: &str, value: &JsonValue) -> Result<JsonValue, GatewayError> {
     match value {
@@ -257,7 +257,7 @@ fn decode_tool_calls(raw: Option<&JsonValue>) -> Result<Vec<ToolCall>, GatewayEr
             Some(object @ JsonValue::Object(_)) => object.clone(),
             _ => JsonValue::Object(BTreeMap::new()),
         };
-        // A present string id is honored verbatim (Swift checks only presence).
+        // A present string id is honored verbatim (only presence is checked).
         let id = entry.get("id").and_then(JsonValue::as_str);
         calls.push(match id {
             Some(id) => ToolCall::with_id(id, name, arguments),
@@ -594,8 +594,8 @@ mod tests {
 
     #[test]
     fn an_out_of_range_integer_valued_float_option_stays_a_double() {
-        // 1e19 overflows i64; Swift's `as? Int` fails and falls to Double, so it
-        // must not be saturated to i64::MAX.
+        // 1e19 overflows i64, so it falls back to a float and must not be
+        // saturated to i64::MAX.
         let options = JsonValue::Object(map(&[("seed", JsonValue::Double(1e19))]));
         let request = decode_chat_request(&minimal(&[("options", options)])).unwrap();
         assert_eq!(request.options.get("seed"), Some(&JsonValue::Double(1e19)));
