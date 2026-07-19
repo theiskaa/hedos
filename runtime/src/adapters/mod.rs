@@ -16,6 +16,7 @@ mod mlx_lm;
 mod mlx_vlm;
 mod ollama;
 mod openai;
+mod sidecar_adapter;
 mod sidecar_stream;
 mod tool_scanner;
 

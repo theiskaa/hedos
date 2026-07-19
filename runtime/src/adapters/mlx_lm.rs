@@ -4,21 +4,21 @@
 //! launched by the [`Descriptor`] this builds.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use kernel::records::{
     BidPreference, Capability, JsonValue, Modality, ModelRecord, RunTier, RuntimeId,
 };
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
+use super::sidecar_adapter::sidecar_descriptor;
 use super::sidecar_stream::{bridge, separating};
 use super::{ChunkStream, RuntimeAdapter};
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
-use crate::python_runtime::{Descriptor, PythonSidecarRuntime, StatusSink};
-use crate::sidecar::{RuntimeBundle, SidecarError, SidecarSupervisor, bundle_spec};
+use crate::python_runtime::{Descriptor, PythonSidecarRuntime};
+use crate::sidecar::SidecarSupervisor;
 
 /// The shipped bundle name for the mlx-lm runtime.
 const BUNDLE_NAME: &str = "python-mlx-lm";
@@ -63,47 +63,16 @@ impl MlxLmAdapter {
     }
 
     fn descriptor(&self) -> Descriptor {
-        let prepare_environments = self.environments.clone();
-        let prepare_roots = Arc::clone(&self.search_roots);
-        let spec_roots = Arc::clone(&self.search_roots);
-        let spec_workdir_root = self.workdir_root.clone();
-        Descriptor {
-            runtime_id: RuntimeId::mlx_lm().as_str().to_owned(),
-            preparing_status: "Preparing text runtime…".to_owned(),
-            starting_status: "Starting text runtime…".to_owned(),
-            warm_window: None,
-            prepare_environment: Arc::new(move |status: StatusSink| {
-                let environments = prepare_environments.clone();
-                let roots = Arc::clone(&prepare_roots);
-                Box::pin(async move {
-                    let bundle = RuntimeBundle::require(BUNDLE_NAME, &roots, &RuntimeId::mlx_lm())?;
-                    let env_dir = environments
-                        .prepare(
-                            RuntimeId::mlx_lm().as_str(),
-                            &bundle.join("requirements.lock"),
-                            status,
-                        )
-                        .await
-                        .map_err(|error| SidecarError::RuntimeFailed(error.to_string()))?;
-                    Ok(Some(env_dir))
-                })
-            }),
-            make_spec: Arc::new(move |record: &ModelRecord, env_dir: Option<&Path>| {
-                let bundle =
-                    RuntimeBundle::require(BUNDLE_NAME, &spec_roots, &RuntimeId::mlx_lm())?;
-                bundle_spec(
-                    &RuntimeId::mlx_lm(),
-                    record,
-                    &bundle,
-                    env_dir,
-                    &spec_workdir_root,
-                    BUNDLE_NAME,
-                    &[],
-                    true,
-                    Duration::from_secs(10),
-                )
-            }),
-        }
+        sidecar_descriptor(
+            RuntimeId::mlx_lm(),
+            BUNDLE_NAME,
+            "Preparing text runtime…",
+            "Starting text runtime…",
+            None,
+            self.environments.clone(),
+            Arc::clone(&self.search_roots),
+            self.workdir_root.clone(),
+        )
     }
 }
 
