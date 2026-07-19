@@ -1,22 +1,12 @@
 //! The disk-backed audit log: JSONL round-trips, unauthorized coalescing, and
 //! size-triggered rotation.
 
+mod common;
+
 use std::fs;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 
+use common::TempDir;
 use gateway::audit::{Auditing, GatewayAuditEntry, GatewayAuditLog};
-
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// A fresh, empty temp directory unique to this test process.
-fn temp_dir() -> PathBuf {
-    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("hedos-audit-{}-{unique}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
 
 fn entry(ts_millis: i64, outcome: &str) -> GatewayAuditEntry {
     GatewayAuditEntry {
@@ -52,8 +42,8 @@ fn unauthorized(ts_millis: i64) -> GatewayAuditEntry {
 
 #[test]
 fn entries_append_as_jsonl_and_tail_reads_them_back() {
-    let dir = temp_dir();
-    let log = GatewayAuditLog::new(&dir);
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::new(dir.path());
     log.append(entry(1_600_000_000_000, "ok"));
     log.append(entry(1_600_000_001_000, "ok"));
 
@@ -66,8 +56,8 @@ fn entries_append_as_jsonl_and_tail_reads_them_back() {
 
 #[test]
 fn the_wire_shape_uses_camel_case_and_an_iso_timestamp() {
-    let dir = temp_dir();
-    let log = GatewayAuditLog::new(&dir);
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::new(dir.path());
     log.append(entry(1_600_000_000_000, "ok"));
 
     let text = fs::read_to_string(dir.join("audit.jsonl")).unwrap();
@@ -80,8 +70,8 @@ fn the_wire_shape_uses_camel_case_and_an_iso_timestamp() {
 
 #[test]
 fn a_burst_of_unauthorized_requests_coalesces_into_one_summary() {
-    let dir = temp_dir();
-    let log = GatewayAuditLog::new(&dir);
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::new(dir.path());
     // First is written; the next four fall inside the 60s window and coalesce.
     for offset in 0..5 {
         log.append_unauthorized(unauthorized(1_600_000_000_000 + offset * 1_000));
@@ -101,8 +91,8 @@ fn a_burst_of_unauthorized_requests_coalesces_into_one_summary() {
 
 #[test]
 fn an_unauthorized_request_after_the_window_starts_a_new_line() {
-    let dir = temp_dir();
-    let log = GatewayAuditLog::new(&dir);
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::new(dir.path());
     log.append_unauthorized(unauthorized(1_600_000_000_000));
     // Past the 60s window: a fresh line, no summary yet (nothing was suppressed).
     log.append_unauthorized(unauthorized(1_600_000_070_000));
@@ -115,8 +105,8 @@ fn an_unauthorized_request_after_the_window_starts_a_new_line() {
 
 #[test]
 fn flush_writes_a_pending_summary_at_shutdown() {
-    let dir = temp_dir();
-    let log = GatewayAuditLog::new(&dir);
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::new(dir.path());
     for offset in 0..3 {
         log.append_unauthorized(unauthorized(1_600_000_000_000 + offset * 1_000));
     }
@@ -134,8 +124,8 @@ fn flush_writes_a_pending_summary_at_shutdown() {
 
 #[test]
 fn the_log_rotates_once_it_exceeds_its_size_bound() {
-    let dir = temp_dir();
-    let log = GatewayAuditLog::with_max_bytes(&dir, 200);
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::with_max_bytes(dir.path(), 200);
     for index in 0..40 {
         log.append(entry(1_600_000_000_000 + index * 1_000, "ok"));
     }
