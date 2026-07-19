@@ -3,16 +3,22 @@
 //! kernel's parameter names, the `think`/`format` directives, and tool calls.
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::LazyLock;
 
 use kernel::capabilities::{
     AttachmentKind, ChatAttachment, ChatMessage, ChatRole, GenerationStats, ToolCall, ToolSpec,
     decode_tool_specs,
 };
-use kernel::records::JsonValue;
+use kernel::records::{JsonValue, ModelRecord};
+use regex::Regex;
 use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
-use crate::wire::{base64, param_decoding};
+use crate::wire::{base64, param_decoding, timestamp};
+
+/// The number of bytes in a mebibyte, for the `size` field.
+const BYTES_PER_MIB: i64 = 1_048_576;
 
 /// `i64::MIN`/`i64::MAX` as floats, for range-checking integer-valued floats.
 /// `i64::MAX as f64` rounds up to 2^63, one past the real max, so the upper
@@ -415,6 +421,87 @@ fn insert_stats(frame: &mut serde_json::Map<String, Value>, stats: Option<&Gener
     }
 }
 
+/// Matches a parameter-size token like `7b` or `1.5B` or `70m`.
+static PARAMETER_SIZE: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r"[0-9]+(\.[0-9]+)?[bBmM]").ok());
+
+/// The quantization-level patterns, tried in order (e.g. `Q4_K_M`, then `Q8`,
+/// then `F16`/`BF16`).
+static QUANT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"[Qq][0-9]_[0-9A-Za-z_]+",
+        r"[Qq][0-9]+",
+        r"[Bb]?[Ff](16|32)",
+    ]
+    .into_iter()
+    .filter_map(|pattern| Regex::new(pattern).ok())
+    .collect()
+});
+
+/// The `/api/tags` list body for a shelf of records.
+pub fn tags(records: &[ModelRecord]) -> Value {
+    let models: Vec<Value> = records
+        .iter()
+        .map(|record| {
+            let name = record.alias.as_deref().unwrap_or(&record.name);
+            json!({
+                "name": name,
+                "model": name,
+                "modified_at": timestamp::iso8601(record.registered_at),
+                "size": record.footprint_mb.unwrap_or(0) * BYTES_PER_MIB,
+                "digest": "",
+                "details": details(record),
+            })
+        })
+        .collect();
+    json!({ "models": models })
+}
+
+/// The `details` sub-object for one record: its weight format and the parameter
+/// size and quantization level guessed from its name and weight path.
+pub fn details(record: &ModelRecord) -> Value {
+    let format = record
+        .primary_weight_path
+        .as_deref()
+        .and_then(|path| Path::new(path).extension())
+        .and_then(|extension| extension.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    let tokens = format!(
+        "{} {}",
+        record.name,
+        record.primary_weight_path.as_deref().unwrap_or("")
+    );
+    json!({
+        "parent_model": "",
+        "format": format,
+        "family": "",
+        "families": [],
+        "parameter_size": parameter_size(&tokens),
+        "quantization_level": quantization_level(&tokens),
+    })
+}
+
+/// The first parameter-size token in `text`, upper-cased, or empty if none.
+fn parameter_size(text: &str) -> String {
+    PARAMETER_SIZE
+        .as_ref()
+        .and_then(|pattern| pattern.find(text))
+        .map(|matched| matched.as_str().to_uppercase())
+        .unwrap_or_default()
+}
+
+/// The first quantization-level token in `text` (trying each pattern in order),
+/// upper-cased, or empty if none.
+fn quantization_level(text: &str) -> String {
+    for pattern in QUANT_PATTERNS.iter() {
+        if let Some(matched) = pattern.find(text) {
+            return matched.as_str().to_uppercase();
+        }
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,5 +804,70 @@ mod tests {
         assert_eq!(final_frame["done"], true);
         assert_eq!(final_frame["done_reason"], "stop");
         assert_eq!(final_frame["eval_count"], 9);
+    }
+
+    fn record(name: &str, weight_path: Option<&str>) -> ModelRecord {
+        use kernel::records::{Modality, ModelSource, SourceKind};
+        let mut record = ModelRecord::new(
+            name,
+            Modality::text(),
+            Vec::new(),
+            ModelSource::new(SourceKind::file(), weight_path.unwrap_or("")),
+        );
+        record.primary_weight_path = weight_path.map(str::to_owned);
+        record
+    }
+
+    #[test]
+    fn tags_lists_a_record_with_a_size_and_iso_modified_at() {
+        let mut rec = record("llama3", Some("/models/llama3-8b-q4_k_m.gguf"));
+        rec.footprint_mb = Some(4096);
+        rec.registered_at = 1_600_000_000_000;
+        let value = tags(std::slice::from_ref(&rec));
+        let entry = &value["models"][0];
+        assert_eq!(entry["name"], "llama3");
+        assert_eq!(entry["model"], "llama3");
+        assert_eq!(entry["modified_at"], "2020-09-13T12:26:40Z");
+        assert_eq!(entry["size"], 4096i64 * 1_048_576);
+        assert_eq!(entry["digest"], "");
+    }
+
+    #[test]
+    fn tags_prefers_the_alias_for_the_name() {
+        let mut rec = record("raw", None);
+        rec.alias = Some("Friendly".to_owned());
+        let value = tags(std::slice::from_ref(&rec));
+        assert_eq!(value["models"][0]["name"], "Friendly");
+    }
+
+    #[test]
+    fn details_reads_the_format_size_and_quantization() {
+        let rec = record("llama3-8b", Some("/models/llama3-8B-Q4_K_M.gguf"));
+        let value = details(&rec);
+        assert_eq!(value["format"], "gguf");
+        assert_eq!(value["parameter_size"], "8B");
+        assert_eq!(value["quantization_level"], "Q4_K_M");
+        assert_eq!(value["families"], json!([]));
+    }
+
+    #[test]
+    fn details_falls_back_to_empty_when_nothing_matches() {
+        let rec = record("plain-model", None);
+        let value = details(&rec);
+        assert_eq!(value["format"], "");
+        assert_eq!(value["parameter_size"], "");
+        assert_eq!(value["quantization_level"], "");
+    }
+
+    #[test]
+    fn parameter_size_and_quantization_extraction() {
+        assert_eq!(parameter_size("mistral-7b-instruct"), "7B");
+        assert_eq!(parameter_size("gemma-1.5b"), "1.5B");
+        assert_eq!(parameter_size("phi-3-mini"), "");
+        assert_eq!(quantization_level("model-q8_0.gguf"), "Q8_0");
+        assert_eq!(quantization_level("model-q4.bin"), "Q4");
+        assert_eq!(quantization_level("model-f16.safetensors"), "F16");
+        assert_eq!(quantization_level("model-bf16"), "BF16");
+        assert_eq!(quantization_level("plain"), "");
     }
 }
