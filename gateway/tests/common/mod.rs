@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use gateway::admission::{GatewayAdmissionState, GatewayWorkKind};
 use gateway::port::{GatewayPort, PortFuture};
@@ -23,6 +23,10 @@ pub struct MockPort {
     pub supports_tools: bool,
     pub honored: HashSet<String>,
     pub admission: GatewayAdmissionState,
+    /// Events replayed, in order, from `job_events`.
+    pub job_events: Vec<JobEvent>,
+    /// Artifact bytes keyed by id, served by `artifact_data`.
+    pub artifacts: HashMap<String, Vec<u8>>,
 }
 
 impl Default for MockPort {
@@ -33,6 +37,8 @@ impl Default for MockPort {
             supports_tools: false,
             honored: HashSet::new(),
             admission: GatewayAdmissionState::Ready,
+            job_events: Vec::new(),
+            artifacts: HashMap::new(),
         }
     }
 }
@@ -50,14 +56,32 @@ impl MockPort {
             id,
         )
     }
+
+    /// A port serving a single ready model that offers `capability`.
+    pub fn with_capable_model(name: &str, capability: Capability) -> (Self, String) {
+        let record = capable_model(name, capability);
+        let id = record.id.clone();
+        (
+            Self {
+                shelf: vec![record],
+                ..Self::default()
+            },
+            id,
+        )
+    }
 }
 
 /// A ready text chat model registered from an ollama tag.
 pub fn ready_model(name: &str) -> ModelRecord {
+    capable_model(name, Capability::chat())
+}
+
+/// A ready model offering a single `capability`, registered from an ollama tag.
+pub fn capable_model(name: &str, capability: Capability) -> ModelRecord {
     let mut record = ModelRecord::new(
         name,
         Modality::text(),
-        vec![Capability::chat()],
+        vec![capability],
         ModelSource::new(SourceKind::ollama(), name),
     );
     record.state = ModelState::Ready;
@@ -100,7 +124,14 @@ impl GatewayPort for MockPort {
     }
 
     fn job_events<'a>(&'a self, _id: &'a str) -> PortFuture<'a, mpsc::UnboundedReceiver<JobEvent>> {
-        Box::pin(async { mpsc::unbounded_channel().1 })
+        let events = self.job_events.clone();
+        Box::pin(async move {
+            let (tx, rx) = mpsc::unbounded_channel();
+            for event in events {
+                let _ = tx.send(event);
+            }
+            rx
+        })
     }
 
     fn cancel<'a>(&'a self, _job_id: &'a str) -> PortFuture<'a, ()> {
@@ -130,9 +161,10 @@ impl GatewayPort for MockPort {
 
     fn artifact_data<'a>(
         &'a self,
-        _id: &'a str,
+        id: &'a str,
     ) -> PortFuture<'a, Result<Option<Vec<u8>>, KernelError>> {
-        Box::pin(async { Ok(None) })
+        let data = self.artifacts.get(id).cloned();
+        Box::pin(async move { Ok(data) })
     }
 
     fn admission_state<'a>(

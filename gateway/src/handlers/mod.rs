@@ -15,6 +15,7 @@ use crate::responder::GatewayResponder;
 pub mod chat;
 pub mod embeddings;
 pub mod generate;
+pub mod images;
 pub mod models;
 pub mod stream;
 
@@ -30,6 +31,12 @@ pub(crate) fn runtime_failed(_: runtime::adapters::RuntimeError) -> GatewayError
 /// A `400 Bad Request` carrying `message`.
 pub(crate) fn bad_request(message: impl Into<String>) -> GatewayError {
     GatewayError::new(crate::error::GatewayErrorKind::BadRequest, message)
+}
+
+/// A `500` server error carrying `message`; unlike [`runtime_failed`] the caller
+/// supplies the wording, so use it only for messages safe to surface.
+pub(crate) fn server_error(message: impl Into<String>) -> GatewayError {
+    GatewayError::new(crate::error::GatewayErrorKind::ServerError, message)
 }
 
 /// The non-empty `model` field of a request body, or a `400`.

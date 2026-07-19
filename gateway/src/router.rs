@@ -13,6 +13,7 @@ use crate::handlers::GatewayHandling;
 use crate::handlers::chat::{OllamaChatHandler, OpenAIChatHandler};
 use crate::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
 use crate::handlers::generate::{OllamaGenerateHandler, OpenAICompletionsHandler};
+use crate::handlers::images::OpenAIImagesHandler;
 use crate::handlers::models::{
     OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
 };
@@ -111,6 +112,13 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         GatewayRoute::new("POST", "/api/generate", Box::new(OllamaGenerateHandler))
             .inference()
             .described("Ollama", "Generate from a prompt, Ollama-style"),
+        GatewayRoute::new(
+            "POST",
+            "/v1/images/generations",
+            Box::new(OpenAIImagesHandler),
+        )
+        .inference()
+        .described("OpenAI", "Generate an image from a prompt"),
     ]
 }
 
