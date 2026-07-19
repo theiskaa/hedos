@@ -9,6 +9,7 @@ pub mod defaults;
 pub mod error;
 pub mod scopes;
 pub mod surface;
+pub mod wire;
 
 pub use error::{GatewayError, GatewayErrorKind};
 pub use scopes::GatewayScopes;
