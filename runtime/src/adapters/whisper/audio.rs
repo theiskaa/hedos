@@ -90,7 +90,12 @@ impl TranscriptionAudio {
             let chunk_id = &data[offset..offset + 4];
             let chunk_size = read_u32(data, offset + 4) as usize;
             let body = offset + 8;
-            if body + chunk_size > data.len() {
+            // `chunk_size` is attacker-controlled; guard the offset math so a
+            // huge declared size can never wrap past the bounds check.
+            let Some(end) = body.checked_add(chunk_size) else {
+                break;
+            };
+            if end > data.len() {
                 break;
             }
             if chunk_id == b"fmt " && chunk_size >= 16 {
@@ -110,13 +115,16 @@ impl TranscriptionAudio {
                         ));
                     }
                 };
-                let interleaved = decode_samples(&data[body..body + chunk_size], format)?;
+                let interleaved = decode_samples(&data[body..end], format)?;
                 return Ok(Self {
                     samples: downmixed(&interleaved, format.channels),
                     sample_rate: format.sample_rate,
                 });
             }
-            offset = body + chunk_size + (chunk_size % 2);
+            let Some(next) = end.checked_add(chunk_size % 2) else {
+                break;
+            };
+            offset = next;
         }
         Err(TranscriptionError::PayloadInvalid(
             "wave file has no data chunk".to_owned(),
