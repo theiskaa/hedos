@@ -1,8 +1,7 @@
-//! The mlx-vlm vision adapter: serves chat/vision for MLX-safetensors
-//! vision-language models through a Python sidecar. Like [`MlxLmAdapter`] but for
-//! `see`-capable models, and its output is not think-split.
+//! The embeddings adapter: serves the `embed` capability for safetensors /
+//! MLX-safetensors embedding models through a Python sidecar. A one-shot runtime
+//! (no honored sampling params, no context window, hard-cancelled).
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -17,11 +16,11 @@ use crate::governor::MemoryGovernor;
 use crate::python_runtime::{Descriptor, PythonSidecarRuntime};
 use crate::sidecar::SidecarSupervisor;
 
-/// The shipped bundle name for the mlx-vlm runtime.
-const BUNDLE_NAME: &str = "python-mlx-vlm";
+/// The shipped bundle name for the embeddings runtime.
+const BUNDLE_NAME: &str = "python-embeddings";
 
-/// The mlx-vlm vision Python-sidecar adapter.
-pub struct MlxVlmAdapter {
+/// The embeddings Python-sidecar adapter.
+pub struct EmbeddingsAdapter {
     id: RuntimeId,
     governor: MemoryGovernor,
     supervisor: SidecarSupervisor,
@@ -30,7 +29,7 @@ pub struct MlxVlmAdapter {
     workdir_root: PathBuf,
 }
 
-impl MlxVlmAdapter {
+impl EmbeddingsAdapter {
     /// An adapter that governs generations through `governor`, launches sidecars
     /// through `supervisor`, prepares environments through `environments`, finds
     /// its bundle under `search_roots`, and runs sidecars under `workdir_root`.
@@ -42,7 +41,7 @@ impl MlxVlmAdapter {
         workdir_root: PathBuf,
     ) -> Self {
         Self {
-            id: RuntimeId::mlx_vlm(),
+            id: RuntimeId::embeddings(),
             governor,
             supervisor,
             environments,
@@ -61,12 +60,14 @@ impl MlxVlmAdapter {
 
     fn descriptor(&self) -> Descriptor {
         sidecar_descriptor(
-            RuntimeId::mlx_vlm(),
+            RuntimeId::embeddings(),
             BUNDLE_NAME,
-            "Preparing vision runtime…",
-            "Starting vision runtime…",
+            "Preparing embedding runtime…",
+            "Starting embedding runtime…",
             None,
-            true,
+            // Embedding requests are short one-shots, so a cancelled stream
+            // hard-kills the sidecar rather than keeping it warm.
+            false,
             self.environments.clone(),
             Arc::clone(&self.search_roots),
             self.workdir_root.clone(),
@@ -74,24 +75,21 @@ impl MlxVlmAdapter {
     }
 }
 
-impl RuntimeAdapter for MlxVlmAdapter {
+impl RuntimeAdapter for EmbeddingsAdapter {
     fn id(&self) -> &RuntimeId {
         &self.id
     }
 
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
-        record.runtime.id.as_ref() == Some(&self.id) && is_vision_capability(capability)
+        record.runtime.id.as_ref() == Some(&self.id) && capability == &Capability::embed()
     }
 
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
-        if identified.format == ModelFormat::MlxSafetensors
-            && identified.capabilities.contains(&Capability::see())
+        if identified.capabilities.contains(&Capability::embed())
+            && (identified.format == ModelFormat::Safetensors
+                || identified.format == ModelFormat::MlxSafetensors)
         {
-            Some(RuntimeBid::with_alternatives(
-                RunTier::Managed,
-                BidPreference::MLX_VLM,
-                vec![RuntimeId::mlx_swift()],
-            ))
+            Some(RuntimeBid::new(RunTier::Managed, BidPreference::EMBEDDINGS))
         } else {
             None
         }
@@ -103,37 +101,8 @@ impl RuntimeAdapter for MlxVlmAdapter {
         _capability: Capability,
         payload: JsonValue,
     ) -> ChunkStream {
-        // Vision requests always run through the chat op; the output is not
-        // think-split.
-        bridge(self.runtime().stream(record, Capability::chat(), payload))
+        bridge(self.runtime().stream(record, Capability::embed(), payload))
     }
-
-    fn effective_context_window(
-        &self,
-        record: &ModelRecord,
-        _requested: Option<i64>,
-    ) -> Option<i64> {
-        record.context_length
-    }
-
-    fn honored_param_keys(
-        &self,
-        _record: &ModelRecord,
-        capability: &Capability,
-    ) -> HashSet<String> {
-        if is_vision_capability(capability) {
-            ["temperature", "top_p", "max_tokens"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
-        } else {
-            HashSet::new()
-        }
-    }
-}
-
-fn is_vision_capability(capability: &Capability) -> bool {
-    capability == &Capability::chat() || capability == &Capability::see()
 }
 
 #[cfg(test)]
@@ -142,40 +111,43 @@ mod tests {
     use crate::governor::GovernorConfig;
     use kernel::records::{ExecutionMode, Modality, ModelSource, ModelState, SourceKind};
 
-    fn adapter() -> MlxVlmAdapter {
-        MlxVlmAdapter::new(
+    fn adapter() -> EmbeddingsAdapter {
+        EmbeddingsAdapter::new(
             MemoryGovernor::new(GovernorConfig::with_total_mb(262_144)),
             SidecarSupervisor::default(),
-            EnvironmentManager::new(std::env::temp_dir().join("hedos-mlx-vlm-env")),
+            EnvironmentManager::new(std::env::temp_dir().join("hedos-embeddings-env")),
             Vec::new(),
-            std::env::temp_dir().join("hedos-mlx-vlm-workdirs"),
+            std::env::temp_dir().join("hedos-embeddings-workdirs"),
         )
     }
 
     fn record() -> ModelRecord {
         let mut record = ModelRecord::new(
             "m",
-            Modality::vision(),
+            Modality::embedding(),
             Vec::new(),
             ModelSource::new(SourceKind::huggingface_cache(), "/models/m"),
         );
-        record.runtime.id = Some(RuntimeId::mlx_vlm());
+        record.runtime.id = Some(RuntimeId::embeddings());
         record.state = ModelState::Ready;
-        record.context_length = Some(4096);
         record
     }
 
     fn identified(format: ModelFormat, caps: Vec<Capability>) -> IdentifiedModel {
-        IdentifiedModel::new(format, Some(Modality::vision()), caps, ExecutionMode::Sync)
+        IdentifiedModel::new(
+            format,
+            Some(Modality::embedding()),
+            caps,
+            ExecutionMode::Sync,
+        )
     }
 
     #[test]
-    fn it_serves_chat_and_see_for_its_own_runtime() {
+    fn it_serves_only_embed_for_its_own_runtime() {
         let adapter = adapter();
-        assert_eq!(adapter.id(), &RuntimeId::mlx_vlm());
-        assert!(adapter.can_serve(&record(), &Capability::chat()));
-        assert!(adapter.can_serve(&record(), &Capability::see()));
-        assert!(!adapter.can_serve(&record(), &Capability::embed()));
+        assert_eq!(adapter.id(), &RuntimeId::embeddings());
+        assert!(adapter.can_serve(&record(), &Capability::embed()));
+        assert!(!adapter.can_serve(&record(), &Capability::chat()));
     }
 
     #[test]
@@ -183,30 +155,30 @@ mod tests {
         let adapter = adapter();
         let mut other = record();
         other.runtime.id = Some(RuntimeId::llama_cpp());
-        assert!(!adapter.can_serve(&other, &Capability::chat()));
+        assert!(!adapter.can_serve(&other, &Capability::embed()));
     }
 
     #[test]
-    fn it_bids_on_mlx_safetensors_vision_models_with_mlx_swift_as_an_alternative() {
-        let bid = adapter()
-            .bid(
-                &record(),
-                &identified(ModelFormat::MlxSafetensors, vec![Capability::see()]),
-            )
-            .unwrap();
-        assert_eq!(bid.tier, RunTier::Managed);
-        assert_eq!(bid.preference, BidPreference::MLX_VLM);
-        assert_eq!(bid.alternatives, vec![RuntimeId::mlx_swift()]);
+    fn it_bids_on_safetensors_and_mlx_safetensors_embedding_models() {
+        let adapter = adapter();
+        for format in [ModelFormat::Safetensors, ModelFormat::MlxSafetensors] {
+            let bid = adapter
+                .bid(&record(), &identified(format, vec![Capability::embed()]))
+                .unwrap();
+            assert_eq!(bid.tier, RunTier::Managed);
+            assert_eq!(bid.preference, BidPreference::EMBEDDINGS);
+            assert!(bid.alternatives.is_empty());
+        }
     }
 
     #[test]
-    fn it_does_not_bid_without_the_see_capability_or_the_right_format() {
+    fn it_does_not_bid_without_the_embed_capability_or_a_supported_format() {
         let adapter = adapter();
         assert!(
             adapter
                 .bid(
                     &record(),
-                    &identified(ModelFormat::MlxSafetensors, vec![Capability::chat()])
+                    &identified(ModelFormat::Safetensors, vec![Capability::chat()])
                 )
                 .is_none()
         );
@@ -214,31 +186,23 @@ mod tests {
             adapter
                 .bid(
                     &record(),
-                    &identified(ModelFormat::Gguf, vec![Capability::see()])
+                    &identified(ModelFormat::Gguf, vec![Capability::embed()])
                 )
                 .is_none()
         );
     }
 
     #[test]
-    fn it_honors_the_vision_sampling_keys_for_chat_and_see_only() {
+    fn it_honors_no_params_and_has_no_context_window() {
         let adapter = adapter();
-        let honored = adapter.honored_param_keys(&record(), &Capability::see());
-        assert!(honored.contains("temperature"));
-        assert!(honored.contains("max_tokens"));
-        assert!(!honored.contains("top_k")); // vlm honors a narrower set than mlx-lm
         assert!(
             adapter
                 .honored_param_keys(&record(), &Capability::embed())
                 .is_empty()
         );
-    }
-
-    #[test]
-    fn its_context_window_is_the_records() {
         assert_eq!(
-            adapter().effective_context_window(&record(), None),
-            Some(4096)
+            adapter.effective_context_window(&record(), Some(4096)),
+            None
         );
     }
 
@@ -248,7 +212,7 @@ mod tests {
         let adapter = adapter();
         let mut stream = adapter.invoke(
             &record(),
-            Capability::see(),
+            Capability::embed(),
             JsonValue::Object(Default::default()),
         );
         let mut error = None;

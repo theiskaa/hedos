@@ -19,7 +19,9 @@ const CANCEL_GRACE: Duration = Duration::from_secs(10);
 
 /// A [`Descriptor`] for a Python sidecar: it prepares the environment from the
 /// bundle's lockfile and builds the launch spec, both locating the bundle
-/// `bundle_name` under `search_roots`. The sidecar is cooperatively cancelled.
+/// `bundle_name` under `search_roots`. `cooperative_cancel` controls whether a
+/// cancelled stream keeps the sidecar warm (streaming models) or hard-kills it
+/// (short one-shot models like embeddings).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sidecar_descriptor(
     runtime_id: RuntimeId,
@@ -27,6 +29,7 @@ pub(crate) fn sidecar_descriptor(
     preparing_status: &str,
     starting_status: &str,
     warm_window: Option<Duration>,
+    cooperative_cancel: bool,
     environments: EnvironmentManager,
     search_roots: Arc<Vec<PathBuf>>,
     workdir_root: PathBuf,
@@ -62,7 +65,7 @@ pub(crate) fn sidecar_descriptor(
                 &workdir_root,
                 bundle_name,
                 &[],
-                true,
+                cooperative_cancel,
                 CANCEL_GRACE,
             )
         }),

@@ -9,6 +9,7 @@
 //! resolution unit ([`crate::resolution`]). The invoke path selects an adapter by
 //! [`RuntimeAdapter::can_serve`].
 
+mod embeddings;
 mod grammar;
 mod llama_pool;
 mod llama_server;
@@ -20,6 +21,7 @@ mod sidecar_adapter;
 mod sidecar_stream;
 mod tool_scanner;
 
+pub use embeddings::EmbeddingsAdapter;
 pub use grammar::{
     CALL_CLOSE, CALL_OPEN, GENERIC_JSON_GRAMMAR, ToolGrammarError, grammar_for_response_format,
     tool_grammar, tool_system_block,

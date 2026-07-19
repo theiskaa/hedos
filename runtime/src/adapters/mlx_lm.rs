@@ -69,6 +69,7 @@ impl MlxLmAdapter {
             "Preparing text runtime…",
             "Starting text runtime…",
             None,
+            true,
             self.environments.clone(),
             Arc::clone(&self.search_roots),
             self.workdir_root.clone(),
