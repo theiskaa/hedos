@@ -10,6 +10,7 @@ use crate::request::GatewayRequest;
 use crate::responder::GatewayResponder;
 
 pub mod chat;
+pub mod models;
 pub mod stream;
 
 /// The future a [`GatewayHandling::handle`] returns, borrowing its inputs.

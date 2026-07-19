@@ -52,12 +52,12 @@ impl MockPort {
     }
 }
 
-/// A ready text model registered from an ollama tag.
+/// A ready text chat model registered from an ollama tag.
 pub fn ready_model(name: &str) -> ModelRecord {
     let mut record = ModelRecord::new(
         name,
         Modality::text(),
-        Vec::new(),
+        vec![Capability::chat()],
         ModelSource::new(SourceKind::ollama(), name),
     );
     record.state = ModelState::Ready;
