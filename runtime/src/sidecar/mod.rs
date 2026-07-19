@@ -9,9 +9,11 @@
 //! `.await`** — reader/writer/watchdog tasks and pumps lock, mutate, and drop
 //! the guard before awaiting.
 
+mod model_paths;
 mod spec;
 mod supervisor;
 
+pub use model_paths::SidecarModelPaths;
 pub use spec::{DEFAULT_SAMPLE_RATE, SidecarSpec};
 pub use supervisor::SidecarSupervisor;
 
