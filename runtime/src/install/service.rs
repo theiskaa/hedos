@@ -4,9 +4,9 @@
 //! deduplicates concurrent installs of the same reference, and announces
 //! completions so the shelf can refresh.
 //!
-//! The free-disk probe is injected (`with_disk_probe`); the default reports
-//! "unknown" and the headroom check is skipped, because std has no portable
-//! free-space API — the composition layer supplies a real probe.
+//! The free-disk probe defaults to querying the filesystem (via `fs2`) so the
+//! headroom check is enforced out of the box; it stays injectable
+//! (`disk_probe`) so tests can supply a fixed figure.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -75,12 +75,13 @@ pub struct InstallServiceBuilder {
 }
 
 impl InstallServiceBuilder {
-    /// A builder over `providers` with the default (no-op) disk probe and clock.
+    /// A builder over `providers` with the default disk probe (querying the
+    /// filesystem) and clock.
     pub fn new(providers: Vec<Arc<dyn InstallProvider>>) -> Self {
         Self {
             providers,
             disk_probe_root: PathBuf::from("."),
-            free_disk_bytes: Box::new(|_| None),
+            free_disk_bytes: Box::new(default_free_disk),
             now_millis: Box::new(default_now_millis),
         }
     }
@@ -467,4 +468,25 @@ fn exact_hit(repo: &str) -> InstallSearchHit {
 
 fn default_now_millis() -> i64 {
     kernel::time::now_millis()
+}
+
+/// The default free-disk probe: the bytes available on the filesystem holding
+/// `root`, or `None` if it can't be queried (so the headroom check is skipped).
+fn default_free_disk(root: &Path) -> Option<i64> {
+    fs2::available_space(root)
+        .ok()
+        .and_then(|bytes| i64::try_from(bytes).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_disk_probe_reads_real_free_space() {
+        // The current directory's filesystem always reports a free-space figure
+        // on the supported platforms, so the headroom check is no longer inert.
+        let free = default_free_disk(Path::new("."));
+        assert!(free.is_some_and(|bytes| bytes >= 0));
+    }
 }

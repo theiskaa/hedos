@@ -36,6 +36,7 @@ hex = "0.4"
 base64 = "0.22"
 toml = "0.8"
 regex = "1"
+fs2 = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 [profile.release]
