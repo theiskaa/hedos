@@ -7,6 +7,7 @@
 
 pub mod defaults;
 pub mod error;
+pub mod identity;
 pub mod param_guard;
 pub mod request;
 pub mod resolver;
