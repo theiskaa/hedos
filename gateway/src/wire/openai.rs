@@ -5,9 +5,11 @@
 use std::collections::BTreeMap;
 
 use kernel::capabilities::{
-    AttachmentKind, ChatAttachment, ChatMessage, ChatRole, ToolCall, ToolSpec, decode_tool_specs,
+    AttachmentKind, ChatAttachment, ChatMessage, ChatRole, GenerationStats, ToolCall, ToolSpec,
+    decode_tool_specs,
 };
-use kernel::records::JsonValue;
+use kernel::records::{JsonValue, ModelRecord};
+use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::wire::{base64, param_decoding};
@@ -412,6 +414,207 @@ fn call_objects(value: &JsonValue) -> Option<Vec<&BTreeMap<String, JsonValue>>> 
         return None;
     };
     items.iter().map(JsonValue::as_object).collect()
+}
+
+/// The kernel dispatch payload for a decoded request: the messages, tools, and
+/// tool choice, with the sampling parameters merged in at the top level.
+pub fn chat_payload(request: &ChatRequest) -> JsonValue {
+    let mut payload: BTreeMap<String, JsonValue> = BTreeMap::new();
+    payload.insert(
+        "messages".to_owned(),
+        JsonValue::Array(
+            request
+                .messages
+                .iter()
+                .map(ChatMessage::payload_value)
+                .collect(),
+        ),
+    );
+    if !request.tools.is_empty() {
+        payload.insert(
+            "tools".to_owned(),
+            JsonValue::Array(request.tools.iter().map(ToolSpec::payload_value).collect()),
+        );
+    }
+    if let Some(tool_choice) = &request.tool_choice {
+        payload.insert("tool_choice".to_owned(), tool_choice.clone());
+    }
+    for (key, value) in &request.sampling {
+        payload.insert(key.clone(), value.clone());
+    }
+    JsonValue::Object(payload)
+}
+
+/// The terminal SSE frame marking the end of a stream.
+pub const SSE_DONE: &[u8] = b"data: [DONE]\n\n";
+
+/// Wrap a JSON value in a `data: …\n\n` server-sent-event frame.
+pub fn sse_frame(value: &Value) -> Vec<u8> {
+    let mut frame = b"data: ".to_vec();
+    frame.extend_from_slice(&serde_json::to_vec(value).unwrap_or_default());
+    frame.extend_from_slice(b"\n\n");
+    frame
+}
+
+/// One streaming `chat.completion.chunk`: an id/created/model header plus the
+/// delta fields to emit. Construct with [`StreamChunk::new`], set the deltas
+/// present in this chunk, and render with [`StreamChunk::to_value`].
+#[derive(Debug, Clone)]
+pub struct StreamChunk<'a> {
+    /// The completion id, shared across all chunks of one response.
+    pub id: &'a str,
+    /// The creation time, in seconds since the epoch.
+    pub created: i64,
+    /// The model id echoed back.
+    pub model: &'a str,
+    /// Visible content delta, if any.
+    pub content: Option<&'a str>,
+    /// Reasoning delta, emitted as `reasoning_content`, if any.
+    pub reasoning: Option<&'a str>,
+    /// A tool call delta, if this chunk carries one.
+    pub tool_call: Option<&'a ToolCall>,
+    /// The index of the tool call within the response's call list.
+    pub tool_call_index: usize,
+    /// The finish reason, if this is the final chunk.
+    pub finish_reason: Option<&'a str>,
+    /// Whether to emit the opening `role: "assistant"` delta.
+    pub role: bool,
+}
+
+impl<'a> StreamChunk<'a> {
+    /// A chunk header with every delta field empty.
+    pub fn new(id: &'a str, created: i64, model: &'a str) -> Self {
+        Self {
+            id,
+            created,
+            model,
+            content: None,
+            reasoning: None,
+            tool_call: None,
+            tool_call_index: 0,
+            finish_reason: None,
+            role: false,
+        }
+    }
+
+    /// Render this chunk as its wire JSON object.
+    pub fn to_value(&self) -> Value {
+        let mut delta = serde_json::Map::new();
+        if self.role {
+            delta.insert("role".to_owned(), json!("assistant"));
+        }
+        if let Some(content) = self.content {
+            delta.insert("content".to_owned(), json!(content));
+        }
+        if let Some(reasoning) = self.reasoning {
+            delta.insert("reasoning_content".to_owned(), json!(reasoning));
+        }
+        if let Some(call) = self.tool_call {
+            delta.insert(
+                "tool_calls".to_owned(),
+                json!([tool_call_wire(call, self.tool_call_index)]),
+            );
+        }
+        json!({
+            "id": self.id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model,
+            "choices": [{
+                "index": 0,
+                "delta": Value::Object(delta),
+                // Always present, null until the final chunk.
+                "finish_reason": self.finish_reason,
+            }],
+        })
+    }
+}
+
+/// The `tool_calls` wire entry for one call at `index`, with arguments rendered
+/// as a compact JSON string (the OpenAI wire shape).
+fn tool_call_wire(call: &ToolCall, index: usize) -> Value {
+    json!({
+        "index": index,
+        "id": call.id,
+        "type": "function",
+        "function": {
+            "name": call.name,
+            "arguments": serde_json::to_string(&call.arguments).unwrap_or_else(|_| "{}".to_owned()),
+        },
+    })
+}
+
+/// The `usage` object for a response, defaulting missing counts to zero.
+pub fn usage(stats: Option<&GenerationStats>) -> Value {
+    let prompt = stats.and_then(|stats| stats.prompt_tokens).unwrap_or(0);
+    let completion = stats.and_then(|stats| stats.completion_tokens).unwrap_or(0);
+    json!({
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    })
+}
+
+/// A non-streaming `chat.completion` response object.
+pub fn completion(
+    id: &str,
+    created: i64,
+    model: &str,
+    content: &str,
+    stats: Option<&GenerationStats>,
+    tool_calls: &[ToolCall],
+) -> Value {
+    let mut message = serde_json::Map::new();
+    message.insert("role".to_owned(), json!("assistant"));
+    message.insert("content".to_owned(), json!(content));
+    if !tool_calls.is_empty() {
+        let calls: Vec<Value> = tool_calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| tool_call_wire(call, index))
+            .collect();
+        message.insert("tool_calls".to_owned(), Value::Array(calls));
+        // With tool calls and no text, content is null rather than empty.
+        if content.is_empty() {
+            message.insert("content".to_owned(), Value::Null);
+        }
+    }
+    let finish_reason = if !tool_calls.is_empty() {
+        "tool_calls"
+    } else {
+        stats
+            .and_then(|stats| stats.finish_reason.as_deref())
+            .unwrap_or("stop")
+    };
+    json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": Value::Object(message),
+            "finish_reason": finish_reason,
+        }],
+        "usage": usage(stats),
+    })
+}
+
+/// The `GET /v1/models` list body for a shelf of records.
+pub fn models_list(records: &[ModelRecord]) -> Value {
+    let data: Vec<Value> = records
+        .iter()
+        .map(|record| {
+            json!({
+                "id": record.alias.as_deref().unwrap_or(&record.name),
+                "object": "model",
+                // registered_at is milliseconds; the wire wants epoch seconds.
+                "created": record.registered_at / 1000,
+                "owned_by": "hedos",
+            })
+        })
+        .collect();
+    json!({ "object": "list", "data": data })
 }
 
 #[cfg(test)]
@@ -821,5 +1024,122 @@ mod tests {
         assert!(
             decode_chat_request(minimal(&[("messages", JsonValue::Array(vec![msg]))])).is_err()
         );
+    }
+
+    fn call(id: &str, name: &str, args: &[(&str, JsonValue)]) -> ToolCall {
+        ToolCall::with_id(id, name, JsonValue::Object(object(args)))
+    }
+
+    #[test]
+    fn chat_payload_merges_messages_tools_choice_and_sampling() {
+        let request = decode_chat_request(minimal(&[
+            ("temperature", JsonValue::Double(0.5)),
+            ("tool_choice", string("auto")),
+        ]))
+        .unwrap();
+        let JsonValue::Object(payload) = chat_payload(&request) else {
+            panic!("expected object");
+        };
+        assert!(payload.contains_key("messages"));
+        assert_eq!(payload.get("temperature"), Some(&JsonValue::Double(0.5)));
+        assert_eq!(payload.get("tool_choice"), Some(&string("auto")));
+        // No tools were supplied, so the key is absent.
+        assert!(!payload.contains_key("tools"));
+    }
+
+    #[test]
+    fn an_sse_frame_wraps_in_data_and_double_newline() {
+        let frame = sse_frame(&json!({"a": 1}));
+        assert_eq!(frame, b"data: {\"a\":1}\n\n");
+        assert_eq!(SSE_DONE, b"data: [DONE]\n\n");
+    }
+
+    #[test]
+    fn a_stream_chunk_emits_only_the_deltas_present() {
+        let mut chunk = StreamChunk::new("cmpl-1", 1000, "gpt-x");
+        chunk.role = true;
+        chunk.content = Some("hello");
+        let value = chunk.to_value();
+        assert_eq!(value["object"], "chat.completion.chunk");
+        assert_eq!(value["choices"][0]["delta"]["role"], "assistant");
+        assert_eq!(value["choices"][0]["delta"]["content"], "hello");
+        // finish_reason is present but null until the final chunk.
+        assert!(value["choices"][0]["finish_reason"].is_null());
+        assert!(value["choices"][0].get("finish_reason").is_some());
+    }
+
+    #[test]
+    fn a_stream_chunk_carries_a_tool_call_with_string_arguments() {
+        let call = call("call_1", "adder", &[("a", JsonValue::Int(1))]);
+        let mut chunk = StreamChunk::new("cmpl-1", 1000, "gpt-x");
+        chunk.tool_call = Some(&call);
+        chunk.tool_call_index = 2;
+        let value = chunk.to_value();
+        let wire = &value["choices"][0]["delta"]["tool_calls"][0];
+        assert_eq!(wire["index"], 2);
+        assert_eq!(wire["id"], "call_1");
+        assert_eq!(wire["type"], "function");
+        assert_eq!(wire["function"]["name"], "adder");
+        assert_eq!(wire["function"]["arguments"], "{\"a\":1}");
+    }
+
+    #[test]
+    fn usage_defaults_missing_counts_and_sums() {
+        assert_eq!(
+            usage(None),
+            json!({"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        );
+        let stats = GenerationStats {
+            prompt_tokens: Some(10),
+            completion_tokens: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(usage(Some(&stats))["total_tokens"], 15);
+    }
+
+    #[test]
+    fn a_plain_completion_uses_the_stats_finish_reason_or_stop() {
+        let value = completion("id", 1, "m", "hi", None, &[]);
+        assert_eq!(value["object"], "chat.completion");
+        assert_eq!(value["choices"][0]["message"]["content"], "hi");
+        assert_eq!(value["choices"][0]["finish_reason"], "stop");
+
+        let stats = GenerationStats {
+            finish_reason: Some("length".to_owned()),
+            ..Default::default()
+        };
+        let value = completion("id", 1, "m", "hi", Some(&stats), &[]);
+        assert_eq!(value["choices"][0]["finish_reason"], "length");
+    }
+
+    #[test]
+    fn a_tool_call_completion_nulls_empty_content_and_finishes_with_tool_calls() {
+        let calls = [call("call_1", "adder", &[])];
+        let value = completion("id", 1, "m", "", None, &calls);
+        assert_eq!(value["choices"][0]["finish_reason"], "tool_calls");
+        // Empty content with tool calls becomes null.
+        assert!(value["choices"][0]["message"]["content"].is_null());
+        assert_eq!(
+            value["choices"][0]["message"]["tool_calls"][0]["id"],
+            "call_1"
+        );
+    }
+
+    #[test]
+    fn the_models_list_uses_alias_and_converts_millis_to_seconds() {
+        use kernel::records::{Modality, ModelSource, SourceKind};
+        let mut record = ModelRecord::new(
+            "raw-name",
+            Modality::text(),
+            Vec::new(),
+            ModelSource::new(SourceKind::ollama(), "tag"),
+        );
+        record.registered_at = 5_000; // 5 seconds in millis
+        record.alias = Some("Friendly".to_owned());
+        let value = models_list(std::slice::from_ref(&record));
+        assert_eq!(value["object"], "list");
+        assert_eq!(value["data"][0]["id"], "Friendly");
+        assert_eq!(value["data"][0]["created"], 5);
+        assert_eq!(value["data"][0]["owned_by"], "hedos");
     }
 }
