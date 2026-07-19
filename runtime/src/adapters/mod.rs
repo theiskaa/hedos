@@ -12,6 +12,7 @@
 mod grammar;
 mod llama_pool;
 mod llama_server;
+mod mlx_lm;
 mod ollama;
 mod openai;
 mod tool_scanner;
@@ -22,6 +23,7 @@ pub use grammar::{
 };
 pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
+pub use mlx_lm::MlxLmAdapter;
 pub use ollama::OllamaAdapter;
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};
 pub use tool_scanner::ToolCallScanner;
