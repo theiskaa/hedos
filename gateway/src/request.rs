@@ -70,8 +70,8 @@ impl GatewayRequest {
     pub fn bearer_token(&self) -> Option<String> {
         if let Some(authorization) = self.header("Authorization") {
             let mut parts = authorization.splitn(2, ' ');
-            // An empty remainder (`"Bearer "`) is not a token: Swift's
-            // whitespace split omits it, so we fall through to `x-api-key`.
+            // An empty remainder (`"Bearer "`) is not a token, so we fall
+            // through to `x-api-key`.
             if let (Some(scheme), Some(token)) = (parts.next(), parts.next())
                 && scheme.eq_ignore_ascii_case("Bearer")
                 && !token.is_empty()

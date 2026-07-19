@@ -33,7 +33,7 @@ pub enum GatewayErrorKind {
 }
 
 impl GatewayErrorKind {
-    /// The stable snake-case label for this kind (the Swift `Kind` raw value).
+    /// The stable snake-case label for this kind.
     pub fn label(self) -> &'static str {
         match self {
             Self::BadRequest => "invalid_request_error",

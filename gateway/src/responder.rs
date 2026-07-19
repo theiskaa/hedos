@@ -57,7 +57,7 @@ impl GatewayResponder {
 
     /// Send a complete response: a head with `status`/`content_type` (plus any
     /// `extra_headers`) and the whole `body`. A no-op if a response already
-    /// started, matching the Swift guard.
+    /// started.
     pub fn respond(
         &self,
         status: u16,

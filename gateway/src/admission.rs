@@ -30,7 +30,7 @@ pub enum GatewayAdmissionState {
 ///
 /// `enter` admits a request only while the count is below the limit; each
 /// admitted request must be balanced by an `exit`. Lock-free via an atomic
-/// compare-and-swap, replacing the Swift lock-guarded counter.
+/// compare-and-swap.
 #[derive(Debug, Default)]
 pub struct GatewayCounter {
     count: AtomicUsize,
