@@ -371,6 +371,25 @@ impl Kernel {
             .collect()
     }
 
+    /// The raw bytes of the artifact stored under `id`, read from disk, or `None`
+    /// if no such artifact exists.
+    pub async fn artifact_data(&self, id: &str) -> Result<Option<Vec<u8>>, KernelError> {
+        // Resolve the on-disk path under the lock, then drop it before the read.
+        let path = {
+            let mut store = self.artifacts.lock().await;
+            store
+                .url(id)
+                .map_err(|error| KernelError::Storage(error.to_string()))?
+        };
+        match path {
+            Some(path) => tokio::fs::read(&path)
+                .await
+                .map(Some)
+                .map_err(|error| KernelError::Storage(error.to_string())),
+            None => Ok(None),
+        }
+    }
+
     /// The models currently holding memory, per the governor.
     pub fn resident_models(&self) -> Vec<ResidentEntry> {
         self.governor
