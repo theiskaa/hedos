@@ -18,8 +18,6 @@ use tokio::sync::mpsc;
 
 use super::{ChunkStream, RuntimeAdapter, RuntimeError};
 
-const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
-const MAX_LINE_BYTES: usize = 2 * 1024 * 1024;
 const DEFAULT_IN_FLIGHT_LIMIT: usize = 4;
 
 /// The request params an OpenAI endpoint honors (forwarded verbatim). Shared with
@@ -255,7 +253,7 @@ pub(crate) async fn stream_completions(
     if let Some(key) = key.filter(|key| !key.is_empty()) {
         builder = builder.header("authorization", format!("Bearer {key}"));
     }
-    let mut response = match builder.send().await {
+    let response = match builder.send().await {
         Ok(response) => response,
         Err(err) => {
             let error = if err.is_connect() || err.is_timeout() {
@@ -284,45 +282,10 @@ pub(crate) async fn stream_completions(
     }
 
     let mut parser = OpenAiStreamParser::new();
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut total = 0usize;
-    loop {
-        let chunk = tokio::select! {
-            chunk = response.chunk() => chunk,
-            _ = tx.closed() => return,
-        };
-        match chunk {
-            Ok(Some(bytes)) => {
-                total += bytes.len();
-                if total > MAX_RESPONSE_BYTES {
-                    let _ = tx.send(Err(RuntimeError::Failed(
-                        "the server sent an oversized response".to_owned(),
-                    )));
-                    return;
-                }
-                buffer.extend_from_slice(&bytes);
-            }
-            Ok(None) => break,
-            Err(err) => {
-                let _ = tx.send(Err(RuntimeError::Failed(format!("endpoint: {err}"))));
-                return;
-            }
-        }
-        while let Some(newline) = buffer.iter().position(|&byte| byte == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=newline).collect();
-            if !forward_line(&mut parser, tx, &line) {
-                return;
-            }
-        }
-        // A single line that never terminates must not buffer without bound.
-        if buffer.len() > MAX_LINE_BYTES {
-            let _ = tx.send(Err(RuntimeError::Failed(
-                "the server sent an oversized line".to_owned(),
-            )));
-            return;
-        }
-    }
-    forward_line(&mut parser, tx, &buffer);
+    super::line_stream::read_lines(response, tx, "endpoint", |line| {
+        forward_line(&mut parser, tx, line)
+    })
+    .await;
 }
 
 /// Parse one SSE line and forward its chunks. Returns `false` to stop (the stream

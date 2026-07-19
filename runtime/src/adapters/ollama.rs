@@ -197,28 +197,7 @@ async fn stream_chat(
         return;
     }
 
-    let mut buffer: Vec<u8> = Vec::new();
-    loop {
-        let chunk = tokio::select! {
-            chunk = response.chunk() => chunk,
-            _ = tx.closed() => return,
-        };
-        match chunk {
-            Ok(Some(bytes)) => buffer.extend_from_slice(&bytes),
-            Ok(None) => break,
-            Err(err) => {
-                let _ = tx.send(Err(RuntimeError::Failed(format!("ollama: {err}"))));
-                return;
-            }
-        }
-        while let Some(newline) = buffer.iter().position(|&byte| byte == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=newline).collect();
-            if !forward_line(tx, &line) {
-                return;
-            }
-        }
-    }
-    forward_line(tx, &buffer);
+    super::line_stream::read_lines(response, tx, "ollama", |line| forward_line(tx, line)).await;
 }
 
 /// Parse one ndjson line and forward its chunks. Returns `false` to stop (an

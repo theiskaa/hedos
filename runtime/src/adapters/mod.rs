@@ -15,6 +15,7 @@ mod daemon_liveness;
 mod diffusers;
 mod embeddings;
 mod grammar;
+mod line_stream;
 mod llama_pool;
 mod llama_server;
 mod manifest_command;
