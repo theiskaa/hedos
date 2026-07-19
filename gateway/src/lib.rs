@@ -7,6 +7,9 @@
 
 pub mod defaults;
 pub mod error;
+pub mod param_guard;
+pub mod request;
+pub mod resolver;
 pub mod scopes;
 pub mod surface;
 pub mod wire;
