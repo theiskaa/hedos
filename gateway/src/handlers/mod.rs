@@ -10,6 +10,7 @@ use crate::request::GatewayRequest;
 use crate::responder::GatewayResponder;
 
 pub mod chat;
+pub mod embeddings;
 pub mod models;
 pub mod stream;
 
@@ -20,6 +21,21 @@ pub(crate) fn runtime_failed(_: runtime::adapters::RuntimeError) -> GatewayError
         crate::error::GatewayErrorKind::ServerError,
         "the runtime failed to complete the request",
     )
+}
+
+/// A `400 Bad Request` carrying `message`.
+pub(crate) fn bad_request(message: impl Into<String>) -> GatewayError {
+    GatewayError::new(crate::error::GatewayErrorKind::BadRequest, message)
+}
+
+/// Send `value` as a `200` JSON response.
+pub(crate) fn respond_json(responder: &GatewayResponder, value: &serde_json::Value) {
+    responder.respond(
+        200,
+        "application/json",
+        serde_json::to_vec(value).unwrap_or_default(),
+        Vec::new(),
+    );
 }
 
 /// The future a [`GatewayHandling::handle`] returns, borrowing its inputs.

@@ -4,7 +4,7 @@
 use kernel::records::{Capability, ModelRecord, ModelState};
 use serde_json::json;
 
-use super::{GatewayHandling, HandlerFuture};
+use super::{GatewayHandling, HandlerFuture, respond_json};
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::GatewayPort;
@@ -15,15 +15,6 @@ use crate::wire::{ollama, openai};
 
 /// The Ollama version this gateway reports to stock clients.
 const OLLAMA_VERSION: &str = "0.5.0";
-
-fn respond_json(responder: &GatewayResponder, value: &serde_json::Value) {
-    responder.respond(
-        200,
-        "application/json",
-        serde_json::to_vec(value).unwrap_or_default(),
-        Vec::new(),
-    );
-}
 
 fn ready(shelf: Vec<ModelRecord>) -> Vec<ModelRecord> {
     shelf

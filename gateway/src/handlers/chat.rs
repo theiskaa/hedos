@@ -11,11 +11,11 @@ use kernel::records::{Capability, JsonValue, ModelRecord};
 use runtime::adapters::ChunkStream;
 use serde_json::json;
 
-use super::runtime_failed;
 use super::stream::{race_timeout, write_failure, write_timeout};
 use super::{GatewayHandling, HandlerFuture, completion_id};
+use super::{bad_request, runtime_failed};
 use crate::admission::GatewayWorkKind;
-use crate::error::{GatewayError, GatewayErrorKind};
+use crate::error::GatewayError;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::param_guard;
 use crate::port::GatewayPort;
@@ -28,10 +28,6 @@ use crate::wire::{ollama, openai};
 
 /// The default run timeout, in seconds, for a streamed chat.
 const DEFAULT_RUN_TIMEOUT_SECONDS: u64 = 600;
-
-fn bad_request(message: impl Into<String>) -> GatewayError {
-    GatewayError::new(GatewayErrorKind::BadRequest, message)
-}
 
 /// The shared chat prefix: resolve and admit the model, reject tools it can't
 /// serve, guard the parameters, and invoke it — yielding the record and its

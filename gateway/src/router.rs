@@ -11,6 +11,7 @@ use crate::defaults::SATURATED_RETRY_AFTER_SECONDS;
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::handlers::GatewayHandling;
 use crate::handlers::chat::{OllamaChatHandler, OpenAIChatHandler};
+use crate::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
 use crate::handlers::models::{
     OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
 };
@@ -90,6 +91,15 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             .described("Ollama", "Version handshake for stock clients"),
         GatewayRoute::new("POST", "/api/show", Box::new(OllamaShowHandler))
             .described("Ollama", "Model details handshake"),
+        GatewayRoute::new("POST", "/v1/embeddings", Box::new(OpenAIEmbeddingsHandler))
+            .inference()
+            .described("OpenAI", "Embed text into vectors"),
+        GatewayRoute::new("POST", "/api/embed", Box::new(OllamaEmbedHandler))
+            .inference()
+            .described("Ollama", "Embed text, Ollama-style"),
+        GatewayRoute::new("POST", "/api/embeddings", Box::new(OllamaEmbedHandler))
+            .inference()
+            .described("Ollama", "Embed text (legacy endpoint)"),
     ]
 }
 
