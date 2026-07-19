@@ -13,3 +13,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 regex.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
+axum.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true

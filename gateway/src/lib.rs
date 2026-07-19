@@ -20,6 +20,7 @@ pub mod resolver;
 pub mod responder;
 pub mod router;
 pub mod scopes;
+pub mod server;
 pub mod surface;
 pub mod wire;
 
