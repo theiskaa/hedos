@@ -1,36 +1,24 @@
 //! The mlx-lm text adapter: serves chat/completion for MLX-safetensors text
-//! models through a Python sidecar. The decision logic (which models it serves,
-//! its bid, honored params) is here; the actual generation runs in the sidecar
-//! launched by the [`Descriptor`] this builds.
+//! models through a Python sidecar, think-splitting its output.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use kernel::records::{
     BidPreference, Capability, JsonValue, Modality, ModelRecord, RunTier, RuntimeId,
 };
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
-use super::sidecar_adapter::sidecar_descriptor;
-use super::sidecar_stream::{bridge, separating};
+use super::sidecar_adapter::{CancelMode, SidecarAdapter, SidecarSpec};
+use super::sidecar_stream::separating;
 use super::{ChunkStream, RuntimeAdapter};
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
-use crate::python_runtime::{Descriptor, PythonSidecarRuntime};
 use crate::sidecar::SidecarSupervisor;
-
-/// The shipped bundle name for the mlx-lm runtime.
-const BUNDLE_NAME: &str = "python-mlx-lm";
 
 /// The mlx-lm Python-sidecar adapter.
 pub struct MlxLmAdapter {
-    id: RuntimeId,
-    governor: MemoryGovernor,
-    supervisor: SidecarSupervisor,
-    environments: EnvironmentManager,
-    search_roots: Arc<Vec<PathBuf>>,
-    workdir_root: PathBuf,
+    base: SidecarAdapter,
 }
 
 impl MlxLmAdapter {
@@ -45,45 +33,32 @@ impl MlxLmAdapter {
         workdir_root: PathBuf,
     ) -> Self {
         Self {
-            id: RuntimeId::mlx_lm(),
-            governor,
-            supervisor,
-            environments,
-            search_roots: Arc::new(search_roots),
-            workdir_root,
+            base: SidecarAdapter::new(
+                SidecarSpec {
+                    id: RuntimeId::mlx_lm(),
+                    bundle_name: "python-mlx-lm",
+                    preparing_status: "Preparing text runtime…",
+                    starting_status: "Starting text runtime…",
+                    warm_window: None,
+                    cancel: CancelMode::Cooperative,
+                },
+                governor,
+                supervisor,
+                environments,
+                search_roots,
+                workdir_root,
+            ),
         }
-    }
-
-    fn runtime(&self) -> PythonSidecarRuntime {
-        PythonSidecarRuntime::new(
-            self.descriptor(),
-            self.governor.clone(),
-            self.supervisor.clone(),
-        )
-    }
-
-    fn descriptor(&self) -> Descriptor {
-        sidecar_descriptor(
-            RuntimeId::mlx_lm(),
-            BUNDLE_NAME,
-            "Preparing text runtime…",
-            "Starting text runtime…",
-            None,
-            true,
-            self.environments.clone(),
-            Arc::clone(&self.search_roots),
-            self.workdir_root.clone(),
-        )
     }
 }
 
 impl RuntimeAdapter for MlxLmAdapter {
     fn id(&self) -> &RuntimeId {
-        &self.id
+        self.base.id()
     }
 
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
-        record.runtime.id.as_ref() == Some(&self.id) && is_text_capability(capability)
+        record.runtime.id.as_ref() == Some(self.base.id()) && is_text_capability(capability)
     }
 
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
@@ -104,7 +79,7 @@ impl RuntimeAdapter for MlxLmAdapter {
         payload: JsonValue,
     ) -> ChunkStream {
         let is_text = is_text_capability(&capability);
-        let stream = bridge(self.runtime().stream(record, capability, payload));
+        let stream = self.base.stream(record, capability, payload);
         // Chat/completion output is think-split, separating reasoning into
         // `Thinking` chunks; other capabilities pass through unchanged.
         if is_text { separating(stream) } else { stream }
@@ -150,8 +125,8 @@ fn is_text_capability(capability: &Capability) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governor::{GovernorConfig, MemoryGovernor};
-    use kernel::records::{ModelSource, ModelState, SourceKind};
+    use crate::governor::GovernorConfig;
+    use kernel::records::{ExecutionMode, ModelSource, ModelState, SourceKind};
 
     fn adapter() -> MlxLmAdapter {
         MlxLmAdapter::new(
@@ -181,12 +156,7 @@ mod tests {
         modality: Modality,
         caps: Vec<Capability>,
     ) -> IdentifiedModel {
-        IdentifiedModel::new(
-            format,
-            Some(modality),
-            caps,
-            kernel::records::ExecutionMode::Sync,
-        )
+        IdentifiedModel::new(format, Some(modality), caps, ExecutionMode::Sync)
     }
 
     #[test]
@@ -221,7 +191,6 @@ mod tests {
             bid,
             Some(RuntimeBid::new(RunTier::Managed, BidPreference::MLX_LM))
         );
-        // Wrong format, or no chat capability → no bid.
         assert!(
             adapter
                 .bid(
@@ -238,7 +207,11 @@ mod tests {
             adapter
                 .bid(
                     &record(),
-                    &identified(ModelFormat::MlxSafetensors, Modality::text(), vec![])
+                    &identified(
+                        ModelFormat::MlxSafetensors,
+                        Modality::vision(),
+                        vec![Capability::chat()]
+                    )
                 )
                 .is_none()
         );
@@ -268,15 +241,12 @@ mod tests {
     #[tokio::test]
     async fn invoke_without_a_bundle_yields_a_bundle_missing_error() {
         use super::super::RuntimeError;
-        // No search roots → the sidecar's environment prep can't find the bundle,
-        // so the stream ends with a runtime error rather than hanging.
         let adapter = adapter();
         let mut stream = adapter.invoke(
             &record(),
             Capability::chat(),
             JsonValue::Object(Default::default()),
         );
-        // Status chunks may precede the failure; drain until the error arrives.
         let mut error = None;
         while let Some(item) = stream.recv().await {
             if let Err(RuntimeError::Failed(message)) = item {

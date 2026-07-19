@@ -4,30 +4,19 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use kernel::records::{BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId};
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
-use super::sidecar_adapter::sidecar_descriptor;
-use super::sidecar_stream::bridge;
+use super::sidecar_adapter::{CancelMode, SidecarAdapter, SidecarSpec};
 use super::{ChunkStream, RuntimeAdapter};
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
-use crate::python_runtime::{Descriptor, PythonSidecarRuntime};
 use crate::sidecar::SidecarSupervisor;
-
-/// The shipped bundle name for the mlx-vlm runtime.
-const BUNDLE_NAME: &str = "python-mlx-vlm";
 
 /// The mlx-vlm vision Python-sidecar adapter.
 pub struct MlxVlmAdapter {
-    id: RuntimeId,
-    governor: MemoryGovernor,
-    supervisor: SidecarSupervisor,
-    environments: EnvironmentManager,
-    search_roots: Arc<Vec<PathBuf>>,
-    workdir_root: PathBuf,
+    base: SidecarAdapter,
 }
 
 impl MlxVlmAdapter {
@@ -42,45 +31,32 @@ impl MlxVlmAdapter {
         workdir_root: PathBuf,
     ) -> Self {
         Self {
-            id: RuntimeId::mlx_vlm(),
-            governor,
-            supervisor,
-            environments,
-            search_roots: Arc::new(search_roots),
-            workdir_root,
+            base: SidecarAdapter::new(
+                SidecarSpec {
+                    id: RuntimeId::mlx_vlm(),
+                    bundle_name: "python-mlx-vlm",
+                    preparing_status: "Preparing vision runtime…",
+                    starting_status: "Starting vision runtime…",
+                    warm_window: None,
+                    cancel: CancelMode::Cooperative,
+                },
+                governor,
+                supervisor,
+                environments,
+                search_roots,
+                workdir_root,
+            ),
         }
-    }
-
-    fn runtime(&self) -> PythonSidecarRuntime {
-        PythonSidecarRuntime::new(
-            self.descriptor(),
-            self.governor.clone(),
-            self.supervisor.clone(),
-        )
-    }
-
-    fn descriptor(&self) -> Descriptor {
-        sidecar_descriptor(
-            RuntimeId::mlx_vlm(),
-            BUNDLE_NAME,
-            "Preparing vision runtime…",
-            "Starting vision runtime…",
-            None,
-            true,
-            self.environments.clone(),
-            Arc::clone(&self.search_roots),
-            self.workdir_root.clone(),
-        )
     }
 }
 
 impl RuntimeAdapter for MlxVlmAdapter {
     fn id(&self) -> &RuntimeId {
-        &self.id
+        self.base.id()
     }
 
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
-        record.runtime.id.as_ref() == Some(&self.id) && is_vision_capability(capability)
+        record.runtime.id.as_ref() == Some(self.base.id()) && is_vision_capability(capability)
     }
 
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
@@ -105,7 +81,7 @@ impl RuntimeAdapter for MlxVlmAdapter {
     ) -> ChunkStream {
         // Vision requests always run through the chat op; the output is not
         // think-split.
-        bridge(self.runtime().stream(record, Capability::chat(), payload))
+        self.base.stream(record, Capability::chat(), payload)
     }
 
     fn effective_context_window(
@@ -226,7 +202,7 @@ mod tests {
         let honored = adapter.honored_param_keys(&record(), &Capability::see());
         assert!(honored.contains("temperature"));
         assert!(honored.contains("max_tokens"));
-        assert!(!honored.contains("top_k")); // vlm honors a narrower set than mlx-lm
+        assert!(!honored.contains("top_k"));
         assert!(
             adapter
                 .honored_param_keys(&record(), &Capability::embed())

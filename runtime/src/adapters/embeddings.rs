@@ -3,30 +3,19 @@
 //! (no honored sampling params, no context window, hard-cancelled).
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use kernel::records::{BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId};
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
-use super::sidecar_adapter::sidecar_descriptor;
-use super::sidecar_stream::bridge;
+use super::sidecar_adapter::{CancelMode, SidecarAdapter, SidecarSpec};
 use super::{ChunkStream, RuntimeAdapter};
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
-use crate::python_runtime::{Descriptor, PythonSidecarRuntime};
 use crate::sidecar::SidecarSupervisor;
-
-/// The shipped bundle name for the embeddings runtime.
-const BUNDLE_NAME: &str = "python-embeddings";
 
 /// The embeddings Python-sidecar adapter.
 pub struct EmbeddingsAdapter {
-    id: RuntimeId,
-    governor: MemoryGovernor,
-    supervisor: SidecarSupervisor,
-    environments: EnvironmentManager,
-    search_roots: Arc<Vec<PathBuf>>,
-    workdir_root: PathBuf,
+    base: SidecarAdapter,
 }
 
 impl EmbeddingsAdapter {
@@ -41,53 +30,42 @@ impl EmbeddingsAdapter {
         workdir_root: PathBuf,
     ) -> Self {
         Self {
-            id: RuntimeId::embeddings(),
-            governor,
-            supervisor,
-            environments,
-            search_roots: Arc::new(search_roots),
-            workdir_root,
+            base: SidecarAdapter::new(
+                SidecarSpec {
+                    id: RuntimeId::embeddings(),
+                    bundle_name: "python-embeddings",
+                    preparing_status: "Preparing embedding runtime…",
+                    starting_status: "Starting embedding runtime…",
+                    warm_window: None,
+                    // Embedding requests are short one-shots: a cancelled stream
+                    // kills the sidecar rather than keeping it warm.
+                    cancel: CancelMode::HardKill,
+                },
+                governor,
+                supervisor,
+                environments,
+                search_roots,
+                workdir_root,
+            ),
         }
-    }
-
-    fn runtime(&self) -> PythonSidecarRuntime {
-        PythonSidecarRuntime::new(
-            self.descriptor(),
-            self.governor.clone(),
-            self.supervisor.clone(),
-        )
-    }
-
-    fn descriptor(&self) -> Descriptor {
-        sidecar_descriptor(
-            RuntimeId::embeddings(),
-            BUNDLE_NAME,
-            "Preparing embedding runtime…",
-            "Starting embedding runtime…",
-            None,
-            // Embedding requests are short one-shots, so a cancelled stream
-            // hard-kills the sidecar rather than keeping it warm.
-            false,
-            self.environments.clone(),
-            Arc::clone(&self.search_roots),
-            self.workdir_root.clone(),
-        )
     }
 }
 
 impl RuntimeAdapter for EmbeddingsAdapter {
     fn id(&self) -> &RuntimeId {
-        &self.id
+        self.base.id()
     }
 
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
-        record.runtime.id.as_ref() == Some(&self.id) && capability == &Capability::embed()
+        record.runtime.id.as_ref() == Some(self.base.id()) && capability == &Capability::embed()
     }
 
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
         if identified.capabilities.contains(&Capability::embed())
-            && (identified.format == ModelFormat::Safetensors
-                || identified.format == ModelFormat::MlxSafetensors)
+            && matches!(
+                identified.format,
+                ModelFormat::Safetensors | ModelFormat::MlxSafetensors
+            )
         {
             Some(RuntimeBid::new(RunTier::Managed, BidPreference::EMBEDDINGS))
         } else {
@@ -101,7 +79,7 @@ impl RuntimeAdapter for EmbeddingsAdapter {
         _capability: Capability,
         payload: JsonValue,
     ) -> ChunkStream {
-        bridge(self.runtime().stream(record, Capability::embed(), payload))
+        self.base.stream(record, Capability::embed(), payload)
     }
 }
 
