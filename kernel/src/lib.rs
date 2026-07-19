@@ -14,7 +14,6 @@ pub mod records;
 pub mod registry;
 pub mod removal;
 pub mod resolution;
-
-mod util;
+pub mod time;
 
 pub use registry::{Registry, RegistryError};

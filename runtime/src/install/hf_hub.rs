@@ -95,7 +95,10 @@ impl HFHubAPI {
                     name,
                     downloads: hit.downloads,
                     likes: hit.likes,
-                    updated_at: hit.last_modified.as_deref().and_then(parse_iso8601_millis),
+                    updated_at: hit
+                        .last_modified
+                        .as_deref()
+                        .and_then(kernel::time::millis_from_iso8601),
                 }
             })
             .collect())
@@ -242,98 +245,5 @@ impl RawGated {
             RawGated::Mode(mode) => !mode.eq_ignore_ascii_case("false"),
             RawGated::Other(_) => false,
         }
-    }
-}
-
-/// Parse an ISO-8601 UTC timestamp (`2024-01-15T10:30:00[.fff]Z`) to epoch
-/// milliseconds, or `None` if it doesn't parse.
-fn parse_iso8601_millis(value: &str) -> Option<i64> {
-    let value = value.trim().trim_end_matches('Z');
-    let (date, time) = value.split_once('T')?;
-    let mut date_parts = date.split('-');
-    let year: i64 = date_parts.next()?.parse().ok()?;
-    let month: i64 = date_parts.next()?.parse().ok()?;
-    let day: i64 = date_parts.next()?.parse().ok()?;
-    let (hms, fraction) = match time.split_once('.') {
-        Some((hms, fraction)) => (hms, Some(fraction)),
-        None => (time, None),
-    };
-    let mut time_parts = hms.split(':');
-    let hour: i64 = time_parts.next()?.parse().ok()?;
-    let minute: i64 = time_parts.next()?.parse().ok()?;
-    let second: i64 = time_parts.next()?.parse().ok()?;
-    let millis: i64 = fraction
-        .map(|fraction| {
-            // Take the leading ASCII digits (never byte-slice — the fraction is
-            // untrusted network input and could carry a multibyte char).
-            let digits: String = fraction
-                .chars()
-                .take_while(char::is_ascii_digit)
-                .take(3)
-                .collect();
-            format!("{digits:0<3}").parse().unwrap_or(0)
-        })
-        .unwrap_or(0);
-    let days = days_from_civil(year, month, day);
-    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000 + millis)
-}
-
-/// Days from the Unix epoch for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = (if year >= 0 { year } else { year - 399 }) / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{days_from_civil, parse_iso8601_millis};
-
-    #[test]
-    fn civil_date_anchors_at_the_epoch() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(1970, 1, 2), 1);
-        assert_eq!(days_from_civil(2024, 1, 15), 19737);
-        // Leap day and the day-after-Feb boundary.
-        assert_eq!(days_from_civil(2000, 3, 1), 11017);
-        assert_eq!(days_from_civil(2024, 2, 29), 19782);
-    }
-
-    #[test]
-    fn iso8601_parses_fractions_and_never_panics() {
-        assert_eq!(parse_iso8601_millis("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(
-            parse_iso8601_millis("2024-01-15T10:30:00.000Z"),
-            Some(1_705_314_600_000)
-        );
-        assert_eq!(
-            parse_iso8601_millis("2024-01-15T10:30:00Z"),
-            Some(1_705_314_600_000)
-        );
-        // Fractions of varying length pad/truncate to milliseconds.
-        assert_eq!(
-            parse_iso8601_millis("2024-01-15T10:30:00.5Z"),
-            Some(1_705_314_600_500)
-        );
-        assert_eq!(
-            parse_iso8601_millis("2024-01-15T10:30:00.12Z"),
-            Some(1_705_314_600_120)
-        );
-        assert_eq!(
-            parse_iso8601_millis("2024-01-15T10:30:00.123456Z"),
-            Some(1_705_314_600_123)
-        );
-        // A multibyte char in the fraction must NOT panic (untrusted input).
-        assert_eq!(
-            parse_iso8601_millis("2024-01-15T10:30:00.12éZ"),
-            Some(1_705_314_600_120)
-        );
-        // Garbage → None, not a panic.
-        assert_eq!(parse_iso8601_millis("not a date"), None);
-        assert_eq!(parse_iso8601_millis("2024-01-15T10:30:00+02:00"), None);
-        assert_eq!(parse_iso8601_millis(""), None);
     }
 }

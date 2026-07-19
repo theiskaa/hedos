@@ -466,8 +466,5 @@ fn exact_hit(repo: &str) -> InstallSearchHit {
 }
 
 fn default_now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as i64)
-        .unwrap_or(0)
+    kernel::time::now_millis()
 }

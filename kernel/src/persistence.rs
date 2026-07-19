@@ -9,7 +9,6 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -43,20 +42,17 @@ pub enum StoreError {
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn epoch_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or(0)
-}
-
 /// A suffix unique across processes and threads, used to name temp and
 /// quarantine siblings so they never collide — the PID separates processes, the
 /// atomic counter separates threads within a process, and the timestamp orders
 /// them roughly in time.
 fn unique_suffix() -> String {
     let unique = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{}-{}-{unique}", std::process::id(), epoch_millis())
+    format!(
+        "{}-{}-{unique}",
+        std::process::id(),
+        crate::time::now_millis()
+    )
 }
 
 fn directory_of(path: &Path) -> PathBuf {

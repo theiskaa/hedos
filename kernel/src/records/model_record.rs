@@ -9,7 +9,7 @@ use crate::records::identifiers::{
     Capability, ExecutionMode, Modality, ModelState, RunTier, RuntimeId, SourceKind,
 };
 use crate::records::json_value::JsonValue;
-use crate::util::now_millis;
+use crate::time::now_millis;
 
 /// Where a model's weights live and how it is identified.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

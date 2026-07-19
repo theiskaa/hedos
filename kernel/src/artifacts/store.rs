@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 use crate::persistence;
-use crate::util::now_millis;
+use crate::time::now_millis;
 
 use super::artifact::{Artifact, ArtifactDraft};
 
@@ -242,22 +242,11 @@ fn slug(name: &str) -> String {
     }
 }
 
-/// The Gregorian year for an epoch-millisecond timestamp, computed with the
-/// civil-from-days algorithm (no calendar crate). The year is in UTC, so an
-/// artifact created near midnight in an offset zone can land in a different year
-/// directory than the machine's local calendar would pick. This is cosmetic — the
-/// store stays self-consistent and `load_if_needed` scans every year dir.
+/// The Gregorian year (UTC) for an epoch-millisecond timestamp. The year is in
+/// UTC, so an artifact created near midnight in an offset zone can land in a
+/// different year directory than the machine's local calendar would pick. This is
+/// cosmetic — the store stays self-consistent and `load_if_needed` scans every
+/// year dir.
 fn year_of(millis: i64) -> i64 {
-    let days = millis.div_euclid(86_400_000);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    // The algorithm's era starts in March, so January and February belong to the
-    // following civil year.
-    year + i64::from(month <= 2)
+    crate::time::civil_from_days(millis.div_euclid(86_400_000)).0
 }

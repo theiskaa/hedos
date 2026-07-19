@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::persistence::{self, StoreError};
-use crate::util::now_millis;
+use crate::time::now_millis;
 
 /// The origin marking a community-installed runtime.
 pub const COMMUNITY_ORIGIN: &str = "community";
