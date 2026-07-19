@@ -11,6 +11,17 @@ pub(crate) fn weights_mb(path: &Path) -> Option<i64> {
         .map(|meta| (meta.len() / (1 << 20)) as i64)
 }
 
+/// Lowercase hex encoding of a byte slice.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(DIGITS[(byte >> 4) as usize] as char);
+        out.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
 /// Decode a standard RFC 4648 (`+`/`/` alphabet) base64 string, or `None` if it
 /// is malformed. Strict: length a multiple of four, padding only at the end, no
 /// stray characters.
