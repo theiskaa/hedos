@@ -9,9 +9,10 @@ use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 use serde_json::{Value, json};
 
 use super::daemon_liveness::{
-    Daemon, DaemonError, DaemonLiveness, daemon_error, decode_base64, dimensions, run_daemon_job,
+    Daemon, DaemonError, DaemonLiveness, daemon_error, dimensions, run_daemon_job,
 };
 use super::{ChunkStream, JobRunning, JobStream, RuntimeAdapter, RuntimeError, RuntimeStream};
+use crate::util::base64_decode;
 
 /// The AUTOMATIC1111 daemon adapter.
 pub struct A1111Adapter {
@@ -115,7 +116,7 @@ impl JobRunning for A1111Adapter {
                     .and_then(|images| images.first())
                     .and_then(Value::as_str)
                     .ok_or_else(|| DaemonError::Failed("A1111 returned no image".to_owned()))?;
-                decode_base64(encoded).ok_or_else(|| {
+                base64_decode(encoded).ok_or_else(|| {
                     DaemonError::Failed("A1111 returned malformed base64".to_owned())
                 })
             }),

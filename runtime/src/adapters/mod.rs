@@ -27,6 +27,7 @@ mod sidecar_adapter;
 mod sidecar_job_adapter;
 mod sidecar_stream;
 mod tool_scanner;
+mod whisper;
 
 pub use a1111::A1111Adapter;
 pub use comfy_ui::ComfyUiAdapter;
@@ -46,6 +47,9 @@ pub use mlx_vlm::MlxVlmAdapter;
 pub use ollama::OllamaAdapter;
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};
 pub use tool_scanner::ToolCallScanner;
+pub use whisper::{
+    TranscriptionAudio, TranscriptionError, TranscriptionOptions, TranscriptionSegment,
+};
 
 use std::collections::HashSet;
 
