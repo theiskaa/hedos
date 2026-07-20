@@ -22,7 +22,7 @@ pub mod router;
 pub mod scopes;
 pub mod server;
 pub mod surface;
-pub mod wire;
+pub(crate) mod wire;
 
 pub use error::{GatewayError, GatewayErrorKind};
 pub use scopes::GatewayScopes;

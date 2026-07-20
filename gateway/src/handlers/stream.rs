@@ -7,10 +7,14 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use crate::error::GatewayError;
+use crate::error::{GatewayError, GatewayErrorKind};
 use crate::responder::GatewayStreamBody;
 use crate::surface::GatewaySurface;
-use crate::wire::{ollama, openai};
+use crate::wire::{anthropic, ollama, openai};
+
+/// The default run timeout, in seconds, for a streamed response. One value for
+/// every dialect handler.
+pub const DEFAULT_RUN_TIMEOUT_SECONDS: u64 = 600;
 
 /// Run `drain` with a deadline. Returns `Ok(false)` if it finished in time,
 /// `Ok(true)` if the deadline elapsed first (the drain is cancelled), or the
@@ -26,6 +30,32 @@ where
     }
 }
 
+/// The shared streamed-handler epilogue: run `drain` against a deadline of
+/// `seconds`, writing the surface's in-band timeout frame if it elapses or its
+/// failure frame (and propagating the error) if the drain fails. One definition
+/// of the timeout/failure contract for every dialect.
+pub async fn drain_bounded<F>(
+    surface: GatewaySurface,
+    body: &GatewayStreamBody,
+    seconds: u64,
+    drain: F,
+) -> Result<(), GatewayError>
+where
+    F: Future<Output = Result<(), GatewayError>>,
+{
+    match race_timeout(Duration::from_secs(seconds), drain).await {
+        Ok(false) => Ok(()),
+        Ok(true) => {
+            write_timeout(surface, body, seconds);
+            Ok(())
+        }
+        Err(error) => {
+            write_failure(surface, body, &error);
+            Err(error)
+        }
+    }
+}
+
 /// Write a gateway error into an already-streaming response and end it. On the
 /// OpenAI surface this is an SSE error frame followed by `[DONE]`; on Ollama it
 /// is a single NDJSON `{"error": …}` line.
@@ -38,6 +68,11 @@ pub fn write_failure(surface: GatewaySurface, body: &GatewayStreamBody, error: &
         }
         GatewaySurface::Ollama => {
             body.write(ollama::line(&error.body(GatewaySurface::Ollama)));
+            body.end();
+        }
+        // Anthropic has no [DONE] sentinel: the error event is the last frame.
+        GatewaySurface::Anthropic => {
+            body.write(anthropic::error_frame(error.kind, &error.message));
             body.end();
         }
     }
@@ -59,6 +94,10 @@ pub fn write_timeout(surface: GatewaySurface, body: &GatewayStreamBody, seconds:
         }
         GatewaySurface::Ollama => {
             body.write(ollama::line(&json!({ "error": message })));
+            body.end();
+        }
+        GatewaySurface::Anthropic => {
+            body.write(anthropic::error_frame(GatewayErrorKind::Timeout, &message));
             body.end();
         }
     }

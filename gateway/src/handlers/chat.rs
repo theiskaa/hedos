@@ -3,14 +3,14 @@
 //! kernel, and stream the chunks back in their dialect (or accumulate them into a
 //! single response).
 
-use std::time::Duration;
-
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
 use kernel::records::{Capability, JsonValue};
 
-use super::runtime_failed;
-use super::stream::{race_timeout, write_failure, write_timeout};
-use super::{GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch};
+use super::stream::{DEFAULT_RUN_TIMEOUT_SECONDS, drain_bounded};
+use super::{
+    GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch, respond_json,
+    runtime_failed,
+};
 use crate::error::GatewayError;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::GatewayPort;
@@ -19,9 +19,6 @@ use crate::responder::GatewayResponder;
 use crate::surface::GatewaySurface;
 use crate::wire::timestamp::{now_iso8601, now_unix_seconds};
 use crate::wire::{ollama, openai};
-
-/// The default run timeout, in seconds, for a streamed chat.
-const DEFAULT_RUN_TIMEOUT_SECONDS: u64 = 600;
 
 /// The OpenAI chat-completions handler.
 pub struct OpenAIChatHandler {
@@ -127,16 +124,13 @@ impl GatewayHandling for OpenAIChatHandler {
                     body.end();
                     Ok::<(), GatewayError>(())
                 };
-                match race_timeout(Duration::from_secs(self.run_timeout_seconds), drain).await {
-                    Ok(false) => {}
-                    Ok(true) => {
-                        write_timeout(GatewaySurface::OpenAI, &body, self.run_timeout_seconds)
-                    }
-                    Err(error) => {
-                        write_failure(GatewaySurface::OpenAI, &body, &error);
-                        return Err(error);
-                    }
-                }
+                drain_bounded(
+                    GatewaySurface::OpenAI,
+                    &body,
+                    self.run_timeout_seconds,
+                    drain,
+                )
+                .await?;
             } else {
                 let (content, tool_calls, final_stats) = collect_completion(&mut stream).await?;
                 let body = openai::completion(
@@ -147,12 +141,7 @@ impl GatewayHandling for OpenAIChatHandler {
                     final_stats.as_ref(),
                     &tool_calls,
                 );
-                responder.respond(
-                    200,
-                    "application/json",
-                    serde_json::to_vec(&body).unwrap_or_default(),
-                    Vec::new(),
-                );
+                respond_json(responder, &body);
             }
             Ok(GatewayOutcome::ok_for(
                 Some(&record.id),
@@ -242,16 +231,13 @@ impl GatewayHandling for OllamaChatHandler {
                     body.end();
                     Ok::<(), GatewayError>(())
                 };
-                match race_timeout(Duration::from_secs(self.run_timeout_seconds), drain).await {
-                    Ok(false) => {}
-                    Ok(true) => {
-                        write_timeout(GatewaySurface::Ollama, &body, self.run_timeout_seconds)
-                    }
-                    Err(error) => {
-                        write_failure(GatewaySurface::Ollama, &body, &error);
-                        return Err(error);
-                    }
-                }
+                drain_bounded(
+                    GatewaySurface::Ollama,
+                    &body,
+                    self.run_timeout_seconds,
+                    drain,
+                )
+                .await?;
             } else {
                 let (content, tool_calls, final_stats) = collect_completion(&mut stream).await?;
                 let body = ollama::final_frame(
@@ -261,12 +247,7 @@ impl GatewayHandling for OllamaChatHandler {
                     final_stats.as_ref(),
                     &tool_calls,
                 );
-                responder.respond(
-                    200,
-                    "application/json",
-                    serde_json::to_vec(&body).unwrap_or_default(),
-                    Vec::new(),
-                );
+                respond_json(responder, &body);
             }
             Ok(GatewayOutcome::ok_for(
                 Some(&record.id),

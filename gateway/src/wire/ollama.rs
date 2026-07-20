@@ -444,7 +444,7 @@ pub fn tags(records: &[ModelRecord]) -> Value {
     let models: Vec<Value> = records
         .iter()
         .map(|record| {
-            let name = record.alias.as_deref().unwrap_or(&record.name);
+            let name = record.wire_id();
             json!({
                 "name": name,
                 "model": name,

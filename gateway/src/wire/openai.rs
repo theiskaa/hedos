@@ -13,13 +13,8 @@ use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::wire::param_decoding;
+use crate::wire::param_decoding::{int_param, number_param};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
-
-/// `i64::MIN`/`i64::MAX` as floats, for range-checking integer-valued floats.
-/// `i64::MAX as f64` rounds up to 2^63, one past the real max, so the upper
-/// bound is exclusive.
-const MIN_I64_AS_F64: f64 = i64::MIN as f64;
-const MAX_I64_AS_F64: f64 = i64::MAX as f64;
 
 /// A decoded chat-completions request.
 #[derive(Debug, Clone, PartialEq)]
@@ -140,43 +135,6 @@ fn message_objects(value: Option<&JsonValue>) -> Option<Vec<&BTreeMap<String, Js
         return None;
     };
     items.iter().map(JsonValue::as_object).collect()
-}
-
-/// A numeric parameter as a float. Accepts an integer or a float, but rejects an
-/// integer too large to be represented in a float without loss.
-fn number_param(
-    body: &BTreeMap<String, JsonValue>,
-    key: &str,
-) -> Result<Option<f64>, GatewayError> {
-    let invalid = || bad_request(format!("{key} must be a number")).with_code("invalid_type");
-    match body.get(key) {
-        None => Ok(None),
-        Some(JsonValue::Int(value)) => {
-            let as_float = *value as f64;
-            if as_float as i64 == *value {
-                Ok(Some(as_float))
-            } else {
-                Err(invalid())
-            }
-        }
-        Some(JsonValue::Double(value)) => Ok(Some(*value)),
-        Some(_) => Err(invalid()),
-    }
-}
-
-/// An integer parameter. Accepts an integer or an integer-valued, in-range float;
-/// a fractional or out-of-range float is rejected.
-fn int_param(body: &BTreeMap<String, JsonValue>, key: &str) -> Result<Option<i64>, GatewayError> {
-    match body.get(key) {
-        None => Ok(None),
-        Some(JsonValue::Int(value)) => Ok(Some(*value)),
-        Some(JsonValue::Double(value))
-            if value.fract() == 0.0 && *value >= MIN_I64_AS_F64 && *value < MAX_I64_AS_F64 =>
-        {
-            Ok(Some(*value as i64))
-        }
-        Some(_) => Err(bad_request(format!("{key} must be an integer")).with_code("invalid_type")),
-    }
 }
 
 pub(crate) fn decode_sampling(
@@ -673,13 +631,21 @@ pub fn models_list(records: &[ModelRecord]) -> Value {
     let data: Vec<Value> = records
         .iter()
         .map(|record| {
-            json!({
-                "id": record.alias.as_deref().unwrap_or(&record.name),
+            let mut entry = json!({
+                "id": record.wire_id(),
                 "object": "model",
                 // registered_at is milliseconds; the wire wants epoch seconds.
                 "created": record.registered_at / 1000,
                 "owned_by": "hedos",
-            })
+            });
+            // `meta.n_ctx` is llama.cpp's extension, not part of the OpenAI
+            // schema, but goose and crush both read it to size the context
+            // window. Without it they assume a default far larger than a small
+            // local model has, and silently overflow it.
+            if let Some(context) = record.context_length {
+                entry["meta"] = json!({ "n_ctx": context });
+            }
+            entry
         })
         .collect();
     json!({ "object": "list", "data": data })
@@ -1242,5 +1208,21 @@ mod tests {
         assert_eq!(value["data"][0]["id"], "Friendly");
         assert_eq!(value["data"][0]["created"], 5);
         assert_eq!(value["data"][0]["owned_by"], "hedos");
+        // No context length known, so no meta block to mislead a client.
+        assert!(value["data"][0]["meta"].is_null());
+    }
+
+    #[test]
+    fn a_known_context_length_is_published_as_meta_n_ctx() {
+        use kernel::records::{Modality, ModelSource, SourceKind};
+        let mut record = ModelRecord::new(
+            "small",
+            Modality::text(),
+            Vec::new(),
+            ModelSource::new(SourceKind::ollama(), "tag"),
+        );
+        record.context_length = Some(4096);
+        let value = models_list(std::slice::from_ref(&record));
+        assert_eq!(value["data"][0]["meta"]["n_ctx"], 4096);
     }
 }

@@ -1,11 +1,66 @@
-//! Shared decoding helpers for the OpenAI and Ollama request bodies: normalizing
-//! the `stop` parameter and rejecting parameters the gateway doesn't honor.
+//! Shared decoding helpers for the wire dialects: normalizing the `stop`
+//! parameter, coercing numeric parameters, and rejecting parameters the gateway
+//! doesn't honor.
 
 use std::collections::BTreeMap;
 
 use kernel::records::JsonValue;
 
 use crate::error::{GatewayError, GatewayErrorKind};
+
+// `i64::MIN`/`i64::MAX` as floats, for range-checking integer-valued floats.
+// `i64::MAX as f64` rounds up to 2^63, one past the real max, so the upper
+// bound is exclusive.
+const MIN_I64_AS_F64: f64 = i64::MIN as f64;
+const MAX_I64_AS_F64: f64 = i64::MAX as f64;
+
+fn invalid_type(key: &str, expected: &str) -> GatewayError {
+    GatewayError::new(
+        GatewayErrorKind::BadRequest,
+        format!("{key} must be {expected}"),
+    )
+    .with_code("invalid_type")
+}
+
+/// A numeric parameter as a float. Accepts an integer or a float, but rejects an
+/// integer too large to be represented in a float without loss. The strict
+/// surfaces propagate the error; the lenient Anthropic surface discards it.
+pub fn number_param(
+    body: &BTreeMap<String, JsonValue>,
+    key: &str,
+) -> Result<Option<f64>, GatewayError> {
+    match body.get(key) {
+        None => Ok(None),
+        Some(JsonValue::Int(value)) => {
+            let as_float = *value as f64;
+            if as_float as i64 == *value {
+                Ok(Some(as_float))
+            } else {
+                Err(invalid_type(key, "a number"))
+            }
+        }
+        Some(JsonValue::Double(value)) => Ok(Some(*value)),
+        Some(_) => Err(invalid_type(key, "a number")),
+    }
+}
+
+/// An integer parameter. Accepts an integer or an integer-valued, in-range float;
+/// a fractional or out-of-range float is rejected.
+pub fn int_param(
+    body: &BTreeMap<String, JsonValue>,
+    key: &str,
+) -> Result<Option<i64>, GatewayError> {
+    match body.get(key) {
+        None => Ok(None),
+        Some(JsonValue::Int(value)) => Ok(Some(*value)),
+        Some(JsonValue::Double(value))
+            if value.fract() == 0.0 && *value >= MIN_I64_AS_F64 && *value < MAX_I64_AS_F64 =>
+        {
+            Ok(Some(*value as i64))
+        }
+        Some(_) => Err(invalid_type(key, "an integer")),
+    }
+}
 
 /// Normalize a `stop` parameter into an array of strings.
 ///
