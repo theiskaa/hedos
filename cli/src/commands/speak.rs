@@ -12,6 +12,7 @@ use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::session::Session;
+use crate::support::spinner::Spinner;
 
 /// Arguments for `speak`.
 #[derive(Args)]
@@ -55,6 +56,7 @@ pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
 
     let mut pcm: Vec<u8> = Vec::new();
     let mut sample_rate = DEFAULT_SAMPLE_RATE;
+    let mut spinner = Spinner::start(out);
     while let Some(result) = stream.recv().await {
         match result? {
             CapabilityChunk::Audio(frame) => {
@@ -63,10 +65,11 @@ pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
                 }
                 pcm.extend_from_slice(&frame.data);
             }
-            CapabilityChunk::Status(status) => out.err(&status),
+            CapabilityChunk::Status(status) => spinner.set(&status),
             _ => {}
         }
     }
+    spinner.clear();
     if pcm.is_empty() {
         return Err(CliError::new(format!(
             "{} produced no audio",
@@ -78,7 +81,7 @@ pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
     let wav = runtime::audio::wav_from_pcm(&pcm, rate);
     let path = args
         .output
-        .unwrap_or_else(|| crate::support::paths::default_path(record.display_name(), "wav"));
+        .unwrap_or_else(|| crate::support::paths::default_path(&text, "wav"));
     std::fs::write(&path, wav)?;
 
     out.line(&format!("wrote {}", path.display()));

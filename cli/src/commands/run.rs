@@ -12,6 +12,7 @@ use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload::message;
 use crate::support::session::Session;
+use crate::support::spinner::Spinner;
 
 /// Arguments for `run`.
 #[derive(Args)]
@@ -59,16 +60,20 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
         .await?;
 
     let mut text = String::new();
+    let mut spinner = Spinner::start(out);
     while let Some(result) = stream.recv().await {
         match result? {
             CapabilityChunk::Text(chunk) => {
+                // Clear the spinner before the reply starts, so they don't collide.
+                spinner.clear();
                 out.raw(&chunk);
                 text.push_str(&chunk);
             }
-            CapabilityChunk::Status(status) => out.err(&status),
+            CapabilityChunk::Status(status) => spinner.set(&status),
             _ => {}
         }
     }
+    spinner.clear();
 
     if out.is_json() {
         out.json(&json!({ "model": record.id, "text": text }));

@@ -11,6 +11,7 @@ use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::session::Session;
+use crate::support::spinner::Spinner;
 
 /// Arguments for `image`.
 #[derive(Args)]
@@ -53,28 +54,29 @@ pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
     let mut events = session.kernel.scheduler().events(&job_id);
 
     let mut artifacts: Vec<String> = Vec::new();
+    let mut spinner = Spinner::start(out);
     while let Some(event) = events.recv().await {
         match event {
             JobEvent::Progress(progress) => {
-                out.progress(&format!("{}%", (progress.fraction * 100.0) as i64));
+                spinner.set(&format!("{}%", (progress.fraction * 100.0) as i64));
             }
-            JobEvent::Status(status) => out.progress(&status),
+            JobEvent::Status(status) => spinner.set(&status),
             JobEvent::Done { result } => {
                 artifacts = result;
                 break;
             }
             JobEvent::Failed { message } => {
-                out.progress_done();
+                spinner.clear();
                 return Err(CliError::new(message));
             }
             JobEvent::Cancelled => {
-                out.progress_done();
+                spinner.clear();
                 return Err(CliError::new("generation was cancelled"));
             }
             _ => {}
         }
     }
-    out.progress_done();
+    spinner.clear();
 
     let artifact = artifacts
         .first()
@@ -86,7 +88,7 @@ pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
         .ok_or_else(|| CliError::new("the image artifact is missing"))?;
     let path = args
         .output
-        .unwrap_or_else(|| crate::support::paths::default_path(record.display_name(), "png"));
+        .unwrap_or_else(|| crate::support::paths::default_path(&prompt, "png"));
     std::fs::write(&path, bytes)?;
 
     out.line(&format!("wrote {}", path.display()));

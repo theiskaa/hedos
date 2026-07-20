@@ -12,6 +12,10 @@ internal/
 # Local scratch
 *.local.*
 
+# Generated media from running speak/image in the repo root
+/*.wav
+/*.png
+
 # Stray Swift-era output (pre-Rust, not part of this branch)
 .build/
 dist/

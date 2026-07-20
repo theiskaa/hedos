@@ -2,17 +2,21 @@
 //! reference it installs directly; without one it searches Hugging Face (or offers
 //! RAM-fit recommendations) and lets you pick. Ctrl-C cancels a download.
 
+use std::collections::HashSet;
+
 use clap::Args;
-use kernel::install::event::{InstallEvent, InstallProgress};
+use kernel::install::event::InstallEvent;
 use kernel::install::reference::{hugging_face_repo, ollama_install_tag};
 use kernel::install::{InstallCatalogEntry, InstallProviderId, InstallSearchHit, recommended};
+use kernel::records::ModelRecord;
 use runtime::governor::GovernorConfig;
 use runtime::install::service::InstallService;
 
 use crate::error::CliError;
+use crate::support::download::Download;
 use crate::support::output::Out;
 use crate::support::session::Session;
-use crate::support::{interactive, progress, signals};
+use crate::support::{interactive, signals};
 
 /// Arguments for `pull`.
 #[derive(Args)]
@@ -29,8 +33,9 @@ pub struct PullArgs {
 pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let install = runtime::boot::default_install_service();
+    let shelf = session.shelf().await;
 
-    let (provider, reference) = resolve_target(out, &install, &args).await?;
+    let (provider, reference) = resolve_target(out, &install, &args, &shelf).await?;
     let plan = install.plan(&provider, &reference).await?;
     if plan.requires_auth {
         return Err(CliError::new(
@@ -57,14 +62,15 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
     let id = install.begin(plan)?;
     let mut events = install.events(&id);
 
+    let mut download = Download::start(out);
     let mut cancelled = false;
     loop {
         tokio::select! {
             event = events.recv() => match event {
-                Some(InstallEvent::Progress(progress)) => out.progress(&progress_line(&progress)),
-                Some(InstallEvent::Status(status)) => out.progress(&status),
+                Some(InstallEvent::Progress(progress)) => download.progress(&progress),
+                Some(InstallEvent::Status(status)) => download.status(&status),
                 Some(InstallEvent::Failed { message }) => {
-                    out.progress_done();
+                    download.finish();
                     return Err(CliError::new(message));
                 }
                 Some(InstallEvent::Cancelled) => {
@@ -78,15 +84,16 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
             () = signals::wait_for_ctrl_c() => install.cancel(&id),
         }
     }
-    out.progress_done();
+    download.finish();
     if cancelled {
         out.err("cancelled");
         return Ok(());
     }
 
-    let summary = session.discover().await?;
+    // Re-scan so the new model registers on the shelf; the census itself is noise
+    // after pulling a single model, so only the confirmation is printed.
+    session.discover().await?;
     out.line(&format!("pulled {reference}"));
-    out.line(&summary.headline());
     out.json(&serde_json::json!({
         "pulled": reference,
         "provider": provider.as_str(),
@@ -100,6 +107,7 @@ async fn resolve_target(
     out: &Out,
     install: &InstallService,
     args: &PullArgs,
+    shelf: &[ModelRecord],
 ) -> Result<(InstallProviderId, String), CliError> {
     if let Some(reference) = &args.reference {
         let provider = provider_for(reference, args.from.as_deref())?;
@@ -113,7 +121,7 @@ async fn resolve_target(
 
     let query = interactive::input("search models (enter/return for recommendations)", true)?;
     if query.trim().is_empty() {
-        return pick_recommended();
+        return pick_recommended(shelf);
     }
 
     let result = install.browse(query.trim(), 25).await;
@@ -129,19 +137,47 @@ async fn resolve_target(
     Ok((hit.provider.clone(), hit.reference.clone()))
 }
 
-/// Offer the catalog models that fit this machine's RAM and return the pick.
-fn pick_recommended() -> Result<(InstallProviderId, String), CliError> {
+/// Offer the catalog models that fit this machine's RAM and are not already on the
+/// shelf, and return the pick.
+fn pick_recommended(shelf: &[ModelRecord]) -> Result<(InstallProviderId, String), CliError> {
     let total_mb = GovernorConfig::detect().total_memory_mb.max(1) as u64;
-    let entries = recommended(None, total_mb * 1024 * 1024, None);
+    let installed = installed_names(shelf);
+    let entries: Vec<InstallCatalogEntry> = recommended(None, total_mb * 1024 * 1024, None)
+        .into_iter()
+        .filter(|entry| !is_installed(&entry.reference, &installed))
+        .collect();
     if entries.is_empty() {
         return Err(CliError::new(
-            "no recommendations available — pass a reference instead",
+            "the recommended models are already installed — search by name or pass a reference",
         ));
     }
     let labels: Vec<String> = entries.iter().map(catalog_label).collect();
     let index = interactive::select_index("recommended", &labels)?;
     let entry = &entries[index];
     Ok((entry.provider.clone(), entry.reference.clone()))
+}
+
+/// The lowercased ids, names, and display names of every model on the shelf, for
+/// matching an install reference against what is already present.
+fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
+    shelf
+        .iter()
+        .flat_map(|record| {
+            [
+                record.id.to_lowercase(),
+                record.name.to_lowercase(),
+                record.display_name().to_lowercase(),
+            ]
+        })
+        .collect()
+}
+
+/// Whether `reference` names a model already on the shelf: a direct match, or a
+/// match on its last path segment (so `org/Model` matches an installed `Model`).
+fn is_installed(reference: &str, installed: &HashSet<String>) -> bool {
+    let reference = reference.to_lowercase();
+    installed.contains(&reference)
+        || installed.contains(reference.rsplit('/').next().unwrap_or(&reference))
 }
 
 /// A picker label for a search hit: the reference plus download and like counts.
@@ -179,28 +215,5 @@ fn provider_for(reference: &str, from: Option<&str>) -> Result<InstallProviderId
         None => Err(CliError::new(format!(
             "can't tell what \"{reference}\" is — pass --from ollama|hf"
         ))),
-    }
-}
-
-/// A one-line progress string for the current download, with a bar when the total
-/// size is known.
-fn progress_line(progress: &InstallProgress) -> String {
-    let file = progress
-        .current_file
-        .as_deref()
-        .map(|name| format!("  {name}"))
-        .unwrap_or_default();
-    // Only draw a bar against a reliable total; `fraction()` returns None while
-    // the total is still a growing estimate (Ollama layer manifests), where a
-    // computed percentage would jump backward as more layers appear.
-    match progress.fraction() {
-        Some(fraction) => format!(
-            "{} {:>3}%  {} / {} MB{file}",
-            progress::bar(fraction, 24),
-            (fraction * 100.0) as i64,
-            progress.bytes_downloaded / 1_000_000,
-            progress.total_bytes.unwrap_or(0) / 1_000_000,
-        ),
-        None => format!("{} MB{file}", progress.bytes_downloaded / 1_000_000),
     }
 }
