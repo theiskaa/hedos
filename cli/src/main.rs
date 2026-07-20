@@ -2,11 +2,6 @@
 //! kernel/runtime/gateway crates: it assembles a production kernel from the
 //! user's data dir and settings, then drives one subcommand.
 
-// The command surface is built out in phases; the shared support (name
-// resolution, streamed output, interrupt handling) lands before the commands
-// that use it. Lifted once every command is in place.
-#![allow(dead_code)]
-
 mod commands;
 mod error;
 mod support;
@@ -45,6 +40,16 @@ enum Command {
     Pull(commands::pull::PullArgs),
     /// Remove an installed model.
     Rm(commands::rm::RmArgs),
+    /// Discover models on this machine and refresh the shelf.
+    Scan(commands::scan::ScanArgs),
+    /// Synthesize speech to a WAV file.
+    Speak(commands::speak::SpeakArgs),
+    /// Generate an image to a PNG file.
+    Image(commands::image::ImageArgs),
+    /// Load a model into residency.
+    Warm(commands::warm::WarmArgs),
+    /// Evict a model from residency.
+    Unload(commands::unload::UnloadArgs),
 }
 
 #[tokio::main]
@@ -58,6 +63,11 @@ async fn main() {
         Command::Serve(args) => commands::serve::run(args, &out).await,
         Command::Pull(args) => commands::pull::run(args, &out).await,
         Command::Rm(args) => commands::rm::run(args, &out).await,
+        Command::Scan(args) => commands::scan::run(args, &out).await,
+        Command::Speak(args) => commands::speak::run(args, &out).await,
+        Command::Image(args) => commands::image::run(args, &out).await,
+        Command::Warm(args) => commands::warm::run(args, &out).await,
+        Command::Unload(args) => commands::unload::run(args, &out).await,
     };
     if let Err(error) = result {
         out.err(&error.message);
