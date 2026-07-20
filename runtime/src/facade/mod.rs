@@ -127,6 +127,7 @@ pub struct Kernel {
     scheduler: Arc<JobScheduler>,
     adapters: Vec<RegisteredAdapter>,
     default_prompt: StdMutex<Option<String>>,
+    tools_refolded: std::sync::atomic::AtomicBool,
 }
 
 impl Kernel {
@@ -158,6 +159,7 @@ impl Kernel {
             scheduler,
             adapters,
             default_prompt: StdMutex::new(None),
+            tools_refolded: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -347,16 +349,6 @@ impl Kernel {
             .ok_or_else(|| KernelError::ArtifactNotFound(artifact_id.to_owned()))
     }
 
-    /// Whether the model's chat adapter supports tool calls. `false` when the
-    /// model is unknown or has no chat runtime.
-    pub async fn supports_tools(&self, model_id: &str) -> bool {
-        let Ok(record) = self.record(model_id).await else {
-            return false;
-        };
-        self.adapter_for(&record, &Capability::chat())
-            .is_ok_and(|entry| entry.adapter.supports_tools(&record))
-    }
-
     /// The request parameter keys the model's adapter honors for `capability`.
     pub async fn honored_params(
         &self,
@@ -370,13 +362,18 @@ impl Kernel {
 
     /// Every registered model.
     pub async fn shelf(&self) -> Vec<ModelRecord> {
-        self.registry
-            .lock()
-            .await
-            .list()
-            .into_iter()
-            .cloned()
-            .collect()
+        let mut registry = self.registry.lock().await;
+        // Once per process, migrate records that predate the `tools` capability
+        // (or a fold-rule change) so an existing shelf serves tools without a
+        // manual rescan. On failure the shelf is served as-is, exactly as it
+        // would have been before the migration existed.
+        if !self
+            .tools_refolded
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            let _ = self.engine().refold_tool_capability(&mut registry);
+        }
+        registry.list().into_iter().cloned().collect()
     }
 
     /// The raw bytes of the artifact stored under `id`, read from disk, or `None`

@@ -170,8 +170,11 @@ pub trait RuntimeAdapter: Send + Sync {
         None
     }
 
-    /// Whether the adapter supports tool calls for `record`.
-    fn supports_tools(&self, _record: &ModelRecord) -> bool {
+    /// Whether this runtime forwards a `tools` array to its backend and parses
+    /// tool calls out of the response. Resolution folds the `tools` capability
+    /// onto a record only when its winning runtime does; the Python sidecars
+    /// render only the message list into the prompt, so they keep the default.
+    fn wires_tools(&self) -> bool {
         false
     }
 

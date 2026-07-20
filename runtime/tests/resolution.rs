@@ -19,17 +19,36 @@ use support::TempDir;
 struct FakeAdapter {
     id: RuntimeId,
     bid: Option<RuntimeBid>,
+    wires_tools: bool,
 }
 
 impl FakeAdapter {
     fn arced(id: RuntimeId, bid: Option<RuntimeBid>) -> Arc<dyn RuntimeAdapter> {
-        Arc::new(Self { id, bid })
+        Arc::new(Self {
+            id,
+            bid,
+            wires_tools: false,
+        })
+    }
+
+    /// A fake that, like the real ollama/llama.cpp/openai adapters, forwards
+    /// tools to its backend.
+    fn tool_wiring(id: RuntimeId, bid: Option<RuntimeBid>) -> Arc<dyn RuntimeAdapter> {
+        Arc::new(Self {
+            id,
+            bid,
+            wires_tools: true,
+        })
     }
 }
 
 impl RuntimeAdapter for FakeAdapter {
     fn id(&self) -> &RuntimeId {
         &self.id
+    }
+
+    fn wires_tools(&self) -> bool {
+        self.wires_tools
     }
 
     fn can_serve(&self, _record: &ModelRecord, capability: &Capability) -> bool {
@@ -474,4 +493,61 @@ fn explain_all_covers_every_record() {
         .find(|e| e.record.source.kind == SourceKind::ollama())
         .expect("ollama explanation");
     assert_eq!(ollama_bid.winner(), Some(&RuntimeId::ollama()));
+}
+
+#[test]
+fn resolve_folds_tools_only_when_the_winning_adapter_wires_them() {
+    let (_dir, mut reg) = registry();
+    let engine = ResolutionEngine::new(vec![FakeAdapter::tool_wiring(
+        RuntimeId::ollama(),
+        Some(RuntimeBid::new(RunTier::Native, 20)),
+    )]);
+    let record = file_record();
+    reg.register(record.clone()).unwrap();
+    let updated = engine.resolve(&record, &mut reg).unwrap().expect("changed");
+    assert!(updated.capabilities.contains(&Capability::tools()));
+
+    // The same model behind an adapter that renders only the message list (a
+    // Python sidecar) must not offer tools.
+    let (_dir, mut reg) = registry();
+    let engine = ollama_engine();
+    let record = file_record();
+    reg.register(record.clone()).unwrap();
+    let updated = engine.resolve(&record, &mut reg).unwrap().expect("changed");
+    assert!(!updated.capabilities.contains(&Capability::tools()));
+}
+
+#[test]
+fn refold_migrates_a_stale_record_without_rerunning_the_auction() {
+    let (_dir, mut reg) = registry();
+    // A record resolved before the `tools` capability existed: runtime already
+    // assigned, capabilities lack tools.
+    let mut record = file_record();
+    record.runtime.id = Some(RuntimeId::ollama());
+    record.state = kernel::records::ModelState::Ready;
+    reg.register(record).unwrap();
+
+    let engine = ResolutionEngine::new(vec![FakeAdapter::tool_wiring(RuntimeId::ollama(), None)]);
+    let changed = engine.refold_tool_capability(&mut reg).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert!(changed[0].capabilities.contains(&Capability::tools()));
+    // The auction was not re-run: the runtime assignment is untouched.
+    assert_eq!(changed[0].runtime.id, Some(RuntimeId::ollama()));
+
+    // Idempotent: a second pass changes nothing.
+    assert!(engine.refold_tool_capability(&mut reg).unwrap().is_empty());
+}
+
+#[test]
+fn refold_withholds_tools_from_a_record_on_a_non_wiring_runtime() {
+    let (_dir, mut reg) = registry();
+    let mut record = file_record();
+    record.runtime.id = Some(RuntimeId::mlx_lm());
+    record.capabilities.push(Capability::tools());
+    reg.register(record).unwrap();
+
+    let engine = ResolutionEngine::new(vec![FakeAdapter::arced(RuntimeId::mlx_lm(), None)]);
+    let changed = engine.refold_tool_capability(&mut reg).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert!(!changed[0].capabilities.contains(&Capability::tools()));
 }

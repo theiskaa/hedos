@@ -25,7 +25,7 @@ struct Fake {
     id: RuntimeId,
     serves: Vec<Capability>,
     window: Option<i64>,
-    tools: bool,
+    wires_tools: bool,
     job_result: Option<(Vec<u8>, String)>,
     last_invoke: Arc<StdMutex<Option<JsonValue>>>,
     last_job: Arc<StdMutex<Option<JsonValue>>>,
@@ -37,7 +37,7 @@ impl Fake {
             id: RuntimeId::ollama(),
             serves,
             window: None,
-            tools: false,
+            wires_tools: false,
             job_result: None,
             last_invoke: Arc::new(StdMutex::new(None)),
             last_job: Arc::new(StdMutex::new(None)),
@@ -49,8 +49,8 @@ impl Fake {
         self
     }
 
-    fn tools(mut self, tools: bool) -> Self {
-        self.tools = tools;
+    fn wires_tools(mut self) -> Self {
+        self.wires_tools = true;
         self
     }
 
@@ -90,8 +90,8 @@ impl RuntimeAdapter for Fake {
         self.window
     }
 
-    fn supports_tools(&self, _record: &ModelRecord) -> bool {
-        self.tools
+    fn wires_tools(&self) -> bool {
+        self.wires_tools
     }
 
     fn honored_param_keys(
@@ -587,16 +587,33 @@ async fn rerun_reports_a_missing_artifact() {
 }
 
 #[tokio::test]
-async fn supports_tools_reflects_the_adapter() {
+async fn shelf_folds_tools_onto_a_registry_that_predates_the_capability() {
     let dir = TempDir::new();
-    let fake = Arc::new(Fake::new(vec![Capability::chat()]).tools(true));
+    // record("m") is a chat record already resolved to ollama with no `tools`
+    // capability — exactly what a registry written before the capability
+    // existed holds. The first shelf() must migrate it without a rescan.
+    let fake = Arc::new(Fake::new(vec![Capability::chat()]).wires_tools());
     let kernel = kernel(
         &dir,
         Some(record("m")),
         vec![RegisteredAdapter::streaming(fake)],
     );
-    assert!(kernel.supports_tools("m").await);
-    assert!(!kernel.supports_tools("ghost").await);
+    let shelf = kernel.shelf().await;
+    assert!(shelf[0].capabilities.contains(&Capability::tools()));
+}
+
+#[tokio::test]
+async fn shelf_leaves_a_sidecar_served_record_without_tools() {
+    let dir = TempDir::new();
+    // The same stale record behind a non-wiring adapter must stay tool-less.
+    let fake = Arc::new(Fake::new(vec![Capability::chat()]));
+    let kernel = kernel(
+        &dir,
+        Some(record("m")),
+        vec![RegisteredAdapter::streaming(fake)],
+    );
+    let shelf = kernel.shelf().await;
+    assert!(!shelf[0].capabilities.contains(&Capability::tools()));
 }
 
 #[tokio::test]

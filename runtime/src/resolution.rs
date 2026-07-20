@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use kernel::profiles::ProfileRegistry;
 use kernel::records::{
-    ModelRecord, ModelState, Resolution, RunTier, RuntimeId, RuntimeRef, SourceKind,
+    Capability, ModelRecord, ModelState, Resolution, RunTier, RuntimeId, RuntimeRef, SourceKind,
 };
 use kernel::registry::{Registry, RegistryError};
 use kernel::resolution::{IdentificationCache, IdentifiedModel, identify};
@@ -262,11 +262,49 @@ impl ResolutionEngine {
 
         let mut updated = current.clone();
         apply_winner(&plan.bids, &mut updated, &current.runtime);
-        merge(&plan.identified, &mut updated);
+        let wires_tools = self.adapter_wires_tools(updated.runtime.id.as_ref());
+        merge(&plan.identified, &mut updated, wires_tools);
         if plan.identified.params.is_empty() {
             updated = self.profiles.refreshed(&updated);
         }
         (updated != *current).then_some(updated)
+    }
+
+    /// Whether the adapter behind `id` forwards tools. `false` when no adapter in
+    /// this engine matches — the winner was just assigned from this same set, so
+    /// a miss means the record resolved to nothing.
+    fn adapter_wires_tools(&self, id: Option<&RuntimeId>) -> bool {
+        id.and_then(|id| self.adapters.iter().find(|adapter| adapter.id() == id))
+            .is_some_and(|adapter| adapter.wires_tools())
+    }
+
+    /// Re-apply the `tools` capability fold to every record using its
+    /// already-resolved runtime, without re-running the auction. A registry
+    /// written before the capability existed never had the fold applied, and
+    /// nothing re-resolves an existing shelf on its own — without this, such a
+    /// shelf serves no tools until a manual rescan. Idempotent and cheap (no
+    /// identification, no disk reads): an already-folded record comes out
+    /// unchanged and nothing is rewritten. Applied to pinned records too — the
+    /// fold adjusts capabilities, never the runtime choice a pin protects.
+    pub fn refold_tool_capability(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<Vec<ModelRecord>, RegistryError> {
+        let ids: Vec<String> = registry
+            .list()
+            .into_iter()
+            .map(|record| record.id.clone())
+            .collect();
+        registry.update(&ids, |current| {
+            let mut updated = current.clone();
+            let wires_tools = self.adapter_wires_tools(updated.runtime.id.as_ref());
+            fold_tool_capability(
+                wires_tools,
+                updated.supports_tools,
+                &mut updated.capabilities,
+            );
+            (updated != *current).then_some(updated)
+        })
     }
 }
 
@@ -303,7 +341,7 @@ fn apply_winner(bids: &[BidEntry], updated: &mut ModelRecord, previous: &Runtime
 /// Fold the identified facts onto `updated`, each field only when identification
 /// actually determined it (an empty modality/capability/param set never clobbers
 /// what the record already carries).
-fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord) {
+fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_tools: bool) {
     if let Some(modality) = &identified.modality {
         updated.modality = modality.clone();
     }
@@ -320,4 +358,105 @@ fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord) {
         updated.has_chat_template = Some(has_chat_template);
     }
     updated.execution = identified.execution;
+    // Re-apply the tool signal after capabilities were overwritten. Tool support
+    // is the resolved runtime AND the model together: the runtime has to forward
+    // tools and parse tool calls ([`RuntimeAdapter::wires_tools`]), and the
+    // model's template has to declare them. This is what keeps a model served by
+    // a non-wiring runtime (the Python sidecars) out of the `hedos launch`
+    // picker rather than letting it be picked and then refused.
+    fold_tool_capability(
+        runtime_wires_tools,
+        updated.supports_tools,
+        &mut updated.capabilities,
+    );
+}
+
+/// Fold the `tools` capability into a conversational model when both its runtime
+/// wires tools and its template doesn't authoritatively lack them (`Some(false)`).
+/// An undetermined template (`None`) on a tool-wiring runtime is assumed capable
+/// and gated by an actual request rather than hidden.
+fn fold_tool_capability(
+    runtime_wires_tools: bool,
+    tool_capable: Option<bool>,
+    capabilities: &mut Vec<Capability>,
+) {
+    let conversational = capabilities
+        .iter()
+        .any(|cap| *cap == Capability::chat() || *cap == Capability::complete());
+    let has_tools = capabilities.iter().any(|cap| *cap == Capability::tools());
+    let keep = conversational && runtime_wires_tools && tool_capable != Some(false);
+    match (keep, has_tools) {
+        (true, false) => capabilities.push(Capability::tools()),
+        (false, true) => capabilities.retain(|cap| *cap != Capability::tools()),
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_tool_capability;
+    use kernel::records::Capability;
+
+    /// Fold assuming a tool-wiring runtime, isolating the template logic.
+    fn fold(caps: Vec<Capability>, tool_capable: Option<bool>) -> Vec<Capability> {
+        let mut caps = caps;
+        fold_tool_capability(true, tool_capable, &mut caps);
+        caps
+    }
+
+    #[test]
+    fn an_undetermined_chat_model_is_assumed_tool_capable() {
+        // A template we couldn't read (safetensors, endpoints) keeps tools, so a
+        // model that may well support them isn't hidden from the launch picker.
+        let caps = fold(vec![Capability::chat(), Capability::complete()], None);
+        assert!(caps.contains(&Capability::tools()));
+    }
+
+    #[test]
+    fn a_template_with_tool_markers_gets_tools() {
+        let caps = fold(vec![Capability::chat()], Some(true));
+        assert!(caps.contains(&Capability::tools()));
+    }
+
+    #[test]
+    fn a_template_without_tool_markers_withholds_tools() {
+        // The authoritative negative: deepseek-coder-v2's template lacks them.
+        let caps = fold(
+            vec![Capability::chat(), Capability::complete()],
+            Some(false),
+        );
+        assert!(!caps.contains(&Capability::tools()));
+    }
+
+    #[test]
+    fn a_negative_removes_a_previously_added_tools_capability() {
+        let caps = fold(vec![Capability::chat(), Capability::tools()], Some(false));
+        assert!(!caps.contains(&Capability::tools()));
+    }
+
+    #[test]
+    fn a_non_conversational_model_is_never_given_tools() {
+        let caps = fold(vec![Capability::embed()], Some(true));
+        assert!(!caps.contains(&Capability::tools()));
+    }
+
+    #[test]
+    fn tools_is_not_duplicated() {
+        let caps = fold(vec![Capability::chat(), Capability::tools()], None);
+        let count = caps.iter().filter(|c| **c == Capability::tools()).count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn a_runtime_that_does_not_wire_tools_withholds_them() {
+        // The mlx-lm sidecar renders only the message list into the prompt, so a
+        // model it serves can't do tool calls however capable the weights are.
+        let mut caps = vec![Capability::chat(), Capability::tools()];
+        fold_tool_capability(false, None, &mut caps);
+        assert!(!caps.contains(&Capability::tools()));
+
+        let mut caps = vec![Capability::chat()];
+        fold_tool_capability(false, Some(true), &mut caps);
+        assert!(!caps.contains(&Capability::tools()));
+    }
 }

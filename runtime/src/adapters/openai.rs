@@ -168,6 +168,10 @@ impl RuntimeAdapter for OpenAiEndpointAdapter {
         &self.id
     }
 
+    fn wires_tools(&self) -> bool {
+        true
+    }
+
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
         let served = *capability == Capability::chat() || *capability == Capability::complete();
         served && record.runtime.id.as_ref() == Some(&self.id)
@@ -217,10 +221,6 @@ impl RuntimeAdapter for OpenAiEndpointAdapter {
             stream_completions(&client, &base, key.as_deref(), body, &tx).await;
         });
         stream
-    }
-
-    fn supports_tools(&self, _record: &ModelRecord) -> bool {
-        true
     }
 
     fn honored_param_keys(

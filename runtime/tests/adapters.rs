@@ -55,10 +55,6 @@ impl RuntimeAdapter for EchoAdapter {
         });
         stream
     }
-
-    fn supports_tools(&self, _record: &ModelRecord) -> bool {
-        true
-    }
 }
 
 struct FakeImageRunner;
@@ -89,7 +85,6 @@ async fn an_adapter_serves_through_dynamic_dispatch() {
     assert_eq!(adapter.id().as_str(), "fake:echo");
     assert!(adapter.can_serve(&record, &Capability::chat()));
     assert!(!adapter.can_serve(&record, &Capability::image()));
-    assert!(adapter.supports_tools(&record));
 
     let payload = JsonValue::Object(
         [("prompt".to_owned(), JsonValue::String("hi".to_owned()))]
@@ -116,7 +111,7 @@ async fn adapter_defaults_are_conservative() {
         id: RuntimeId::from("fake:echo"),
     };
     let record = record();
-    // EchoAdapter overrides supports_tools; the rest use the trait defaults.
+    assert!(!adapter.wires_tools());
     assert_eq!(adapter.effective_context_window(&record, Some(4096)), None);
     assert_eq!(
         adapter.honored_param_keys(&record, &Capability::chat()),
