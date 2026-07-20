@@ -29,6 +29,9 @@ pub struct DiscoveredModel {
     pub context_length_hint: Option<i64>,
     /// Whether the store recorded a chat template.
     pub has_chat_template_hint: Option<bool>,
+    /// Whether the model's chat template supports tool calling, when the store
+    /// let it be read. `None` means undetermined.
+    pub tool_capable_hint: Option<bool>,
     /// Stop tokens the store recorded.
     pub stop_tokens_hint: Option<Vec<String>>,
     /// Whether the model is still downloading (weights incomplete).
@@ -49,6 +52,7 @@ impl DiscoveredModel {
             diagnostics: Vec::new(),
             context_length_hint: None,
             has_chat_template_hint: None,
+            tool_capable_hint: None,
             stop_tokens_hint: None,
             downloading: false,
         }

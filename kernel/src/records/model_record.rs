@@ -165,6 +165,10 @@ pub struct ModelRecord {
     /// Whether the model ships a chat template.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_chat_template: Option<bool>,
+    /// Whether the model's chat template supports tool calling, when it could be
+    /// read. `None` means undetermined — treated as capable, gated by a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_tools: Option<bool>,
     /// Stop tokens the model declares.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_tokens: Option<Vec<String>>,
@@ -203,6 +207,7 @@ impl ModelRecord {
             primary_weight_path: None,
             context_length: None,
             has_chat_template: None,
+            supports_tools: None,
             stop_tokens: None,
             downloading: false,
             content_fingerprint: None,
@@ -215,6 +220,15 @@ impl ModelRecord {
             Some(alias) if !alias.is_empty() => alias,
             _ => &self.name,
         }
+    }
+
+    /// The id this model has on the wire: what the gateway's model listings
+    /// advertise and what clients send back. One definition, so a launcher that
+    /// configures a client and the listing it will call cannot disagree. Same
+    /// rule as [`display_name`](Self::display_name), including the empty-alias
+    /// guard.
+    pub fn wire_id(&self) -> &str {
+        self.display_name()
     }
 
     /// Whether the model can perform `capability`.

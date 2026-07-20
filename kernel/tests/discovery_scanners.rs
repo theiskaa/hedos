@@ -85,6 +85,71 @@ fn scans_a_library_model_with_all_hints() {
 }
 
 #[test]
+fn reads_tool_support_from_the_go_template() {
+    // A Go template that gates on `.Tools` is Ollama's own signal for tool
+    // support; reading it is authoritative and needs no daemon.
+    let dir = TempDir::new();
+    let root = dir.path();
+    write_manifest(
+        root,
+        ["registry.ollama.ai", "library", "toolful", "latest"],
+        &manifest(&[
+            layer("application/vnd.ollama.image.model", 1, "sha256:m1"),
+            layer("application/vnd.ollama.image.template", 40, "sha256:t1"),
+        ]),
+    );
+    write_blob(root, "sha256:m1", b"x");
+    write_blob(
+        root,
+        "sha256:t1",
+        b"{{ if .Tools }}{{ .Tools }}{{ end }}Assistant:",
+    );
+
+    let result = OllamaStoreScanner::new(root).scan();
+    let model = only(&result.discovered);
+    assert_eq!(model.tool_capable_hint, Some(true));
+}
+
+#[test]
+fn a_template_without_tool_markers_is_reported_tool_incapable() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    write_manifest(
+        root,
+        ["registry.ollama.ai", "library", "plain", "latest"],
+        &manifest(&[
+            layer("application/vnd.ollama.image.model", 1, "sha256:m2"),
+            layer("application/vnd.ollama.image.template", 20, "sha256:t2"),
+        ]),
+    );
+    write_blob(root, "sha256:m2", b"x");
+    write_blob(root, "sha256:t2", b"User: {{ .Prompt }}\nAssistant:");
+
+    let result = OllamaStoreScanner::new(root).scan();
+    let model = only(&result.discovered);
+    // The authoritative negative — the case that steers the launch picker away.
+    assert_eq!(model.tool_capable_hint, Some(false));
+}
+
+#[test]
+fn a_model_without_a_template_layer_leaves_tool_support_undetermined() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    write_manifest(
+        root,
+        ["registry.ollama.ai", "library", "bare", "latest"],
+        &manifest(&[layer("application/vnd.ollama.image.model", 1, "sha256:m3")]),
+    );
+    write_blob(root, "sha256:m3", b"x");
+
+    let result = OllamaStoreScanner::new(root).scan();
+    let model = only(&result.discovered);
+    // Undetermined, not "no" — so a model whose template rides inside the GGUF
+    // (e.g. qwen) is assumed capable rather than hidden.
+    assert_eq!(model.tool_capable_hint, None);
+}
+
+#[test]
 fn keeps_a_non_library_namespace_in_the_name() {
     let dir = TempDir::new();
     write_manifest(

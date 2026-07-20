@@ -166,6 +166,9 @@ impl DiscoveryService {
                     if let Some(template) = model.has_chat_template_hint {
                         record.has_chat_template = Some(template);
                     }
+                    if model.tool_capable_hint.is_some() {
+                        record.supports_tools = model.tool_capable_hint;
+                    }
                     if let Some(stops) = &model.stop_tokens_hint {
                         record.stop_tokens = Some(stops.clone());
                     }
@@ -191,6 +194,7 @@ impl DiscoveryService {
                     record.state = ModelState::Unresolved;
                     record.context_length = model.context_length_hint;
                     record.has_chat_template = model.has_chat_template_hint;
+                    record.supports_tools = model.tool_capable_hint;
                     record.stop_tokens = model.stop_tokens_hint.clone();
                     record.primary_weight_path = model.primary_weight_path.clone();
                     record.downloading = model.downloading;

@@ -24,6 +24,30 @@ pub fn expand_tilde_env(path: &str) -> PathBuf {
     }
 }
 
+/// Whether `path` is an existing regular file the process may execute (on
+/// non-Unix, merely an existing file — there is no mode bit to check).
+pub fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+/// Find `binary` on the process `PATH`, returning the first executable match.
+pub fn find_on_path(binary: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(binary))
+        .find(|candidate| is_executable(candidate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -116,10 +116,18 @@ impl StoreScanner for OllamaStoreScanner {
                 .iter()
                 .find(|layer| layer.media_type.ends_with(".model"))
                 .map(|layer| display(&self.blob_path(&layer.digest)));
-            let has_template = manifest
+            let template_layer = manifest
                 .layers
                 .iter()
-                .any(|layer| layer.media_type.ends_with(".template"));
+                .find(|layer| layer.media_type.ends_with(".template"));
+            let has_template = template_layer.is_some();
+            // Ollama decides tool support from this Go template: a tool-capable
+            // model gates its output on `.Tools`. Reading it is authoritative —
+            // the same signal `/api/show` reports — and needs no daemon. A model
+            // whose template we can't read stays undetermined (`None`).
+            let tool_capable_hint = template_layer
+                .and_then(|layer| std::fs::read_to_string(self.blob_path(&layer.digest)).ok())
+                .map(|template| template.contains(".Tools"));
             let has_projector = manifest
                 .layers
                 .iter()
@@ -160,6 +168,7 @@ impl StoreScanner for OllamaStoreScanner {
             discovered.primary_weight_path = weight_blob;
             discovered.context_length_hint = context_length_hint;
             discovered.has_chat_template_hint = has_template.then_some(true);
+            discovered.tool_capable_hint = tool_capable_hint;
             discovered.stop_tokens_hint = stop_tokens_hint;
             result.discovered.push(discovered);
         }

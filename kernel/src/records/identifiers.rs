@@ -87,6 +87,7 @@ string_id! {
         image => "image",
         speak => "speak",
         transcribe => "transcribe",
+        tools => "tools",
     }
 }
 
