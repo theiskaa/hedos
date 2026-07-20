@@ -30,6 +30,12 @@ The near-term surface is the CLI and the gateway. A terminal UI is planned but n
 
 ## Install
 
+### Install script
+
+```sh
+curl -fsSL https://hedos.ai/install | bash
+```
+
 ### Homebrew
 
 ```sh
