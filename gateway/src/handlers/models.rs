@@ -118,7 +118,7 @@ impl GatewayHandling for OllamaShowHandler {
             if record.capabilities.contains(&Capability::see()) {
                 capabilities.push("vision");
             }
-            if port.supports_tools(&record.id).await {
+            if record.capabilities.contains(&Capability::tools()) {
                 capabilities.push("tools");
             }
 

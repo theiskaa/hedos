@@ -134,7 +134,7 @@ async fn ollama_unary_chat_returns_one_object() {
 
 #[tokio::test]
 async fn a_tool_request_to_a_non_tool_model_is_rejected() {
-    let port = hello_port(); // supports_tools defaults to false
+    let port = hello_port(); // the shelf record carries no `tools` capability
     let (responder, _rx) = GatewayResponder::new();
     let body = r#"{"model":"llama3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"add"}}]}"#;
     let error = OpenAIChatHandler::default()

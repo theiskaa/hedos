@@ -38,7 +38,6 @@ async fn the_bridge_delegates_to_an_empty_kernel() {
     // An unknown model has no voices to enumerate.
     assert!(gateway.voices("m").await.is_err());
     assert!(gateway.artifact_data("missing").await.unwrap().is_none());
-    assert!(!gateway.supports_tools("m").await);
     // No job is registered under an arbitrary id.
     assert!(gateway.job("no-such-job").await.is_none());
 }

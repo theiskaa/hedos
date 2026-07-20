@@ -68,7 +68,6 @@ impl Drop for TempDir {
 pub struct MockPort {
     pub shelf: Vec<ModelRecord>,
     pub chunks: Vec<CapabilityChunk>,
-    pub supports_tools: bool,
     pub honored: HashSet<String>,
     pub admission: GatewayAdmissionState,
     /// Voices returned by `voices`, first one used as the speech default.
@@ -84,7 +83,6 @@ impl Default for MockPort {
         Self {
             shelf: Vec::new(),
             chunks: Vec::new(),
-            supports_tools: false,
             honored: HashSet::new(),
             admission: GatewayAdmissionState::Ready,
             voices: Vec::new(),
@@ -195,11 +193,6 @@ impl GatewayPort for MockPort {
     ) -> PortFuture<'a, Result<Vec<String>, KernelError>> {
         let voices = self.voices.clone();
         Box::pin(async move { Ok(voices) })
-    }
-
-    fn supports_tools<'a>(&'a self, _model_id: &'a str) -> PortFuture<'a, bool> {
-        let supports = self.supports_tools;
-        Box::pin(async move { supports })
     }
 
     fn honored_params<'a>(

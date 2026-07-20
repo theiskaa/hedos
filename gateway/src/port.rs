@@ -54,9 +54,6 @@ pub trait GatewayPort: Send + Sync {
     /// The voices a speech model offers.
     fn voices<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, Result<Vec<String>, KernelError>>;
 
-    /// Whether a model supports tool calls.
-    fn supports_tools<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, bool>;
-
     /// The parameter keys the model's runtime honors for a capability.
     fn honored_params<'a>(
         &'a self,
@@ -153,9 +150,6 @@ mod tests {
             _model_id: &'a str,
         ) -> PortFuture<'a, Result<Vec<String>, KernelError>> {
             Box::pin(async { Ok(Vec::new()) })
-        }
-        fn supports_tools<'a>(&'a self, _model_id: &'a str) -> PortFuture<'a, bool> {
-            Box::pin(async { false })
         }
         fn honored_params<'a>(
             &'a self,

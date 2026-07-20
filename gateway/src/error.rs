@@ -48,6 +48,21 @@ impl GatewayErrorKind {
         }
     }
 
+    /// The Anthropic `error.type` for this kind. Anthropic names a smaller set
+    /// of types than the gateway distinguishes, so several kinds share one.
+    pub fn anthropic_type(self) -> &'static str {
+        match self {
+            Self::BadRequest | Self::MethodNotAllowed | Self::NotSupported => {
+                "invalid_request_error"
+            }
+            Self::Unauthorized => "authentication_error",
+            Self::Forbidden => "permission_error",
+            Self::NotFound => "not_found_error",
+            Self::Overloaded => "overloaded_error",
+            Self::Timeout | Self::ServerError => "api_error",
+        }
+    }
+
     /// The HTTP status code to return.
     pub fn status(self) -> u16 {
         match self {
@@ -164,6 +179,16 @@ impl GatewayError {
     pub fn body(&self, surface: GatewaySurface) -> Value {
         match surface {
             GatewaySurface::Ollama => json!({ "error": self.message }),
+            // Claude Code string-matches on the upstream's error wording to
+            // decide whether to retry and which capability to drop, so this
+            // shape and the message must reach it unwrapped.
+            GatewaySurface::Anthropic => json!({
+                "type": "error",
+                "error": {
+                    "type": self.kind.anthropic_type(),
+                    "message": self.message,
+                },
+            }),
             GatewaySurface::OpenAI => {
                 let mut error = json!({
                     "message": self.message,
@@ -198,12 +223,13 @@ impl From<KernelError> for GatewayError {
                 GatewayError::new(GatewayErrorKind::BadRequest, error.to_string())
                     .with_code("context_length_exceeded")
             }
-            // The runtime's own message may carry internals, so a generic one is
-            // returned for server failures.
-            KernelError::RuntimeFailed(_) => GatewayError::new(
-                GatewayErrorKind::ServerError,
-                "the runtime failed to complete the request",
-            ),
+            // Surfaced rather than hidden: on a loopback gateway that already
+            // grants every local caller the whole shelf, the text of a runtime
+            // failure is not what needs protecting, and it is the only thing
+            // that explains a stopped daemon or an out-of-memory GPU.
+            KernelError::RuntimeFailed(_) => {
+                GatewayError::new(GatewayErrorKind::ServerError, error.to_string())
+            }
             KernelError::Storage(_) => {
                 GatewayError::new(GatewayErrorKind::ServerError, "internal error")
             }
@@ -313,10 +339,18 @@ mod tests {
     }
 
     #[test]
-    fn server_kernel_errors_are_generic_and_do_not_leak() {
-        let error: GatewayError = KernelError::RuntimeFailed("secret path /x".to_owned()).into();
+    fn a_runtime_failure_explains_itself_but_a_storage_failure_stays_generic() {
+        // A runtime failure is the caller's to act on — a stopped daemon, a
+        // model that cannot do tool calling, an out-of-memory GPU — and none of
+        // it is secret from a local caller who can already reach every model on
+        // the shelf. Hiding it leaves "something failed" as the only diagnosis.
+        let error: GatewayError =
+            KernelError::RuntimeFailed("ollama: model does not support tools".to_owned()).into();
         assert_eq!(error.kind, GatewayErrorKind::ServerError);
-        assert!(!error.message.contains("secret"));
+        assert!(error.message.contains("does not support tools"));
+
+        // Storage failures stay generic: they describe this machine's disk
+        // state, which the caller cannot act on and did not ask about.
         let error: GatewayError = KernelError::Storage("disk /y full".to_owned()).into();
         assert_eq!(error.kind, GatewayErrorKind::ServerError);
         assert!(!error.message.contains("disk"));

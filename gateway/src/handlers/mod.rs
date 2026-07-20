@@ -21,17 +21,25 @@ pub mod chat;
 pub mod embeddings;
 pub mod generate;
 pub mod images;
+pub mod messages;
 pub mod models;
 pub mod speech;
 pub mod stream;
 pub mod transcriptions;
 
-/// The generic server error shown when a runtime stream fails mid-flight; the
-/// runtime's own message may carry internals, so it is not surfaced.
-pub(crate) fn runtime_failed(_: runtime::adapters::RuntimeError) -> GatewayError {
+/// The error shown when a runtime stream fails mid-flight.
+///
+/// The runtime's own message is surfaced rather than hidden. The gateway binds
+/// loopback and treats every local caller as trusted with every model on the
+/// shelf, so a caller that can read this error can already do far more than read
+/// it; withholding the text buys no confidentiality and costs the only
+/// explanation of why a request failed. "the runtime failed to complete the
+/// request" is unactionable when the real cause is a stopped daemon, a model
+/// that cannot do tool calling, or an out-of-memory GPU.
+pub(crate) fn runtime_failed(error: runtime::adapters::RuntimeError) -> GatewayError {
     GatewayError::new(
         crate::error::GatewayErrorKind::ServerError,
-        "the runtime failed to complete the request",
+        error.to_string(),
     )
 }
 
@@ -76,7 +84,7 @@ pub(crate) async fn dispatch(
         identity,
     )
     .await?;
-    if tools_present && !port.supports_tools(&record.id).await {
+    if tools_present && !record.capabilities.contains(&Capability::tools()) {
         return Err(bad_request(format!(
             "{model} does not support tool calling"
         )));

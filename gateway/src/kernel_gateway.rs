@@ -68,10 +68,6 @@ impl GatewayPort for KernelGateway {
         Box::pin(self.kernel.voices(model_id))
     }
 
-    fn supports_tools<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, bool> {
-        Box::pin(self.kernel.supports_tools(model_id))
-    }
-
     fn honored_params<'a>(
         &'a self,
         model_id: &'a str,
