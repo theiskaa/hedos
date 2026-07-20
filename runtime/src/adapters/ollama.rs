@@ -58,17 +58,21 @@ impl OllamaAdapter {
     fn invoke_chat(&self, model: &str, payload: JsonValue) -> ChunkStream {
         let (tx, stream) = ChunkStream::channel();
         let client = self.client.clone();
+        let base_url = self.base_url.clone();
         let url = format!("{}/api/chat", self.base_url);
         let model = model.to_owned();
         tokio::spawn(async move {
-            let body = match chat_body(&model, &payload) {
-                Ok(body) => body,
-                Err(err) => {
-                    let _ = tx.send(Err(err));
-                    return;
-                }
-            };
-            stream_chat(&client, &url, body, &tx).await;
+            let response =
+                match send_with_autostart(&client, &base_url, &url, || chat_body(&model, &payload))
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
+                        return;
+                    }
+                };
+            stream_chat(response, &tx).await;
         });
         stream
     }
@@ -76,17 +80,22 @@ impl OllamaAdapter {
     fn invoke_embed(&self, model: &str, payload: JsonValue) -> ChunkStream {
         let (tx, stream) = ChunkStream::channel();
         let client = self.client.clone();
+        let base_url = self.base_url.clone();
         let url = format!("{}/api/embed", self.base_url);
         let model = model.to_owned();
         tokio::spawn(async move {
-            let body = match embed_body(&model, &payload) {
-                Ok(body) => body,
+            let response = match send_with_autostart(&client, &base_url, &url, || {
+                embed_body(&model, &payload)
+            })
+            .await
+            {
+                Ok(response) => response,
                 Err(err) => {
                     let _ = tx.send(Err(err));
                     return;
                 }
             };
-            stream_embed(&client, &url, body, &tx).await;
+            stream_embed(response, &tx).await;
         });
         stream
     }
@@ -101,6 +110,10 @@ impl Default for OllamaAdapter {
 impl RuntimeAdapter for OllamaAdapter {
     fn id(&self) -> &RuntimeId {
         &self.id
+    }
+
+    fn wires_tools(&self) -> bool {
+        true
     }
 
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
@@ -152,10 +165,6 @@ impl RuntimeAdapter for OllamaAdapter {
         requested.or(record.context_length)
     }
 
-    fn supports_tools(&self, _record: &ModelRecord) -> bool {
-        true
-    }
-
     fn honored_param_keys(
         &self,
         _record: &ModelRecord,
@@ -176,18 +185,9 @@ impl RuntimeAdapter for OllamaAdapter {
 }
 
 async fn stream_chat(
-    client: &reqwest::Client,
-    url: &str,
-    body: Vec<u8>,
+    mut response: reqwest::Response,
     tx: &mpsc::UnboundedSender<Result<CapabilityChunk, RuntimeError>>,
 ) {
-    let mut response = match post_json(client, url, body).await {
-        Ok(response) => response,
-        Err(err) => {
-            let _ = tx.send(Err(err));
-            return;
-        }
-    };
     if response.status() != reqwest::StatusCode::OK {
         let code = response.status().as_u16();
         let body = capped_body(&mut response, MAX_ERROR_BYTES)
@@ -300,18 +300,9 @@ fn done_stats(object: &BTreeMap<String, JsonValue>) -> GenerationStats {
 }
 
 async fn stream_embed(
-    client: &reqwest::Client,
-    url: &str,
-    body: Vec<u8>,
+    mut response: reqwest::Response,
     tx: &mpsc::UnboundedSender<Result<CapabilityChunk, RuntimeError>>,
 ) {
-    let mut response = match post_json(client, url, body).await {
-        Ok(response) => response,
-        Err(err) => {
-            let _ = tx.send(Err(err));
-            return;
-        }
-    };
     let status = response.status();
     let bytes = match capped_body(&mut response, MAX_EMBED_BYTES).await {
         Ok(bytes) => bytes,
@@ -364,6 +355,77 @@ async fn post_json(
                 RuntimeError::Failed(format!("ollama: {err}"))
             }
         })
+}
+
+/// Send the built body; if the runtime is unreachable, run `recover` (which
+/// starts the daemon) and, if it reports success, send once more.
+///
+/// `build_body` is a closure rather than a prebuilt `Vec` so the common path —
+/// the daemon already running — never copies the request body (an embedding
+/// batch can be tens of megabytes). The body is only rebuilt on the cold-start
+/// retry, at most once per call; concurrent requests against a down daemon each
+/// try the start, and the losers exit on the port bind. `send` and `recover`
+/// are injected so the retry logic is testable without a live server or a
+/// spawned process.
+async fn retry_after_recovery<T, B, S, SF, R, RF>(
+    build_body: B,
+    send: S,
+    recover: R,
+) -> Result<T, RuntimeError>
+where
+    B: Fn() -> Result<Vec<u8>, RuntimeError>,
+    S: Fn(Vec<u8>) -> SF,
+    SF: std::future::Future<Output = Result<T, RuntimeError>>,
+    R: FnOnce() -> RF,
+    RF: std::future::Future<Output = bool>,
+{
+    match send(build_body()?).await {
+        Err(RuntimeError::Unavailable(hint)) => {
+            if recover().await {
+                send(build_body()?).await
+            } else {
+                Err(RuntimeError::Unavailable(hint))
+            }
+        }
+        other => other,
+    }
+}
+
+/// Post to the Ollama daemon, auto-starting it on a cold connection.
+async fn send_with_autostart<B>(
+    client: &reqwest::Client,
+    base_url: &str,
+    url: &str,
+    build_body: B,
+) -> Result<reqwest::Response, RuntimeError>
+where
+    B: Fn() -> Result<Vec<u8>, RuntimeError>,
+{
+    retry_after_recovery(
+        build_body,
+        |body| post_json(client, url, body),
+        || ensure_daemon(client, base_url),
+    )
+    .await
+}
+
+/// Whether a local Ollama daemon is answering, starting it first if it isn't but
+/// the binary is installed. Returns `false` when Ollama isn't installed or the
+/// daemon didn't come up, so the caller keeps the "isn't running" error rather
+/// than hanging.
+async fn ensure_daemon(client: &reqwest::Client, base_url: &str) -> bool {
+    if crate::install::ollama::daemon_reachable(client, base_url).await {
+        return true;
+    }
+    // vars_os rather than vars: vars() panics on a non-Unicode variable (legal
+    // on Unix), and this runs inside library code. A variable that isn't UTF-8
+    // is dropped from the daemon's inherited environment instead.
+    let environment: std::collections::HashMap<String, String> = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect();
+    crate::install::ollama::start_daemon(client, base_url, &environment)
+        .await
+        .is_ok()
 }
 
 async fn capped_body(
@@ -594,4 +656,116 @@ fn empty_object() -> JsonValue {
 
 fn object_of<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonValue {
     JsonValue::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn ollama_wires_tools() {
+        // Resolution leans on this to fold the `tools` capability onto
+        // Ollama-served models whose templates declare them.
+        assert!(OllamaAdapter::new().wires_tools());
+    }
+
+    /// Count how many times the body is built and sent, so the retry can be
+    /// distinguished from the first attempt.
+    struct Calls {
+        built: Cell<usize>,
+        sent: Cell<usize>,
+    }
+
+    impl Calls {
+        fn new() -> Self {
+            Self {
+                built: Cell::new(0),
+                sent: Cell::new(0),
+            }
+        }
+        fn build(&self) -> Result<Vec<u8>, RuntimeError> {
+            self.built.set(self.built.get() + 1);
+            Ok(vec![1, 2, 3])
+        }
+    }
+
+    #[tokio::test]
+    async fn a_successful_send_never_recovers_or_rebuilds() {
+        let calls = Calls::new();
+        let result: Result<&str, RuntimeError> = retry_after_recovery(
+            || calls.build(),
+            |_body| {
+                calls.sent.set(calls.sent.get() + 1);
+                async { Ok("ok") }
+            },
+            || async {
+                panic!("recovery must not run when the first send succeeds");
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap(), "ok");
+        assert_eq!(calls.built.get(), 1);
+        assert_eq!(calls.sent.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_send_recovers_then_rebuilds_and_sends_again() {
+        let calls = Calls::new();
+        let result: Result<&str, RuntimeError> = retry_after_recovery(
+            || calls.build(),
+            |_body| {
+                let attempt = calls.sent.get() + 1;
+                calls.sent.set(attempt);
+                async move {
+                    if attempt == 1 {
+                        Err(RuntimeError::Unavailable("down".to_owned()))
+                    } else {
+                        Ok("ok")
+                    }
+                }
+            },
+            || async { true },
+        )
+        .await;
+        assert_eq!(result.unwrap(), "ok");
+        // Built once per send: the retry re-serializes rather than cloning.
+        assert_eq!(calls.built.get(), 2);
+        assert_eq!(calls.sent.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_recovery_keeps_the_unavailable_error_and_does_not_resend() {
+        let calls = Calls::new();
+        let result: Result<&str, RuntimeError> = retry_after_recovery(
+            || calls.build(),
+            |_body| {
+                calls.sent.set(calls.sent.get() + 1);
+                async { Err(RuntimeError::Unavailable("Ollama isn't running".to_owned())) }
+            },
+            || async { false },
+        )
+        .await;
+        match result {
+            Err(RuntimeError::Unavailable(hint)) => assert!(hint.contains("isn't running")),
+            other => panic!("expected the unavailable error, got {other:?}"),
+        }
+        assert_eq!(calls.sent.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_non_connection_error_is_not_retried() {
+        let calls = Calls::new();
+        let result: Result<&str, RuntimeError> = retry_after_recovery(
+            || calls.build(),
+            |_body| {
+                calls.sent.set(calls.sent.get() + 1);
+                async { Err(RuntimeError::Failed("bad request".to_owned())) }
+            },
+            || async { panic!("recovery must not run for a non-connection failure") },
+        )
+        .await;
+        assert!(matches!(result, Err(RuntimeError::Failed(_))));
+        assert_eq!(calls.sent.get(), 1);
+    }
 }

@@ -69,6 +69,21 @@ impl LlamaServerSpawner {
         self.extra_args = args;
         self
     }
+
+    /// Turn a spawn failure into an actionable error. A missing binary (the
+    /// common case, since `llama-server` is looked up on `PATH`) names what to
+    /// install rather than leaking the OS "No such file or directory"; any other
+    /// failure keeps its detail, which is genuinely about this spawn.
+    fn spawn_error(&self, error: std::io::Error) -> RuntimeError {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            RuntimeError::Unavailable(format!(
+                "{} isn't installed or isn't on your PATH. It comes with llama.cpp (e.g. `brew install llama.cpp`).",
+                self.binary.display()
+            ))
+        } else {
+            RuntimeError::Unavailable(format!("could not start llama-server: {error}"))
+        }
+    }
 }
 
 impl ServerSpawner for LlamaServerSpawner {
@@ -94,9 +109,7 @@ impl ServerSpawner for LlamaServerSpawner {
             // failed readiness wait).
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| {
-                RuntimeError::Unavailable(format!("could not start llama-server: {error}"))
-            })?;
+            .map_err(|error| self.spawn_error(error))?;
         Ok(Box::new(ChildProcess {
             child: StdMutex::new(child),
         }))
@@ -303,5 +316,47 @@ async fn wait_ready(
             ));
         }
         tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_binary_names_what_to_install_instead_of_the_errno() {
+        // A bare command name that isn't on PATH: the OS returns ENOENT, which
+        // must not reach the user verbatim.
+        let spawner = LlamaServerSpawner::new("llama-server-definitely-not-installed");
+        match spawner.spawn("/tmp/model.gguf", 61234, 2048) {
+            Err(RuntimeError::Unavailable(message)) => {
+                assert!(message.contains("isn't installed"), "message: {message}");
+                assert!(message.contains("PATH"), "message: {message}");
+                assert!(!message.contains("os error"), "leaked the errno: {message}");
+            }
+            Err(other) => panic!("expected Unavailable, got {other:?}"),
+            Ok(_) => panic!("spawning a missing binary must fail"),
+        }
+    }
+
+    #[test]
+    fn a_non_missing_spawn_error_keeps_its_detail() {
+        // A permissions failure is about this spawn, not a missing install, so
+        // its detail is kept rather than replaced with the install hint.
+        let spawner = LlamaServerSpawner::new("llama-server");
+        let error = spawner.spawn_error(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied",
+        ));
+        match error {
+            RuntimeError::Unavailable(message) => {
+                assert!(
+                    message.contains("could not start llama-server"),
+                    "message: {message}"
+                );
+                assert!(!message.contains("isn't installed"), "message: {message}");
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
     }
 }
