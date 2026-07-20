@@ -17,7 +17,7 @@ Discovery also resolves each model to a runtime. It reads the model's shape (con
 
 ## Installing
 
-`hedos pull <reference>` resolves a reference and plans the install before anything downloads. The reference can be a Hugging Face repo (`org/model`), an Ollama tag (`gemma3:4b`), or a link to either. hedos infers the provider from the shape, and `--from ollama` or `--from hf` forces it.
+`hedos pull <reference>` resolves a reference and plans the install before anything downloads. The reference can be a Hugging Face repo (`org/model`), an Ollama tag (`gemma3:4b`), or a link to either. hedos infers the provider from the shape, and `--from ollama` or `--from hf` forces it. Run `hedos pull` with no reference in a terminal to search Hugging Face by keyword or to pick from a short list of models that fit your machine's RAM.
 
 Installs write into each platform's native layout:
 
@@ -28,7 +28,7 @@ hedos owns no weights directory of its own, so the moment an install finishes, e
 
 ## Removing
 
-Removal is symmetric with install. `hedos rm <model>` first shows a deletion preview: the items that would go and the estimated size. It does nothing until you pass `-y`.
+Removal is symmetric with install. `hedos rm <model>` first shows a deletion preview: the items that would go and the estimated size. In a terminal it then asks for a yes/no confirmation and removes nothing unless you agree; in a script or pipe it removes nothing unless you pass `-y`.
 
 - File-backed models are deleted from disk.
 - Ollama models delete through the daemon.
