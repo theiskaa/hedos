@@ -8,16 +8,17 @@ use kernel::jobs::JobEvent;
 use kernel::records::{Capability, JsonValue};
 
 use crate::error::CliError;
+use crate::support::interactive;
 use crate::support::output::Out;
-use crate::support::session::{self, Session};
+use crate::support::session::Session;
 
 /// Arguments for `image`.
 #[derive(Args)]
 pub struct ImageArgs {
-    /// The image model (name, alias, or id).
-    model: String,
-    /// The prompt to render.
-    prompt: String,
+    /// The image model (name, alias, or id). Omit to pick one interactively.
+    model: Option<String>,
+    /// The prompt to render. Omit to type it interactively.
+    prompt: Option<String>,
     /// Number of diffusion steps.
     #[arg(long)]
     steps: Option<i64>,
@@ -33,9 +34,18 @@ pub struct ImageArgs {
 pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let record = session::resolve(&args.model, &shelf, Some(&Capability::image()))?;
+    let warm = session.warm_set();
+    let record = interactive::choose_model(
+        out,
+        args.model.as_deref(),
+        &shelf,
+        Some(&Capability::image()),
+        "image with",
+        &warm,
+    )?;
 
-    let payload = image_payload(&args.prompt, args.steps, args.seed);
+    let prompt = interactive::text_or_prompt(out, args.prompt, "prompt")?;
+    let payload = image_payload(&prompt, args.steps, args.seed);
     let job_id = session
         .kernel
         .submit(&record.id, Capability::image(), payload)

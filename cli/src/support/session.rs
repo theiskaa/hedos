@@ -2,6 +2,8 @@
 //! settings, list the shelf (discovering on first use), and resolve a
 //! model-name query to a record.
 
+use std::collections::HashSet;
+
 use kernel::discovery::{DiscoverySummary, ModelHabitat};
 use kernel::records::{Capability, ModelRecord};
 use runtime::boot::{self, HedosDirs};
@@ -47,6 +49,15 @@ impl Session {
         }
         self.discover().await?;
         Ok(self.kernel.shelf().await)
+    }
+
+    /// The ids of the models currently held resident, for the warm marker.
+    pub fn warm_set(&self) -> HashSet<String> {
+        self.kernel
+            .resident_models()
+            .into_iter()
+            .filter_map(|entry| entry.model_id)
+            .collect()
     }
 
     /// Scan the machine's model stores, reconcile the registry, and resolve

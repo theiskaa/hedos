@@ -9,15 +9,16 @@ use kernel::capabilities::CapabilityChunk;
 use kernel::records::{Capability, JsonValue};
 
 use crate::error::CliError;
+use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload::message;
-use crate::support::session::{self, Session};
+use crate::support::session::Session;
 
 /// Arguments for `chat`.
 #[derive(Args)]
 pub struct ChatArgs {
-    /// The model to chat with (name, alias, or id).
-    model: String,
+    /// The model to chat with (name, alias, or id). Omit to pick one interactively.
+    model: Option<String>,
     /// A system prompt for the conversation.
     #[arg(long)]
     system: Option<String>,
@@ -30,10 +31,18 @@ pub struct ChatArgs {
 pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let record = session::resolve(&args.model, &shelf, Some(&Capability::chat()))?;
+    let warm = session.warm_set();
+    let record = interactive::choose_model(
+        out,
+        args.model.as_deref(),
+        &shelf,
+        Some(&Capability::chat()),
+        "chat with",
+        &warm,
+    )?;
 
-    let interactive = std::io::stdin().is_terminal() && !out.is_json();
-    if interactive {
+    let tty = std::io::stdin().is_terminal() && !out.is_json();
+    if tty {
         out.err(&format!(
             "chatting with {} — Ctrl-D to end",
             record.display_name()
@@ -42,7 +51,7 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
 
     let mut history: Vec<JsonValue> = Vec::new();
     loop {
-        if interactive {
+        if tty {
             eprint!("› ");
             let _ = std::io::stderr().flush();
         }

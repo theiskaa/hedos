@@ -6,21 +6,24 @@ use clap::Args;
 use kernel::records::{Capability, JsonValue};
 
 use crate::error::CliError;
+use crate::support::interactive;
 use crate::support::output::Out;
-use crate::support::session::{self, Session};
+use crate::support::session::Session;
 
 /// Arguments for `warm`.
 #[derive(Args)]
 pub struct WarmArgs {
-    /// The model to warm (name, alias, or id).
-    model: String,
+    /// The model to warm (name, alias, or id). Omit to pick one interactively.
+    model: Option<String>,
 }
 
 /// Run the `warm` command.
 pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let record = session::resolve(&args.model, &shelf, None)?;
+    let warm = session.warm_set();
+    let record =
+        interactive::choose_model(out, args.model.as_deref(), &shelf, None, "warm", &warm)?;
 
     let (capability, payload) = warm_request(record)
         .ok_or_else(|| CliError::new(format!("{} can't be warmed", record.display_name())))?;

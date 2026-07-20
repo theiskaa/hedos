@@ -8,6 +8,7 @@ mod support;
 
 use clap::{Parser, Subcommand};
 
+use crate::support::banner::BANNER;
 use crate::support::output::Out;
 
 /// The `hedos` command line.
@@ -15,7 +16,8 @@ use crate::support::output::Out;
 #[command(
     name = "hedos",
     version,
-    about = "Run and serve local models headlessly."
+    about = "Run and serve local models headlessly.",
+    before_help = BANNER
 )]
 struct Cli {
     /// Emit machine-readable JSON instead of formatted text.

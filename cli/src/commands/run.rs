@@ -8,17 +8,18 @@ use kernel::records::{Capability, JsonValue};
 use serde_json::json;
 
 use crate::error::CliError;
+use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload::message;
-use crate::support::session::{self, Session};
+use crate::support::session::Session;
 
 /// Arguments for `run`.
 #[derive(Args)]
 pub struct RunArgs {
-    /// The model to run (name, alias, or id).
-    model: String,
-    /// The prompt to complete.
-    prompt: String,
+    /// The model to run (name, alias, or id). Omit to pick one interactively.
+    model: Option<String>,
+    /// The prompt to complete. Omit to type it interactively.
+    prompt: Option<String>,
     /// A system prompt for this run.
     #[arg(long)]
     system: Option<String>,
@@ -34,9 +35,18 @@ pub struct RunArgs {
 pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let record = session::resolve(&args.model, &shelf, Some(&Capability::chat()))?;
+    let warm = session.warm_set();
+    let record = interactive::choose_model(
+        out,
+        args.model.as_deref(),
+        &shelf,
+        Some(&Capability::chat()),
+        "run",
+        &warm,
+    )?;
 
-    let payload = chat_payload(&args.prompt, args.max_tokens, args.temperature);
+    let prompt = interactive::text_or_prompt(out, args.prompt, "prompt")?;
+    let payload = chat_payload(&prompt, args.max_tokens, args.temperature);
     let mut stream = session
         .kernel
         .invoke_with(

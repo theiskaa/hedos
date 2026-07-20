@@ -9,16 +9,17 @@ use kernel::records::{Capability, JsonValue};
 use runtime::sidecar::DEFAULT_SAMPLE_RATE;
 
 use crate::error::CliError;
+use crate::support::interactive;
 use crate::support::output::Out;
-use crate::support::session::{self, Session};
+use crate::support::session::Session;
 
 /// Arguments for `speak`.
 #[derive(Args)]
 pub struct SpeakArgs {
-    /// The speech model (name, alias, or id).
-    model: String,
-    /// The text to speak.
-    text: String,
+    /// The speech model (name, alias, or id). Omit to pick one interactively.
+    model: Option<String>,
+    /// The text to speak. Omit to type it interactively.
+    text: Option<String>,
     /// The voice to use (default: the model's first bundled voice).
     #[arg(long)]
     voice: Option<String>,
@@ -34,13 +35,19 @@ pub struct SpeakArgs {
 pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let record = session::resolve(&args.model, &shelf, Some(&Capability::speak()))?;
+    let warm = session.warm_set();
+    let record = interactive::choose_model(
+        out,
+        args.model.as_deref(),
+        &shelf,
+        Some(&Capability::speak()),
+        "speak with",
+        &warm,
+    )?;
 
-    let voice = match args.voice {
-        Some(voice) => Some(voice),
-        None => session.kernel.voices(&record.id).await?.into_iter().next(),
-    };
-    let payload = speak_payload(&args.text, voice.as_deref(), args.speed);
+    let text = interactive::text_or_prompt(out, args.text, "text")?;
+    let voice = choose_voice(out, &session, &record.id, args.voice).await?;
+    let payload = speak_payload(&text, voice.as_deref(), args.speed);
     let mut stream = session
         .kernel
         .invoke(&record.id, Capability::speak(), payload)
@@ -81,6 +88,26 @@ pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
         "voice": voice,
     }));
     Ok(())
+}
+
+/// Resolve the voice: an explicit `--voice`, else the model's only voice, else —
+/// when several exist and the session is interactive — a picker. Falls back to the
+/// first voice when non-interactive so scripts keep their prior behavior.
+async fn choose_voice(
+    out: &Out,
+    session: &Session,
+    model_id: &str,
+    requested: Option<String>,
+) -> Result<Option<String>, CliError> {
+    if let Some(voice) = requested {
+        return Ok(Some(voice));
+    }
+    let voices = session.kernel.voices(model_id).await?;
+    if voices.len() > 1 && interactive::is_interactive(out) {
+        let index = interactive::select_index("voice", &voices)?;
+        return Ok(voices.into_iter().nth(index));
+    }
+    Ok(voices.into_iter().next())
 }
 
 /// A `speak` payload: text plus an optional voice and a speed multiplier.
