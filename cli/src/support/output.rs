@@ -35,9 +35,25 @@ impl Out {
         }
     }
 
-    /// A notice on stderr (status, progress, prompts) — always shown.
+    /// A notice on stderr (status, prompts) — always shown.
     pub fn err(&self, text: &str) {
         eprintln!("{text}");
+    }
+
+    /// A redrawing progress line on stderr: carriage-return + clear-to-end, no
+    /// newline. Suppressed in JSON mode.
+    pub fn progress(&self, text: &str) {
+        if !self.json {
+            eprint!("\r\x1b[K{text}");
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    /// End a run of [`progress`](Self::progress) lines with a newline.
+    pub fn progress_done(&self) {
+        if !self.json {
+            eprintln!();
+        }
     }
 
     /// A JSON document on stdout (pretty-printed). A no-op outside JSON mode.
