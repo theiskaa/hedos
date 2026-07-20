@@ -80,9 +80,19 @@ pub fn select_model<'a>(
     candidates: &[&'a ModelRecord],
     warm: &HashSet<String>,
 ) -> Result<&'a ModelRecord, CliError> {
-    let labels = shelf_table::picker_labels(candidates, warm);
+    // Models that resolved a runtime come first, so the servable one is the
+    // default rather than a look-alike that can't actually run.
+    let mut ordered: Vec<&ModelRecord> = candidates.to_vec();
+    ordered.sort_by_cached_key(|record| {
+        (
+            record.runtime.id.is_none(),
+            record.display_name().to_lowercase(),
+        )
+    });
+
+    let labels = shelf_table::picker_labels(&ordered, warm);
     let index = select_index(prompt, &labels)?;
-    candidates
+    ordered
         .get(index)
         .copied()
         .ok_or_else(|| CliError::new("nothing selected"))
