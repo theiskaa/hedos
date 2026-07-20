@@ -1,0 +1,18 @@
+id           = "python:mflux"
+modalities   = ["image"]
+capabilities = ["image"]
+execution    = "job"
+alternatives = ["python:diffusers"]
+
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]

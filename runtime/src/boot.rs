@@ -88,6 +88,11 @@ pub fn build_kernel(dirs: &HedosDirs, settings: &Settings) -> Result<Kernel, Boo
         ram_budget_mb: settings.models.ram_budget_mb(),
     });
 
+    // Extract the shipped Python runtime bundles into the data dir so the sidecar
+    // adapters can find them. Best-effort: a failure just leaves a bundle absent,
+    // which the runtime reports on use, and never blocks the non-Python commands.
+    let _ = crate::sidecar::provision_bundles(&dirs.sub("bundles"));
+
     let adapters = default_adapters(&governor, dirs);
     let kernel = Kernel::new(registry, artifacts, Arc::new(governor), history, adapters);
     kernel.set_default_system_prompt(settings.chat.default_system_prompt().map(str::to_owned));

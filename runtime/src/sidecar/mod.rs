@@ -10,11 +10,13 @@
 //! before awaiting.
 
 mod bundle;
+mod bundled;
 mod model_paths;
 mod spec;
 mod supervisor;
 
 pub use bundle::{RuntimeBundle, SidecarWorkdir, spec as bundle_spec};
+pub use bundled::provision as provision_bundles;
 pub use model_paths::{SidecarModelPaths, speech_voices};
 pub use spec::{DEFAULT_SAMPLE_RATE, SidecarSpec};
 pub use supervisor::SidecarSupervisor;
