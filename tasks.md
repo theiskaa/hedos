@@ -54,3 +54,45 @@ Done when:
 - [ ] Reviewed.
 
 Swift reference: `Sources/HedosKernel/Runtimes/MlxSwift/*.swift` at `f85874f`.
+
+## Tool calling through the Python sidecars (mlx-lm)
+
+Every coding harness except aider drives the model through tool calls, so `hedos launch`
+only offers tool-capable models. No model served by a Python sidecar qualifies today,
+because the mlx-lm sidecar doesn't wire tools: `runtime/runtimes/python-mlx-lm/main.py`
+renders only the message list into the prompt and never forwards a `tools` array or parses
+tool calls back out. So capable instruct models (Llama-3.2-Instruct, Qwen mlx builds) can't
+be used with a harness even though the weights support it. This is a runtime-integration
+gap, not a model limit, and it can be closed entirely in code we own, with no change to
+mlx-lm or transformers.
+
+Two halves, both in the sidecar. Inbound is small: `load()` hands us the model's real
+HuggingFace tokenizer, and `apply_chat_template` takes a standard `tools=` kwarg (we already
+pin `transformers<5`, which has it), so passing the request's `tools` through lets the
+model's own chat template render them into the prompt. Outbound is the real work: mlx emits
+plain text, so the sidecar buffers the output and parses any tool call into structured
+calls before emitting. Each model family uses its own format (Qwen/Hermes
+`<tool_call>{...}</tool_call>`, Llama 3.1/3.2 raw JSON or `<|python_tag|>`, Mistral
+`[TOOL_CALLS]`), so this is a best-effort per-family parser plus a bare-JSON fallback; tool
+calls are parsed at end-of-turn rather than streamed, and unrecognized output degrades to
+plain text rather than failing.
+
+The Rust side already models tool-call chunks (ollama and openai emit them), so the
+kernel/gateway path is ready; check that the sidecar frame protocol (`runtime/src/sidecar/`,
+the `send_json` events in `main.py`) can carry a `tool_call` event and add one on both sides
+if not. Once it works, add `python:mlx-lm` (and mlx-vlm, given the same treatment) to
+`runtime/src/resolution.rs::runtime_wires_tools`, so those models start showing the `tools`
+capability and appear in the launch picker.
+
+Done when:
+
+- [ ] `hedos launch opencode -m <an mlx instruct model>` completes a tool-driven turn (a
+  file read or edit), not just chat.
+- [ ] A model whose template lacks tool markers still shows no `tools` and stays excluded,
+  so the runtime gate and the template gate compose.
+- [ ] Plain-text replies still stream; only tool-call turns buffer.
+- [ ] build/test/clippy/fmt pass.
+- [ ] Reviewed.
+
+No Swift reference: the Swift app served MLX in-process through `MlxSwiftAdapter` rather
+than a Python sidecar, so this is new work in the sidecar rather than a port.
