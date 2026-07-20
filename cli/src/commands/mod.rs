@@ -2,6 +2,7 @@
 
 pub mod chat;
 pub mod image;
+pub mod launch;
 pub mod ls;
 pub mod pull;
 pub mod rm;

@@ -36,8 +36,10 @@ enum Command {
     Run(commands::run::RunArgs),
     /// Chat interactively over stdin.
     Chat(commands::chat::ChatArgs),
-    /// Run the OpenAI/Ollama-compatible gateway on loopback.
+    /// Run the OpenAI/Ollama/Anthropic-compatible gateway on loopback.
     Serve(commands::serve::ServeArgs),
+    /// Run a coding harness (opencode, claude, aider) on a local model.
+    Launch(commands::launch::LaunchArgs),
     /// Fetch a model from Ollama or Hugging Face.
     Pull(commands::pull::PullArgs),
     /// Remove an installed model.
@@ -63,6 +65,7 @@ async fn main() {
         Command::Run(args) => commands::run::run(args, &out).await,
         Command::Chat(args) => commands::chat::run(args, &out).await,
         Command::Serve(args) => commands::serve::run(args, &out).await,
+        Command::Launch(args) => commands::launch::run(args, &out).await,
         Command::Pull(args) => commands::pull::run(args, &out).await,
         Command::Rm(args) => commands::rm::run(args, &out).await,
         Command::Scan(args) => commands::scan::run(args, &out).await,

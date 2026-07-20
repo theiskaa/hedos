@@ -1,7 +1,5 @@
 //! `hedos run <model> <prompt>` — stream a single completion to stdout.
 
-use std::collections::BTreeMap;
-
 use clap::Args;
 use kernel::capabilities::CapabilityChunk;
 use kernel::records::{Capability, JsonValue};
@@ -10,7 +8,7 @@ use serde_json::json;
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
-use crate::support::payload::message;
+use crate::support::payload::{self, message};
 use crate::support::session::Session;
 use crate::support::spinner::Spinner;
 
@@ -86,14 +84,7 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
 
 /// A one-user-turn chat payload with optional sampling knobs.
 fn chat_payload(prompt: &str, max_tokens: Option<i64>, temperature: Option<f64>) -> JsonValue {
-    let mut payload = BTreeMap::new();
-    payload.insert(
-        "messages".to_owned(),
-        JsonValue::Array(vec![message("user", prompt)]),
-    );
-    if let Some(max_tokens) = max_tokens {
-        payload.insert("max_tokens".to_owned(), JsonValue::Int(max_tokens));
-    }
+    let mut payload = payload::chat(vec![message("user", prompt)], max_tokens);
     if let Some(temperature) = temperature {
         payload.insert("temperature".to_owned(), JsonValue::Double(temperature));
     }

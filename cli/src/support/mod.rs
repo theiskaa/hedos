@@ -3,10 +3,12 @@
 
 pub mod banner;
 pub mod download;
+pub mod harnesses;
 pub mod interactive;
 pub mod output;
 pub mod paths;
 pub mod payload;
+pub mod serving;
 pub mod session;
 pub mod shelf_table;
 pub mod signals;

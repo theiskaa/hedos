@@ -1,7 +1,6 @@
 //! `hedos chat <model>` — an interactive headless chat that reads turns from
 //! stdin and streams replies to stdout.
 
-use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
 
 use clap::Args;
@@ -11,7 +10,7 @@ use kernel::records::{Capability, JsonValue};
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
-use crate::support::payload::message;
+use crate::support::payload::{self, message};
 use crate::support::session::Session;
 
 /// Arguments for `chat`.
@@ -96,10 +95,5 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
 
 /// A chat payload carrying the running `history` and an optional token cap.
 fn chat_payload(history: &[JsonValue], max_tokens: Option<i64>) -> JsonValue {
-    let mut payload = BTreeMap::new();
-    payload.insert("messages".to_owned(), JsonValue::Array(history.to_vec()));
-    if let Some(max_tokens) = max_tokens {
-        payload.insert("max_tokens".to_owned(), JsonValue::Int(max_tokens));
-    }
-    JsonValue::Object(payload)
+    JsonValue::Object(payload::chat(history.to_vec(), max_tokens))
 }

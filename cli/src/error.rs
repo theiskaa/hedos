@@ -20,6 +20,15 @@ impl CliError {
             code: 1,
         }
     }
+
+    /// An error exiting with a specific code, for passing a child process's
+    /// status through unchanged.
+    pub fn with_code(message: impl Into<String>, code: i32) -> Self {
+        Self {
+            message: message.into(),
+            code,
+        }
+    }
 }
 
 impl fmt::Display for CliError {
