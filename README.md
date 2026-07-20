@@ -47,7 +47,7 @@ cargo install hedos
 For the latest git version:
 
 ```sh
-cargo install --git https://github.com/theiskaa/hedos hedos
+cargo install --git https://github.com/theiskaa/hedos
 ```
 
 ### Prebuilt binaries
