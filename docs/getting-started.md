@@ -5,7 +5,7 @@ This walks from a clean checkout to a running gateway.
 ## Prerequisites
 
 - A recent Rust toolchain with edition 2024 support. Install it from [rustup.rs](https://rustup.rs) if you do not have it.
-- `python3` on your `PATH`, if you want to run the Python sidecar runtimes (mlx-lm, speech, embeddings, and the rest). They provision their own environments the first time they run.
+- [`uv`](https://astral.sh/uv) on your `PATH`, if you want to run the Python sidecar runtimes (mlx-lm, speech, embeddings, and the rest). It provisions their environments the first time they run; the runtime code itself ships inside the binary.
 - Optionally, whatever backends serve the models you care about: a `llama-server` binary for local GGUF files, the Ollama daemon, or an API key for a remote OpenAI-compatible endpoint.
 
 hedos runs on macOS and Linux.

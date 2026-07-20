@@ -30,15 +30,44 @@ The near-term surface is the CLI and the gateway. A terminal UI is planned but n
 
 ## Install
 
-hedos builds from source with a recent Rust toolchain (edition 2024). You also want `python3` on your `PATH` if you plan to run the Python sidecar runtimes, since they provision their own environments at first use.
+### Homebrew
 
 ```sh
-git clone https://github.com/theiskaa/hedos
-cd hedos
-cargo build --release
+brew install theiskaa/tap/hedos
 ```
 
-The `hedos` binary lands in `target/release/hedos`. Put it on your `PATH` and you are ready.
+### Cargo
+
+Install the binary globally using cargo:
+
+```sh
+cargo install hedos
+```
+
+For the latest git version:
+
+```sh
+cargo install --git https://github.com/theiskaa/hedos hedos
+```
+
+### Prebuilt binaries
+
+Prebuilt versions are available in our [GitHub releases](https://github.com/theiskaa/hedos/releases/latest):
+
+|  File  | Platform | Checksum |
+|--------|----------|----------|
+| [hedos-aarch64-apple-darwin.tar.xz](https://github.com/theiskaa/hedos/releases/latest/download/hedos-aarch64-apple-darwin.tar.xz) | Apple Silicon macOS | [checksum](https://github.com/theiskaa/hedos/releases/latest/download/hedos-aarch64-apple-darwin.tar.xz.sha256) |
+| [hedos-x86_64-apple-darwin.tar.xz](https://github.com/theiskaa/hedos/releases/latest/download/hedos-x86_64-apple-darwin.tar.xz) | Intel macOS | [checksum](https://github.com/theiskaa/hedos/releases/latest/download/hedos-x86_64-apple-darwin.tar.xz.sha256) |
+| [hedos-aarch64-unknown-linux-gnu.tar.xz](https://github.com/theiskaa/hedos/releases/latest/download/hedos-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux | [checksum](https://github.com/theiskaa/hedos/releases/latest/download/hedos-aarch64-unknown-linux-gnu.tar.xz.sha256) |
+| [hedos-x86_64-unknown-linux-gnu.tar.xz](https://github.com/theiskaa/hedos/releases/latest/download/hedos-x86_64-unknown-linux-gnu.tar.xz) | x64 Linux | [checksum](https://github.com/theiskaa/hedos/releases/latest/download/hedos-x86_64-unknown-linux-gnu.tar.xz.sha256) |
+
+### Optional backends
+
+hedos serves whatever your machine can already run, so nothing else is required to start. Add these when you want the runtimes that need them:
+
+- [`uv`](https://astral.sh/uv) for the Python sidecar runtimes (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, whisper). They provision their own environments the first time they run; the runtime code itself ships inside the binary.
+- A `llama-server` binary on the `PATH` for local GGUF files.
+- The Ollama daemon for models it manages.
 
 ## Quick start
 
@@ -79,7 +108,7 @@ Each runtime is present whether or not its backend is installed. A capability on
 - **local GGUF** needs a `llama-server` binary on the `PATH`.
 - **Ollama** needs the Ollama daemon running.
 - **OpenAI-compatible endpoints** need a base URL and an API key in the environment.
-- **the Python sidecars** (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux) and **whisper** need `python3` and, in some cases, the shipped runtime bundle.
+- **the Python sidecars** (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux) and **whisper** need [`uv`](https://astral.sh/uv), which provisions their environment on first use. Their runtime code ships inside the binary.
 - **image daemons** (ComfyUI, AUTOMATIC1111) need the daemon running.
 
 The Apple Foundation and MLX-Swift runtimes from the original macOS build are framework-bound and are intentionally out of this headless port.
