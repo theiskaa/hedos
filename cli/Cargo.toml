@@ -1,9 +1,15 @@
 [package]
-name = "cli"
+# Named for the binary it produces: release artifacts and the Homebrew formula
+# take the package name, so this must be `hedos`, not `cli`.
+name = "hedos"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Discover, install, and serve the local models already on your machine."
+readme = "../README.md"
 
 [[bin]]
 name = "hedos"

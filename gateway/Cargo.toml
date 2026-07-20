@@ -1,9 +1,18 @@
 [package]
-name = "gateway"
+name = "hedos-gateway"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "The hedos gateway: a loopback server speaking the OpenAI and Ollama wire formats."
+
+# The package publishes as `hedos-gateway` (the bare name is taken on crates.io),
+# but the library keeps its bare name so `use gateway::…` works everywhere,
+# including this crate's own integration tests.
+[lib]
+name = "gateway"
 
 [dependencies]
 kernel.workspace = true

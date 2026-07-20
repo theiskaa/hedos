@@ -1,9 +1,18 @@
 [package]
-name = "runtime"
+name = "hedos-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "The hedos runtime: execution adapters, sidecar supervision, and the memory governor."
+
+# The package publishes as `hedos-runtime` (the bare name is taken on crates.io),
+# but the library keeps its bare name so `use runtime::…` works everywhere,
+# including this crate's own integration tests.
+[lib]
+name = "runtime"
 
 [dependencies]
 kernel.workspace = true

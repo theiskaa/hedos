@@ -1,9 +1,18 @@
 [package]
-name = "kernel"
+name = "hedos-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "The hedos kernel: model records, registry, discovery, install planning, and resolution."
+
+# The package publishes as `hedos-kernel` (the bare name is taken on crates.io),
+# but the library keeps its bare name so `use kernel::…` works everywhere,
+# including this crate's own integration tests.
+[lib]
+name = "kernel"
 
 [dependencies]
 serde.workspace = true

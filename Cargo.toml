@@ -13,11 +13,16 @@ edition = "2024"
 license = "MIT"
 authors = ["theiskaa"]
 repository = "https://github.com/theiskaa/hedos"
+homepage = "https://hedos.ai"
+documentation = "https://hedos.ai/docs"
 
 [workspace.dependencies]
-kernel = { path = "kernel" }
-runtime = { path = "runtime" }
-gateway = { path = "gateway" }
+# Published under `hedos-*` (the bare names are taken on crates.io) but aliased
+# back to the bare names here, so every `use kernel::…` keeps working. The
+# `version` fields are required to publish a crate with path dependencies.
+kernel = { package = "hedos-kernel", path = "kernel", version = "1.0.0" }
+runtime = { package = "hedos-runtime", path = "runtime", version = "1.0.0" }
+gateway = { package = "hedos-gateway", path = "gateway", version = "1.0.0" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "process", "sync", "signal", "time", "io-util"] }
 tokio-stream = "0.1"
@@ -45,3 +50,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 [profile.release]
 lto = "thin"
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
