@@ -7,7 +7,6 @@ use clap::Args;
 use kernel::jobs::JobEvent;
 use kernel::records::{Capability, JsonValue};
 
-use crate::commands::speak::default_path;
 use crate::error::CliError;
 use crate::support::output::Out;
 use crate::support::session::{self, Session};
@@ -33,7 +32,7 @@ pub struct ImageArgs {
 /// Run the `image` command.
 pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let shelf = session.shelf(true).await?;
+    let shelf = session.shelf_or_discover().await?;
     let record = session::resolve(&args.model, &shelf, Some(&Capability::image()))?;
 
     let payload = image_payload(&args.prompt, args.steps, args.seed);
@@ -77,7 +76,7 @@ pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
         .ok_or_else(|| CliError::new("the image artifact is missing"))?;
     let path = args
         .output
-        .unwrap_or_else(|| default_path(record.display_name(), "png"));
+        .unwrap_or_else(|| crate::support::paths::default_path(record.display_name(), "png"));
     std::fs::write(&path, bytes)?;
 
     out.line(&format!("wrote {}", path.display()));

@@ -33,7 +33,7 @@ pub struct SpeakArgs {
 /// Run the `speak` command.
 pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let shelf = session.shelf(true).await?;
+    let shelf = session.shelf_or_discover().await?;
     let record = session::resolve(&args.model, &shelf, Some(&Capability::speak()))?;
 
     let voice = match args.voice {
@@ -71,7 +71,7 @@ pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
     let wav = runtime::audio::wav_from_pcm(&pcm, rate);
     let path = args
         .output
-        .unwrap_or_else(|| default_path(record.display_name(), "wav"));
+        .unwrap_or_else(|| crate::support::paths::default_path(record.display_name(), "wav"));
     std::fs::write(&path, wav)?;
 
     out.line(&format!("wrote {}", path.display()));
@@ -92,20 +92,4 @@ fn speak_payload(text: &str, voice: Option<&str>, speed: f64) -> JsonValue {
     }
     payload.insert("speed".to_owned(), JsonValue::Double(speed));
     JsonValue::Object(payload)
-}
-
-/// A default output path in the current directory: the slugged model name plus
-/// an extension.
-pub(crate) fn default_path(name: &str, extension: &str) -> PathBuf {
-    let slug: String = name
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    let trimmed = slug.trim_matches('-');
-    let base = if trimmed.is_empty() {
-        "output"
-    } else {
-        trimmed
-    };
-    PathBuf::from(format!("{base}.{extension}"))
 }

@@ -20,7 +20,7 @@ pub struct RmArgs {
 /// Run the `rm` command.
 pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let shelf = session.shelf(false).await?;
+    let shelf = session.shelf().await;
     let record = session::resolve(&args.model, &shelf, None)?;
 
     if !args.yes {

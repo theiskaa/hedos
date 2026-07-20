@@ -37,6 +37,16 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
+    /// Build an object from a fixed set of `(key, value)` pairs.
+    pub fn object<const N: usize>(pairs: [(&str, JsonValue); N]) -> Self {
+        JsonValue::Object(
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value))
+                .collect(),
+        )
+    }
+
     /// The object's fields, if this is an object.
     pub fn as_object(&self) -> Option<&BTreeMap<String, JsonValue>> {
         match self {

@@ -24,7 +24,12 @@ pub struct LsArgs {
 /// Run the `ls` command.
 pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let mut shelf = session.shelf(args.scan).await?;
+    let mut shelf = if args.scan {
+        session.discover().await?;
+        session.shelf().await
+    } else {
+        session.shelf_or_discover().await?
+    };
     if let Some(name) = &args.capability {
         let capability = Capability::from(name.as_str());
         shelf.retain(|record| record.capabilities.contains(&capability));

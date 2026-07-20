@@ -10,6 +10,7 @@ use kernel::records::{Capability, JsonValue};
 
 use crate::error::CliError;
 use crate::support::output::Out;
+use crate::support::payload::message;
 use crate::support::session::{self, Session};
 
 /// Arguments for `chat`.
@@ -28,7 +29,7 @@ pub struct ChatArgs {
 /// Run the `chat` command; reads turns until end-of-input (Ctrl-D).
 pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let shelf = session.shelf(true).await?;
+    let shelf = session.shelf_or_discover().await?;
     let record = session::resolve(&args.model, &shelf, Some(&Capability::chat()))?;
 
     let interactive = std::io::stdin().is_terminal() && !out.is_json();
@@ -82,14 +83,6 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
         history.push(message("assistant", &reply));
     }
     Ok(())
-}
-
-/// A `{"role":…, "content":…}` chat message.
-fn message(role: &str, content: &str) -> JsonValue {
-    let mut object = BTreeMap::new();
-    object.insert("role".to_owned(), JsonValue::String(role.to_owned()));
-    object.insert("content".to_owned(), JsonValue::String(content.to_owned()));
-    JsonValue::Object(object)
 }
 
 /// A chat payload carrying the running `history` and an optional token cap.

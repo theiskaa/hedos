@@ -9,6 +9,7 @@ use serde_json::json;
 
 use crate::error::CliError;
 use crate::support::output::Out;
+use crate::support::payload::message;
 use crate::support::session::{self, Session};
 
 /// Arguments for `run`.
@@ -32,7 +33,7 @@ pub struct RunArgs {
 /// Run the `run` command.
 pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let shelf = session.shelf(true).await?;
+    let shelf = session.shelf_or_discover().await?;
     let record = session::resolve(&args.model, &shelf, Some(&Capability::chat()))?;
 
     let payload = chat_payload(&args.prompt, args.max_tokens, args.temperature);
@@ -70,14 +71,10 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
 
 /// A one-user-turn chat payload with optional sampling knobs.
 fn chat_payload(prompt: &str, max_tokens: Option<i64>, temperature: Option<f64>) -> JsonValue {
-    let mut message = BTreeMap::new();
-    message.insert("role".to_owned(), JsonValue::String("user".to_owned()));
-    message.insert("content".to_owned(), JsonValue::String(prompt.to_owned()));
-
     let mut payload = BTreeMap::new();
     payload.insert(
         "messages".to_owned(),
-        JsonValue::Array(vec![JsonValue::Object(message)]),
+        JsonValue::Array(vec![message("user", prompt)]),
     );
     if let Some(max_tokens) = max_tokens {
         payload.insert("max_tokens".to_owned(), JsonValue::Int(max_tokens));

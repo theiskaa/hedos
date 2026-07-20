@@ -33,11 +33,16 @@ impl Session {
         })
     }
 
-    /// The current shelf; when empty and `discover_if_empty`, run discovery first
-    /// so a fresh install still finds the models already on disk.
-    pub async fn shelf(&self, discover_if_empty: bool) -> Result<Vec<ModelRecord>, CliError> {
+    /// The current shelf, exactly as registered.
+    pub async fn shelf(&self) -> Vec<ModelRecord> {
+        self.kernel.shelf().await
+    }
+
+    /// The shelf, running discovery first when it is empty so a fresh install
+    /// still finds the models already on disk.
+    pub async fn shelf_or_discover(&self) -> Result<Vec<ModelRecord>, CliError> {
         let shelf = self.kernel.shelf().await;
-        if !shelf.is_empty() || !discover_if_empty {
+        if !shelf.is_empty() {
             return Ok(shelf);
         }
         self.discover().await?;
@@ -56,6 +61,10 @@ impl Session {
 /// Resolve a model-name `query` against `shelf`, optionally filtered by
 /// `capability`: exact id, then exact case-insensitive name, then a unique
 /// substring. Ambiguity or no match is a user-facing error.
+///
+/// This is registry-shaped matching, not session state; a future kernel/registry
+/// resolver (which the TUI would share) is the natural home — it lives here for
+/// now because no such kernel entry point exists yet.
 pub fn resolve<'a>(
     query: &str,
     shelf: &'a [ModelRecord],
@@ -73,7 +82,7 @@ pub fn resolve<'a>(
     let names_match = |record: &ModelRecord| {
         record.display_name().eq_ignore_ascii_case(query) || record.name.eq_ignore_ascii_case(query)
     };
-    if let Some(record) = unique(&candidates, names_match)? {
+    if let Some(record) = unique(query, &candidates, names_match)? {
         return Ok(record);
     }
 
@@ -83,7 +92,7 @@ pub fn resolve<'a>(
             || record.name.to_lowercase().contains(&lowered)
             || record.id.to_lowercase().contains(&lowered)
     };
-    if let Some(record) = unique(&candidates, contains)? {
+    if let Some(record) = unique(query, &candidates, contains)? {
         return Ok(record);
     }
 
@@ -94,8 +103,9 @@ pub fn resolve<'a>(
 }
 
 /// The single record matching `predicate`, `None` if none match, or an ambiguity
-/// error (listing up to 8) if more than one does.
+/// error naming `query` and listing up to 8 matches if more than one does.
 fn unique<'a>(
+    query: &str,
     candidates: &[&'a ModelRecord],
     predicate: impl Fn(&ModelRecord) -> bool,
 ) -> Result<Option<&'a ModelRecord>, CliError> {
@@ -115,8 +125,7 @@ fn unique<'a>(
                 .collect::<Vec<_>>()
                 .join("\n  ");
             Err(CliError::new(format!(
-                "\"{}\" is ambiguous — matched:\n  {listing}",
-                many[0].display_name()
+                "\"{query}\" is ambiguous — matched:\n  {listing}"
             )))
         }
     }

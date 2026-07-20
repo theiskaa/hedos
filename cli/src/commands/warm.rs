@@ -19,7 +19,7 @@ pub struct WarmArgs {
 /// Run the `warm` command.
 pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let shelf = session.shelf(true).await?;
+    let shelf = session.shelf_or_discover().await?;
     let record = session::resolve(&args.model, &shelf, None)?;
 
     let (capability, payload) = warm_request(record)
@@ -57,13 +57,10 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
 fn warm_request(record: &kernel::records::ModelRecord) -> Option<(Capability, JsonValue)> {
     let has = |cap: &Capability| record.capabilities.contains(cap);
     if has(&Capability::chat()) {
-        let mut message = BTreeMap::new();
-        message.insert("role".to_owned(), JsonValue::String("user".to_owned()));
-        message.insert("content".to_owned(), JsonValue::String("hi".to_owned()));
         let mut payload = BTreeMap::new();
         payload.insert(
             "messages".to_owned(),
-            JsonValue::Array(vec![JsonValue::Object(message)]),
+            JsonValue::Array(vec![crate::support::payload::message("user", "hi")]),
         );
         payload.insert("max_tokens".to_owned(), JsonValue::Int(1));
         Some((Capability::chat(), JsonValue::Object(payload)))
