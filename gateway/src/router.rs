@@ -14,6 +14,7 @@ use crate::handlers::chat::{OllamaChatHandler, OpenAIChatHandler};
 use crate::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
 use crate::handlers::generate::{OllamaGenerateHandler, OpenAICompletionsHandler};
 use crate::handlers::images::OpenAIImagesHandler;
+use crate::handlers::messages::AnthropicMessagesHandler;
 use crate::handlers::models::{
     OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
 };
@@ -93,6 +94,13 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         .described("OpenAI", "Stream or complete a chat"),
         GatewayRoute::new("GET", "/v1/models", Box::new(OpenAIModelsHandler))
             .described("OpenAI", "List the models this token can reach"),
+        GatewayRoute::new(
+            "POST",
+            "/v1/messages",
+            Box::new(AnthropicMessagesHandler::default()),
+        )
+        .inference()
+        .described("Anthropic", "Stream or complete a message"),
         GatewayRoute::new("POST", "/api/chat", Box::new(OllamaChatHandler::default()))
             .inference()
             .described("Ollama", "Chat over the Ollama NDJSON protocol"),
