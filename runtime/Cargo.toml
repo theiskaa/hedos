@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 kernel.workspace = true
 fs2.workspace = true
+include_dir.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
