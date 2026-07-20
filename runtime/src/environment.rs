@@ -275,31 +275,17 @@ fn tail_string(bytes: &[u8], max: usize) -> String {
 
 fn uv_binary() -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
-    let mut candidates = vec![
+    // The fixed candidates cover the common installs even when the caller's
+    // PATH doesn't; the PATH walk picks up everything else.
+    [
         format!("{home}/.local/bin/uv"),
         "/opt/homebrew/bin/uv".to_owned(),
         "/usr/local/bin/uv".to_owned(),
-    ];
-    if let Ok(path) = std::env::var("PATH") {
-        candidates.extend(path.split(':').map(|entry| format!("{entry}/uv")));
-    }
-    candidates
-        .into_iter()
-        .map(PathBuf::from)
-        .find(|candidate| is_executable(candidate))
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
+    ]
+    .into_iter()
+    .map(PathBuf::from)
+    .find(|candidate| kernel::fs::is_executable(candidate))
+    .or_else(|| kernel::fs::find_on_path("uv"))
 }
 
 fn uv_builder(

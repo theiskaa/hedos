@@ -4,7 +4,7 @@
 //! [`Aggregator`](kernel::install::ollama_pull::Aggregator).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use kernel::fs::expand_tilde;
@@ -375,27 +375,11 @@ pub(crate) fn daemon_binary(environment: &HashMap<String, String>) -> Option<Pat
         home.join(".local/bin/ollama"),
     ];
     if let Some(path) = environment.get("PATH") {
-        candidates.extend(
-            path.split(':')
-                .filter(|entry| !entry.is_empty())
-                .map(|dir| Path::new(dir).join("ollama")),
-        );
+        candidates.extend(std::env::split_paths(path).map(|dir| dir.join("ollama")));
     }
-    candidates.into_iter().find(|path| is_executable_file(path))
-}
-
-fn is_executable_file(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        path.is_file()
-    }
+    candidates
+        .into_iter()
+        .find(|path| kernel::fs::is_executable(path))
 }
 
 fn home_dir(environment: &HashMap<String, String>) -> PathBuf {
