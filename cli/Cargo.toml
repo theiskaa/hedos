@@ -13,3 +13,6 @@ path = "src/main.rs"
 kernel.workspace = true
 runtime.workspace = true
 gateway.workspace = true
+clap.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
