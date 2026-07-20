@@ -3,6 +3,7 @@
 
 pub mod adapters;
 pub mod audio;
+pub mod boot;
 pub mod environment;
 pub mod facade;
 pub mod frame_codec;
