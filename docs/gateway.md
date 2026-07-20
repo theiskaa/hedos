@@ -1,6 +1,8 @@
 # Gateway
 
-`hedos serve` runs a local HTTP server that speaks the OpenAI and Ollama dialects. Point any tool that already talks to one of those at it, and it reaches the models on your shelf.
+`hedos serve` runs a local HTTP server that speaks the OpenAI, Ollama, and Anthropic dialects. Point any tool that already talks to one of those at it, and it reaches the models on your shelf.
+
+To run a coding harness against it without configuring anything, see [`hedos launch`](cli.md#launch), which serves a gateway for the life of the harness.
 
 ## Starting it
 
@@ -67,6 +69,30 @@ curl http://127.0.0.1:43367/api/chat \
 ```
 
 Ollama streaming responses are newline-delimited JSON, one object per line, which is what stock Ollama clients read.
+
+## Anthropic endpoints
+
+Base path `/v1`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /v1/messages` | Chat over the Anthropic Messages protocol, with tool use. |
+
+This is the dialect Claude Code speaks. It exists so `hedos launch claude` works, and the base URL carries no version segment because the client appends `/v1/messages` itself:
+
+```sh
+curl http://127.0.0.1:43367/v1/messages \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen2.5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "hi"}]
+  }'
+```
+
+Streaming responses use Anthropic's own server-sent event grammar: `message_start`, then a `content_block_start` / `content_block_delta` / `content_block_stop` group per content block, then `message_delta` and `message_stop`. There is no `[DONE]` sentinel.
+
+Two limits worth knowing. Thinking is not sent as a `thinking` block, because those carry a signature this gateway cannot issue and clients replay the blocks they receive. And `/v1/messages/count_tokens` is not served, so Claude Code estimates context usage locally rather than asking.
 
 ## Fidelity
 

@@ -48,9 +48,45 @@ An interactive session that reads turns from stdin and streams each reply. Press
 
 ### `hedos serve`
 
-Start the OpenAI- and Ollama-compatible gateway on loopback and block until Ctrl-C. Prints the base URL. See the [gateway guide](gateway.md).
+Start the OpenAI-, Ollama-, and Anthropic-compatible gateway on loopback and block until Ctrl-C. Prints the base URL. See the [gateway guide](gateway.md).
 
 - `-p, --port <n>` overrides the port (the default comes from settings, else `43367`).
+
+### `hedos launch [harness]`
+
+Run a coding harness against a gateway served for exactly as long as that harness runs. There is nothing to start first: the gateway binds a free port inside the same process, the harness is spawned pointed at it, and it stops when the harness exits.
+
+```sh
+hedos launch                  # pick a harness, then a model
+hedos launch opencode         # pick a model
+hedos launch claude -m qwen3
+```
+
+Supported harnesses, and the dialect each needs:
+
+| Harness | Binary | Dialect |
+| --- | --- | --- |
+| Claude Code | `claude` | Anthropic |
+| OpenCode | `opencode` | OpenAI |
+| Aider | `aider` | OpenAI |
+| Goose | `goose` | OpenAI |
+| Crush | `crush` | OpenAI |
+
+- `-m, --model <name>` picks the model; omit it to choose interactively.
+- Anything after `--` is passed straight through to the harness.
+- Omitting the harness in a terminal lists only the ones actually installed.
+
+Before the harness starts, hedos runs one throwaway request through the model, shaped like the ones the harness will send. A model whose backend is down (a stopped Ollama daemon, a missing `llama-server`, an out-of-memory GPU) fails here with the reason and what to do about it, rather than inside the harness where it reads as an unexplained error. It also leaves the model loaded, so the first real request is warm.
+
+Every harness here except Aider drives the model entirely through tool calls, so it needs a model that supports them. Tool support shows as a `tools` capability in `hedos ls` and the picker, read from the model's chat template during discovery, and the launch picker offers only tool-capable models to the harnesses that need them. A model whose tool support couldn't be read from disk is assumed capable and left in the list; the pre-flight then probes with a tool and catches it before the harness starts, with a note to pick another model or use Aider (whose edits are plain text and need no tools).
+
+Your own harness config is never read around or written to. Harnesses that can be configured through the environment are; the rest get a generated config under the hedos data directory, so running the harness directly afterwards behaves exactly as it did before.
+
+The whole chat-capable shelf is offered, not just the model you named, so you can switch models inside the harness. `-m` only chooses the one it opens on.
+
+Ctrl-C goes to the harness, not to hedos, so it handles the interrupt the way it normally would. The harness's exit code becomes the exit code of `hedos launch`.
+
+Codex is not supported: it speaks the OpenAI Responses API, which this gateway does not serve, and it removed the setting that made it speak chat completions.
 
 ### `hedos pull [reference]`
 

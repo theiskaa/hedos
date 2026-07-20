@@ -60,12 +60,23 @@ hedos pull qwen2.5:3b             # install from ollama or hugging face
 hedos run gemma3 "explain this"   # stream a completion to your terminal
 hedos rm gemma3 --yes             # delete a model
 hedos serve                       # start the local gateway
+hedos launch opencode             # run a coding harness on a local model
 ```
 
 Every command takes `--json` when you want machine-readable output instead of formatted text.
 
+## Coding harnesses
+`hedos launch` runs a coding harness against a local model with nothing to configure. The gateway starts inside the same process on a free port, the harness is wired to it, and both stop together:
+
+```sh
+hedos launch                      # pick a harness, then a model
+hedos launch claude -m qwen3      # or name both
+```
+
+Claude Code, OpenCode, Aider, Goose, and Crush are supported. Your own harness config is never touched, so running the harness directly afterwards behaves exactly as it did before.
+
 ## The gateway
-`hedos serve` binds an OpenAI- and Ollama-compatible HTTP server to loopback (`127.0.0.1:43367` by default). Any editor, script, or agent on the machine can point at it and reach the models you own, tools and all:
+`hedos serve` binds an OpenAI-, Ollama-, and Anthropic-compatible HTTP server to loopback (`127.0.0.1:43367` by default). Any editor, script, or agent on the machine can point at it and reach the models you own, tools and all:
 
 ```sh
 curl http://127.0.0.1:43367/v1/chat/completions \
