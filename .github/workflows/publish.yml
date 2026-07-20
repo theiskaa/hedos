@@ -1,0 +1,32 @@
+# Publishes the crates to crates.io when a version tag is pushed. The GitHub
+# Release and the Homebrew formula are handled separately by release.yml, which
+# triggers on the same tags.
+name: Publish
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+  # Allows a re-run from the Actions tab if a publish failed partway.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+
+      # `--workspace` publishes hedos-kernel, hedos-runtime, hedos-gateway, and
+      # hedos in dependency order, waiting for each to land on the index before
+      # the crate that depends on it goes up.
+      - name: Publish the workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --locked
