@@ -4,10 +4,13 @@
 
 <p align="center">
 
-[![Release](https://img.shields.io/github/v/release/theiskaa/hedos?color=orange)](https://github.com/theiskaa/hedos/releases)
+[![CI](https://github.com/theiskaa/hedos/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/theiskaa/hedos/actions/workflows/ci.yml)
+[![Documentation](https://img.shields.io/badge/docs-hedos.ai-orange)](https://hedos.ai/docs)
+[![Crates.io](https://img.shields.io/crates/v/hedos?color=orange)](https://crates.io/crates/hedos)
+[![Release](https://img.shields.io/github/v/release/theiskaa/hedos)](https://github.com/theiskaa/hedos/releases)
 [![Rust](https://img.shields.io/badge/rust-edition%202024-orange)](Cargo.toml)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%26%20Linux-orange)](docs/getting-started.md)
+[![Downloads](https://img.shields.io/crates/d/hedos)](https://crates.io/crates/hedos)
 
 </p>
 
