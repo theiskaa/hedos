@@ -178,6 +178,22 @@ async fn run_install(
         .ok_or_else(|| {
             InstallError::TransferFailed(format!("{} has no resolvable revision.", plan.reference))
         })?;
+    // The hub base URL is configurable, so a hostile endpoint could return a
+    // `sha` crafted for path traversal; this is used directly as a filesystem
+    // path component (see hf_cache.rs's snapshot_directory/snapshot_file), so
+    // reject anything that isn't a single, safe path component before it's used.
+    if revision.is_empty()
+        || revision.contains('/')
+        || revision.contains('\\')
+        || revision
+            .split(['/', '\\'])
+            .any(|part| part == "." || part == "..")
+    {
+        return Err(InstallError::ReferenceInvalid(format!(
+            "{} resolved to an unsafe revision",
+            plan.reference
+        )));
+    }
     let selection = file_selection::select(&info.siblings);
     if !selection.iter().any(HFSibling::is_weight) {
         return Err(InstallError::TransferFailed(format!(

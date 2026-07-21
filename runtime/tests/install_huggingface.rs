@@ -210,6 +210,46 @@ async fn an_invalid_reference_is_rejected() {
 }
 
 #[tokio::test]
+async fn a_hostile_revision_is_rejected_and_nothing_is_written_outside_the_cache_root() {
+    let root = temp_root();
+    let body = vec![4u8; 256];
+    let sha = sha_hex(&body);
+    let siblings = format!(
+        r#"{{"rfilename":"model.Q4_K_M.gguf","size":{size},"lfs":{{"size":{size},"oid":"{sha}"}}}}"#,
+        size = body.len(),
+    );
+    let model_info =
+        format!(r#"{{"id":"org/Model","sha":"../../evil","gated":false,"siblings":[{siblings}]}}"#);
+    let search = r#"[{"id":"org/Model","downloads":5,"likes":1}]"#.to_owned();
+    let transport: Arc<dyn InstallTransport> = Arc::new(HubMock {
+        model_info,
+        search,
+        file_body: body.clone(),
+    });
+    let api = HFHubAPI::new(Arc::clone(&transport)).with_base_url("https://hf.test");
+    let provider = HuggingFaceInstallProvider::new(api, transport, &root, "/home/me");
+
+    let plan = provider.plan("org/Model").await.expect("plan");
+    match drain(provider.install(plan)).await {
+        Err(InstallError::ReferenceInvalid(_)) => {}
+        other => panic!("expected reference-invalid, got {other:?}"),
+    }
+
+    // Nothing escaped the cache root: no sibling `evil` directory two levels up,
+    // and the repo directory itself has no snapshot for the hostile revision.
+    let outside = root
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.join("evil"));
+    if let Some(outside) = outside {
+        assert!(!outside.exists());
+    }
+    let repo = root.join("models--org--Model");
+    assert!(!repo.join("snapshots").join("../../evil").exists());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
 async fn a_gated_repo_without_a_token_requires_auth() {
     let root = temp_root();
     let body = vec![2u8; 512];
