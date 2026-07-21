@@ -48,6 +48,11 @@ impl GatewayIdentity {
     }
 }
 
+/// The audit outcome label written for a successful request. Shared so the
+/// producer here and consumers like [`crate::stats`] classify by the same string
+/// and cannot silently drift apart.
+pub(crate) const OK_OUTCOME: &str = "ok";
+
 /// The result a handler reports for the audit log: the HTTP status, an outcome
 /// label, and the model and capability that were served.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +72,7 @@ impl GatewayOutcome {
     pub fn ok() -> Self {
         Self {
             status: 200,
-            outcome: "ok".to_owned(),
+            outcome: OK_OUTCOME.to_owned(),
             model: None,
             capability: None,
         }
@@ -77,7 +82,7 @@ impl GatewayOutcome {
     pub fn ok_for(model: Option<&str>, capability: Option<&Capability>) -> Self {
         Self {
             status: 200,
-            outcome: "ok".to_owned(),
+            outcome: OK_OUTCOME.to_owned(),
             model: model.map(str::to_owned),
             capability: capability.map(|capability| capability.as_str().to_owned()),
         }

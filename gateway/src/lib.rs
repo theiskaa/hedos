@@ -21,6 +21,7 @@ pub mod responder;
 pub mod router;
 pub mod scopes;
 pub mod server;
+pub mod stats;
 pub mod surface;
 pub(crate) mod wire;
 

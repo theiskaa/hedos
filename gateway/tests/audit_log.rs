@@ -132,3 +132,27 @@ fn the_log_rotates_once_it_exceeds_its_size_bound() {
     assert!(dir.join("audit.jsonl").exists());
     assert!(dir.join("audit.1.jsonl").exists());
 }
+
+#[test]
+fn read_all_spans_rotated_generations_oldest_first_and_skips_garbage() {
+    let dir = TempDir::new();
+    let log = GatewayAuditLog::with_max_bytes(dir.path(), 200);
+    for index in 0..40 {
+        log.append(entry(1_600_000_000_000 + index * 1_000, "ok"));
+    }
+    // A garbage line in the live file must not derail the read.
+    let mut existing = fs::read_to_string(dir.join("audit.jsonl")).unwrap();
+    existing.push_str("this is not json\n");
+    fs::write(dir.join("audit.jsonl"), existing).unwrap();
+
+    let all = log.read_all();
+    // Rotation is lossy — only a bounded number of generations survive — so this
+    // sees fewer than 40 entries, but strictly more than the live file alone.
+    assert!(all.len() > log.tail(10_000).len());
+    // Rotated generations are read before the live one, so timestamps ascend.
+    for pair in all.windows(2) {
+        assert!(pair[0].ts_millis <= pair[1].ts_millis);
+    }
+    // The newest append survives and the trailing garbage line is skipped.
+    assert_eq!(all.last().unwrap().ts_millis, 1_600_000_039_000);
+}

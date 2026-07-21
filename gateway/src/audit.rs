@@ -157,6 +157,33 @@ impl GatewayAuditLog {
             .collect()
     }
 
+    /// Every entry across all generations, oldest first. Rotated files are read
+    /// before the live one so the sequence stays chronological; malformed lines
+    /// and unreadable generations are skipped. Knowledge of the rotation scheme
+    /// stays inside this type.
+    pub fn read_all(&self) -> Vec<GatewayAuditEntry> {
+        let mut entries = Vec::new();
+        // Highest generation is oldest; the live file is newest.
+        for generation in (1..GENERATIONS).rev() {
+            Self::read_into(&self.rotated_path(generation), &mut entries);
+        }
+        Self::read_into(&self.path, &mut entries);
+        entries
+    }
+
+    /// Append every well-formed entry in `path` to `sink`, skipping a file that
+    /// cannot be read and any line that fails to parse.
+    fn read_into(path: &Path, sink: &mut Vec<GatewayAuditEntry>) {
+        let Ok(text) = fs::read_to_string(path) else {
+            return;
+        };
+        sink.extend(
+            text.lines()
+                .filter(|line| !line.is_empty())
+                .filter_map(|line| serde_json::from_str(line).ok()),
+        );
+    }
+
     /// Flush any pending coalesced-unauthorized summary, then persist `entry`.
     fn write_entry(&self, window: &mut UnauthorizedWindow, entry: &GatewayAuditEntry) {
         self.flush_unauthorized(window);

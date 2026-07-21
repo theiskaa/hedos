@@ -10,5 +10,6 @@ pub mod run;
 pub mod scan;
 pub mod serve;
 pub mod speak;
+pub mod stats;
 pub mod unload;
 pub mod warm;
