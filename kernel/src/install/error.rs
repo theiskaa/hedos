@@ -18,9 +18,10 @@ pub enum InstallError {
     /// The reference was not found on the platform.
     #[error("{0} was not found on the platform.")]
     ReferenceNotFound(String),
-    /// The model is gated and needs authentication.
+    /// The model is gated: either no token was supplied, or the token that was
+    /// supplied has not been granted access to this repo.
     #[error(
-        "{0} is gated. Add a Hugging Face access token, or sign in with `huggingface-cli login`."
+        "{0} is gated. Accept its terms and request access at https://huggingface.co/{0}, then set HF_TOKEN to a token with read access (or sign in with `huggingface-cli login`)."
     )]
     AuthRequired(String),
     /// Not enough free disk space to complete the download.
