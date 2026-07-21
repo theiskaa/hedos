@@ -5,6 +5,7 @@ pub mod banner;
 pub mod download;
 pub mod harnesses;
 pub mod interactive;
+pub mod machine;
 pub mod output;
 pub mod paths;
 pub mod payload;

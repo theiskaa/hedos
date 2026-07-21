@@ -22,6 +22,15 @@ pub struct FitAssessment {
 }
 
 impl FitVerdict {
+    /// The stable string form: `runs_well`, `tight_fit`, or `too_large`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FitVerdict::RunsWell => "runs_well",
+            FitVerdict::TightFit => "tight_fit",
+            FitVerdict::TooLarge => "too_large",
+        }
+    }
+
     /// Weights need working memory beyond the raw footprint.
     const MEMORY_OVERHEAD_FACTOR: f64 = 1.25;
     /// Below this share of memory a model runs well.
@@ -80,6 +89,13 @@ mod tests {
         // 16 GiB × 1.25 = 20 GiB of 16 GiB → share 1.25 → too large.
         let too_large = FitVerdict::assess(Some(16 * 1024), 16 * GIB).unwrap();
         assert_eq!(too_large.verdict, FitVerdict::TooLarge);
+    }
+
+    #[test]
+    fn each_verdict_has_a_stable_slug() {
+        assert_eq!(FitVerdict::RunsWell.as_str(), "runs_well");
+        assert_eq!(FitVerdict::TightFit.as_str(), "tight_fit");
+        assert_eq!(FitVerdict::TooLarge.as_str(), "too_large");
     }
 
     #[test]

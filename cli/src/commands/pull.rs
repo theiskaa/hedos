@@ -9,14 +9,13 @@ use kernel::install::event::InstallEvent;
 use kernel::install::reference::{hugging_face_repo, ollama_install_tag};
 use kernel::install::{InstallCatalogEntry, InstallProviderId, InstallSearchHit, recommended};
 use kernel::records::ModelRecord;
-use runtime::governor::GovernorConfig;
 use runtime::install::service::InstallService;
 
 use crate::error::CliError;
 use crate::support::download::Download;
 use crate::support::output::Out;
 use crate::support::session::Session;
-use crate::support::{interactive, signals};
+use crate::support::{interactive, machine, signals};
 
 /// Arguments for `pull`.
 #[derive(Args)]
@@ -140,9 +139,8 @@ async fn resolve_target(
 /// Offer the catalog models that fit this machine's RAM and are not already on the
 /// shelf, and return the pick.
 fn pick_recommended(shelf: &[ModelRecord]) -> Result<(InstallProviderId, String), CliError> {
-    let total_mb = GovernorConfig::detect().total_memory_mb.max(1) as u64;
     let installed = installed_names(shelf);
-    let entries: Vec<InstallCatalogEntry> = recommended(None, total_mb * 1024 * 1024, None)
+    let entries: Vec<InstallCatalogEntry> = recommended(None, machine::memory_budget_bytes(), None)
         .into_iter()
         .filter(|entry| !is_installed(&entry.reference, &installed))
         .collect();

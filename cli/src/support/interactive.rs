@@ -11,6 +11,7 @@ use dialoguer::{Confirm, FuzzySelect, Input};
 use kernel::records::{Capability, ModelRecord};
 
 use crate::error::CliError;
+use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::session;
 use crate::support::shelf_table;
@@ -90,7 +91,7 @@ pub fn select_model<'a>(
         )
     });
 
-    let labels = shelf_table::picker_labels(&ordered, warm);
+    let labels = shelf_table::picker_labels(&ordered, warm, machine::memory_budget_bytes());
     let index = select_index(prompt, &labels)?;
     ordered
         .get(index)
