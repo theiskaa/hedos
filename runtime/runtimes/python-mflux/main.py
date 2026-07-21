@@ -197,4 +197,5 @@ def main():
             send_json({"event": "error", "message": str(error)})
 
 
-main()
+if __name__ == "__main__":
+    main()

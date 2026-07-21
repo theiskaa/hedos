@@ -62,8 +62,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ruff and mypy
-        run: pip install ruff==0.15.22 mypy==1.19.1
+      - name: Install ruff, mypy, and pytest
+        run: pip install ruff==0.15.22 mypy==1.19.1 pytest==8.4.2
 
       - name: Ruff lint
         run: ruff check runtime/runtimes
@@ -82,3 +82,9 @@ jobs:
           for dir in runtime/runtimes/*/; do
             mypy --config-file runtime/runtimes/pyproject.toml "$dir"
           done
+
+      - name: Pytest
+        # Covers the frame protocol and request-shaping helpers each sidecar's
+        # main.py exposes — not model inference, which needs real weights and
+        # is deliberately out of scope for CI.
+        run: pytest runtime/runtimes
