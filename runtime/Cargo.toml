@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 description = "The hedos runtime: execution adapters, sidecar supervision, and the memory governor."
+build = "build.rs"
 
 # The package publishes as `hedos-runtime` (the bare name is taken on crates.io),
 # but the library keeps its bare name so `use runtime::…` works everywhere,
@@ -17,7 +18,7 @@ name = "runtime"
 [dependencies]
 kernel.workspace = true
 fs2.workspace = true
-include_dir.workspace = true
+flate2.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,6 +28,9 @@ hex.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
+
+[build-dependencies]
+flate2.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
