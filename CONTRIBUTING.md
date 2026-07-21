@@ -15,6 +15,11 @@ cargo fmt --check                        # format check
 
 All four of these should pass before you open a pull request. `cargo fmt` (without `--check`) applies the formatting.
 
+**Local hooks (optional):** enable the repo's pre-commit hook once with
+`git config core.hooksPath .githooks`. It runs `cargo fmt --check` and
+`cargo clippy -- -D warnings` on each commit so formatting/lint failures are
+caught before CI. Bypass a single commit with `git commit --no-verify` if you must.
+
 ## How the code is organized
 
 The workspace has four crates, and dependencies only ever flow in one direction: `kernel` to `runtime` to `gateway` to `cli`. Nothing points back up.

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fast local gate: formatting + lint. Full tests run in CI / pre-push.
+set -e
+echo "pre-commit: cargo fmt --check"
+cargo fmt --check
+echo "pre-commit: cargo clippy -- -D warnings"
+cargo clippy --workspace --all-targets -- -D warnings
