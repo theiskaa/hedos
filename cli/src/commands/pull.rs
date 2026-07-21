@@ -118,41 +118,99 @@ async fn resolve_target(
         ));
     }
 
-    let query = interactive::input("search models (enter/return for recommendations)", true)?;
-    if query.trim().is_empty() {
-        return pick_recommended(shelf);
-    }
-
-    let result = install.browse(query.trim(), 25).await;
-    if result.hits.is_empty() {
-        let hint = result
-            .failure_hint
-            .unwrap_or_else(|| format!("nothing matched \"{}\"", query.trim()));
-        return Err(CliError::new(hint));
-    }
-    let labels: Vec<String> = result.hits.iter().map(hit_label).collect();
-    let index = interactive::select_index("model", &labels)?;
-    let hit = &result.hits[index];
-    Ok((hit.provider.clone(), hit.reference.clone()))
+    interactive_pick(out, install, shelf).await
 }
 
-/// Offer the catalog models that fit this machine's RAM and are not already on the
-/// shelf, and return the pick.
-fn pick_recommended(shelf: &[ModelRecord]) -> Result<(InstallProviderId, String), CliError> {
+/// One installable option offered by the interactive picker.
+struct Candidate {
+    label: String,
+    provider: InstallProviderId,
+    reference: String,
+}
+
+/// The interactive install picker: a search prompt that flows into a list of
+/// results — or the memory-fit recommendations when the query is blank — with a
+/// "search again" row so switching between the two, or trying another query,
+/// never needs a fresh command. Loops until a model is chosen; Escape at the list
+/// or Ctrl-C at the prompt exits.
+async fn interactive_pick(
+    out: &Out,
+    install: &InstallService,
+    shelf: &[ModelRecord],
+) -> Result<(InstallProviderId, String), CliError> {
+    const SEARCH_AGAIN: &str = "‹ search again";
+    loop {
+        let query = interactive::input("search models (blank for recommendations)", true)?;
+        let query = query.trim();
+
+        let candidates = if query.is_empty() {
+            recommended_candidates(shelf)
+        } else {
+            match search_candidates(install, query).await {
+                Ok(candidates) => candidates,
+                Err(note) => {
+                    out.line(&note);
+                    continue;
+                }
+            }
+        };
+        if candidates.is_empty() {
+            out.line("every recommended model is already installed — type a name to search");
+            continue;
+        }
+
+        let mut labels: Vec<String> = candidates
+            .iter()
+            .map(|candidate| candidate.label.clone())
+            .collect();
+        labels.push(SEARCH_AGAIN.to_owned());
+        let index = interactive::select_index("model", &labels)?;
+        // The "search again" row sits past the last candidate, so a `get` miss
+        // means "go back to the prompt".
+        match candidates.get(index) {
+            Some(candidate) => {
+                return Ok((candidate.provider.clone(), candidate.reference.clone()));
+            }
+            None => continue,
+        }
+    }
+}
+
+/// The memory-fit catalog models not already on the shelf, as picker candidates.
+fn recommended_candidates(shelf: &[ModelRecord]) -> Vec<Candidate> {
     let installed = installed_names(shelf);
-    let entries: Vec<InstallCatalogEntry> = recommended(None, machine::memory_budget_bytes(), None)
+    recommended(None, machine::memory_budget_bytes(), None)
         .into_iter()
         .filter(|entry| !is_installed(&entry.reference, &installed))
-        .collect();
-    if entries.is_empty() {
-        return Err(CliError::new(
-            "the recommended models are already installed — search by name or pass a reference",
-        ));
+        .map(|entry| Candidate {
+            label: catalog_label(&entry),
+            provider: entry.provider.clone(),
+            reference: entry.reference.clone(),
+        })
+        .collect()
+}
+
+/// Hugging Face search hits for `query` as picker candidates, or a note to show
+/// and return to the prompt when nothing matched.
+async fn search_candidates(
+    install: &InstallService,
+    query: &str,
+) -> Result<Vec<Candidate>, String> {
+    let result = install.browse(query, 25).await;
+    if result.hits.is_empty() {
+        return Err(result
+            .failure_hint
+            .unwrap_or_else(|| format!("nothing matched \"{query}\"")));
     }
-    let labels: Vec<String> = entries.iter().map(catalog_label).collect();
-    let index = interactive::select_index("recommended", &labels)?;
-    let entry = &entries[index];
-    Ok((entry.provider.clone(), entry.reference.clone()))
+    Ok(result
+        .hits
+        .iter()
+        .map(|hit| Candidate {
+            label: hit_label(hit),
+            provider: hit.provider.clone(),
+            reference: hit.reference.clone(),
+        })
+        .collect())
 }
 
 /// The lowercased ids, names, and display names of every model on the shelf, for
