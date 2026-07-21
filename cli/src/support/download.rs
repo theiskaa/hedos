@@ -28,8 +28,9 @@ impl Download {
                 determinate: false,
             };
         }
-        let style = ProgressStyle::with_template("{spinner:.cyan} {bytes} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner());
+        let style = ProgressStyle::with_template("{spinner:.cyan} {bytes}  {wide_msg}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner())
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ");
         let bar = ProgressBar::new_spinner().with_style(style);
         bar.enable_steady_tick(Duration::from_millis(90));
         Self {
@@ -48,9 +49,10 @@ impl Download {
             bar.disable_steady_tick();
             bar.set_length(total.max(0) as u64);
             let style = ProgressStyle::with_template(
-                "{bar:28.cyan/blue} {bytes}/{total_bytes} ({percent}%) {msg}",
+                "{bar:24.cyan/blue} {percent:>3}%  {bytes}/{total_bytes}  {wide_msg}",
             )
-            .unwrap_or_else(|_| ProgressStyle::default_bar());
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("█▓░");
             bar.set_style(style);
             self.determinate = true;
         }
