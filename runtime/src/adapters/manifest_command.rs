@@ -4,6 +4,7 @@
 //! (`run`) paths share the same governed execution; the interpreter is launched
 //! directly (host execution must be approved).
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -21,7 +22,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use super::{ChunkStream, JobRunning, JobStream, RuntimeAdapter, RuntimeError, RuntimeStream};
-use crate::environment::{EnvironmentManager, Progress};
+use crate::environment::{EnvironmentManager, Progress, scrubbed_environment};
 use crate::governed::governed_one_shot;
 use crate::governor::{GpuProducer, MemoryGovernor};
 use crate::manifests::{
@@ -312,13 +313,13 @@ impl Execution {
         let (program, arguments) = tokens
             .split_first()
             .ok_or_else(|| RuntimeError::Failed("the manifest command is empty".to_owned()))?;
+        let overrides = BTreeMap::from([("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned())]);
         let mut command = Command::new(program);
         command
             .args(arguments)
             .current_dir(workdir)
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env_remove("PYTHONPATH")
-            .env_remove("PYTHONHOME")
+            .env_clear()
+            .envs(scrubbed_environment(std::env::vars(), &overrides))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);

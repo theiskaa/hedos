@@ -147,9 +147,59 @@ impl EnvironmentManager {
     }
 }
 
-/// The child environment for a sidecar or build: the current process
-/// environment with `PYTHONPATH`/`PYTHONHOME` stripped (so a user's shell Python
-/// config can't leak into the venv), then `overrides` applied.
+/// Environment keys always forwarded to a spawned runtime: process essentials and
+/// locale/proxy/temp settings that affect correctness but carry no credentials.
+/// Everything else is dropped; a runtime's real needs come through `overrides`.
+/// Deliberately excludes `PYTHONPATH`/`PYTHONHOME` so a user's shell Python config
+/// can't leak into the venv.
+const BASELINE_KEYS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+];
+
+#[cfg(target_os = "linux")]
+const OS_BASELINE_KEYS: &[&str] = &["LD_LIBRARY_PATH"];
+
+#[cfg(target_os = "macos")]
+const OS_BASELINE_KEYS: &[&str] = &["DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"];
+
+#[cfg(target_os = "windows")]
+const OS_BASELINE_KEYS: &[&str] = &["USERPROFILE", "SystemRoot"];
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const OS_BASELINE_KEYS: &[&str] = &[];
+
+/// The full set of allowlisted environment keys: [`BASELINE_KEYS`] plus the
+/// current OS's additions.
+fn baseline_keys() -> Vec<&'static str> {
+    BASELINE_KEYS
+        .iter()
+        .copied()
+        .chain(OS_BASELINE_KEYS.iter().copied())
+        .collect()
+}
+
+/// The child environment for a sidecar or build: an allowlist of process
+/// essentials and locale/proxy/temp settings from `base` (so unrelated
+/// credentials in the parent environment — cloud keys, tokens, arbitrary shell
+/// secrets — are not forwarded), then `overrides` applied on top. `overrides`
+/// always wins, even for keys outside the allowlist, since that's how a runtime
+/// declares what it actually needs.
 pub fn scrubbed_environment<I>(
     base: I,
     overrides: &BTreeMap<String, String>,
@@ -157,9 +207,11 @@ pub fn scrubbed_environment<I>(
 where
     I: IntoIterator<Item = (String, String)>,
 {
-    let mut env: BTreeMap<String, String> = base.into_iter().collect();
-    env.remove("PYTHONPATH");
-    env.remove("PYTHONHOME");
+    let allowed: std::collections::HashSet<&str> = baseline_keys().into_iter().collect();
+    let mut env: BTreeMap<String, String> = base
+        .into_iter()
+        .filter(|(key, _)| allowed.contains(key.as_str()))
+        .collect();
     for (key, value) in overrides {
         env.insert(key.clone(), value.clone());
     }
@@ -334,4 +386,52 @@ fn uv_builder(
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_baseline_key_passes_through() {
+        let env = scrubbed_environment(base(&[("PATH", "/usr/bin")]), &BTreeMap::new());
+        assert_eq!(env.get("PATH"), Some(&"/usr/bin".to_owned()));
+    }
+
+    #[test]
+    fn a_secret_shaped_key_is_dropped() {
+        let env = scrubbed_environment(
+            base(&[
+                ("AWS_SECRET_ACCESS_KEY", "secret"),
+                ("GITHUB_TOKEN", "token"),
+            ]),
+            &BTreeMap::new(),
+        );
+        assert!(!env.contains_key("AWS_SECRET_ACCESS_KEY"));
+        assert!(!env.contains_key("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn an_override_wins_even_outside_the_baseline() {
+        let overrides = BTreeMap::from([("HF_HOME".to_owned(), "/custom/hf".to_owned())]);
+        let env = scrubbed_environment(base(&[("HF_HOME", "/parent/hf")]), &overrides);
+        assert_eq!(env.get("HF_HOME"), Some(&"/custom/hf".to_owned()));
+    }
+
+    #[test]
+    fn pythonpath_and_pythonhome_are_still_absent() {
+        let env = scrubbed_environment(
+            base(&[("PYTHONPATH", "/evil"), ("PYTHONHOME", "/evil")]),
+            &BTreeMap::new(),
+        );
+        assert!(!env.contains_key("PYTHONPATH"));
+        assert!(!env.contains_key("PYTHONHOME"));
+    }
 }

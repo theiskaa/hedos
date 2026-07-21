@@ -165,19 +165,23 @@ async fn a_failed_build_leaves_no_marker_and_retries() {
 }
 
 #[test]
-fn scrubbed_environment_strips_python_vars_and_applies_overrides() {
+fn scrubbed_environment_allowlists_base_and_applies_overrides() {
     let base = [
         ("PATH".to_owned(), "/bin".to_owned()),
         ("PYTHONPATH".to_owned(), "/danger".to_owned()),
         ("PYTHONHOME".to_owned(), "/danger".to_owned()),
-        ("KEEP".to_owned(), "yes".to_owned()),
+        ("AWS_SECRET_ACCESS_KEY".to_owned(), "secret".to_owned()),
     ];
     let overrides = BTreeMap::from([("EXTRA".to_owned(), "1".to_owned())]);
     let env = scrubbed_environment(base, &overrides);
 
     assert!(!env.contains_key("PYTHONPATH"));
     assert!(!env.contains_key("PYTHONHOME"));
-    assert_eq!(env.get("KEEP").map(String::as_str), Some("yes"));
+    assert!(
+        !env.contains_key("AWS_SECRET_ACCESS_KEY"),
+        "keys outside the allowlist are dropped"
+    );
+    assert_eq!(env.get("PATH").map(String::as_str), Some("/bin"));
     assert_eq!(env.get("EXTRA").map(String::as_str), Some("1"));
 }
 
