@@ -48,6 +48,8 @@ enum Command {
     Scan(commands::scan::ScanArgs),
     /// Synthesize speech to a WAV file.
     Speak(commands::speak::SpeakArgs),
+    /// Transcribe an audio file to text.
+    Transcribe(commands::transcribe::TranscribeArgs),
     /// Generate an image to a PNG file.
     Image(commands::image::ImageArgs),
     /// Show aggregate statistics from the gateway audit log.
@@ -72,6 +74,7 @@ async fn main() {
         Command::Rm(args) => commands::rm::run(args, &out).await,
         Command::Scan(args) => commands::scan::run(args, &out).await,
         Command::Speak(args) => commands::speak::run(args, &out).await,
+        Command::Transcribe(args) => commands::transcribe::run(args, &out).await,
         Command::Image(args) => commands::image::run(args, &out).await,
         Command::Stats(args) => commands::stats::run(args, &out).await,
         Command::Warm(args) => commands::warm::run(args, &out).await,
