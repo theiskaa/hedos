@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["theiskaa"]
@@ -20,9 +20,9 @@ documentation = "https://hedos.ai/docs"
 # Published under `hedos-*` (the bare names are taken on crates.io) but aliased
 # back to the bare names here, so every `use kernel::…` keeps working. The
 # `version` fields are required to publish a crate with path dependencies.
-kernel = { package = "hedos-kernel", path = "kernel", version = "1.0.0" }
-runtime = { package = "hedos-runtime", path = "runtime", version = "1.0.0" }
-gateway = { package = "hedos-gateway", path = "gateway", version = "1.0.0" }
+kernel = { package = "hedos-kernel", path = "kernel", version = "1.1.0" }
+runtime = { package = "hedos-runtime", path = "runtime", version = "1.1.0" }
+gateway = { package = "hedos-gateway", path = "gateway", version = "1.1.0" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "process", "sync", "signal", "time", "io-util"] }
 tokio-stream = "0.1"

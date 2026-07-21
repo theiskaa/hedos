@@ -54,16 +54,19 @@ hedos serves whatever your machine can already run, so nothing else is required 
 
 ## Quick start
 ```sh
-hedos scan                        # discover every model on this machine
-hedos ls                          # list them with their runtime, store, and capabilities
-hedos pull qwen2.5:3b             # install from ollama or hugging face
-hedos run gemma3 "explain this"   # stream a completion to your terminal
-hedos rm gemma3 --yes             # delete a model
-hedos serve                       # start the local gateway
-hedos launch opencode             # run a coding harness on a local model
+hedos scan                          # discover every model on this machine
+hedos ls                            # list them with runtime, store, fit, and capabilities
+hedos pull qwen2.5:3b               # install from ollama or hugging face
+hedos run gemma3 "explain this"     # stream a completion to your terminal
+hedos run llava "describe" --image photo.png   # ask a vision model about an image
+hedos transcribe whisper voice.wav  # transcribe an audio file to text
+hedos rm gemma3 --yes               # delete a model
+hedos serve                         # start the local gateway
+hedos launch opencode               # run a coding harness on a local model
+hedos stats                         # per-model usage from the gateway audit log
 ```
 
-Every command takes `--json` when you want machine-readable output instead of formatted text.
+Every command takes `--json` when you want machine-readable output instead of formatted text. `hedos ls` shows a fit verdict — whether each model will actually run in this machine's memory — next to its capabilities.
 
 ## Coding harnesses
 `hedos launch` runs a coding harness against a local model with nothing to configure. The gateway starts inside the same process on a free port, the harness is wired to it, and both stop together:
@@ -73,7 +76,7 @@ hedos launch                      # pick a harness, then a model
 hedos launch claude -m qwen3      # or name both
 ```
 
-Claude Code, OpenCode, Aider, Goose, and Crush are supported. Your own harness config is never touched, so running the harness directly afterwards behaves exactly as it did before.
+Claude Code, OpenCode, Aider, Goose, and Crush are supported; the interactive picker lists the ones installed on your `PATH`, so it never offers a harness that would then fail to launch. Naming one you do not have points you at where to get it. Your own harness config is never touched, so running the harness directly afterwards behaves exactly as it did before.
 
 ## The gateway
 `hedos serve` binds an OpenAI-, Ollama-, and Anthropic-compatible HTTP server to loopback (`127.0.0.1:43367` by default). Any editor, script, or agent on the machine can point at it and reach the models you own, tools and all:
@@ -88,7 +91,7 @@ The gateway is bound to loopback and treats every local caller as trusted. It do
 ## Managing models
 The shelf is not read-only. The install service resolves a reference (a `huggingface.co` or `ollama.com` link, an `org/repo`, or a `name:tag`) and plans the install before a byte moves: the file set, the sizes, the destination, and the pinned revision.
 
-Installs write into each platform's native habitat. Ollama models pull through the daemon's own API. Hugging Face models download into the standard hub cache layout (blobs, snapshots, refs) with `Range` resume and incremental SHA-256 verified against the LFS oids. hedos owns no weights directory, so every other tool still sees the model, and installs never touch the registry; the scanners discover the result. Gated repositories authenticate with `HF_TOKEN` from the environment.
+Installs write into each platform's native habitat. Ollama models pull through the daemon's own API. Hugging Face models download into the standard hub cache layout (blobs, snapshots, refs) with `Range` resume and incremental SHA-256 verified against the LFS oids. hedos owns no weights directory, so every other tool still sees the model, and installs never touch the registry; the scanners discover the result. Gated repositories authenticate with `HF_TOKEN` from the environment, or the token `huggingface-cli login` writes.
 
 Removal is symmetric. `hedos rm <model>` shows a deletion preview (the files, the estimated bytes) and does nothing until you pass `-y`. File-backed models are deleted from disk; Ollama models delete through the daemon.
 
