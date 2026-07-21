@@ -103,7 +103,7 @@ pub fn build_kernel(dirs: &HedosDirs, settings: &Settings) -> Result<Kernel, Boo
 pub fn default_install_service() -> InstallService {
     let home = home_dir();
     let transport: Arc<dyn InstallTransport> = Arc::new(ReqwestTransport::new());
-    let api = HFHubAPI::new(Arc::clone(&transport)).with_token(hf_token());
+    let api = HFHubAPI::new(Arc::clone(&transport)).with_token(hf_token(&home));
     let hugging_face = HuggingFaceInstallProvider::new(api, transport, hf_cache_root(&home), home);
     let providers: Vec<Arc<dyn InstallProvider>> = vec![
         Arc::new(OllamaInstallProvider::new()),
@@ -207,38 +207,43 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+/// The Hugging Face home directory: `$HF_HOME`, else `~/.cache/huggingface`. Both
+/// the hub cache and the login token file hang off it.
+fn hf_home(home: &std::path::Path) -> PathBuf {
+    std::env::var_os("HF_HOME")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| home.join(".cache/huggingface"), PathBuf::from)
+}
+
 /// The Hugging Face hub cache root: `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
 /// `~/.cache/huggingface/hub`.
 fn hf_cache_root(home: &std::path::Path) -> PathBuf {
     if let Some(cache) = std::env::var_os("HF_HUB_CACHE").filter(|value| !value.is_empty()) {
         return PathBuf::from(cache);
     }
-    if let Some(hf_home) = std::env::var_os("HF_HOME").filter(|value| !value.is_empty()) {
-        return PathBuf::from(hf_home).join("hub");
-    }
-    home.join(".cache/huggingface/hub")
+    hf_home(home).join("hub")
 }
 
 /// The Hugging Face access token for gated repositories: `$HF_TOKEN` (or the
 /// `$HUGGING_FACE_HUB_TOKEN` alias), else the token file `huggingface-cli login`
-/// writes under `$HF_HOME` (default `~/.cache/huggingface`). `None` when unset, so
-/// public repositories still install without one.
-fn hf_token() -> Option<String> {
+/// writes (`$HF_TOKEN_PATH`, else `$HF_HOME/token`). `None` when unset, so public
+/// repositories still install without one.
+fn hf_token(home: &std::path::Path) -> Option<String> {
+    fn nonempty(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+    }
     for key in ["HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"] {
-        if let Ok(token) = std::env::var(key) {
-            let token = token.trim().to_owned();
-            if !token.is_empty() {
-                return Some(token);
-            }
+        if let Ok(value) = std::env::var(key)
+            && let Some(token) = nonempty(&value)
+        {
+            return Some(token);
         }
     }
-    let hf_home = std::env::var_os("HF_HOME")
+    let token_path = std::env::var_os("HF_TOKEN_PATH")
         .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home_dir().join(".cache/huggingface"));
-    let token = std::fs::read_to_string(hf_home.join("token")).ok()?;
-    let token = token.trim().to_owned();
-    (!token.is_empty()).then_some(token)
+        .map_or_else(|| hf_home(home).join("token"), PathBuf::from);
+    nonempty(&std::fs::read_to_string(token_path).ok()?)
 }
 
 #[cfg(test)]
