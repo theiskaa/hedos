@@ -96,11 +96,19 @@ fn the_cheap_kinds_are_never_cached() {
     assert_eq!(cache.hit_count(), 0);
 }
 
-/// Rewrite `path` with `contents` after nudging the clock, so its mtime is
-/// distinct from the previous write even at coarse filesystem resolution.
-fn rewrite_after_tick(path: &std::path::Path, contents: &[u8]) {
-    std::thread::sleep(std::time::Duration::from_millis(10));
+/// Rewrite `path` with `contents`, forcing a strictly-newer mtime than the
+/// previous write, so the cache's freshness signature changes even on a
+/// coarse-granularity filesystem. Deterministic — no sleep.
+fn rewrite_with_newer_mtime(path: &std::path::Path, contents: &[u8]) {
+    let before = std::fs::metadata(path).unwrap().modified().unwrap();
     std::fs::write(path, contents).unwrap();
+    let newer = before + std::time::Duration::from_secs(2);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(newer)
+        .unwrap();
 }
 
 #[test]
@@ -113,7 +121,7 @@ fn a_same_size_mtime_change_on_a_file_invalidates_the_cache() {
 
     cache.identify(&rec);
     // Same length, later mtime → the signature still changes.
-    rewrite_after_tick(&gguf, b"LMGG");
+    rewrite_with_newer_mtime(&gguf, b"LMGG");
     cache.identify(&rec);
     assert_eq!(cache.hit_count(), 0);
     // And the fresh identification is now cached: a third call hits.
@@ -138,7 +146,7 @@ fn a_child_mtime_bump_invalidates_a_folder_entry() {
     assert!(hits_before >= 1);
     // Rewrite the child with identical bytes → same size, later mtime. Only the
     // newest-child-mtime fold (not the size fold) can catch this.
-    rewrite_after_tick(&config, br#"{"architectures":["LlamaForCausalLM"]}"#);
+    rewrite_with_newer_mtime(&config, br#"{"architectures":["LlamaForCausalLM"]}"#);
     cache.identify(&rec);
     // No new hit — the entry was invalidated by the child's mtime alone.
     assert_eq!(cache.hit_count(), hits_before);
