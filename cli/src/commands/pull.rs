@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use clap::Args;
 use kernel::install::event::InstallEvent;
 use kernel::install::reference::{hugging_face_repo, ollama_install_tag};
-use kernel::install::{InstallCatalogEntry, InstallProviderId, InstallSearchHit, recommended};
+use kernel::install::{
+    InstallCatalogEntry, InstallError, InstallProviderId, InstallSearchHit, recommended,
+};
 use kernel::records::ModelRecord;
 use runtime::install::service::InstallService;
 
@@ -37,9 +39,9 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
     let (provider, reference) = resolve_target(out, &install, &args, &shelf).await?;
     let plan = install.plan(&provider, &reference).await?;
     if plan.requires_auth {
-        return Err(CliError::new(
-            "this model is gated — set HF_TOKEN in the environment and retry",
-        ));
+        // One canonical voice for a gated repo: the same guidance the download path
+        // surfaces, rather than a second, thinner message here.
+        return Err(InstallError::AuthRequired(reference.clone()).into());
     }
 
     if interactive::is_interactive(out) {
@@ -144,7 +146,12 @@ async fn interactive_pick(
         let query = query.trim();
 
         let candidates = if query.is_empty() {
-            recommended_candidates(shelf)
+            let recommendations = recommended_candidates(shelf);
+            if recommendations.is_empty() {
+                out.line("every recommended model is already installed — type a name to search");
+                continue;
+            }
+            recommendations
         } else {
             match search_candidates(install, query).await {
                 Ok(candidates) => candidates,
@@ -154,10 +161,6 @@ async fn interactive_pick(
                 }
             }
         };
-        if candidates.is_empty() {
-            out.line("every recommended model is already installed — type a name to search");
-            continue;
-        }
 
         let mut labels: Vec<String> = candidates
             .iter()
@@ -165,12 +168,10 @@ async fn interactive_pick(
             .collect();
         labels.push(SEARCH_AGAIN.to_owned());
         let index = interactive::select_index("model", &labels)?;
-        // The "search again" row sits past the last candidate, so a `get` miss
-        // means "go back to the prompt".
-        match candidates.get(index) {
-            Some(candidate) => {
-                return Ok((candidate.provider.clone(), candidate.reference.clone()));
-            }
+        // The "search again" row sits past the last candidate, so an out-of-range
+        // index (that row) yields `None` and drops back to the prompt.
+        match candidates.into_iter().nth(index) {
+            Some(candidate) => return Ok((candidate.provider, candidate.reference)),
             None => continue,
         }
     }
