@@ -21,6 +21,7 @@ use kernel::discovery::{DiscoveryService, DiscoverySummary, StoreScanner};
 use kernel::jobs::{JobHistoryStore, reseeded, seeded};
 use kernel::profiles::{Verdict, assess, merged, prompt_characters};
 use kernel::records::{Capability, JsonValue, ModelRecord, SourceKind};
+use kernel::resolution::IdentificationCache;
 use kernel::{Registry, RegistryError};
 use tokio::sync::{Mutex, mpsc};
 
@@ -128,6 +129,7 @@ pub struct Kernel {
     adapters: Vec<RegisteredAdapter>,
     default_prompt: StdMutex<Option<String>>,
     tools_refolded: std::sync::atomic::AtomicBool,
+    identification_cache: Arc<IdentificationCache>,
 }
 
 impl Kernel {
@@ -160,6 +162,7 @@ impl Kernel {
             adapters,
             default_prompt: StdMutex::new(None),
             tools_refolded: std::sync::atomic::AtomicBool::new(false),
+            identification_cache: Arc::new(IdentificationCache::new()),
         }
     }
 
@@ -417,7 +420,7 @@ impl Kernel {
             .iter()
             .map(|entry| Arc::clone(&entry.adapter))
             .collect();
-        ResolutionEngine::new(adapters)
+        ResolutionEngine::new(adapters).with_cache(Arc::clone(&self.identification_cache))
     }
 
     /// Run `scanners` over the machine, reconcile what they find into the registry,
