@@ -130,6 +130,7 @@ pub struct Kernel {
     default_prompt: StdMutex<Option<String>>,
     tools_refolded: std::sync::atomic::AtomicBool,
     identification_cache: Arc<IdentificationCache>,
+    shelf_snapshot: StdMutex<Option<(u64, Arc<[ModelRecord]>)>>,
 }
 
 impl Kernel {
@@ -163,6 +164,7 @@ impl Kernel {
             default_prompt: StdMutex::new(None),
             tools_refolded: std::sync::atomic::AtomicBool::new(false),
             identification_cache: Arc::new(IdentificationCache::new()),
+            shelf_snapshot: StdMutex::new(None),
         }
     }
 
@@ -363,8 +365,12 @@ impl Kernel {
         Ok(entry.adapter.honored_param_keys(&record, &capability))
     }
 
-    /// Every registered model.
-    pub async fn shelf(&self) -> Vec<ModelRecord> {
+    /// Every registered model, as a shared snapshot. The snapshot is rebuilt only
+    /// when the registry's generation has moved since the last call, so repeated
+    /// calls between mutations are a refcount bump rather than a fresh deep clone
+    /// of every record — this runs on the path of every chat/embed/generate/image
+    /// request via the gateway resolver.
+    pub async fn shelf(&self) -> Arc<[ModelRecord]> {
         let mut registry = self.registry.lock().await;
         // Once per process, migrate records that predate the `tools` capability
         // (or a fold-rule change) so an existing shelf serves tools without a
@@ -376,7 +382,35 @@ impl Kernel {
         {
             let _ = self.engine().refold_tool_capability(&mut registry);
         }
-        registry.list().into_iter().cloned().collect()
+        let generation = registry.generation();
+        // Built while the registry is still locked, so the generation read above
+        // and the snapshot contents can never straddle an intervening mutation.
+        match self.shelf_snapshot.lock() {
+            Ok(mut cache) => match cache.as_ref() {
+                Some((cached_generation, snapshot)) if *cached_generation == generation => {
+                    Arc::clone(snapshot)
+                }
+                _ => {
+                    let snapshot: Arc<[ModelRecord]> = registry
+                        .list()
+                        .into_iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .into();
+                    *cache = Some((generation, Arc::clone(&snapshot)));
+                    snapshot
+                }
+            },
+            // A poisoned cache lock is served by rebuilding fresh rather than
+            // propagating the panic — the cache is a pure optimization, never the
+            // source of truth.
+            Err(_) => registry
+                .list()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .into(),
+        }
     }
 
     /// The raw bytes of the artifact stored under `id`, read from disk, or `None`

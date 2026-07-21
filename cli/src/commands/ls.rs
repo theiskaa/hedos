@@ -23,11 +23,13 @@ pub struct LsArgs {
 /// Run the `ls` command.
 pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
+    // `retain` below needs an owned, mutable `Vec`; this is the one cold CLI
+    // boundary where the shared shelf snapshot is unpacked into one.
     let mut shelf = if args.scan {
         session.discover().await?;
-        session.shelf().await
+        session.shelf().await.to_vec()
     } else {
-        session.shelf_or_discover().await?
+        session.shelf_or_discover().await?.to_vec()
     };
     if let Some(name) = &args.capability {
         let capability = Capability::from(name.as_str());

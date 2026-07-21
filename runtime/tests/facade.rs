@@ -11,6 +11,7 @@ use std::time::Duration;
 use kernel::Registry;
 use kernel::artifacts::ArtifactStore;
 use kernel::capabilities::CapabilityChunk;
+use kernel::discovery::{DiscoveredModel, ScanResult, StoreScanner};
 use kernel::jobs::{JobHistoryStore, JobRuntimeEvent, JobState};
 use kernel::records::{
     Capability, JsonValue, Modality, ModelRecord, ModelSource, RuntimeId, SourceKind,
@@ -131,6 +132,33 @@ fn record(id: &str) -> ModelRecord {
     record.runtime.id = Some(RuntimeId::ollama());
     record.id = id.to_owned();
     record
+}
+
+/// A scanner that returns a fixed [`ScanResult`], for driving `Kernel::discover`
+/// as the registry-mutating "kernel path" in shelf-caching tests.
+struct FakeScanner {
+    result: ScanResult,
+}
+
+impl FakeScanner {
+    fn with_models(models: Vec<DiscoveredModel>) -> Box<Self> {
+        Box::new(Self {
+            result: ScanResult {
+                discovered: models,
+                ..Default::default()
+            },
+        })
+    }
+}
+
+impl StoreScanner for FakeScanner {
+    fn kinds(&self) -> Vec<SourceKind> {
+        vec![SourceKind::ollama()]
+    }
+
+    fn scan(&self) -> ScanResult {
+        self.result.clone()
+    }
 }
 
 fn object<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonValue {
@@ -646,4 +674,38 @@ async fn shelf_lists_registered_models() {
     let shelf = kernel.shelf().await;
     assert_eq!(shelf.len(), 1);
     assert_eq!(shelf[0].id, "m");
+}
+
+#[tokio::test]
+async fn shelf_reuses_the_same_snapshot_until_the_registry_changes() {
+    let dir = TempDir::new();
+    let kernel = kernel(
+        &dir,
+        Some(record("m")),
+        vec![RegisteredAdapter::streaming(Arc::new(Fake::new(vec![
+            Capability::chat(),
+        ])))],
+    );
+
+    let first = kernel.shelf().await;
+    let second = kernel.shelf().await;
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "unchanged registry must hand back the same snapshot allocation"
+    );
+
+    // Mutate the registry through the kernel's discover path (the same
+    // register/update choke point every real mutation goes through).
+    let scanner = FakeScanner::with_models(vec![DiscoveredModel::new(
+        "new-model",
+        ModelSource::new(SourceKind::ollama(), "new-model"),
+    )]);
+    kernel.discover(vec![scanner]).await.expect("discover");
+
+    let third = kernel.shelf().await;
+    assert!(
+        !Arc::ptr_eq(&first, &third),
+        "a registry mutation must invalidate the cached snapshot"
+    );
+    assert!(third.iter().any(|record| record.name == "new-model"));
 }

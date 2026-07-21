@@ -3,6 +3,7 @@
 //! model-name query to a record.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use kernel::discovery::{DiscoverySummary, ModelHabitat};
 use kernel::records::{Capability, ModelRecord};
@@ -35,14 +36,15 @@ impl Session {
         })
     }
 
-    /// The current shelf, exactly as registered.
-    pub async fn shelf(&self) -> Vec<ModelRecord> {
+    /// The current shelf, exactly as registered — a shared snapshot; cloning it
+    /// is a refcount bump, not a deep copy of every record.
+    pub async fn shelf(&self) -> Arc<[ModelRecord]> {
         self.kernel.shelf().await
     }
 
     /// The shelf, running discovery first when it is empty so a fresh install
     /// still finds the models already on disk.
-    pub async fn shelf_or_discover(&self) -> Result<Vec<ModelRecord>, CliError> {
+    pub async fn shelf_or_discover(&self) -> Result<Arc<[ModelRecord]>, CliError> {
         let shelf = self.kernel.shelf().await;
         if !shelf.is_empty() {
             return Ok(shelf);

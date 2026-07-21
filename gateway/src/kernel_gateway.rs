@@ -30,7 +30,7 @@ impl KernelGateway {
 }
 
 impl GatewayPort for KernelGateway {
-    fn shelf(&self) -> PortFuture<'_, Vec<ModelRecord>> {
+    fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>> {
         Box::pin(self.kernel.shelf())
     }
 

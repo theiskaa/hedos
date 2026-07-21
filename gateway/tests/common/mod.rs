@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -138,8 +139,8 @@ pub fn capable_model(name: &str, capability: Capability) -> ModelRecord {
 }
 
 impl GatewayPort for MockPort {
-    fn shelf(&self) -> PortFuture<'_, Vec<ModelRecord>> {
-        let shelf = self.shelf.clone();
+    fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>> {
+        let shelf: Arc<[ModelRecord]> = self.shelf.clone().into();
         Box::pin(async move { shelf })
     }
 

@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use kernel::jobs::{Job, JobEvent};
 use kernel::records::{Capability, JsonValue, ModelRecord};
@@ -23,8 +24,9 @@ pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// job dispatch, job control, and the metadata (tool support, honored params,
 /// voices, admission) that shapes a request.
 pub trait GatewayPort: Send + Sync {
-    /// The models currently on the shelf.
-    fn shelf(&self) -> PortFuture<'_, Vec<ModelRecord>>;
+    /// The models currently on the shelf, as a shared snapshot: cloning it is a
+    /// refcount bump, not a deep copy of every record.
+    fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>>;
 
     /// Serve a streaming request, yielding capability chunks.
     fn invoke<'a>(
@@ -111,8 +113,8 @@ mod tests {
     }
 
     impl GatewayPort for StubPort {
-        fn shelf(&self) -> PortFuture<'_, Vec<ModelRecord>> {
-            Box::pin(async { Vec::new() })
+        fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>> {
+            Box::pin(async { Arc::from(Vec::<ModelRecord>::new()) })
         }
         fn invoke<'a>(
             &'a self,

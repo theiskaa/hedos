@@ -16,10 +16,11 @@ use crate::wire::{ollama, openai};
 /// The Ollama version this gateway reports to stock clients.
 const OLLAMA_VERSION: &str = "0.5.0";
 
-fn ready(shelf: Vec<ModelRecord>) -> Vec<ModelRecord> {
+fn ready(shelf: &[ModelRecord]) -> Vec<ModelRecord> {
     shelf
-        .into_iter()
+        .iter()
         .filter(|record| record.state == ModelState::Ready)
+        .cloned()
         .collect()
 }
 
@@ -35,7 +36,8 @@ impl GatewayHandling for OpenAIModelsHandler {
         responder: &'a GatewayResponder,
     ) -> HandlerFuture<'a> {
         Box::pin(async move {
-            let visible = identity.scopes.filter(&ready(port.shelf().await));
+            let shelf = port.shelf().await;
+            let visible = identity.scopes.filter(&ready(&shelf));
             respond_json(responder, &openai::models_list(&visible));
             Ok(GatewayOutcome::ok())
         })
@@ -54,7 +56,8 @@ impl GatewayHandling for OllamaTagsHandler {
         responder: &'a GatewayResponder,
     ) -> HandlerFuture<'a> {
         Box::pin(async move {
-            let chat_models: Vec<ModelRecord> = ready(port.shelf().await)
+            let shelf = port.shelf().await;
+            let chat_models: Vec<ModelRecord> = ready(&shelf)
                 .into_iter()
                 .filter(|record| record.capabilities.contains(&Capability::chat()))
                 .collect();

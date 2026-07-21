@@ -62,6 +62,7 @@ struct EnvelopeRef<'a> {
 pub struct Registry {
     directory: PathBuf,
     models: BTreeMap<String, ModelRecord>,
+    generation: u64,
 }
 
 impl Registry {
@@ -75,6 +76,7 @@ impl Registry {
         Ok(Self {
             directory: directory.to_path_buf(),
             models,
+            generation: 0,
         })
     }
 
@@ -149,6 +151,13 @@ impl Registry {
     /// Whether the registry holds no records.
     pub fn is_empty(&self) -> bool {
         self.models.is_empty()
+    }
+
+    /// A counter that advances every time [`Self::save`] persists a change.
+    /// Callers can cache work derived from the registry's contents keyed on this
+    /// value and rebuild only when it moves.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Every record, sorted by display name (case-insensitive) then id.
@@ -253,12 +262,13 @@ impl Registry {
         Ok(changed)
     }
 
-    fn save(&self) -> Result<(), RegistryError> {
+    fn save(&mut self) -> Result<(), RegistryError> {
         let envelope = EnvelopeRef {
             schema_version: SCHEMA_VERSION,
             models: self.models.values().collect(),
         };
         persistence::write_json_atomic(&self.directory.join(STORE_FILE), &envelope)?;
+        self.generation += 1;
         Ok(())
     }
 }
