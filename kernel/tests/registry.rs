@@ -382,3 +382,46 @@ fn unregister_absent_id_returns_none() {
     let mut registry = Registry::open(dir.path()).unwrap();
     assert!(registry.unregister("never").unwrap().is_none());
 }
+
+#[test]
+fn concurrent_writers_do_not_lose_each_others_updates() {
+    let dir = TempDir::new();
+    let mut a = Registry::open(dir.path()).unwrap();
+    let mut b = Registry::open(dir.path()).unwrap();
+
+    let x = record("X", "/x.gguf");
+    let y = record("Y", "/y.gguf");
+    let (id_x, id_y) = (x.id.clone(), y.id.clone());
+
+    assert!(a.register(x).unwrap(), "a registers X");
+    assert!(
+        b.register(y).unwrap(),
+        "b registers Y, reloading a's write first"
+    );
+
+    let c = Registry::open(dir.path()).unwrap();
+    assert!(c.contains(&id_x), "X must survive both writers");
+    assert!(c.contains(&id_y), "Y must survive both writers");
+    assert_eq!(c.len(), 2);
+}
+
+#[test]
+fn registering_the_same_id_from_two_instances_converges() {
+    let dir = TempDir::new();
+    let mut a = Registry::open(dir.path()).unwrap();
+    let mut b = Registry::open(dir.path()).unwrap();
+
+    let mut rec = record("Model", "/m.gguf");
+    let id = rec.id.clone();
+    assert!(a.register(rec.clone()).unwrap());
+
+    rec.alias = Some("FromB".into());
+    assert!(
+        b.register(rec).unwrap(),
+        "b's differing content is a change"
+    );
+
+    let c = Registry::open(dir.path()).unwrap();
+    assert_eq!(c.len(), 1);
+    assert_eq!(c.get(&id).unwrap().alias.as_deref(), Some("FromB"));
+}

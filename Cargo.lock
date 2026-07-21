@@ -499,6 +499,7 @@ name = "hedos-kernel"
 version = "1.0.0"
 dependencies = [
  "base64",
+ "fs2",
  "hex",
  "regex",
  "serde",

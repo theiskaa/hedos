@@ -10,6 +10,7 @@ use crate::persistence::{self, StoreError};
 use crate::records::{ModelRecord, ModelState};
 
 const STORE_FILE: &str = "models.json";
+const LOCK_FILE: &str = "models.json.lock";
 const SCHEMA_VERSION: u32 = 1;
 
 /// Errors raised by the registry.
@@ -33,6 +34,10 @@ pub enum RegistryError {
     /// A filesystem or encoding error while reading or writing the store.
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    /// The advisory file lock guarding a mutation could not be acquired.
+    #[error("locking registry store: {0}")]
+    Lock(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,9 +53,11 @@ struct EnvelopeRef<'a> {
 }
 
 /// The in-memory model store, backed by `<directory>/models.json`. Every mutating
-/// method persists the change before returning. Not safe for concurrent writers:
-/// two instances on the same directory each hold their own view and the last to
-/// save wins, so a single process should own one instance.
+/// method acquires a short-held advisory file lock, reloads the on-disk state
+/// under it, applies the change, and persists before returning — so two
+/// instances on the same directory serialize their writes instead of one
+/// silently clobbering the other. The lock is held only for the span of a
+/// single mutation, never across the instance's lifetime.
 #[derive(Debug)]
 pub struct Registry {
     directory: PathBuf,
@@ -64,8 +71,18 @@ impl Registry {
     /// place and reported as [`RegistryError::FutureSchema`]. If the file holds
     /// two records with the same id, the last one in file order wins.
     pub fn open(directory: &Path) -> Result<Self, RegistryError> {
+        let models = Self::load_models(directory)?;
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            models,
+        })
+    }
+
+    /// Read `<directory>/models.json` into a fresh map, applying the same
+    /// missing/corrupt/future-schema handling as [`Self::open`].
+    fn load_models(directory: &Path) -> Result<BTreeMap<String, ModelRecord>, RegistryError> {
         let file = directory.join(STORE_FILE);
-        let models = match persistence::read_json::<Envelope>(&file) {
+        match persistence::read_json::<Envelope>(&file) {
             Ok(Some(envelope)) => {
                 if envelope.schema_version > SCHEMA_VERSION {
                     return Err(RegistryError::FutureSchema {
@@ -73,22 +90,45 @@ impl Registry {
                         supported: SCHEMA_VERSION,
                     });
                 }
-                envelope
+                Ok(envelope
                     .models
                     .into_iter()
                     .map(|record| (record.id.clone(), record))
-                    .collect()
+                    .collect())
             }
-            Ok(None) => BTreeMap::new(),
+            Ok(None) => Ok(BTreeMap::new()),
             Err(StoreError::Corrupt { source, .. }) => {
-                return Err(RegistryError::CorruptStore(source.to_string()));
+                Err(RegistryError::CorruptStore(source.to_string()))
             }
-            Err(other) => return Err(RegistryError::Store(other)),
-        };
-        Ok(Self {
-            directory: directory.to_path_buf(),
-            models,
-        })
+            Err(other) => Err(RegistryError::Store(other)),
+        }
+    }
+
+    /// Re-read the on-disk store into memory, discarding the in-memory view. Called
+    /// under the advisory lock so a mutation applies to the latest committed state.
+    fn reload(&mut self) -> Result<(), RegistryError> {
+        self.models = Self::load_models(&self.directory)?;
+        Ok(())
+    }
+
+    /// Acquire an exclusive OS advisory lock on a `models.json.lock` sibling,
+    /// blocking until it is available. The returned file releases the lock when
+    /// dropped; callers hold it only for the span of one mutation, never longer.
+    fn lock(&self) -> Result<std::fs::File, RegistryError> {
+        use fs2::FileExt;
+        std::fs::create_dir_all(&self.directory)
+            .map_err(|source| RegistryError::Lock(source.to_string()))?;
+        let path = self.directory.join(LOCK_FILE);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| RegistryError::Lock(source.to_string()))?;
+        file.lock_exclusive()
+            .map_err(|source| RegistryError::Lock(source.to_string()))?;
+        Ok(file)
     }
 
     /// The record with `id`, if present.
@@ -121,6 +161,8 @@ impl Registry {
     /// Insert or replace `record`. Returns whether anything changed; an identical
     /// record is a no-op that touches no disk.
     pub fn register(&mut self, record: ModelRecord) -> Result<bool, RegistryError> {
+        let _lock = self.lock()?;
+        self.reload()?;
         if self.models.get(&record.id) == Some(&record) {
             return Ok(false);
         }
@@ -133,6 +175,8 @@ impl Registry {
     /// records differed from the store (counted per input record, so two inputs
     /// with the same id both count even though only the last survives).
     pub fn register_all(&mut self, records: Vec<ModelRecord>) -> Result<usize, RegistryError> {
+        let _lock = self.lock()?;
+        self.reload()?;
         let mut changed = 0;
         for record in records {
             if self.models.get(&record.id) != Some(&record) {
@@ -148,6 +192,8 @@ impl Registry {
 
     /// Remove the record with `id`, returning it if it was present.
     pub fn unregister(&mut self, id: &str) -> Result<Option<ModelRecord>, RegistryError> {
+        let _lock = self.lock()?;
+        self.reload()?;
         let removed = self.models.remove(id);
         if removed.is_some() {
             self.save()?;
@@ -162,6 +208,8 @@ impl Registry {
         id: &str,
         state: ModelState,
     ) -> Result<bool, RegistryError> {
+        let _lock = self.lock()?;
+        self.reload()?;
         let Some(record) = self.models.get_mut(id) else {
             return Ok(false);
         };
@@ -183,6 +231,8 @@ impl Registry {
         ids: &[String],
         transform: impl Fn(&ModelRecord) -> Option<ModelRecord>,
     ) -> Result<Vec<ModelRecord>, RegistryError> {
+        let _lock = self.lock()?;
+        self.reload()?;
         let mut changed = Vec::new();
         for id in ids {
             let Some(next) = self.models.get(id).and_then(&transform) else {

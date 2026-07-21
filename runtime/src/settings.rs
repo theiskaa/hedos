@@ -34,6 +34,15 @@ pub enum SettingsError {
     /// Encoding the settings to TOML failed.
     #[error("encoding settings: {0}")]
     Encode(String),
+
+    /// The advisory file lock guarding a mutation could not be acquired.
+    #[error("locking settings at {path}: {source}")]
+    Lock {
+        /// The lock file involved.
+        path: String,
+        /// The underlying error.
+        source: std::io::Error,
+    },
 }
 
 /// Model discovery + residency settings.
@@ -279,12 +288,52 @@ impl SettingsStore {
         Ok(())
     }
 
-    /// Load, mutate, and save — returning the updated settings.
+    /// Load, mutate, and save — returning the updated settings. Serialized against
+    /// other processes by a short-held advisory lock on `<path>.lock`: the lock is
+    /// acquired here, the settings are reloaded under it so the mutation applies to
+    /// the latest committed state, and it is released when this call returns.
     pub fn update(&self, mutate: impl FnOnce(&mut Settings)) -> Result<Settings, SettingsError> {
+        let _lock = self.lock()?;
         let mut settings = self.load();
         mutate(&mut settings);
         self.save(&settings)?;
         Ok(settings)
+    }
+
+    /// Acquire an exclusive OS advisory lock on a `<path>.lock` sibling, blocking
+    /// until it is available. The returned file releases the lock when dropped;
+    /// callers hold it only for the span of one mutation, never longer.
+    fn lock(&self) -> Result<fs::File, SettingsError> {
+        use fs2::FileExt;
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|source| self.io_error(source))?;
+        }
+        let lock_path = self.lock_path();
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|source| SettingsError::Lock {
+                path: lock_path.to_string_lossy().into_owned(),
+                source,
+            })?;
+        file.lock_exclusive()
+            .map_err(|source| SettingsError::Lock {
+                path: lock_path.to_string_lossy().into_owned(),
+                source,
+            })?;
+        Ok(file)
+    }
+
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.file_name().unwrap_or_default().to_os_string();
+        name.push(".lock");
+        match self.path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join(name),
+            _ => PathBuf::from(name),
+        }
     }
 
     /// Add a watched model folder (tilde-expanded, deduplicated).
@@ -613,5 +662,21 @@ mod tests {
         assert_eq!(models.ram_budget_mb(), None);
         models.ram_budget_mb = 4096;
         assert_eq!(models.ram_budget_mb(), Some(4096));
+    }
+
+    #[test]
+    fn concurrent_updates_from_two_stores_do_not_lose_each_others_writes() {
+        let path = temp_path();
+        let a = SettingsStore::new(&path);
+        let b = SettingsStore::new(&path);
+
+        a.add_watched_folder("/a").expect("a adds a folder");
+        b.set_default_chat_model(Some("qwen"))
+            .expect("b sets the default model, reloading a's write first");
+
+        let c = SettingsStore::new(&path).load();
+        assert_eq!(c.models.watched_folders, vec!["/a"]);
+        assert_eq!(c.chat.default_model_id, "qwen");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }
