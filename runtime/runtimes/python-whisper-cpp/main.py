@@ -3,7 +3,6 @@ import json
 import os
 import select
 import struct
-import sys
 
 real_stdout = os.dup(1)
 os.dup2(2, 1)
@@ -103,8 +102,11 @@ def main():
 
                 cancel_state = {"cancelled": False, "shutdown": False}
 
+                # cancel_state is rebound each transcribe request; this closure
+                # runs synchronously during the transcribe() call below, never
+                # after a later iteration reassigns it.
                 def on_segment(segment):
-                    if cancel_state["cancelled"]:
+                    if cancel_state["cancelled"]:  # noqa: B023
                         return
                     send_json(
                         {
@@ -116,10 +118,10 @@ def main():
                     )
                     op = pending_op()
                     if op in ("cancel", "shutdown"):
-                        cancel_state["cancelled"] = True
-                        cancel_state["shutdown"] = op == "shutdown"
+                        cancel_state["cancelled"] = True  # noqa: B023
+                        cancel_state["shutdown"] = op == "shutdown"  # noqa: B023
 
-                segments = model.transcribe(
+                model.transcribe(
                     samples,
                     new_segment_callback=on_segment,
                     **params,

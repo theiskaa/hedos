@@ -112,7 +112,7 @@ class StepEmitter:
 def transformer_uses_guidance(model_path):
     config_path = os.path.join(model_path, "transformer", "config.json")
     try:
-        with open(config_path, "r", encoding="utf-8") as handle:
+        with open(config_path, encoding="utf-8") as handle:
             return bool(json.load(handle).get("guidance_embeds", False))
     except (OSError, ValueError):
         return False

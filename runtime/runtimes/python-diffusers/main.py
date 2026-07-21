@@ -190,7 +190,11 @@ def main():
             seed = int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little")
             width, height = (int(part) for part in size.split("x"))
             negative_prompt = request.get("negative_prompt")
-            if negative_prompt is not None and str(negative_prompt).strip() and not supports_negative:
+            if (
+                negative_prompt is not None
+                and str(negative_prompt).strip()
+                and not supports_negative
+            ):
                 send_json(
                     {
                         "event": "error",

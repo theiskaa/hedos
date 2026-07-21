@@ -3,7 +3,6 @@ import json
 import os
 import select
 import struct
-import sys
 
 real_stdout = os.dup(1)
 os.dup2(2, 1)
@@ -112,8 +111,8 @@ def main():
     espeak_mode = setup_espeak()
 
     import numpy as np
-    from mlx_audio.tts.utils import load_model
     from mlx_audio.tts.models.kokoro import KokoroPipeline
+    from mlx_audio.tts.utils import load_model
 
     patch_sinegen()
 
@@ -123,9 +122,11 @@ def main():
     os.symlink(args.model, link)
 
     voices_dir = os.path.join(link, "voices")
-    voices = sorted(
-        f[:-12] for f in os.listdir(voices_dir) if f.endswith(".safetensors")
-    ) if os.path.isdir(voices_dir) else []
+    voices = (
+        sorted(f[:-12] for f in os.listdir(voices_dir) if f.endswith(".safetensors"))
+        if os.path.isdir(voices_dir)
+        else []
+    )
 
     model = load_model(link)
     pipelines = {}
@@ -137,12 +138,14 @@ def main():
 
     pipeline_for("a")
 
-    send_json({
-        "event": "ready",
-        "sample_rate": 24000,
-        "voices": voices,
-        "espeak": espeak_mode,
-    })
+    send_json(
+        {
+            "event": "ready",
+            "sample_rate": 24000,
+            "voices": voices,
+            "espeak": espeak_mode,
+        }
+    )
 
     while True:
         frame = read_frame()
@@ -171,10 +174,12 @@ def main():
                 pipeline = pipeline_for(code)
             except Exception as error:
                 language = KOKORO_LANGUAGES.get(code, code)
-                send_json({
-                    "event": "error",
-                    "message": f"cannot synthesize {language}: {error}",
-                })
+                send_json(
+                    {
+                        "event": "error",
+                        "message": f"cannot synthesize {language}: {error}",
+                    }
+                )
                 continue
             try:
                 send_json({"event": "begin"})

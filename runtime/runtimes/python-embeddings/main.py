@@ -60,7 +60,8 @@ def embed_one(model, tokenizer, text):
     import mlx.core as mx
 
     inputs = tokenizer.batch_encode_plus(
-        [text], return_tensors="mlx", padding=True, truncation=True)
+        [text], return_tensors="mlx", padding=True, truncation=True
+    )
     output = model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
     vector = output.text_embeds
     if vector.ndim > 1:

@@ -1,0 +1,33 @@
+[project]
+name = "hedos-runtimes"
+version = "0.0.0"
+description = "Shared lint/type config for the hedos python sidecars"
+requires-python = "==3.12.*"
+
+# Pinned tool versions — bump deliberately, not via floating ranges.
+[tool.hedos.lint-tools]
+ruff = "0.15.22"
+mypy = "1.19.1"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# E: pycodestyle errors, F: pyflakes, I: import order, UP: pyupgrade, B: bugbear.
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+# The sidecars import model libraries (mlx, mlx_lm, mlx_vlm, mlx_audio, mflux,
+# diffusers, torch, pywhispercpp, ...) that ship no type stubs, so unresolved
+# imports are expected rather than a signal to chase down stub packages.
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+# Every sidecar is a standalone script named main.py living in a hyphenated
+# directory (no __init__.py, and the hyphen makes it an invalid package name
+# mypy can key on). Passing the whole runtime/runtimes tree in one `mypy`
+# invocation makes every file resolve to the same top-level module "main" and
+# mypy refuses with "Duplicate module named main". Run mypy once per sidecar
+# directory instead (see .github/workflows/ci.yml's python-lint job).

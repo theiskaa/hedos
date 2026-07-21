@@ -148,13 +148,13 @@ class ThinkSplitter:
                     emit = self._emittable(self.open_tags)
                     if emit:
                         out.append(("text", emit))
-                        self.buffer = self.buffer[len(emit):]
+                        self.buffer = self.buffer[len(emit) :]
                     break
                 index, open_tag, close_tag = earliest
                 before = self.buffer[:index]
                 if before:
                     out.append(("text", before))
-                self.buffer = self.buffer[index + len(open_tag):]
+                self.buffer = self.buffer[index + len(open_tag) :]
                 self.mode = "thinking"
                 self.close = close_tag
             else:
@@ -163,12 +163,12 @@ class ThinkSplitter:
                     emit = self._emittable([self.close])
                     if emit:
                         out.append(("thinking", emit))
-                        self.buffer = self.buffer[len(emit):]
+                        self.buffer = self.buffer[len(emit) :]
                     break
                 before = self.buffer[:index]
                 if before:
                     out.append(("thinking", before))
-                self.buffer = self.buffer[index + len(self.close):]
+                self.buffer = self.buffer[index + len(self.close) :]
                 self.mode = "text"
                 self.close = None
         return out
@@ -187,7 +187,7 @@ class ThinkSplitter:
         for length in range(max_hold, 0, -1):
             suffix = self.buffer[-length:]
             if any(tag.startswith(suffix) for tag in tags):
-                return self.buffer[:len(self.buffer) - length]
+                return self.buffer[: len(self.buffer) - length]
         return self.buffer
 
 
@@ -197,7 +197,7 @@ NO_TEMPLATE_NOTICE = "this model has no chat template — using a generic format
 def render_chatml(messages):
     prompt = ""
     for message in messages:
-        prompt += "<|im_start|>%s\n%s<|im_end|>\n" % (
+        prompt += "<|im_start|>{}\n{}<|im_end|>\n".format(
             message.get("role", ""),
             message.get("content", ""),
         )
@@ -276,28 +276,28 @@ def main():
             splitter = ThinkSplitter()
             stopped = False
 
+            # scanner/splitter are rebound each request; these closures run
+            # synchronously within the same iteration, never a later one.
             def emit_text(text):
                 if not text:
                     return False
-                if not scanner.active:
+                if not scanner.active:  # noqa: B023
                     send_json({"event": "text", "text": text})
                     return False
-                emit = scanner.feed(text)
+                emit = scanner.feed(text)  # noqa: B023
                 if emit:
                     send_json({"event": "text", "text": emit})
-                return scanner.stopped
+                return scanner.stopped  # noqa: B023
 
             def emit_raw(text):
-                for kind, value in splitter.feed(text):
+                for kind, value in splitter.feed(text):  # noqa: B023
                     if kind == "thinking":
                         send_json({"event": "thinking", "text": value})
                     elif emit_text(value):
                         return True
                 return False
 
-            for response in stream_generate(
-                model, tokenizer, prompt, **generate_kwargs
-            ):
+            for response in stream_generate(model, tokenizer, prompt, **generate_kwargs):
                 last = response
                 if emit_raw(response.text):
                     stopped = True

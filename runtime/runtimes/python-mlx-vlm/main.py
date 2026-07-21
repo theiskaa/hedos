@@ -110,10 +110,8 @@ def main():
         shutdown_requested = False
         last = None
         try:
-            messages, images = materialize_images(
-                request.get("messages", []), args.workdir)
-            prompt = apply_chat_template(
-                processor, config, messages, num_images=len(images))
+            messages, images = materialize_images(request.get("messages", []), args.workdir)
+            prompt = apply_chat_template(processor, config, messages, num_images=len(images))
             kwargs = {"max_tokens": int(request.get("max_tokens", 4096))}
             if "temperature" in request:
                 kwargs["temperature"] = float(request["temperature"])
@@ -121,9 +119,7 @@ def main():
                 kwargs["top_p"] = float(request["top_p"])
 
             send_json({"event": "begin"})
-            for response in stream_generate(
-                model, processor, prompt, images, **kwargs
-            ):
+            for response in stream_generate(model, processor, prompt, images, **kwargs):
                 last = response
                 send_json({"event": "text", "text": response.text})
                 inner = pending_op()

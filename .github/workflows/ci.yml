@@ -48,3 +48,37 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  python-lint:
+    name: python-lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff and mypy
+        run: pip install ruff==0.15.22 mypy==1.19.1
+
+      - name: Ruff lint
+        run: ruff check runtime/runtimes
+
+      - name: Ruff format
+        run: ruff format --check runtime/runtimes
+
+      - name: Mypy
+        # Each sidecar is a standalone main.py in a hyphenated directory (no
+        # __init__.py), so a single `mypy runtime/runtimes` invocation makes
+        # every file resolve to the same top-level module and fails with
+        # "Duplicate module named main" — see runtime/runtimes/pyproject.toml.
+        # Check one sidecar directory at a time instead.
+        run: |
+          set -e
+          for dir in runtime/runtimes/*/; do
+            mypy --config-file runtime/runtimes/pyproject.toml "$dir"
+          done
