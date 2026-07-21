@@ -522,3 +522,41 @@ mod tests {
         assert_eq!(mode, 0o700);
     }
 }
+
+#[cfg(all(test, unix))]
+mod exit_result_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn spec() -> &'static HarnessSpec {
+        harnesses::find("aider").expect("aider is registered")
+    }
+
+    #[test]
+    fn normal_exit_zero_is_ok() {
+        let status = std::process::ExitStatus::from_raw(0);
+        assert!(exit_result(status, spec()).is_ok());
+    }
+
+    #[test]
+    fn normal_exit_nonzero_is_an_error_with_the_matching_code() {
+        let status = std::process::ExitStatus::from_raw(3 << 8);
+        let error = exit_result(status, spec()).expect_err("nonzero exit should error");
+        assert_eq!(error.code, 3);
+        assert!(error.message.contains("status 3"));
+    }
+
+    #[test]
+    fn sigint_is_a_quiet_success() {
+        let status = std::process::ExitStatus::from_raw(2);
+        assert!(exit_result(status, spec()).is_ok());
+    }
+
+    #[test]
+    fn any_other_signal_exits_with_128_plus_the_signal() {
+        let status = std::process::ExitStatus::from_raw(11);
+        let error = exit_result(status, spec()).expect_err("sigsegv should error");
+        assert_eq!(error.code, 139);
+        assert!(error.message.contains("signal 11"));
+    }
+}

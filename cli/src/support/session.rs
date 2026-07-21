@@ -143,3 +143,68 @@ fn unique<'a>(
         }
     }
 }
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use kernel::records::{Modality, ModelSource, SourceKind};
+
+    fn model(name: &str, capabilities: Vec<Capability>) -> ModelRecord {
+        ModelRecord::new(
+            name,
+            Modality::text(),
+            capabilities,
+            ModelSource::new(SourceKind::ollama(), name),
+        )
+    }
+
+    fn shelf() -> Vec<ModelRecord> {
+        vec![
+            model("qwen3", vec![Capability::chat(), Capability::tools()]),
+            model("qwen3-mini", vec![Capability::chat()]),
+            model("gemma3", vec![Capability::chat()]),
+        ]
+    }
+
+    #[test]
+    fn exact_id_matches_regardless_of_query_casing() {
+        let shelf = shelf();
+        let target = &shelf[1];
+        let found = resolve(&target.id, &shelf, None).expect("exact id should resolve");
+        assert_eq!(found.id, target.id);
+    }
+
+    #[test]
+    fn exact_name_match_is_case_insensitive() {
+        let shelf = shelf();
+        let found = resolve("QWEN3", &shelf, None).expect("exact name should resolve");
+        assert_eq!(found.name, "qwen3");
+    }
+
+    #[test]
+    fn unique_substring_resolves() {
+        let shelf = shelf();
+        let found = resolve("gemma", &shelf, None).expect("unique substring should resolve");
+        assert_eq!(found.name, "gemma3");
+    }
+
+    #[test]
+    fn ambiguous_substring_is_an_error() {
+        let shelf = shelf();
+        let error = resolve("qwen", &shelf, None).expect_err("ambiguous query should error");
+        assert!(error.message.to_lowercase().contains("ambiguous"));
+    }
+
+    #[test]
+    fn no_match_is_an_error() {
+        let shelf = shelf();
+        assert!(resolve("nonexistent-model", &shelf, None).is_err());
+    }
+
+    #[test]
+    fn capability_filter_excludes_records_lacking_it() {
+        let shelf = shelf();
+        assert!(resolve("qwen3-mini", &shelf, None).is_ok());
+        assert!(resolve("qwen3-mini", &shelf, Some(&Capability::tools())).is_err());
+    }
+}
