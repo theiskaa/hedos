@@ -343,7 +343,7 @@ pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, 
     body.insert("stream".to_owned(), JsonValue::Bool(true));
     body.insert(
         "stream_options".to_owned(),
-        object_of([("include_usage", JsonValue::Bool(true))]),
+        super::object_of([("include_usage", JsonValue::Bool(true))]),
     );
 
     if let Some(messages) = object.get("messages") {
@@ -351,7 +351,7 @@ pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, 
     } else if let Some(JsonValue::String(prompt)) = object.get("prompt") {
         body.insert(
             "messages".to_owned(),
-            JsonValue::Array(vec![object_of([
+            JsonValue::Array(vec![super::object_of([
                 ("role", JsonValue::String("user".to_owned())),
                 ("content", JsonValue::String(prompt.clone())),
             ])]),
@@ -368,7 +368,7 @@ pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, 
         let wrapped = tools
             .iter()
             .map(|tool| {
-                object_of([
+                super::object_of([
                     ("type", JsonValue::String("function".to_owned())),
                     ("function", tool.clone()),
                 ])
@@ -420,7 +420,7 @@ fn wire_messages(messages: &JsonValue) -> JsonValue {
                             .cloned()
                             .unwrap_or_else(|| JsonValue::Object(BTreeMap::new()));
                         let arguments = serde_json::to_string(&arguments).unwrap_or_default();
-                        object_of([
+                        super::object_of([
                             (
                                 "id",
                                 parts
@@ -431,7 +431,7 @@ fn wire_messages(messages: &JsonValue) -> JsonValue {
                             ("type", JsonValue::String("function".to_owned())),
                             (
                                 "function",
-                                object_of([
+                                super::object_of([
                                     (
                                         "name",
                                         parts
@@ -457,15 +457,6 @@ fn wire_messages(messages: &JsonValue) -> JsonValue {
         })
         .collect();
     JsonValue::Array(mapped)
-}
-
-fn object_of<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonValue {
-    JsonValue::Object(
-        pairs
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value))
-            .collect(),
-    )
 }
 
 /// An accumulating parser for the OpenAI SSE stream. Tool-call fragments arrive
@@ -610,5 +601,5 @@ fn parse_tool_arguments(raw: &str) -> JsonValue {
     if raw.trim().is_empty() {
         return JsonValue::Object(BTreeMap::new());
     }
-    object_of([("_raw", JsonValue::String(raw.to_owned()))])
+    super::object_of([("_raw", JsonValue::String(raw.to_owned()))])
 }

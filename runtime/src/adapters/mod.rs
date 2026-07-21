@@ -194,3 +194,14 @@ pub trait JobRunning: Send + Sync {
     /// Run a job, yielding job runtime events.
     fn run(&self, record: &ModelRecord, capability: Capability, payload: JsonValue) -> JobStream;
 }
+
+/// Build a JSON object from `pairs`, shared by the wire adapters (ollama,
+/// openai) that hand-assemble request/response bodies.
+pub(crate) fn object_of<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonValue {
+    JsonValue::Object(
+        pairs
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}

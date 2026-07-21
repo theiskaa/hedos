@@ -456,7 +456,7 @@ fn chat_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError> 
     let messages = if let Some(existing) = object.get("messages") {
         existing.clone()
     } else if let Some(prompt) = object.get("prompt").and_then(JsonValue::as_str) {
-        JsonValue::Array(vec![object_of([
+        JsonValue::Array(vec![super::object_of([
             ("role", string("user")),
             ("content", string(prompt)),
         ])])
@@ -476,7 +476,9 @@ fn chat_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError> 
     {
         let wrapped = tools
             .iter()
-            .map(|tool| object_of([("type", string("function")), ("function", tool.clone())]))
+            .map(|tool| {
+                super::object_of([("type", string("function")), ("function", tool.clone())])
+            })
             .collect();
         body.insert("tools".to_owned(), JsonValue::Array(wrapped));
     }
@@ -559,9 +561,9 @@ fn wire_messages(messages: &JsonValue) -> JsonValue {
                             let Some(parts) = call.as_object() else {
                                 return call.clone();
                             };
-                            object_of([(
+                            super::object_of([(
                                 "function",
-                                object_of([
+                                super::object_of([
                                     (
                                         "name",
                                         parts.get("name").cloned().unwrap_or_else(|| string("")),
@@ -592,7 +594,7 @@ fn embed_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError>
         .and_then(|object| object.get("input"))
         .filter(|input| **input != JsonValue::Null)
         .ok_or_else(|| RuntimeError::Failed("embed payload must carry an input".to_owned()))?;
-    let body = object_of([("model", string(model)), ("input", input.clone())]);
+    let body = super::object_of([("model", string(model)), ("input", input.clone())]);
     serde_json::to_vec(&body).map_err(|err| RuntimeError::Failed(err.to_string()))
 }
 
@@ -652,10 +654,6 @@ fn string(value: &str) -> JsonValue {
 
 fn empty_object() -> JsonValue {
     JsonValue::Object(BTreeMap::new())
-}
-
-fn object_of<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonValue {
-    JsonValue::Object(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
 }
 
 #[cfg(test)]
