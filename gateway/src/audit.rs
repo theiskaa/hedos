@@ -78,6 +78,25 @@ pub trait Auditing: Send + Sync {
     fn flush(&self) {}
 }
 
+/// Create `dir` (recursively) owner-only on Unix, tightening it if it already
+/// exists with looser permissions. Best-effort throughout: a logging sink
+/// never fails a request over a directory permission it could not set.
+fn ensure_owner_only_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let _ = fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir);
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fs::create_dir_all(dir);
+    }
+}
+
 /// An audit sink that discards everything.
 pub struct NoopAudit;
 
@@ -178,16 +197,22 @@ impl GatewayAuditLog {
         };
         line.push(b'\n');
         if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
+            ensure_owner_only_dir(parent);
         }
         self.rotate_if_needed();
         // `append(true).create(true)` creates the file when missing without ever
         // truncating an existing log.
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            // The audit log records which models/capabilities the owner exercised
+            // and at what latency — owner-only keeps that off-limits to other
+            // local accounts on a shared host.
+            options.mode(0o600);
+        }
+        if let Ok(mut file) = options.open(&self.path) {
             let _ = file.write_all(&line);
         }
     }
@@ -248,5 +273,91 @@ impl Auditing for GatewayAuditLog {
         if let Ok(mut window) = self.unauthorized.lock() {
             self.flush_unauthorized(&mut window);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// A unique temporary directory removed on drop. Built without the
+    /// `tempfile` crate to honor the project's minimal-dependency policy.
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let unique = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let pid = std::process::id();
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
+            let path =
+                std::env::temp_dir().join(format!("hedos-audit-test-{pid}-{nanos}-{unique}"));
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn sample_entry() -> GatewayAuditEntry {
+        GatewayAuditEntry {
+            ts_millis: 0,
+            client: None,
+            client_name: None,
+            method: "GET".to_owned(),
+            route: "/v1/models".to_owned(),
+            model: None,
+            capability: None,
+            outcome: "ok".to_owned(),
+            status: 200,
+            duration_ms: 1,
+            detail: None,
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn audit_log_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new();
+        let log = GatewayAuditLog::new(&dir.path);
+        log.append(sample_entry());
+
+        let mode = fs::metadata(dir.path.join("audit.jsonl"))
+            .expect("audit log file exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn audit_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new();
+        let log = GatewayAuditLog::new(&dir.path);
+        log.append(sample_entry());
+
+        let mode = fs::metadata(&dir.path)
+            .expect("audit dir exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
     }
 }

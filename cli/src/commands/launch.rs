@@ -129,16 +129,43 @@ fn materialize(plan: &harnesses::LaunchPlan, config_dir: &Path) -> Result<(), Cl
     if plan.files.is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(config_dir).map_err(|error| {
-        CliError::new(format!(
-            "could not create {} — {error}",
-            config_dir.display()
-        ))
-    })?;
+    create_config_dir(config_dir)?;
     for (path, contents) in &plan.files {
         write_config(path, contents)?;
     }
     Ok(())
+}
+
+/// Create `config_dir`, owner-only on Unix — it carries the gateway's URL and
+/// placeholder token, unreadable to other local accounts on a shared host. A
+/// pre-existing dir with looser permissions is tightened best-effort; only the
+/// creation itself is fatal.
+fn create_config_dir(config_dir: &Path) -> Result<(), CliError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(config_dir)
+            .map_err(|error| {
+                CliError::new(format!(
+                    "could not create {} — {error}",
+                    config_dir.display()
+                ))
+            })?;
+        let _ = std::fs::set_permissions(config_dir, std::fs::Permissions::from_mode(0o700));
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(config_dir).map_err(|error| {
+            CliError::new(format!(
+                "could not create {} — {error}",
+                config_dir.display()
+            ))
+        })
+    }
 }
 
 /// Serve the gateway on `listener` until the returned sender fires (or drops).
@@ -396,8 +423,102 @@ fn locate(spec: &HarnessSpec) -> Result<PathBuf, CliError> {
 /// Write a generated harness config, replacing any previous one.
 ///
 /// These live under the hedos data dir, never beside the user's own config, so
-/// launching a harness can't disturb how it behaves when run directly.
+/// launching a harness can't disturb how it behaves when run directly. They
+/// carry the gateway's URL and placeholder token, so on Unix the file is
+/// created owner-only.
 fn write_config(path: &Path, contents: &str) -> Result<(), CliError> {
-    std::fs::write(path, contents)
+    write_config_contents(path, contents)
         .map_err(|error| CliError::new(format!("could not write {} — {error}", path.display())))
+}
+
+/// The fallible half of [`write_config`], kept separate so its `io::Result`
+/// composes cleanly across the Unix/non-Unix branches.
+fn write_config_contents(path: &Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// A unique temporary directory removed on drop. Built without the
+    /// `tempfile` crate to honor the project's minimal-dependency policy.
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let unique = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let pid = std::process::id();
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0);
+            let path =
+                std::env::temp_dir().join(format!("hedos-launch-test-{pid}-{nanos}-{unique}"));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_config_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new();
+        let path = dir.path.join("config.json");
+        write_config(&path, "{}").expect("write config");
+
+        let mode = std::fs::metadata(&path)
+            .expect("config file exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn config_dir_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new();
+        let config_dir = dir.path.join("launch");
+        create_config_dir(&config_dir).expect("create config dir");
+
+        let mode = std::fs::metadata(&config_dir)
+            .expect("config dir exists")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700);
+    }
 }
