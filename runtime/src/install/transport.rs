@@ -23,12 +23,28 @@ const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A GET request: a URL and any headers to send.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct InstallRequest {
     /// The full request URL.
     pub url: String,
     /// Header `(name, value)` pairs.
     pub headers: Vec<(String, String)>,
+}
+
+impl std::fmt::Debug for InstallRequest {
+    /// Header values are redacted so an `authorization: Bearer <token>` never
+    /// reaches a log or an error string that happens to format the request.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, _)| (name.as_str(), "<redacted>"))
+            .collect();
+        f.debug_struct("InstallRequest")
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .finish()
+    }
 }
 
 impl InstallRequest {
