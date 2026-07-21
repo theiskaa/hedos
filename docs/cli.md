@@ -24,10 +24,12 @@ Discover models across the machine's stores, reconcile them into the registry, a
 
 ### `hedos ls`
 
-List the shelf: a warm indicator, the name, the runtime, the store, and the capabilities. If the shelf is empty, it runs a scan first.
+List the shelf: a warm indicator, the name, the runtime, the store, a memory-fit verdict, and the capabilities. If the shelf is empty, it runs a scan first.
 
 - `--scan` rescans before listing.
 - `--capability <name>` shows only models serving that capability, for example `--capability embed`.
+
+The FIT column reads `fits`, `tight`, `too big`, or `—` (footprint unknown), judged from the model's estimated footprint against this machine's memory — the same assessment the install recommendations use. `--json` carries it as a `fit` field on each record.
 
 ### `hedos run [model] [prompt]`
 
@@ -36,6 +38,7 @@ Stream a single completion to stdout. Omit the model to pick one interactively, 
 - `--system <text>` sets a system prompt for the run.
 - `--max-tokens <n>` caps the generated length.
 - `--temperature <f>` sets the sampling temperature.
+- `--image <path>` attaches a local image for a vision (`see`) model to read; repeat it for several images. With `--image`, the picker and name resolution scope to vision-capable models, and a model that cannot see is refused up front rather than answering blind.
 
 Under `--json`, streaming is suppressed and the full text plus the model id is printed as one object at the end.
 
@@ -93,10 +96,10 @@ Codex is not supported: it speaks the OpenAI Responses API, which this gateway d
 Fetch a model from Ollama or Hugging Face, with a download progress bar. Ctrl-C cancels. When it finishes it runs a scan so the model appears on the shelf.
 
 - The reference is a Hugging Face repo (`org/model`) or an Ollama tag (`gemma3:4b`). hedos infers the provider from the shape.
-- Omit the reference in a terminal to search: type a query to search Hugging Face (results show download and like counts), or leave it blank for a short list of models that fit this machine's RAM. Pick one from the list to install it.
+- Omit the reference in a terminal to search: type a query to search Hugging Face (results show download and like counts), or leave it blank for a short list of models that fit this machine's RAM. A "search again" entry in the list returns to the prompt, so you can move between recommendations and a search — or try another query — without restarting the command.
 - Before any bytes move, hedos shows the plan (the name, the destination, and the size) and asks you to confirm.
 - `--from <ollama|hf>` forces the provider.
-- Gated Hugging Face repositories need `HF_TOKEN` in the environment.
+- Gated Hugging Face repositories need a token with access to the repo — `HF_TOKEN`, `HF_TOKEN_PATH`, or `huggingface-cli login` — and you must accept the model's terms on its Hugging Face page first.
 
 ### `hedos rm [model]`
 
@@ -114,6 +117,15 @@ Synthesize speech and write a WAV file. There is no playback. Omit the model or 
 - `--speed <f>` sets the speed multiplier (default `1.0`).
 - `-o, --output <path>` sets the output file. The default is a name slugged from the text with a `.wav` extension in the current directory.
 
+### `hedos transcribe [model] [audio]`
+
+Transcribe an audio file to text through a local whisper model — the inverse of `speak`. Omit the model or the audio path to be prompted for them. The transcript streams to stdout as it is produced.
+
+- `--language <code>` forces the source language (for example `en`); the default auto-detects.
+- `--translate` translates to English instead of transcribing verbatim.
+
+The audio is a WAV file, and the path may start with `~`. Under `--json`, the model, the path, and the full transcript are printed as one object.
+
 ### `hedos image [model] [prompt]`
 
 Generate an image and write a PNG file. This runs as a job, with progress on stderr. Omit the model or the prompt to be prompted for them.
@@ -129,6 +141,10 @@ Load a model into residency with a tiny request, so the next real request starts
 ### `hedos unload [model]`
 
 Evict a model from in-process residency and report the result. Omit the model to pick from the models that are currently warm.
+
+### `hedos stats`
+
+Read the gateway's audit log back and report usage: the total request count, the rejection rate, and per model the request count, the error rate, and p50/p90/p99 serving latency. Prints a table, or the full summary under `--json`. With no audit log yet (nothing has been served), it says so and exits `0`.
 
 ## Exit codes
 

@@ -58,7 +58,7 @@ hedos reads these from the environment:
 
 - `XDG_CONFIG_HOME` and `XDG_DATA_HOME` relocate the settings file and the data directory.
 - `HOME` is the fallback base for both when the XDG variables are unset, and the base for tilde expansion in paths.
-- `HF_TOKEN` authenticates gated Hugging Face repositories during `hedos pull`.
+- `HF_TOKEN`, `HF_TOKEN_PATH`, or the token `huggingface-cli login` writes (under `$HF_HOME`, default `~/.cache/huggingface`) authenticates gated Hugging Face repositories during `hedos pull`.
 - `HF_HUB_CACHE` and `HF_HOME` locate the Hugging Face cache that hedos scans and installs into. If neither is set, it uses `~/.cache/huggingface/hub`.
 - `HEDOS_OPENAI_API_KEY` provides the API key the OpenAI-endpoint runtime uses.
 - `OLLAMA_MODELS` relocates the Ollama store that discovery scans.

@@ -34,7 +34,7 @@ This scans the Ollama store, the Hugging Face cache, LM Studio's library, and lo
 hedos ls
 ```
 
-`ls` lists the shelf: each model's name, the runtime it resolved to, the store it came from, and what it can do. A filled dot in the first column means the model is currently warm. If the shelf is empty, `ls` runs a scan for you on first use.
+`ls` lists the shelf: each model's name, the runtime it resolved to, the store it came from, whether it will fit in this machine's memory, and what it can do. A filled dot in the first column means the model is currently warm. If the shelf is empty, `ls` runs a scan for you on first use.
 
 ## Run a completion
 
@@ -62,7 +62,15 @@ hedos works out the provider from the reference shape (an `org/repo` goes to Hug
 hedos serve
 ```
 
-This starts the local gateway on `127.0.0.1:43367` and prints the base URL. Leave it running and point any OpenAI- or Ollama-compatible tool at it. Ctrl-C stops it cleanly. See the [gateway guide](gateway.md) for the full API.
+This starts the local gateway on `127.0.0.1:43367` and prints the base URL. Leave it running and point any OpenAI-, Ollama-, or Anthropic-compatible tool at it. Ctrl-C stops it cleanly. See the [gateway guide](gateway.md) for the full API.
+
+## Drive a coding agent
+
+```sh
+hedos launch opencode
+```
+
+`hedos launch` runs a coding harness — Claude Code, OpenCode, Aider, Goose, or Crush — against a model on your shelf, with nothing to configure. It starts a gateway on a free port inside the same process, points the harness at it, and stops both when the harness exits; your own harness config is left untouched. Omit the harness to pick from the ones you have installed, and pass `-m <model>` to choose the model. See the [CLI reference](cli.md) for the details.
 
 ## Where things live
 

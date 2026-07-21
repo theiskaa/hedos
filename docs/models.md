@@ -13,7 +13,7 @@ hedos treats the models on your machine as one shelf, no matter where they came 
 
 For each one it reads the format, works out the modality and capabilities, and reconciles the result into the registry. A model that moved is migrated, a model that vanished is marked missing, and duplicates are noted. Nothing is copied or relocated. The registry records point at the files where they already are, so every other tool still sees the same models.
 
-Discovery also resolves each model to a runtime. It reads the model's shape (context length, chat template, senses, tool dialect) and picks the engine that fits, so the shelf tells you not just what you have but how each model will actually be served.
+Discovery also resolves each model to a runtime. It reads the model's shape (context length, chat template, senses, tool dialect) and picks the engine that fits, so the shelf tells you not just what you have but how each model will actually be served — and, from each model's footprint against this machine's memory, whether it will run comfortably.
 
 ## Installing
 
