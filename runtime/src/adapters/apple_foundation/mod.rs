@@ -4,9 +4,11 @@
 
 mod adapter;
 mod backend;
+mod scanner;
 
 pub use adapter::AppleFoundationAdapter;
 pub use backend::{
     AppleFoundationBackend, BuiltinAvailability, BuiltinEvent, BuiltinEventStream, BuiltinOptions,
     MissingAppleBackend,
 };
+pub use scanner::AppleFoundationScanner;

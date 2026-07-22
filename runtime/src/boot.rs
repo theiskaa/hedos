@@ -8,14 +8,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kernel::artifacts::ArtifactStore;
+use kernel::discovery::StoreScanner;
 use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
 
 use crate::adapters::{
-    A1111Adapter, AppleFoundationAdapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter,
-    EmbeddingsAdapter, LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, MfluxAdapter,
-    MissingAppleBackend, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter,
-    OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
+    A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
+    ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter, LlamaServerAdapter,
+    LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingAppleBackend, MissingWhisperBackend,
+    MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter,
+    WhisperCppAdapter, WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -121,6 +123,20 @@ pub fn discovery_settings(settings: &Settings) -> kernel::discovery::ModelsSetti
     }
 }
 
+/// The bridge to Apple's on-device model, shared by the adapter and the
+/// discovery scanner so both see the same availability. Missing until the
+/// Swift FFI backend is compiled in.
+fn apple_foundation_backend() -> Arc<dyn AppleFoundationBackend> {
+    Arc::new(MissingAppleBackend)
+}
+
+/// The scanner that puts Apple's built-in model on the shelf. Handed out
+/// separately from the adapter set because scanner assembly happens above the
+/// runtime facade, alongside the kernel's filesystem scanners.
+pub fn apple_foundation_scanner() -> Box<dyn StoreScanner> {
+    Box::new(AppleFoundationScanner::new(apple_foundation_backend()))
+}
+
 /// The built-in adapter set — the port of the Swift `defaultAdapters`. Each
 /// adapter is present regardless of whether its backend (a `llama-server`
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
@@ -153,9 +169,9 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
             WhisperEngine::new(Arc::new(MissingWhisperBackend)),
         ))),
         RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())),
-        RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(Arc::new(
-            MissingAppleBackend,
-        )))),
+        RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(
+            apple_foundation_backend(),
+        ))),
     ];
     let (g, s, e, b, w) = args("mlx-audio");
     adapters.push(RegisteredAdapter::streaming(Arc::new(

@@ -35,8 +35,8 @@ mod whisper;
 
 pub use a1111::A1111Adapter;
 pub use apple_foundation::{
-    AppleFoundationAdapter, AppleFoundationBackend, BuiltinAvailability, BuiltinEvent,
-    BuiltinEventStream, BuiltinOptions, MissingAppleBackend,
+    AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner, BuiltinAvailability,
+    BuiltinEvent, BuiltinEventStream, BuiltinOptions, MissingAppleBackend,
 };
 pub use comfy_ui::ComfyUiAdapter;
 pub use daemon_liveness::{Daemon, DaemonLiveness, DaemonState, Snapshot};
