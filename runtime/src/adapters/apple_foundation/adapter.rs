@@ -137,7 +137,7 @@ impl RuntimeAdapter for AppleFoundationAdapter {
             while let Some(event) = upstream.recv().await {
                 match event {
                     Ok(BuiltinEvent::Snapshot(current)) => {
-                        let delta = AppleFoundationAdapter::delta(&previous, &current);
+                        let delta = Self::delta(&previous, &current);
                         if !delta.is_empty()
                             && tx
                                 .send(Ok(CapabilityChunk::Text(delta.to_owned())))
