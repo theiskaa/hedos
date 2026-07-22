@@ -113,3 +113,16 @@ def test_json_with_leading_prose_stays_text(mlx_lm):
 def test_non_call_bare_json_stays_text(mlx_lm):
     text = '{"answer": 42}'
     assert mlx_lm.extract_tool_calls(text) == (text, [])
+
+
+def test_bare_json_without_an_arguments_key_stays_text(mlx_lm):
+    text = '{"name": "config"}'
+    assert mlx_lm.extract_tool_calls(text) == (text, [])
+    listed = '[{"name": "a"}]'
+    assert mlx_lm.extract_tool_calls(listed) == (listed, [])
+
+
+def test_marked_formats_still_default_missing_arguments(mlx_lm):
+    remaining, calls = mlx_lm.extract_tool_calls('<tool_call>{"name": "ping"}</tool_call>')
+    assert remaining == ""
+    assert calls == [{"name": "ping", "arguments": {}}]

@@ -151,15 +151,19 @@ def test_tool_system_block_describes_tools_and_the_call_format(mlx_lm):
 
 class FakeTokenizer:
     """apply_chat_template stand-in: renders a comparable string, optionally
-    using the tools kwarg, optionally rejecting it like an old signature."""
+    using the tools kwarg, optionally rejecting it like an old signature or
+    rejecting a system role like a strict template."""
 
-    def __init__(self, uses_tools=True, rejects_tools=False):
+    def __init__(self, uses_tools=True, rejects_tools=False, rejects_system=False):
         self.uses_tools = uses_tools
         self.rejects_tools = rejects_tools
+        self.rejects_system = rejects_system
 
     def apply_chat_template(self, messages, tools=None, **kwargs):
         if tools is not None and self.rejects_tools:
             raise TypeError("unexpected keyword argument 'tools'")
+        if self.rejects_system and any(m.get("role") == "system" for m in messages):
+            raise ValueError("System role not supported")
         rendered = "|".join(
             "{}:{}".format(m.get("role", ""), m.get("content", "")) for m in messages
         )
@@ -320,3 +324,40 @@ def test_vlm_extraction_matches_the_mlx_lm_copy(mlx_lm, mlx_vlm):
     text = 'ok <tool_call>{"name": "read", "arguments": {}}</tool_call>'
     assert mlx_vlm.extract_tool_calls(text) == mlx_lm.extract_tool_calls(text)
     assert mlx_vlm.extract_tool_calls("plain") == ("plain", [])
+
+
+def test_chat_prompt_folds_tools_into_a_user_turn_when_system_is_rejected(mlx_lm):
+    tokenizer = FakeTokenizer(uses_tools=False, rejects_system=True)
+    prompt = mlx_lm.chat_prompt(
+        tokenizer, [{"role": "user", "content": "hi"}], [{"name": "read"}], {}
+    )
+    assert prompt.startswith("user:You can call tools.")
+    assert prompt.endswith("hi")
+    assert "system:" not in prompt
+
+
+def test_with_tool_block_in_user_appends_a_turn_when_no_user_exists(mlx_lm):
+    shaped = mlx_lm.with_tool_block_in_user(
+        [{"role": "assistant", "content": "x"}], [{"name": "f"}]
+    )
+    assert shaped[-1]["role"] == "user"
+    assert shaped[-1]["content"].startswith("You can call tools.")
+
+
+def test_vlm_inline_tool_history_folds_results_into_one_user_turn(mlx_vlm):
+    messages = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"name": "a", "arguments": {}},
+                {"name": "b", "arguments": {}},
+            ],
+        },
+        {"role": "tool", "tool_name": "a", "content": "one"},
+        {"role": "tool", "tool_name": "b", "content": "two"},
+    ]
+    shaped = mlx_vlm.inline_tool_history(messages)
+    assert [m["role"] for m in shaped] == ["user", "assistant", "user"]
+    assert shaped[2]["content"] == '[tool "a" result]\none\n\n[tool "b" result]\ntwo'

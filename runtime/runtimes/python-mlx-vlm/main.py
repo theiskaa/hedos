@@ -97,6 +97,19 @@ def with_tool_block(messages, tools):
     return [{"role": "system", "content": block}] + messages
 
 
+def with_tool_block_in_user(messages, tools):
+    block = tool_system_block(tools)
+    shaped = list(messages)
+    for index, message in enumerate(shaped):
+        if isinstance(message, dict) and message.get("role") == "user":
+            merged = dict(message)
+            content = merged.get("content", "")
+            merged["content"] = f"{block}\n\n{content}" if content else block
+            shaped[index] = merged
+            return shaped
+    return shaped + [{"role": "user", "content": block}]
+
+
 def inline_tool_history(messages):
     # mlx_vlm's prompt_utils templates know nothing of tool_calls fields or a
     # "tool" role, so the history is folded into plain turns: calls become
@@ -124,8 +137,17 @@ def inline_tool_history(messages):
             name = message.pop("tool_name", "")
             content = message.get("content", "")
             label = f'[tool "{name}" result]' if name else "[tool result]"
+            text = f"{label}\n{content}" if content else label
+            # Folded into a preceding user turn when there is one — templates
+            # that enforce strict user/assistant alternation reject the
+            # back-to-back user messages a multi-call turn would produce.
+            previous = shaped[-1] if shaped else None
+            if isinstance(previous, dict) and previous.get("role") == "user":
+                content = previous.get("content", "")
+                previous["content"] = f"{content}\n\n{text}" if content else text
+                continue
             message["role"] = "user"
-            message["content"] = f"{label}\n{content}" if content else label
+            message["content"] = text
         shaped.append(message)
     return shaped
 
@@ -143,11 +165,13 @@ def try_json(text):
         return None
 
 
-def call_from_value(value):
+def call_from_value(value, require_arguments=False):
     if not isinstance(value, dict):
         return None
     name = value.get("name")
     if not isinstance(name, str) or not name:
+        return None
+    if require_arguments and "arguments" not in value and "parameters" not in value:
         return None
     arguments = value.get("arguments", value.get("parameters"))
     if arguments is None:
@@ -202,13 +226,19 @@ def parse_llama_calls(text):
         if call:
             return "", [call]
         return text, []
+    # Without a marker, a JSON reply is only a call when it names its
+    # arguments — a data answer that merely contains a "name" field stays text.
     value = try_json(stripped)
     if isinstance(value, list):
-        calls = [call for call in (call_from_value(entry) for entry in value) if call]
+        calls = [
+            call
+            for call in (call_from_value(entry, require_arguments=True) for entry in value)
+            if call
+        ]
         if calls and len(calls) == len(value):
             return "", calls
         return text, []
-    call = call_from_value(value)
+    call = call_from_value(value, require_arguments=True)
     if call:
         return "", [call]
     return text, []
@@ -280,8 +310,21 @@ def main():
             messages, images = materialize_images(request.get("messages", []), args.workdir)
             messages = inline_tool_history(messages)
             if tools:
-                messages = with_tool_block(messages, tools)
-            prompt = apply_chat_template(processor, config, messages, num_images=len(images))
+                try:
+                    prompt = apply_chat_template(
+                        processor, config, with_tool_block(messages, tools), num_images=len(images)
+                    )
+                except Exception:
+                    # Templates that reject a system role (Gemma family) get
+                    # the block folded into the first user turn instead.
+                    prompt = apply_chat_template(
+                        processor,
+                        config,
+                        with_tool_block_in_user(messages, tools),
+                        num_images=len(images),
+                    )
+            else:
+                prompt = apply_chat_template(processor, config, messages, num_images=len(images))
             kwargs = {"max_tokens": int(request.get("max_tokens", 4096))}
             if "temperature" in request:
                 kwargs["temperature"] = float(request["temperature"])
@@ -310,6 +353,8 @@ def main():
                 continue
             if collector is not None:
                 remaining, calls = extract_tool_calls("".join(collector))
+                # Leftover text always flows when nothing parsed; once a call
+                # did, whitespace-only leftovers are noise and are dropped.
                 if remaining and (not calls or remaining.strip()):
                     send_json({"event": "text", "text": remaining})
                 for call in calls:
