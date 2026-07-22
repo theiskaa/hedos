@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kernel::capabilities::{AudioFrame, CapabilityChunk, GenerationStats};
+use kernel::capabilities::{AudioFrame, CapabilityChunk, GenerationStats, ToolCall};
 use kernel::jobs::JobRuntimeEvent;
 use kernel::records::JsonValue;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -366,6 +366,16 @@ impl SidecarSupervisor {
                 }
                 Some("thinking") => {
                     let _ = tx.send(Ok(CapabilityChunk::Thinking(string_field(object, "text"))));
+                }
+                // The event object doubles as the call payload ({name, arguments,
+                // id?}); the extra "event" key is ignored and a missing id is
+                // minted. A nameless or malformed call is dropped, like any
+                // other unparseable field on this wire.
+                Some("tool_call") => {
+                    let call = ToolCall::from_payload(&value).filter(|call| !call.name.is_empty());
+                    if let Some(call) = call {
+                        let _ = tx.send(Ok(CapabilityChunk::ToolCall(call)));
+                    }
                 }
                 Some("vector") => {
                     let values = object

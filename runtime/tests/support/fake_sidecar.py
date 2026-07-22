@@ -152,6 +152,12 @@ while True:
                 continue
             send_json({"event": "done", "seconds": 1.0})
             continue
+        if content == "tool":
+            send_json({"event": "text", "text": "calling "})
+            send_json({"event": "tool_call", "name": "read", "arguments": {"path": "a"}})
+            send_json({"event": "tool_call", "name": ""})
+            send_json({"event": "done", "seconds": 0.1})
+            continue
         for part in [content[: len(content) // 2], content[len(content) // 2 :], "!"]:
             send_json({"event": "text", "text": part})
         send_json(

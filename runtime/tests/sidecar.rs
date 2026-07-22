@@ -173,6 +173,41 @@ async fn parses_token_counts_from_the_chat_done_event() {
 }
 
 #[tokio::test]
+async fn maps_a_tool_call_event_to_a_tool_call_chunk() {
+    let spec = spec("normal");
+    let supervisor = SidecarSupervisor::new();
+    supervisor.ensure_running(&spec).await.expect("ready");
+
+    let stream = supervisor.request(&spec, chat("tool"));
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    let mut done = false;
+    for chunk in collect_chunks(stream).await {
+        match chunk {
+            CapabilityChunk::Text(delta) => text.push_str(&delta),
+            CapabilityChunk::ToolCall(call) => calls.push(call),
+            CapabilityChunk::Done(_) => done = true,
+            _ => {}
+        }
+    }
+    assert_eq!(text, "calling ");
+    // The nameless second event is dropped rather than surfaced.
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "read");
+    assert_eq!(
+        calls[0].arguments,
+        JsonValue::Object(
+            [("path".to_owned(), JsonValue::String("a".to_owned()))]
+                .into_iter()
+                .collect()
+        )
+    );
+    assert!(calls[0].id.starts_with("call_"));
+    assert!(done);
+    supervisor.shutdown_all().await;
+}
+
+#[tokio::test]
 async fn concurrent_stream_requests_serialize_without_corruption() {
     let spec = spec("normal");
     let supervisor = SidecarSupervisor::new();
