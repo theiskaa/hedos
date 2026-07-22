@@ -45,5 +45,6 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 - **Python sidecars** for mlx-lm, mlx-vlm, speech, embeddings, diffusers, and mflux.
 - **whisper** for transcription.
 - **image daemons** (ComfyUI, AUTOMATIC1111) for models they serve.
+- **Apple Intelligence** — Apple's on-device model — through a bundled Swift bridge, on Macs where the model is enabled and ready. It appears on the shelf as a built-in model; on Linux, or on a Mac without it, it simply never shows up.
 
-The Apple Foundation and MLX-Swift runtimes from the original macOS build are framework-bound and are not part of this headless port. A model that would need one of those still appears on the shelf, but hedos will tell you it cannot serve it here rather than dropping it.
+The MLX-Swift runtime from the original macOS build is framework-bound and is not part of this headless port; its models are served by the MLX sidecars instead. A model that would need it still appears on the shelf, but hedos will tell you it cannot serve it here rather than dropping it.
