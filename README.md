@@ -1,17 +1,18 @@
-# hedos
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
+  <img alt="hedos — ἕδος, a seat, an abode, a foundation" width="480" src="assets/banner-light.svg">
+</picture>
 
-> _ἕδος (hédos)_, Greek for "a seat, an abode, a foundation."
+<br/>
 
-<p align="center">
-
-[![CI](https://github.com/theiskaa/hedos/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/theiskaa/hedos/actions/workflows/ci.yml)
-[![Documentation](https://img.shields.io/badge/docs-hedos.ai-orange)](https://hedos.ai/docs)
-[![Crates.io](https://img.shields.io/crates/v/hedos?color=orange)](https://crates.io/crates/hedos)
-[![Release](https://img.shields.io/github/v/release/theiskaa/hedos)](https://github.com/theiskaa/hedos/releases)
-[![Rust](https://img.shields.io/badge/rust-edition%202024-orange)](Cargo.toml)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Downloads](https://img.shields.io/crates/d/hedos)](https://crates.io/crates/hedos)
-
+<p>
+  <a href="https://github.com/theiskaa/hedos/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/theiskaa/hedos/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://hedos.ai/docs"><img alt="Documentation" src="https://img.shields.io/badge/docs-hedos.ai-orange"></a>
+  <a href="https://crates.io/crates/hedos"><img alt="Crates.io" src="https://img.shields.io/crates/v/hedos?color=orange"></a>
+  <a href="https://github.com/theiskaa/hedos/releases"><img alt="Release" src="https://img.shields.io/github/v/release/theiskaa/hedos"></a>
+  <a href="Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/rust-edition%202024-orange"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://crates.io/crates/hedos"><img alt="Downloads" src="https://img.shields.io/crates/d/hedos"></a>
 </p>
 
 hedos is a headless engine for the local models already on your machine. It finds them wherever they live, installs new ones, and serves each through the runtime that actually fits, all from one binary and a local HTTP gateway. There is no app and no browser wrapper. Everything runs on your hardware, offline.
