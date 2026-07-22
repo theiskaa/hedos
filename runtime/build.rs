@@ -44,23 +44,36 @@ fn main() {
     let archive_path = Path::new(&out_dir).join("runtimes.archive.gz");
     std::fs::write(&archive_path, compressed).expect("writing the archive to OUT_DIR cannot fail");
 
-    if std::env::var_os("CARGO_FEATURE_APPLE_FOUNDATION").is_some() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         build_apple_shim(&manifest_dir, &out_dir);
     }
 }
 
 /// Compile the Swift shim over Apple's `FoundationModels` framework
 /// (`shim-apple/shim.swift`) into a dylib in `OUT_DIR`, baking its path into
-/// the crate as `HEDOS_APPLE_SHIM_BUILT_DYLIB`. Only runs under the
-/// `apple-foundation` feature, and fails loudly when the toolchain can't
-/// deliver — a requested feature must never ship silently inert.
+/// the crate as `HEDOS_APPLE_SHIM_BUILT_DYLIB`. Runs on every macOS build —
+/// the bridge is a standard part of the binary, like the Python runtimes, not
+/// an opt-in. A toolchain that cannot build it (no Xcode, an SDK without
+/// FoundationModels) skips with a warning and bakes an empty path, leaving
+/// the runtime to report the model unavailable; a compile failure on a
+/// capable SDK is a shim bug and fails the build.
 fn build_apple_shim(manifest_dir: &str, out_dir: &str) {
     println!("cargo:rerun-if-changed=shim-apple");
-    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    assert_eq!(
-        target_os, "macos",
-        "the apple-foundation feature only builds for macOS targets"
-    );
+    let bake = |path: &str| println!("cargo:rustc-env=HEDOS_APPLE_SHIM_BUILT_DYLIB={path}");
+    let Some(sdk_path) = command_stdout("xcrun", &["--sdk", "macosx", "--show-sdk-path"]) else {
+        println!("cargo:warning=Apple Intelligence bridge skipped: no usable macOS SDK");
+        bake("");
+        return;
+    };
+    let framework =
+        Path::new(sdk_path.trim()).join("System/Library/Frameworks/FoundationModels.framework");
+    if !framework.exists() {
+        println!(
+            "cargo:warning=Apple Intelligence bridge skipped: this SDK has no FoundationModels (needs the macOS 26 SDK)"
+        );
+        bake("");
+        return;
+    }
     let dylib = Path::new(out_dir).join("libhedos_apple_shim.dylib");
     let source = Path::new(manifest_dir).join("shim-apple/shim.swift");
     // Always optimized, even in debug builds: nobody steps through the shim,
@@ -70,17 +83,25 @@ fn build_apple_shim(manifest_dir: &str, out_dir: &str) {
         .arg(&dylib)
         .arg(&source)
         .status();
-    let toolchain_hint =
-        "the apple-foundation feature needs Xcode with the FoundationModels SDK (macOS 26+)";
     match status {
         Ok(status) if status.success() => {}
-        Ok(status) => panic!("swiftc failed with {status}; {toolchain_hint}"),
-        Err(error) => panic!("running xcrun swiftc: {error}; {toolchain_hint}"),
+        Ok(status) => panic!("swiftc failed with {status} compiling shim-apple/shim.swift"),
+        Err(error) => panic!("running xcrun swiftc: {error}"),
     }
-    println!(
-        "cargo:rustc-env=HEDOS_APPLE_SHIM_BUILT_DYLIB={}",
-        dylib.display()
-    );
+    bake(&dylib.display().to_string());
+}
+
+/// Run `program` with `args`, returning its stdout on success and `None` when
+/// it is missing or fails.
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Recursively collect every file under `dir`, keyed by its path relative to

@@ -15,9 +15,9 @@ use kernel::registry::{Registry, RegistryError};
 use crate::adapters::{
     A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
     ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter, LlamaServerAdapter,
-    LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingAppleBackend, MissingWhisperBackend,
-    MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter,
-    WhisperCppAdapter, WhisperEngine,
+    LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter,
+    MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter,
+    WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -124,10 +124,19 @@ pub fn discovery_settings(settings: &Settings) -> kernel::discovery::ModelsSetti
 }
 
 /// The bridge to Apple's on-device model, shared by the adapter and the
-/// discovery scanner so both see the same availability. Missing until the
-/// Swift FFI backend is compiled in.
+/// discovery scanner so both see the same availability. On macOS, the FFI
+/// backend over the Swift shim (degrading to missing when no shim was built
+/// or loads); elsewhere, the missing placeholder — the model does not exist
+/// off Apple platforms.
 fn apple_foundation_backend() -> Arc<dyn AppleFoundationBackend> {
-    Arc::new(MissingAppleBackend)
+    #[cfg(target_os = "macos")]
+    {
+        crate::adapters::loaded_apple_backend()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Arc::new(crate::adapters::MissingAppleBackend)
+    }
 }
 
 /// The scanner that puts Apple's built-in model on the shelf. Handed out
@@ -142,8 +151,8 @@ pub fn apple_foundation_scanner() -> Box<dyn StoreScanner> {
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
 /// capability only actually serves when its backend is available. The one
 /// framework-bound adapter still out is MLX-Swift (covered by the mlx
-/// sidecars); Apple Foundation registers with a missing backend until the
-/// Swift bridge is compiled in.
+/// sidecars); Apple Foundation serves through the Swift bridge wherever it
+/// could be built and loaded, else registers a missing backend.
 fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<RegisteredAdapter> {
     let bundles = vec![dirs.sub("bundles")];
     let workdirs = dirs.sub("workdirs");

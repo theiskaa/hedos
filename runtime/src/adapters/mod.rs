@@ -34,6 +34,8 @@ mod tool_scanner;
 mod whisper;
 
 pub use a1111::A1111Adapter;
+#[cfg(target_os = "macos")]
+pub use apple_foundation::loaded_apple_backend;
 pub use apple_foundation::{
     AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner, BuiltinAvailability,
     BuiltinEvent, BuiltinEventStream, BuiltinOptions, MissingAppleBackend,

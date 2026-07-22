@@ -11,11 +11,6 @@ documentation.workspace = true
 description = "Discover, install, and serve the local models already on your machine."
 readme = "../README.md"
 
-# Forwarded to the runtime crate, which compiles the Swift FoundationModels
-# shim and the FFI backend that drives it. macOS-only; needs the macOS 26 SDK.
-[features]
-apple-foundation = ["runtime/apple-foundation"]
-
 [[bin]]
 name = "hedos"
 path = "src/main.rs"

@@ -1,7 +1,7 @@
 // The Swift shim bridging Apple's FoundationModels framework to the Rust
 // runtime over a flat C ABI, ported from the Swift kernel's
 // SystemFoundationBackend (macos-app branch, f85874f). Compiled by the
-// crate's build script (feature `apple-foundation`) into
+// crate's build script on every macOS build with a capable SDK into
 // `libhedos_apple_shim.dylib`; loaded and driven by
 // `runtime/src/adapters/apple_foundation/ffi.rs`.
 //

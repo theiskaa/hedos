@@ -153,6 +153,11 @@ impl RuntimeAdapter for AppleFoundationAdapter {
                     }) => {
                         prompt_tokens = prompt;
                         completion_tokens = completion;
+                        // Done is the terminal event: waiting for the channel
+                        // to close instead would hang against a backend whose
+                        // internals still hold a sender (the FFI backend's
+                        // cancel watcher does).
+                        break;
                     }
                     Err(error) => {
                         let _ = tx.send(Err(error));
@@ -455,6 +460,53 @@ mod tests {
         assert!(matches!(
             results.first(),
             Some(Err(RuntimeError::Failed(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn done_ends_the_stream_even_while_the_backend_holds_a_sender() {
+        // Reproduces the FFI backend's shape: its cancel watcher keeps a
+        // sender alive after the terminal event, so the adapter must end on
+        // Done rather than waiting for the channel to close.
+        struct Holding {
+            kept: std::sync::Mutex<
+                Option<tokio::sync::mpsc::UnboundedSender<Result<BuiltinEvent, RuntimeError>>>,
+            >,
+        }
+
+        impl AppleFoundationBackend for Holding {
+            fn availability(&self) -> BuiltinAvailability {
+                BuiltinAvailability::Available
+            }
+
+            fn stream(
+                &self,
+                _messages: Vec<ChatMessage>,
+                _options: BuiltinOptions,
+            ) -> BuiltinEventStream {
+                let (tx, stream) = RuntimeStream::channel();
+                let _ = tx.send(Ok(BuiltinEvent::Snapshot("hi".to_owned())));
+                let _ = tx.send(Ok(BuiltinEvent::Done {
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                }));
+                *self.kept.lock().unwrap() = Some(tx);
+                stream
+            }
+        }
+
+        let adapter = AppleFoundationAdapter::new(Arc::new(Holding {
+            kept: std::sync::Mutex::new(None),
+        }));
+        let collected = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            collect(adapter.invoke(&record(), Capability::chat(), chat_payload(&[]))),
+        )
+        .await
+        .expect("the stream must end on the done event");
+        assert!(matches!(
+            collected.last(),
+            Some(Ok(CapabilityChunk::Done(Some(_))))
         ));
     }
 
