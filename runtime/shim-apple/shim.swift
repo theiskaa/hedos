@@ -1,15 +1,31 @@
 // The Swift shim bridging Apple's FoundationModels framework to the Rust
-// runtime over a flat C ABI. Compiled by the crate's build script (feature
-// `apple-foundation`) into `libhedos_apple_shim.dylib`; loaded and driven by
+// runtime over a flat C ABI, ported from the Swift kernel's
+// SystemFoundationBackend (macos-app branch, f85874f). Compiled by the
+// crate's build script (feature `apple-foundation`) into
+// `libhedos_apple_shim.dylib`; loaded and driven by
 // `runtime/src/adapters/apple_foundation/ffi.rs`.
 //
-// The contract: `hedos_af_stream` starts a generation and returns a handle;
-// events arrive through the callback on an arbitrary thread, the payload
-// pointer valid only during the call. Every generation ends with exactly one
-// terminal event — done, error, or cancelled — after which the shim never
-// touches the callback context again, so the caller frees it on the terminal
-// event. `hedos_af_cancel` requests cooperative cancellation; the cancelled
-// terminal event still follows.
+// The ABI:
+// - `hedos_af_abi_version() -> u32` — this contract's version; currently 1.
+// - `hedos_af_availability() -> i32` — 0 available, 1 Apple Intelligence not
+//   enabled, 2 model not ready (still downloading), 3 device not eligible.
+// - `hedos_af_stream(request_json, ctx, callback) -> u64` — starts a
+//   generation and returns its handle (never 0). The request is
+//   `{"messages":[{"role","content"},…],"temperature","top_p","top_k",
+//   "seed","max_tokens"}` with every option omittable. Returns 0 without
+//   starting one when the callback is null (no event fires) or the request
+//   fails to decode (one `error` event fires synchronously on the calling
+//   thread, before the return — the only re-entrant emit; every other event
+//   arrives later, from the generation task).
+// - `hedos_af_cancel(handle)` — requests cooperative cancellation; a
+//   terminal event still follows, though not necessarily `cancelled` (a
+//   generation already past its stream loop finishes as `done` or `error`).
+//
+// Events arrive through the callback as `(ctx, kind, payload)` on an
+// arbitrary thread, the payload pointer valid only during the call (see
+// `Event` for the kinds). Every generation ends with exactly one terminal
+// event — done, error, or cancelled — after which the shim never touches
+// `ctx` again, so the caller frees it on the terminal event.
 
 import Foundation
 import FoundationModels
@@ -18,10 +34,16 @@ public typealias HedosEventCallback = @convention(c) (
     UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?
 ) -> Void
 
-private let snapshotEvent: Int32 = 0
-private let doneEvent: Int32 = 1
-private let errorEvent: Int32 = 2
-private let cancelledEvent: Int32 = 3
+// The callback event kinds. `snapshot` is the only non-terminal event and
+// carries the full reply text so far (cumulative, not a delta); `done`
+// carries `{"prompt_tokens":n|null,"completion_tokens":n|null}`; `error` a
+// human-readable message; `cancelled` an empty payload.
+private enum Event: Int32 {
+    case snapshot = 0
+    case done = 1
+    case error = 2
+    case cancelled = 3
+}
 
 private struct ShimError: Error {
     let text: String
@@ -31,9 +53,9 @@ private struct CallbackContext: @unchecked Sendable {
     let raw: UnsafeMutableRawPointer?
     let callback: HedosEventCallback
 
-    func emit(_ kind: Int32, _ payload: String) {
+    func emit(_ kind: Event, _ payload: String) {
         payload.withCString { pointer in
-            callback(raw, kind, pointer)
+            callback(raw, kind.rawValue, pointer)
         }
     }
 }
@@ -171,7 +193,7 @@ private func donePayload(promptTokens: Int?, completionTokens: Int?) -> String {
     return "{\"prompt_tokens\":\(prompt),\"completion_tokens\":\(completion)}"
 }
 
-private func message(for error: LanguageModelSession.GenerationError) -> String {
+private func errorMessage(for error: LanguageModelSession.GenerationError) -> String {
     switch error {
     case .guardrailViolation, .refusal:
         return "Apple's model declined this request."
@@ -225,7 +247,7 @@ public func hedos_af_stream(
         let request = try? JSONDecoder().decode(
             WireRequest.self, from: Data(bytes: requestJSON, count: strlen(requestJSON)))
     else {
-        ctx.emit(errorEvent, "the generation request could not be decoded")
+        ctx.emit(.error, "the generation request could not be decoded")
         return 0
     }
     let handle = GenerationTable.shared.reserve()
@@ -242,22 +264,22 @@ public func hedos_af_stream(
             for try await snapshot in session.streamResponse(to: parts.prompt, options: options) {
                 try Task.checkCancellation()
                 finalText = snapshot.content
-                ctx.emit(snapshotEvent, snapshot.content)
+                ctx.emit(.snapshot, snapshot.content)
             }
             let promptText = request.messages.map(\.content).joined(separator: "\n")
             ctx.emit(
-                doneEvent,
+                .done,
                 donePayload(
                     promptTokens: await tokenCount(promptText),
                     completionTokens: await tokenCount(finalText)))
         } catch is CancellationError {
-            ctx.emit(cancelledEvent, "")
+            ctx.emit(.cancelled, "")
         } catch let error as LanguageModelSession.GenerationError {
-            ctx.emit(errorEvent, message(for: error))
+            ctx.emit(.error, errorMessage(for: error))
         } catch let error as ShimError {
-            ctx.emit(errorEvent, error.text)
+            ctx.emit(.error, error.text)
         } catch {
-            ctx.emit(errorEvent, "Apple's model hit an error: \(error.localizedDescription)")
+            ctx.emit(.error, "Apple's model hit an error: \(error.localizedDescription)")
         }
     }
     GenerationTable.shared.store(handle, task)

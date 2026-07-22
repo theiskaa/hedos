@@ -63,6 +63,8 @@ fn build_apple_shim(manifest_dir: &str, out_dir: &str) {
     );
     let dylib = Path::new(out_dir).join("libhedos_apple_shim.dylib");
     let source = Path::new(manifest_dir).join("shim-apple/shim.swift");
+    // Always optimized, even in debug builds: nobody steps through the shim,
+    // and an unoptimized bridge to the model is only slower.
     let status = std::process::Command::new("xcrun")
         .args(["-sdk", "macosx", "swiftc", "-O", "-emit-library", "-o"])
         .arg(&dylib)
