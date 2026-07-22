@@ -2,6 +2,15 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.1.1 - 2026-07-22
+
+Tool calling now reaches the models served by the Python sidecars (#5). MLX builds from the Hugging Face cache — Llama and Qwen instruct models among them — can drive the coding harnesses and serve tool requests over the gateway, closing the gap where capable weights sat out of `hedos launch` because their runtime never forwarded tools.
+
+- The mlx-lm sidecar renders a request's tools through the model's own chat template, so each model family sees tools in the exact format it was trained on. A template with no tool support gets a generic system-prompt description of the tools instead, and a template that rejects a system role gets it folded into the first user turn — the request degrades gracefully rather than failing.
+- Tool calls are parsed back out of the model's reply in each family's own format — Qwen/Hermes `<tool_call>` blocks, Mistral `[TOOL_CALLS]`, Llama's python tag and bare JSON — and served over the gateway as structured calls in every dialect. A reply that contains no call streams as plain text, exactly as before.
+- mlx-vlm gets the same treatment, so tool-driving harnesses can also seat vision models.
+- Models served by these runtimes now carry the `tools` capability on the shelf and appear in the `hedos launch` picker; an existing shelf picks this up automatically on the next command, no rescan needed.
+
 ## v1.1.0 - 2026-07-21
 
 This release turns hedos into a working seat for coding agents and rounds out the command surface. The gateway speaks a third wire format and enforces tool calling per model, `hedos launch` runs a coding harness against a local model with nothing to configure, and four new capabilities land on the command line. The default posture is unchanged: the gateway still binds loopback and trusts every local caller.
