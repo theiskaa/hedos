@@ -206,3 +206,72 @@ def test_render_chatml_prepends_a_tool_system_block(mlx_lm):
 def test_render_chatml_without_tools_is_unchanged(mlx_lm):
     prompt = mlx_lm.render_chatml([{"role": "user", "content": "hi"}])
     assert prompt == "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+
+
+def test_with_tool_block_merges_into_an_existing_system_turn(mlx_lm):
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "hi"},
+    ]
+    blocked = mlx_lm.with_tool_block(messages, [{"name": "read"}])
+    assert len(blocked) == 2
+    assert blocked[0]["role"] == "system"
+    assert blocked[0]["content"].startswith("Be brief.\n\nYou can call tools.")
+    assert blocked[1] == {"role": "user", "content": "hi"}
+    assert messages[0]["content"] == "Be brief."
+
+
+def test_chat_prompt_fallback_keeps_a_single_system_turn(mlx_lm):
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "hi"},
+    ]
+    prompt = mlx_lm.chat_prompt(FakeTokenizer(uses_tools=False), messages, [{"name": "read"}], {})
+    assert prompt.count("system:") == 1
+    assert prompt.startswith("system:Be brief.\n\nYou can call tools.")
+
+
+class TokenIdTokenizer:
+    """Renders to token-id lists like a real tokenizer with tokenize=True."""
+
+    def apply_chat_template(self, messages, tools=None, **kwargs):
+        ids = [len(messages)]
+        if tools is not None:
+            ids.append(len(tools))
+        return ids
+
+
+def test_chat_prompt_compares_token_id_renders(mlx_lm):
+    prompt = mlx_lm.chat_prompt(
+        TokenIdTokenizer(), [{"role": "user", "content": "hi"}], [{"name": "read"}], {}
+    )
+    assert prompt == [1, 1]
+
+
+def test_render_chatml_inlines_assistant_tool_calls(mlx_lm):
+    messages = mlx_lm.shape_tool_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "c1", "name": "read", "arguments": {"path": "a"}}],
+            },
+            {"role": "tool", "tool_name": "read", "content": "data"},
+        ]
+    )
+    prompt = mlx_lm.render_chatml(messages)
+    assert (
+        '<|im_start|>assistant\n<tool_call>{"name": "read", "arguments": {"path": "a"}}'
+        "</tool_call><|im_end|>\n" in prompt
+    )
+    assert "<|im_start|>tool\ndata<|im_end|>" in prompt
+
+
+def test_render_chatml_merges_tools_into_an_existing_system_turn(mlx_lm):
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "hi"},
+    ]
+    prompt = mlx_lm.render_chatml(messages, [{"name": "read"}])
+    assert prompt.count("<|im_start|>system") == 1
+    assert prompt.startswith("<|im_start|>system\nBe brief.\n\nYou can call tools.")

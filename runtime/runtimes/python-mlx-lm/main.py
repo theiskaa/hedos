@@ -261,6 +261,18 @@ def tool_system_block(tools):
     return "\n".join(lines)
 
 
+def with_tool_block(messages, tools):
+    # Merged into an existing leading system turn rather than prepended as a
+    # second one — strict templates reject more than one system message.
+    block = tool_system_block(tools)
+    if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
+        first = dict(messages[0])
+        content = first.get("content", "")
+        first["content"] = f"{content}\n\n{block}" if content else block
+        return [first] + messages[1:]
+    return [{"role": "system", "content": block}] + messages
+
+
 def chat_prompt(tokenizer, messages, tools, template_kwargs):
     if not tools:
         return tokenizer.apply_chat_template(messages, **template_kwargs)
@@ -274,18 +286,35 @@ def chat_prompt(tokenizer, messages, tools, template_kwargs):
             return with_tools
     except TypeError:
         pass
-    blocked = [{"role": "system", "content": tool_system_block(tools)}] + messages
-    return tokenizer.apply_chat_template(blocked, **template_kwargs)
+    return tokenizer.apply_chat_template(with_tool_block(messages, tools), **template_kwargs)
+
+
+def chatml_content(message):
+    content = message.get("content", "")
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return content
+    blocks = []
+    for call in calls:
+        function = call.get("function", {}) if isinstance(call, dict) else {}
+        name = function.get("name")
+        if not name:
+            continue
+        body = json.dumps({"name": name, "arguments": function.get("arguments", {})})
+        blocks.append(f"<tool_call>{body}</tool_call>")
+    if not blocks:
+        return content
+    return "\n".join([content] + blocks) if content else "\n".join(blocks)
 
 
 def render_chatml(messages, tools=None):
-    prompt = ""
     if tools:
-        prompt += f"<|im_start|>system\n{tool_system_block(tools)}<|im_end|>\n"
+        messages = with_tool_block(messages, tools)
+    prompt = ""
     for message in messages:
         prompt += "<|im_start|>{}\n{}<|im_end|>\n".format(
             message.get("role", ""),
-            message.get("content", ""),
+            chatml_content(message),
         )
     prompt += "<|im_start|>assistant\n"
     return prompt
