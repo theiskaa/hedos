@@ -52,8 +52,8 @@ fn main() {
 /// Compile the Swift shim over Apple's `FoundationModels` framework
 /// (`shim-apple/shim.swift`) into a dylib in `OUT_DIR`, baking its path into
 /// the crate as `HEDOS_APPLE_SHIM_BUILT_DYLIB`. Runs on every macOS build —
-/// the bridge is a standard part of the binary, like the Python runtimes, not
-/// an opt-in. A toolchain that cannot build it (no Xcode, an SDK without
+/// the bridge is a standard part of macOS binaries, never an opt-in. A
+/// toolchain that cannot build it (no Xcode, an SDK without
 /// FoundationModels) skips with a warning and bakes an empty path, leaving
 /// the runtime to report the model unavailable; a compile failure on a
 /// capable SDK is a shim bug and fails the build.

@@ -14,10 +14,7 @@ mod scanner;
 mod wire;
 
 pub use adapter::AppleFoundationAdapter;
-pub use backend::{
-    AppleFoundationBackend, BuiltinAvailability, BuiltinEvent, BuiltinEventStream, BuiltinOptions,
-    MissingAppleBackend,
-};
+pub use backend::{AppleFoundationBackend, MissingAppleBackend};
 #[cfg(target_os = "macos")]
 pub use ffi::loaded_apple_backend;
 pub use scanner::AppleFoundationScanner;
