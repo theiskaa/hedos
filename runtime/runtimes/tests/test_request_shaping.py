@@ -361,3 +361,28 @@ def test_vlm_inline_tool_history_folds_results_into_one_user_turn(mlx_vlm):
     shaped = mlx_vlm.inline_tool_history(messages)
     assert [m["role"] for m in shaped] == ["user", "assistant", "user"]
     assert shaped[2]["content"] == '[tool "a" result]\none\n\n[tool "b" result]\ntwo'
+
+
+def test_vlm_build_prompt_without_tools_renders_plainly(mlx_vlm):
+    prompt = mlx_vlm.build_prompt(len, [{"role": "user", "content": "hi"}], [])
+    assert prompt == 1
+
+
+def test_vlm_build_prompt_prefers_the_system_block(mlx_vlm):
+    def render(messages):
+        return "|".join(f"{m.get('role')}:{m.get('content')}" for m in messages)
+
+    prompt = mlx_vlm.build_prompt(render, [{"role": "user", "content": "hi"}], [{"name": "read"}])
+    assert prompt.startswith("system:You can call tools.")
+    assert prompt.endswith("|user:hi")
+
+
+def test_vlm_build_prompt_folds_tools_into_a_user_turn_when_system_is_rejected(mlx_vlm):
+    def render(messages):
+        if any(m.get("role") == "system" for m in messages):
+            raise ValueError("System role not supported")
+        return "|".join(f"{m.get('role')}:{m.get('content')}" for m in messages)
+
+    prompt = mlx_vlm.build_prompt(render, [{"role": "user", "content": "hi"}], [{"name": "read"}])
+    assert prompt.startswith("user:You can call tools.")
+    assert "system:" not in prompt

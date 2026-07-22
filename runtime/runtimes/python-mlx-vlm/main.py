@@ -110,6 +110,17 @@ def with_tool_block_in_user(messages, tools):
     return shaped + [{"role": "user", "content": block}]
 
 
+def build_prompt(render, messages, tools):
+    if not tools:
+        return render(messages)
+    try:
+        return render(with_tool_block(messages, tools))
+    except Exception:
+        # Templates that reject a system role (Gemma family) get the block
+        # folded into the first user turn instead.
+        return render(with_tool_block_in_user(messages, tools))
+
+
 def inline_tool_history(messages):
     # mlx_vlm's prompt_utils templates know nothing of tool_calls fields or a
     # "tool" role, so the history is folded into plain turns: calls become
@@ -309,22 +320,17 @@ def main():
             tools = tool_specs(request) if op == "chat" else []
             messages, images = materialize_images(request.get("messages", []), args.workdir)
             messages = inline_tool_history(messages)
-            if tools:
-                try:
-                    prompt = apply_chat_template(
-                        processor, config, with_tool_block(messages, tools), num_images=len(images)
-                    )
-                except Exception:
-                    # Templates that reject a system role (Gemma family) get
-                    # the block folded into the first user turn instead.
-                    prompt = apply_chat_template(
-                        processor,
-                        config,
-                        with_tool_block_in_user(messages, tools),
-                        num_images=len(images),
-                    )
-            else:
-                prompt = apply_chat_template(processor, config, messages, num_images=len(images))
+
+            # Rebound each request and called synchronously within it.
+            def render(shaped):
+                return apply_chat_template(
+                    processor,
+                    config,
+                    shaped,
+                    num_images=len(images),  # noqa: B023
+                )
+
+            prompt = build_prompt(render, messages, tools)
             kwargs = {"max_tokens": int(request.get("max_tokens", 4096))}
             if "temperature" in request:
                 kwargs["temperature"] = float(request["temperature"])
