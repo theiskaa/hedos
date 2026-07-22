@@ -83,3 +83,126 @@ def test_materialize_images_handles_messages_with_no_images(mlx_vlm, tmp_path):
 
     assert stripped == messages
     assert paths == []
+
+
+def test_tool_specs_absent_or_malformed_returns_empty(mlx_lm):
+    assert mlx_lm.tool_specs({}) == []
+    assert mlx_lm.tool_specs({"tools": "read"}) == []
+    assert mlx_lm.tool_specs({"tools": [{"description": "no name"}, "junk", 5]}) == []
+
+
+def test_tool_specs_keeps_named_tools(mlx_lm):
+    tools = [{"name": "read", "parameters": {}}, {"description": "nameless"}]
+    assert mlx_lm.tool_specs({"tools": tools}) == [{"name": "read", "parameters": {}}]
+
+
+def test_wrap_tools_produces_the_openai_function_form(mlx_lm):
+    wrapped = mlx_lm.wrap_tools([{"name": "read", "parameters": {"type": "object"}}])
+    assert wrapped == [
+        {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+
+def test_shape_tool_messages_rewires_assistant_calls_and_tool_results(mlx_lm):
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "name": "read", "arguments": {"path": "a"}}],
+        },
+        {"role": "tool", "tool_name": "read", "content": "data"},
+    ]
+    shaped = mlx_lm.shape_tool_messages(messages)
+    assert shaped[0] == {"role": "user", "content": "hi"}
+    assert shaped[1]["tool_calls"] == [
+        {
+            "type": "function",
+            "id": "call_1",
+            "function": {"name": "read", "arguments": {"path": "a"}},
+        }
+    ]
+    assert shaped[2] == {"role": "tool", "name": "read", "content": "data"}
+
+
+def test_shape_tool_messages_leaves_plain_messages_and_input_untouched(mlx_lm):
+    messages = [{"role": "user", "content": "hi"}, "junk"]
+    assert mlx_lm.shape_tool_messages(messages) == messages
+    with_calls = [{"role": "assistant", "tool_calls": [{"name": "f", "arguments": {}}]}]
+    mlx_lm.shape_tool_messages(with_calls)
+    assert with_calls[0]["tool_calls"] == [{"name": "f", "arguments": {}}]
+
+
+def test_tool_system_block_describes_tools_and_the_call_format(mlx_lm):
+    block = mlx_lm.tool_system_block(
+        [{"name": "read", "description": "Read a file.", "parameters": {"type": "object"}}]
+    )
+    assert "- read: Read a file." in block
+    assert '{"type": "object"}' in block
+    assert "<tool_call>" in block and "</tool_call>" in block
+
+
+class FakeTokenizer:
+    """apply_chat_template stand-in: renders a comparable string, optionally
+    using the tools kwarg, optionally rejecting it like an old signature."""
+
+    def __init__(self, uses_tools=True, rejects_tools=False):
+        self.uses_tools = uses_tools
+        self.rejects_tools = rejects_tools
+
+    def apply_chat_template(self, messages, tools=None, **kwargs):
+        if tools is not None and self.rejects_tools:
+            raise TypeError("unexpected keyword argument 'tools'")
+        rendered = "|".join(
+            "{}:{}".format(m.get("role", ""), m.get("content", "")) for m in messages
+        )
+        if tools is not None and self.uses_tools:
+            rendered += f"|tools:{len(tools)}"
+        return rendered
+
+
+def test_chat_prompt_without_tools_renders_plainly(mlx_lm):
+    prompt = mlx_lm.chat_prompt(FakeTokenizer(), [{"role": "user", "content": "hi"}], [], {})
+    assert prompt == "user:hi"
+
+
+def test_chat_prompt_uses_the_templates_own_tool_rendering(mlx_lm):
+    tools = [{"name": "read"}]
+    prompt = mlx_lm.chat_prompt(FakeTokenizer(), [{"role": "user", "content": "hi"}], tools, {})
+    assert prompt == "user:hi|tools:1"
+
+
+def test_chat_prompt_falls_back_to_a_system_block_when_the_template_ignores_tools(mlx_lm):
+    tools = [{"name": "read"}]
+    prompt = mlx_lm.chat_prompt(
+        FakeTokenizer(uses_tools=False), [{"role": "user", "content": "hi"}], tools, {}
+    )
+    assert prompt.startswith("system:You can call tools.")
+    assert prompt.endswith("|user:hi")
+
+
+def test_chat_prompt_falls_back_when_the_tokenizer_rejects_the_tools_kwarg(mlx_lm):
+    tools = [{"name": "read"}]
+    prompt = mlx_lm.chat_prompt(
+        FakeTokenizer(rejects_tools=True), [{"role": "user", "content": "hi"}], tools, {}
+    )
+    assert prompt.startswith("system:You can call tools.")
+
+
+def test_render_chatml_prepends_a_tool_system_block(mlx_lm):
+    tools = [{"name": "read"}]
+    prompt = mlx_lm.render_chatml([{"role": "user", "content": "hi"}], tools)
+    assert prompt.startswith("<|im_start|>system\nYou can call tools.")
+    assert prompt.endswith("<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n")
+
+
+def test_render_chatml_without_tools_is_unchanged(mlx_lm):
+    prompt = mlx_lm.render_chatml([{"role": "user", "content": "hi"}])
+    assert prompt == "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"

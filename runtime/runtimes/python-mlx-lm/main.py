@@ -194,8 +194,94 @@ class ThinkSplitter:
 NO_TEMPLATE_NOTICE = "this model has no chat template — using a generic format"
 
 
-def render_chatml(messages):
+def tool_specs(request):
+    tools = request.get("tools")
+    if not isinstance(tools, list):
+        return []
+    return [tool for tool in tools if isinstance(tool, dict) and tool.get("name")]
+
+
+def wrap_tools(tools):
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters", {}),
+            },
+        }
+        for tool in tools
+    ]
+
+
+def shape_tool_messages(messages):
+    shaped = []
+    for message in messages:
+        if not isinstance(message, dict):
+            shaped.append(message)
+            continue
+        message = dict(message)
+        calls = message.get("tool_calls")
+        if isinstance(calls, list) and calls:
+            message["tool_calls"] = [
+                {
+                    "type": "function",
+                    "id": str(call.get("id", "")),
+                    "function": {
+                        "name": call.get("name", ""),
+                        "arguments": call.get("arguments", {}),
+                    },
+                }
+                for call in calls
+                if isinstance(call, dict)
+            ]
+        if "tool_name" in message:
+            message["name"] = message.pop("tool_name")
+        shaped.append(message)
+    return shaped
+
+
+def tool_system_block(tools):
+    lines = ["You can call tools. The available tools are:", ""]
+    for tool in tools:
+        lines.append(
+            "- {}: {} Parameters schema: {}".format(
+                tool.get("name", ""),
+                tool.get("description", ""),
+                json.dumps(tool.get("parameters", {})),
+            )
+        )
+    lines.append("")
+    lines.append(
+        "To call a tool, reply with exactly one block of the form "
+        '<tool_call>{"name": "<tool name>", "arguments": {…}}</tool_call> '
+        "and nothing after it. Only call a tool when it is needed to answer."
+    )
+    return "\n".join(lines)
+
+
+def chat_prompt(tokenizer, messages, tools, template_kwargs):
+    if not tools:
+        return tokenizer.apply_chat_template(messages, **template_kwargs)
+    try:
+        with_tools = tokenizer.apply_chat_template(
+            messages, tools=wrap_tools(tools), **template_kwargs
+        )
+        # A template with no tools support renders the same prompt with and
+        # without them; only a differing render proves the model saw the offer.
+        if with_tools != tokenizer.apply_chat_template(messages, **template_kwargs):
+            return with_tools
+    except TypeError:
+        pass
+    blocked = [{"role": "system", "content": tool_system_block(tools)}] + messages
+    return tokenizer.apply_chat_template(blocked, **template_kwargs)
+
+
+def render_chatml(messages, tools=None):
     prompt = ""
+    if tools:
+        prompt += f"<|im_start|>system\n{tool_system_block(tools)}<|im_end|>\n"
     for message in messages:
         prompt += "<|im_start|>{}\n{}<|im_end|>\n".format(
             message.get("role", ""),
@@ -240,22 +326,20 @@ def main():
         try:
             no_template = False
             if op == "chat":
+                messages = shape_tool_messages(request.get("messages", []))
+                tools = tool_specs(request)
                 if getattr(tokenizer, "chat_template", None):
                     template_kwargs = {"add_generation_prompt": True}
                     if request.get("thinking") is False:
                         template_kwargs["enable_thinking"] = False
                     try:
-                        prompt = tokenizer.apply_chat_template(
-                            request.get("messages", []), **template_kwargs
-                        )
+                        prompt = chat_prompt(tokenizer, messages, tools, template_kwargs)
                     except TypeError:
                         template_kwargs.pop("enable_thinking", None)
-                        prompt = tokenizer.apply_chat_template(
-                            request.get("messages", []), **template_kwargs
-                        )
+                        prompt = chat_prompt(tokenizer, messages, tools, template_kwargs)
                 else:
                     no_template = True
-                    prompt = render_chatml(request.get("messages", []))
+                    prompt = render_chatml(messages, tools)
             else:
                 prompt = request.get("prompt", "")
             max_tokens = int(request.get("max_tokens", 4096))
