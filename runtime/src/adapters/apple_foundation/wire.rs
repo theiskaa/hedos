@@ -1,7 +1,7 @@
 //! The wire forms of the shim ABI: the request JSON `hedos_af_stream` takes
 //! and the done-event payload it emits. Pure functions, so the FFI protocol
-//! stays testable on every platform even though the FFI itself is
-//! feature-gated to macOS.
+//! stays testable on every platform even though the FFI itself is compiled
+//! only on macOS.
 
 use kernel::capabilities::ChatMessage;
 use serde_json::{Map, Value, json};

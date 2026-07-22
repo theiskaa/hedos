@@ -112,6 +112,8 @@ struct CallbackState {
     tx: UnboundedSender<Result<BuiltinEvent, RuntimeError>>,
 }
 
+/// The C callback the shim invokes per event: routes each into the backend
+/// stream and frees the boxed state on the terminal event.
 unsafe extern "C" fn on_event(ctx: *mut c_void, kind: i32, payload: *const c_char) {
     // SAFETY: `ctx` is the `Box<CallbackState>` handed to `hedos_af_stream`;
     // the shim invokes this callback sequentially per generation and never
