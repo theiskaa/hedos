@@ -55,6 +55,12 @@ impl RuntimeAdapter for MlxVlmAdapter {
         self.base.id()
     }
 
+    fn wires_tools(&self) -> bool {
+        // The sidecar offers the request's tools through a system block and
+        // parses tool calls back out of the finished turn.
+        true
+    }
+
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
         record.runtime.id.as_ref() == Some(self.base.id()) && is_vision_capability(capability)
     }
@@ -143,6 +149,13 @@ mod tests {
 
     fn identified(format: ModelFormat, caps: Vec<Capability>) -> IdentifiedModel {
         IdentifiedModel::new(format, Some(Modality::vision()), caps, ExecutionMode::Sync)
+    }
+
+    #[test]
+    fn it_wires_tools() {
+        // Keeps the `tools` capability fold granting tools to mlx-vlm models
+        // (resolution::fold_tool_capability keys on this).
+        assert!(adapter().wires_tools());
     }
 
     #[test]
