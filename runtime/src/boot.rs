@@ -12,10 +12,10 @@ use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
 
 use crate::adapters::{
-    A1111Adapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter,
-    LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingWhisperBackend,
-    MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter,
-    WhisperCppAdapter, WhisperEngine,
+    A1111Adapter, AppleFoundationAdapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter,
+    EmbeddingsAdapter, LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, MfluxAdapter,
+    MissingAppleBackend, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter,
+    OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -124,8 +124,10 @@ pub fn discovery_settings(settings: &Settings) -> kernel::discovery::ModelsSetti
 /// The built-in adapter set — the port of the Swift `defaultAdapters`. Each
 /// adapter is present regardless of whether its backend (a `llama-server`
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
-/// capability only actually serves when its backend is available. The two
-/// framework-bound adapters (MLX-Swift, Apple Foundation) are intentionally out.
+/// capability only actually serves when its backend is available. The one
+/// framework-bound adapter still out is MLX-Swift (covered by the mlx
+/// sidecars); Apple Foundation registers with a missing backend until the
+/// Swift bridge is compiled in.
 fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<RegisteredAdapter> {
     let bundles = vec![dirs.sub("bundles")];
     let workdirs = dirs.sub("workdirs");
@@ -141,21 +143,20 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
         )
     };
 
-    let mut adapters: Vec<RegisteredAdapter> = Vec::new();
-
     // Streaming adapters.
-    adapters.push(RegisteredAdapter::streaming(Arc::new(
-        LlamaServerAdapter::new(Arc::new(LlamaServerPool::new(Arc::new(
-            LlamaServerSpawner::new("llama-server"),
+    let mut adapters: Vec<RegisteredAdapter> = vec![
+        RegisteredAdapter::streaming(Arc::new(LlamaServerAdapter::new(Arc::new(
+            LlamaServerPool::new(Arc::new(LlamaServerSpawner::new("llama-server"))),
         )))),
-    )));
-    adapters.push(RegisteredAdapter::streaming(Arc::new(
-        WhisperCppAdapter::new(
+        RegisteredAdapter::streaming(Arc::new(WhisperCppAdapter::new(
             governor.clone(),
             WhisperEngine::new(Arc::new(MissingWhisperBackend)),
-        ),
-    )));
-    adapters.push(RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())));
+        ))),
+        RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())),
+        RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(Arc::new(
+            MissingAppleBackend,
+        )))),
+    ];
     let (g, s, e, b, w) = args("mlx-audio");
     adapters.push(RegisteredAdapter::streaming(Arc::new(
         MlxAudioAdapter::new(g, s, e, b, w),
