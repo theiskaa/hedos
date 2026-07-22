@@ -102,6 +102,12 @@ impl RuntimeAdapter for AppleFoundationAdapter {
         &self.id
     }
 
+    fn wires_tools(&self) -> bool {
+        // The bridge offers the request's tools to the session and captures
+        // the calls the model makes back out as chunks.
+        true
+    }
+
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
         record.runtime.id.as_ref() == Some(&self.id)
             && (*capability == Capability::chat() || *capability == Capability::complete())
@@ -300,6 +306,13 @@ mod tests {
         let mut other = record();
         other.runtime.id = Some(RuntimeId::ollama());
         assert!(!adapter.can_serve(&other, &Capability::chat()));
+    }
+
+    #[test]
+    fn it_wires_tools() {
+        // Keeps the `tools` capability fold granting tools to the builtin
+        // model (resolution::fold_tool_capability keys on this).
+        assert!(AppleFoundationAdapter::new(Arc::new(MissingAppleBackend)).wires_tools());
     }
 
     #[test]
