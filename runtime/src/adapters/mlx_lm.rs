@@ -57,6 +57,12 @@ impl RuntimeAdapter for MlxLmAdapter {
         self.base.id()
     }
 
+    fn wires_tools(&self) -> bool {
+        // The sidecar renders the request's tools through the model's chat
+        // template and parses tool calls back out of the finished turn.
+        true
+    }
+
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
         record.runtime.id.as_ref() == Some(self.base.id()) && is_text_capability(capability)
     }
@@ -166,6 +172,13 @@ mod tests {
         assert!(adapter.can_serve(&record(), &Capability::chat()));
         assert!(adapter.can_serve(&record(), &Capability::complete()));
         assert!(!adapter.can_serve(&record(), &Capability::embed()));
+    }
+
+    #[test]
+    fn it_wires_tools() {
+        // Keeps the `tools` capability fold granting tools to mlx-lm models
+        // (resolution::fold_tool_capability keys on this).
+        assert!(adapter().wires_tools());
     }
 
     #[test]
