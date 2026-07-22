@@ -1,7 +1,7 @@
 //! The Apple-Foundation backend seam: the interface the adapter drives, and the
 //! placeholder used when no bridge to Apple's model is built into this binary.
 
-use kernel::capabilities::ChatMessage;
+use kernel::capabilities::{ChatMessage, ToolCall, ToolSpec};
 
 use crate::adapters::{RuntimeError, RuntimeStream};
 
@@ -24,6 +24,10 @@ pub enum BuiltinAvailability {
 pub enum BuiltinEvent {
     /// The full reply text so far.
     Snapshot(String),
+    /// A tool invocation the model captured mid-generation. The turn still
+    /// ends with a `Done` — the backend finishes the generation once a call
+    /// is captured, since the tool's result arrives in a later request.
+    ToolCall(ToolCall),
     /// The terminal token counts, when the backend could measure them.
     Done {
         prompt_tokens: Option<i64>,
@@ -49,9 +53,15 @@ pub trait AppleFoundationBackend: Send + Sync {
     /// Whether the model can serve right now.
     fn availability(&self) -> BuiltinAvailability;
 
-    /// Stream a generation over `messages` with `options`. Dropping the
-    /// returned stream cancels the generation.
-    fn stream(&self, messages: Vec<ChatMessage>, options: BuiltinOptions) -> BuiltinEventStream;
+    /// Stream a generation over `messages` with `options`, offering `tools`
+    /// for the model to call. Dropping the returned stream cancels the
+    /// generation.
+    fn stream(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolSpec>,
+        options: BuiltinOptions,
+    ) -> BuiltinEventStream;
 }
 
 /// The placeholder backend used when no bridge is compiled in: the model is
@@ -67,7 +77,12 @@ impl AppleFoundationBackend for MissingAppleBackend {
         BuiltinAvailability::NotEligible
     }
 
-    fn stream(&self, _messages: Vec<ChatMessage>, _options: BuiltinOptions) -> BuiltinEventStream {
+    fn stream(
+        &self,
+        _messages: Vec<ChatMessage>,
+        _tools: Vec<ToolSpec>,
+        _options: BuiltinOptions,
+    ) -> BuiltinEventStream {
         RuntimeStream::failed(RuntimeError::Unavailable(MISSING_HINT.to_owned()))
     }
 }

@@ -71,7 +71,7 @@ mod tests {
     use super::super::backend::{BuiltinEventStream, BuiltinOptions};
     use super::*;
     use crate::adapters::{RuntimeError, RuntimeStream};
-    use kernel::capabilities::ChatMessage;
+    use kernel::capabilities::{ChatMessage, ToolSpec};
 
     struct Fixed(BuiltinAvailability);
 
@@ -83,6 +83,7 @@ mod tests {
         fn stream(
             &self,
             _messages: Vec<ChatMessage>,
+            _tools: Vec<ToolSpec>,
             _options: BuiltinOptions,
         ) -> BuiltinEventStream {
             RuntimeStream::failed(RuntimeError::Unavailable("not under test".to_owned()))

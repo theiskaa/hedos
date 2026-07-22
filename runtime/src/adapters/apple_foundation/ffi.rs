@@ -9,7 +9,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use kernel::capabilities::ChatMessage;
+use kernel::capabilities::{ChatMessage, ToolSpec};
 use libloading::Library;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -17,7 +17,7 @@ use super::backend::{
     AppleFoundationBackend, BuiltinAvailability, BuiltinEvent, BuiltinEventStream, BuiltinOptions,
     MissingAppleBackend,
 };
-use super::wire::{done_event, request_json};
+use super::wire::{done_event, request_json, tool_call_event};
 use crate::adapters::{RuntimeError, RuntimeStream};
 
 /// The shim ABI this backend speaks (`hedos_af_abi_version`).
@@ -145,6 +145,16 @@ unsafe extern "C" fn on_event(ctx: *mut c_void, kind: i32, payload: *const c_cha
             let _ = state.tx.send(Err(RuntimeError::Cancelled));
             true
         }
+        4 => {
+            // The ABI-v2 tool-call event, decoded ahead of the shim speaking
+            // v2 — today's v1 shim never emits it. A malformed call payload
+            // is dropped, keeping the stream alive for the terminal event
+            // that still follows.
+            if let Some(event) = tool_call_event(&text) {
+                let _ = state.tx.send(Ok(event));
+            }
+            false
+        }
         // An unknown kind would mean an ABI drift the version guard missed;
         // dropping the event keeps the stream alive for the terminal one.
         _ => false,
@@ -173,9 +183,14 @@ impl AppleFoundationBackend for FfiAppleBackend {
         }
     }
 
-    fn stream(&self, messages: Vec<ChatMessage>, options: BuiltinOptions) -> BuiltinEventStream {
+    fn stream(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Vec<ToolSpec>,
+        options: BuiltinOptions,
+    ) -> BuiltinEventStream {
         let (tx, stream) = RuntimeStream::channel();
-        let Ok(request) = CString::new(request_json(&messages, &options)) else {
+        let Ok(request) = CString::new(request_json(&messages, &tools, &options)) else {
             return RuntimeStream::failed(RuntimeError::Failed(
                 "the generation request could not be encoded".to_owned(),
             ));

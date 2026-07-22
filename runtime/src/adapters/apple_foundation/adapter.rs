@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use kernel::capabilities::{CapabilityChunk, ChatMessage, ChatRole, GenerationStats};
+use kernel::capabilities::{CapabilityChunk, ChatMessage, ChatRole, GenerationStats, ToolSpec};
 use kernel::records::{BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId};
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
@@ -68,6 +68,12 @@ impl AppleFoundationAdapter {
             .collect())
     }
 
+    /// The tools the request offers, parsed leniently: a malformed spec is
+    /// dropped, not refused.
+    fn tools(payload: &JsonValue) -> Vec<ToolSpec> {
+        ToolSpec::from_payload_array(payload.as_object().and_then(|fields| fields.get("tools")))
+    }
+
     /// Read the sampling options the model honors; both `top_p` and `top_k` at
     /// once is refused because Apple's sampler takes one or the other.
     fn options(payload: &JsonValue) -> Result<BuiltinOptions, RuntimeError> {
@@ -127,10 +133,11 @@ impl RuntimeAdapter for AppleFoundationAdapter {
                 return stream;
             }
         };
+        let tools = Self::tools(&payload);
         let backend = Arc::clone(&self.backend);
         tokio::spawn(async move {
             let started = Instant::now();
-            let mut upstream = backend.stream(messages, options);
+            let mut upstream = backend.stream(messages, tools, options);
             let mut previous = String::new();
             let mut prompt_tokens = None;
             let mut completion_tokens = None;
@@ -146,6 +153,11 @@ impl RuntimeAdapter for AppleFoundationAdapter {
                             return;
                         }
                         previous = current;
+                    }
+                    Ok(BuiltinEvent::ToolCall(call)) => {
+                        if tx.send(Ok(CapabilityChunk::ToolCall(call))).is_err() {
+                            return;
+                        }
                     }
                     Ok(BuiltinEvent::Done {
                         prompt_tokens: prompt,
@@ -201,11 +213,13 @@ mod tests {
     use crate::adapters::RuntimeStream;
     use kernel::records::{ExecutionMode, Modality, ModelSource, ModelState, SourceKind};
 
+    type SeenRequest = (Vec<ChatMessage>, Vec<ToolSpec>, BuiltinOptions);
+
     /// A backend that replays a scripted event sequence (once) and records the
     /// request it saw.
     struct FakeBackend {
         events: std::sync::Mutex<Vec<Result<BuiltinEvent, RuntimeError>>>,
-        seen: std::sync::Mutex<Option<(Vec<ChatMessage>, BuiltinOptions)>>,
+        seen: std::sync::Mutex<Option<SeenRequest>>,
     }
 
     impl FakeBackend {
@@ -225,9 +239,10 @@ mod tests {
         fn stream(
             &self,
             messages: Vec<ChatMessage>,
+            tools: Vec<ToolSpec>,
             options: BuiltinOptions,
         ) -> BuiltinEventStream {
-            *self.seen.lock().unwrap() = Some((messages, options));
+            *self.seen.lock().unwrap() = Some((messages, tools, options));
             let (tx, stream) = RuntimeStream::channel();
             for event in std::mem::take(&mut *self.events.lock().unwrap()) {
                 let _ = tx.send(event);
@@ -368,6 +383,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_captured_tool_call_streams_as_a_chunk_before_done() {
+        let call = kernel::capabilities::ToolCall::with_id(
+            "call_1",
+            "read",
+            JsonValue::Object(BTreeMap::new()),
+        );
+        let backend = Arc::new(FakeBackend::scripted(vec![
+            Ok(BuiltinEvent::Snapshot("Let me check.".to_owned())),
+            Ok(BuiltinEvent::ToolCall(call.clone())),
+            Ok(BuiltinEvent::Done {
+                prompt_tokens: None,
+                completion_tokens: None,
+            }),
+        ]));
+        let adapter = AppleFoundationAdapter::new(backend);
+        let chunks = collect(adapter.invoke(&record(), Capability::chat(), chat_payload(&[])))
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        assert!(chunks.contains(&CapabilityChunk::ToolCall(call)));
+        assert!(matches!(chunks.last(), Some(CapabilityChunk::Done(_))));
+    }
+
+    #[tokio::test]
+    async fn the_requests_tools_and_tool_history_reach_the_backend() {
+        let backend = Arc::new(FakeBackend::scripted(vec![]));
+        let adapter =
+            AppleFoundationAdapter::new(Arc::clone(&backend) as Arc<dyn AppleFoundationBackend>);
+        let tool_call = JsonValue::Object(
+            [
+                ("id".to_owned(), JsonValue::String("call_1".to_owned())),
+                ("name".to_owned(), JsonValue::String("read".to_owned())),
+                ("arguments".to_owned(), JsonValue::Object(BTreeMap::new())),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let messages = JsonValue::Array(vec![
+            JsonValue::Object(
+                [
+                    ("role".to_owned(), JsonValue::String("assistant".to_owned())),
+                    ("content".to_owned(), JsonValue::String(String::new())),
+                    ("tool_calls".to_owned(), JsonValue::Array(vec![tool_call])),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            JsonValue::Object(
+                [
+                    ("role".to_owned(), JsonValue::String("tool".to_owned())),
+                    (
+                        "content".to_owned(),
+                        JsonValue::String("file text".to_owned()),
+                    ),
+                    (
+                        "tool_call_id".to_owned(),
+                        JsonValue::String("call_1".to_owned()),
+                    ),
+                    ("tool_name".to_owned(), JsonValue::String("read".to_owned())),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            JsonValue::Object(
+                [
+                    ("role".to_owned(), JsonValue::String("user".to_owned())),
+                    ("content".to_owned(), JsonValue::String("go on".to_owned())),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        ]);
+        let spec = JsonValue::Object(
+            [
+                ("name".to_owned(), JsonValue::String("read".to_owned())),
+                (
+                    "description".to_owned(),
+                    JsonValue::String("read a file".to_owned()),
+                ),
+                ("parameters".to_owned(), JsonValue::Object(BTreeMap::new())),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let payload = JsonValue::Object(
+            [
+                ("messages".to_owned(), messages),
+                ("tools".to_owned(), JsonValue::Array(vec![spec])),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        collect(adapter.invoke(&record(), Capability::chat(), payload)).await;
+        let seen = backend.seen.lock().unwrap().clone();
+        let (messages, tools, _) = seen.expect("backend saw the request");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "read");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].tool_calls.len(), 1);
+        assert_eq!(messages[0].tool_calls[0].id, "call_1");
+        assert_eq!(messages[1].role, ChatRole::Tool);
+        assert_eq!(messages[1].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(messages[1].tool_name.as_deref(), Some("read"));
+    }
+
+    #[tokio::test]
     async fn a_rewritten_snapshot_is_skipped_not_reemitted() {
         let backend = Arc::new(FakeBackend::scripted(vec![
             Ok(BuiltinEvent::Snapshot("draft".to_owned())),
@@ -416,7 +538,7 @@ mod tests {
         ]);
         collect(adapter.invoke(&record(), Capability::chat(), payload)).await;
         let seen = backend.seen.lock().unwrap().clone();
-        let (messages, options) = seen.expect("backend saw the request");
+        let (messages, _, options) = seen.expect("backend saw the request");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, "hi");
         assert_eq!(options.temperature, Some(0.2));
@@ -424,6 +546,37 @@ mod tests {
         assert_eq!(options.seed, Some(11));
         assert_eq!(options.max_tokens, Some(64));
         assert_eq!(options.top_p, None);
+    }
+
+    #[tokio::test]
+    async fn tools_on_a_complete_payload_still_reach_the_backend() {
+        // The gateway never builds a complete payload with tools, but the
+        // adapter forwards them uniformly rather than special-casing the
+        // capability — this pins that as intended.
+        let backend = Arc::new(FakeBackend::scripted(vec![]));
+        let adapter =
+            AppleFoundationAdapter::new(Arc::clone(&backend) as Arc<dyn AppleFoundationBackend>);
+        let spec = JsonValue::Object(
+            [("name".to_owned(), JsonValue::String("read".to_owned()))]
+                .into_iter()
+                .collect(),
+        );
+        let payload = JsonValue::Object(
+            [
+                (
+                    "prompt".to_owned(),
+                    JsonValue::String("finish this".to_owned()),
+                ),
+                ("tools".to_owned(), JsonValue::Array(vec![spec])),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        collect(adapter.invoke(&record(), Capability::complete(), payload)).await;
+        let seen = backend.seen.lock().unwrap().clone();
+        let (_, tools, _) = seen.expect("backend saw the request");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "read");
     }
 
     #[tokio::test]
@@ -441,7 +594,7 @@ mod tests {
         );
         collect(adapter.invoke(&record(), Capability::complete(), payload)).await;
         let seen = backend.seen.lock().unwrap().clone();
-        let (messages, _) = seen.expect("backend saw the request");
+        let (messages, _, _) = seen.expect("backend saw the request");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, ChatRole::User);
         assert_eq!(messages[0].content, "finish this");
@@ -482,6 +635,7 @@ mod tests {
             fn stream(
                 &self,
                 _messages: Vec<ChatMessage>,
+                _tools: Vec<ToolSpec>,
                 _options: BuiltinOptions,
             ) -> BuiltinEventStream {
                 let (tx, stream) = RuntimeStream::channel();
@@ -525,7 +679,7 @@ mod tests {
         );
         collect(adapter.invoke(&record(), Capability::chat(), payload)).await;
         let seen = backend.seen.lock().unwrap().clone();
-        let (messages, _) = seen.expect("backend saw the request");
+        let (messages, _, _) = seen.expect("backend saw the request");
         assert!(messages.is_empty());
     }
 

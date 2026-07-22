@@ -3,22 +3,31 @@
 //! stays testable on every platform even though the FFI itself is compiled
 //! only on macOS.
 
-use kernel::capabilities::ChatMessage;
+use kernel::capabilities::{ChatMessage, ToolCall, ToolSpec};
+use kernel::records::JsonValue;
 use serde_json::{Map, Value, json};
 
 use super::backend::{BuiltinEvent, BuiltinOptions};
 
-/// The request `hedos_af_stream` takes: the messages plus only the sampling
-/// options actually set. `seed` needs the full u64 range, which is why this
-/// serializes through `serde_json` rather than the kernel's i64-only
-/// [`kernel::records::JsonValue`].
-pub(crate) fn request_json(messages: &[ChatMessage], options: &BuiltinOptions) -> String {
-    let wire_messages: Vec<Value> = messages
-        .iter()
-        .map(|message| json!({"role": message.role.as_str(), "content": message.content}))
-        .collect();
+/// The request `hedos_af_stream` takes: the messages, the tools on offer, and
+/// only the sampling options actually set. `seed` needs the full u64 range,
+/// which is why this serializes through `serde_json` rather than the kernel's
+/// i64-only [`kernel::records::JsonValue`].
+pub(crate) fn request_json(
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+    options: &BuiltinOptions,
+) -> String {
+    let wire_messages: Vec<Value> = messages.iter().map(message_value).collect();
     let mut object = Map::new();
     object.insert("messages".to_owned(), Value::Array(wire_messages));
+    if !tools.is_empty() {
+        let wire_tools = tools
+            .iter()
+            .map(|tool| serde_value(&tool.payload_value()))
+            .collect();
+        object.insert("tools".to_owned(), Value::Array(wire_tools));
+    }
     if let Some(temperature) = options.temperature {
         object.insert("temperature".to_owned(), json!(temperature));
     }
@@ -35,6 +44,65 @@ pub(crate) fn request_json(messages: &[ChatMessage], options: &BuiltinOptions) -
         object.insert("max_tokens".to_owned(), json!(max_tokens));
     }
     Value::Object(object).to_string()
+}
+
+/// One message's wire object: role and content, plus the tool calls an
+/// assistant turn emitted and the call a tool turn answers, when present.
+fn message_value(message: &ChatMessage) -> Value {
+    let mut object = Map::new();
+    object.insert("role".to_owned(), json!(message.role.as_str()));
+    object.insert("content".to_owned(), json!(message.content));
+    if !message.tool_calls.is_empty() {
+        let calls = message
+            .tool_calls
+            .iter()
+            .map(|call| serde_value(&call.payload_value()))
+            .collect();
+        object.insert("tool_calls".to_owned(), Value::Array(calls));
+    }
+    if let Some(id) = &message.tool_call_id {
+        object.insert("tool_call_id".to_owned(), json!(id));
+    }
+    if let Some(name) = &message.tool_name {
+        object.insert("tool_name".to_owned(), json!(name));
+    }
+    Value::Object(object)
+}
+
+/// A kernel [`JsonValue`] as a `serde_json` value. Tool specs and calls go
+/// through their canonical `payload_value` forms and then this conversion, so
+/// the shim wire shape is pinned to those forms rather than to whatever the
+/// kernel structs' derived serialization happens to be.
+fn serde_value(value: &JsonValue) -> Value {
+    match value {
+        JsonValue::Null => Value::Null,
+        JsonValue::Bool(flag) => Value::Bool(*flag),
+        JsonValue::Int(number) => Value::Number((*number).into()),
+        JsonValue::Double(number) => serde_json::Number::from_f64(*number)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        JsonValue::String(text) => Value::String(text.clone()),
+        JsonValue::Array(entries) => Value::Array(entries.iter().map(serde_value).collect()),
+        JsonValue::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), serde_value(value)))
+                .collect(),
+        ),
+    }
+}
+
+/// Parse a tool-call-event payload (`{"id"?,"name","arguments"?:{…}}`) into
+/// the event, or `None` for a payload without a usable call — a nameless or
+/// malformed one is dropped, like any other unparseable frame on this wire.
+/// An absent `arguments` defaults to `{}`, but a present non-object (null
+/// included) drops the call — the shim must send an object or omit the key,
+/// never null.
+pub(crate) fn tool_call_event(payload: &str) -> Option<BuiltinEvent> {
+    let value: JsonValue = serde_json::from_str(payload).ok()?;
+    ToolCall::from_payload(&value)
+        .filter(|call| !call.name.is_empty())
+        .map(BuiltinEvent::ToolCall)
 }
 
 /// Parse a done-event payload (`{"prompt_tokens":n|null,"completion_tokens":
@@ -70,14 +138,61 @@ mod tests {
             top_k: Some(40),
             ..BuiltinOptions::default()
         };
-        let parsed: Value = serde_json::from_str(&request_json(&messages, &options)).unwrap();
+        let parsed: Value = serde_json::from_str(&request_json(&messages, &[], &options)).unwrap();
         assert_eq!(parsed["messages"][0]["role"], "system");
         assert_eq!(parsed["messages"][1]["content"], "hi");
         assert_eq!(parsed["temperature"], 0.5);
         assert_eq!(parsed["top_k"], 40);
+        assert!(parsed.get("tools").is_none());
         assert!(parsed.get("top_p").is_none());
         assert!(parsed.get("seed").is_none());
         assert!(parsed.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn the_request_carries_tools_and_tool_routed_messages() {
+        let mut assistant = ChatMessage::new(ChatRole::Assistant, "");
+        assistant.tool_calls = vec![ToolCall::with_id(
+            "call_1",
+            "read",
+            JsonValue::Object(
+                [("path".to_owned(), JsonValue::String("a.txt".to_owned()))]
+                    .into_iter()
+                    .collect(),
+            ),
+        )];
+        let mut result = ChatMessage::new(ChatRole::Tool, "contents");
+        result.tool_call_id = Some("call_1".to_owned());
+        result.tool_name = Some("read".to_owned());
+        let messages = vec![
+            assistant,
+            result,
+            ChatMessage::new(ChatRole::User, "and now?"),
+        ];
+        let tools = vec![ToolSpec::new(
+            "read",
+            "read a file",
+            JsonValue::Object(
+                [("type".to_owned(), JsonValue::String("object".to_owned()))]
+                    .into_iter()
+                    .collect(),
+            ),
+        )];
+        let parsed: Value =
+            serde_json::from_str(&request_json(&messages, &tools, &BuiltinOptions::default()))
+                .unwrap();
+        assert_eq!(parsed["tools"][0]["name"], "read");
+        assert_eq!(parsed["tools"][0]["parameters"]["type"], "object");
+        assert_eq!(parsed["messages"][0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(
+            parsed["messages"][0]["tool_calls"][0]["arguments"]["path"],
+            "a.txt"
+        );
+        assert_eq!(parsed["messages"][1]["role"], "tool");
+        assert_eq!(parsed["messages"][1]["tool_call_id"], "call_1");
+        assert_eq!(parsed["messages"][1]["tool_name"], "read");
+        assert!(parsed["messages"][2].get("tool_calls").is_none());
+        assert!(parsed["messages"][2].get("tool_call_id").is_none());
     }
 
     #[test]
@@ -86,9 +201,45 @@ mod tests {
             seed: Some(u64::MAX),
             ..BuiltinOptions::default()
         };
-        let json = request_json(&[ChatMessage::new(ChatRole::User, "x")], &options);
+        let json = request_json(&[ChatMessage::new(ChatRole::User, "x")], &[], &options);
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["seed"].as_u64(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn tool_call_payloads_parse_mint_ids_and_drop_the_malformed() {
+        let Some(BuiltinEvent::ToolCall(call)) =
+            tool_call_event(r#"{"id":"call_9","name":"read","arguments":{"path":"a"}}"#)
+        else {
+            panic!("expected a tool call");
+        };
+        assert_eq!(call.id, "call_9");
+        assert_eq!(call.name, "read");
+        let Some(BuiltinEvent::ToolCall(minted)) = tool_call_event(r#"{"name":"read"}"#) else {
+            panic!("expected a tool call with a minted id");
+        };
+        assert!(!minted.id.is_empty());
+        assert_eq!(tool_call_event(r#"{"arguments":{}}"#), None);
+        assert_eq!(tool_call_event(r#"{"name":""}"#), None);
+        assert_eq!(tool_call_event(r#"{"name":"read","arguments":3}"#), None);
+        assert_eq!(tool_call_event(r#"{"name":"read","arguments":null}"#), None);
+        assert_eq!(tool_call_event("[]"), None);
+        assert_eq!(tool_call_event("not json"), None);
+    }
+
+    #[test]
+    fn a_non_object_parameters_spec_flows_through_verbatim() {
+        // The gateway coerces malformed parameters to {} before dispatch, but
+        // a direct dispatch caller can hand the adapter anything — the wire
+        // forwards it as-is, so the shim's decode must tolerate the shape.
+        let tools = vec![ToolSpec::new("odd", "", JsonValue::Int(3))];
+        let json = request_json(
+            &[ChatMessage::new(ChatRole::User, "x")],
+            &tools,
+            &BuiltinOptions::default(),
+        );
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["tools"][0]["parameters"], 3);
     }
 
     #[test]
