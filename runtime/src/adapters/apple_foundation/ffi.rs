@@ -21,7 +21,7 @@ use super::wire::{done_event, request_json, tool_call_event};
 use crate::adapters::{RuntimeError, RuntimeStream};
 
 /// The shim ABI this backend speaks (`hedos_af_abi_version`).
-const SUPPORTED_ABI: u32 = 1;
+const SUPPORTED_ABI: u32 = 2;
 
 type AbiVersionFn = unsafe extern "C" fn() -> u32;
 type AvailabilityFn = unsafe extern "C" fn() -> i32;
@@ -146,10 +146,8 @@ unsafe extern "C" fn on_event(ctx: *mut c_void, kind: i32, payload: *const c_cha
             true
         }
         4 => {
-            // The ABI-v2 tool-call event, decoded ahead of the shim speaking
-            // v2 — today's v1 shim never emits it. A malformed call payload
-            // is dropped, keeping the stream alive for the terminal event
-            // that still follows.
+            // A malformed call payload is dropped, keeping the stream alive
+            // for the terminal event that still follows.
             if let Some(event) = tool_call_event(&text) {
                 let _ = state.tx.send(Ok(event));
             }
