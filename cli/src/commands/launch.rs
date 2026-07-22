@@ -226,8 +226,9 @@ fn exit_result(status: std::process::ExitStatus, spec: &HarnessSpec) -> Result<(
 /// request: a tool-needing harness requires the `tools` capability, refused
 /// here with the precise reason instead of as a 400 on every request inside
 /// the harness. The probe below can't catch this case on its own — a Python
-/// sidecar accepts a `tools` array and silently ignores it, so a probe through
-/// one "succeeds" against a model the gateway will refuse.
+/// sidecar serves a tools request even for a model whose template declares
+/// none (falling back to a generic tool prompt), so a probe through one
+/// "succeeds" against a model the gateway will refuse.
 ///
 /// Then one throwaway request shaped like the ones the harness will send. This
 /// catches the failures only the runtime can report: a backend that is down (a

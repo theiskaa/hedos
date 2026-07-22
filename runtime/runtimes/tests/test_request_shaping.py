@@ -275,3 +275,48 @@ def test_render_chatml_merges_tools_into_an_existing_system_turn(mlx_lm):
     prompt = mlx_lm.render_chatml(messages, [{"name": "read"}])
     assert prompt.count("<|im_start|>system") == 1
     assert prompt.startswith("<|im_start|>system\nBe brief.\n\nYou can call tools.")
+
+
+def test_vlm_inline_tool_history_folds_calls_into_assistant_text(mlx_vlm):
+    messages = [
+        {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [{"id": "c1", "name": "read", "arguments": {"path": "a"}}],
+        }
+    ]
+    shaped = mlx_vlm.inline_tool_history(messages)
+    assert shaped == [
+        {
+            "role": "assistant",
+            "content": 'checking\n<tool_call>{"name": "read", "arguments": {"path": "a"}}'
+            "</tool_call>",
+        }
+    ]
+    assert "tool_calls" in messages[0]
+
+
+def test_vlm_inline_tool_history_turns_tool_results_into_user_turns(mlx_vlm):
+    shaped = mlx_vlm.inline_tool_history([{"role": "tool", "tool_name": "read", "content": "data"}])
+    assert shaped == [{"role": "user", "content": '[tool "read" result]\ndata'}]
+
+
+def test_vlm_inline_tool_history_leaves_plain_messages_untouched(mlx_vlm):
+    messages = [{"role": "user", "content": "hi"}, "junk"]
+    assert mlx_vlm.inline_tool_history(messages) == messages
+
+
+def test_vlm_with_tool_block_merges_into_an_existing_system_turn(mlx_vlm):
+    messages = [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "hi"},
+    ]
+    blocked = mlx_vlm.with_tool_block(messages, [{"name": "read"}])
+    assert len(blocked) == 2
+    assert blocked[0]["content"].startswith("Be brief.\n\nYou can call tools.")
+
+
+def test_vlm_extraction_matches_the_mlx_lm_copy(mlx_lm, mlx_vlm):
+    text = 'ok <tool_call>{"name": "read", "arguments": {}}</tool_call>'
+    assert mlx_vlm.extract_tool_calls(text) == mlx_lm.extract_tool_calls(text)
+    assert mlx_vlm.extract_tool_calls("plain") == ("plain", [])
