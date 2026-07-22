@@ -34,59 +34,61 @@ impl AppleFoundationAdapter {
     fn delta<'a>(previous: &str, current: &'a str) -> &'a str {
         current.strip_prefix(previous).unwrap_or("")
     }
-}
 
-/// Parse the request's messages: a `complete` payload's prompt becomes a single
-/// user message; a `chat` payload's entries parse leniently, dropping any
-/// without a valid role.
-fn messages(
-    payload: &JsonValue,
-    capability: &Capability,
-) -> Result<Vec<ChatMessage>, RuntimeError> {
-    let JsonValue::Object(object) = payload else {
-        return Err(RuntimeError::Failed(
-            "chat payload must be an object".to_owned(),
-        ));
-    };
-    if *capability == Capability::complete() {
-        let Some(JsonValue::String(prompt)) = object.get("prompt") else {
+    /// Parse the request's messages: a `complete` payload's prompt becomes a
+    /// single user message; a `chat` payload's entries parse leniently,
+    /// dropping any without a valid role. An empty list passes through — the
+    /// backend owns the "needs a user message" rejection, as the Swift bridge
+    /// does.
+    fn messages(
+        payload: &JsonValue,
+        capability: &Capability,
+    ) -> Result<Vec<ChatMessage>, RuntimeError> {
+        let JsonValue::Object(object) = payload else {
             return Err(RuntimeError::Failed(
-                "complete payload must carry a prompt string".to_owned(),
+                "chat payload must be an object".to_owned(),
             ));
         };
-        return Ok(vec![ChatMessage::new(ChatRole::User, prompt.clone())]);
+        if *capability == Capability::complete() {
+            let Some(JsonValue::String(prompt)) = object.get("prompt") else {
+                return Err(RuntimeError::Failed(
+                    "complete payload must carry a prompt string".to_owned(),
+                ));
+            };
+            return Ok(vec![ChatMessage::new(ChatRole::User, prompt.clone())]);
+        }
+        let Some(JsonValue::Array(entries)) = object.get("messages") else {
+            return Err(RuntimeError::Failed(
+                "chat payload must carry a messages array".to_owned(),
+            ));
+        };
+        Ok(entries
+            .iter()
+            .filter_map(ChatMessage::from_payload)
+            .collect())
     }
-    let Some(JsonValue::Array(entries)) = object.get("messages") else {
-        return Err(RuntimeError::Failed(
-            "chat payload must carry a messages array".to_owned(),
-        ));
-    };
-    Ok(entries
-        .iter()
-        .filter_map(ChatMessage::from_payload)
-        .collect())
-}
 
-/// Read the sampling options the model honors; both `top_p` and `top_k` at
-/// once is refused because Apple's sampler takes one or the other.
-fn options(payload: &JsonValue) -> Result<BuiltinOptions, RuntimeError> {
-    let object = payload.as_object();
-    let get = |key: &str| object.and_then(|fields| fields.get(key));
-    let options = BuiltinOptions {
-        temperature: get("temperature").and_then(JsonValue::as_f64),
-        top_p: get("top_p").and_then(JsonValue::as_f64),
-        top_k: get("top_k").and_then(JsonValue::as_i64),
-        seed: get("seed")
-            .and_then(JsonValue::as_i64)
-            .map(|seed| seed as u64),
-        max_tokens: get("max_tokens").and_then(JsonValue::as_i64),
-    };
-    if options.top_p.is_some() && options.top_k.is_some() {
-        return Err(RuntimeError::Failed(
-            "Apple Intelligence honors either top_p or top_k, not both".to_owned(),
-        ));
+    /// Read the sampling options the model honors; both `top_p` and `top_k` at
+    /// once is refused because Apple's sampler takes one or the other.
+    fn options(payload: &JsonValue) -> Result<BuiltinOptions, RuntimeError> {
+        let object = payload.as_object();
+        let get = |key: &str| object.and_then(|fields| fields.get(key));
+        let options = BuiltinOptions {
+            temperature: get("temperature").and_then(JsonValue::as_f64),
+            top_p: get("top_p").and_then(JsonValue::as_f64),
+            top_k: get("top_k").and_then(JsonValue::as_i64),
+            seed: get("seed")
+                .and_then(JsonValue::as_i64)
+                .map(|seed| seed as u64),
+            max_tokens: get("max_tokens").and_then(JsonValue::as_i64),
+        };
+        if options.top_p.is_some() && options.top_k.is_some() {
+            return Err(RuntimeError::Failed(
+                "Apple Intelligence honors either top_p or top_k, not both".to_owned(),
+            ));
+        }
+        Ok(options)
     }
-    Ok(options)
 }
 
 impl RuntimeAdapter for AppleFoundationAdapter {
@@ -116,8 +118,8 @@ impl RuntimeAdapter for AppleFoundationAdapter {
         payload: JsonValue,
     ) -> ChunkStream {
         let (tx, stream) = ChunkStream::channel();
-        let parsed = messages(&payload, &capability)
-            .and_then(|messages| options(&payload).map(|options| (messages, options)));
+        let parsed = Self::messages(&payload, &capability)
+            .and_then(|messages| Self::options(&payload).map(|options| (messages, options)));
         let (messages, options) = match parsed {
             Ok(parts) => parts,
             Err(error) => {
@@ -454,6 +456,25 @@ mod tests {
             results.first(),
             Some(Err(RuntimeError::Failed(_)))
         ));
+    }
+
+    #[tokio::test]
+    async fn an_empty_messages_array_reaches_the_backend_as_zero_messages() {
+        // The "needs a user message" rejection belongs to the backend (the
+        // Swift bridge's message split performs it), so the adapter forwards
+        // an empty list rather than second-guessing it.
+        let backend = Arc::new(FakeBackend::scripted(vec![]));
+        let adapter =
+            AppleFoundationAdapter::new(Arc::clone(&backend) as Arc<dyn AppleFoundationBackend>);
+        let payload = JsonValue::Object(
+            [("messages".to_owned(), JsonValue::Array(Vec::new()))]
+                .into_iter()
+                .collect(),
+        );
+        collect(adapter.invoke(&record(), Capability::chat(), payload)).await;
+        let seen = backend.seen.lock().unwrap().clone();
+        let (messages, _) = seen.expect("backend saw the request");
+        assert!(messages.is_empty());
     }
 
     #[tokio::test]
