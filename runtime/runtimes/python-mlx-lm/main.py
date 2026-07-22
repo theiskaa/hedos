@@ -320,6 +320,101 @@ def render_chatml(messages, tools=None):
     return prompt
 
 
+CALL_OPEN = "<tool_call>"
+CALL_CLOSE = "</tool_call>"
+TOOL_CALLS_MARKER = "[TOOL_CALLS]"
+PYTHON_TAG = "<|python_tag|>"
+
+
+def try_json(text):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def call_from_value(value):
+    if not isinstance(value, dict):
+        return None
+    name = value.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = value.get("arguments", value.get("parameters"))
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return None
+    call = {"name": name, "arguments": arguments}
+    if isinstance(value.get("id"), str) and value["id"]:
+        call["id"] = value["id"]
+    return call
+
+
+def parse_tagged_calls(text):
+    calls = []
+    remaining = []
+    cursor = 0
+    while True:
+        start = text.find(CALL_OPEN, cursor)
+        if start == -1:
+            remaining.append(text[cursor:])
+            break
+        end = text.find(CALL_CLOSE, start)
+        if end == -1:
+            remaining.append(text[cursor:])
+            break
+        remaining.append(text[cursor:start])
+        call = call_from_value(try_json(text[start + len(CALL_OPEN) : end].strip()))
+        if call:
+            calls.append(call)
+        else:
+            remaining.append(text[start : end + len(CALL_CLOSE)])
+        cursor = end + len(CALL_CLOSE)
+    return "".join(remaining), calls
+
+
+def parse_mistral_calls(text):
+    start = text.find(TOOL_CALLS_MARKER)
+    if start == -1:
+        return text, []
+    value = try_json(text[start + len(TOOL_CALLS_MARKER) :].strip())
+    entries = value if isinstance(value, list) else [value]
+    calls = [call for call in (call_from_value(entry) for entry in entries) if call]
+    if not calls:
+        return text, []
+    return text[:start], calls
+
+
+def parse_llama_calls(text):
+    stripped = text.strip()
+    if stripped.startswith(PYTHON_TAG):
+        call = call_from_value(try_json(stripped[len(PYTHON_TAG) :].strip()))
+        if call:
+            return "", [call]
+        return text, []
+    value = try_json(stripped)
+    if isinstance(value, list):
+        calls = [call for call in (call_from_value(entry) for entry in value) if call]
+        if calls and len(calls) == len(value):
+            return "", calls
+        return text, []
+    call = call_from_value(value)
+    if call:
+        return "", [call]
+    return text, []
+
+
+def extract_tool_calls(text):
+    # The marker formats are mutually exclusive, so a fixed order is safe; the
+    # bare-JSON fallback (inside parse_llama_calls) must run last because any
+    # model family can degrade to it.
+    for parser in (parse_tagged_calls, parse_mistral_calls, parse_llama_calls):
+        remaining, calls = parser(text)
+        if calls:
+            return remaining, calls
+    return text, []
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -354,6 +449,7 @@ def main():
         last = None
         try:
             no_template = False
+            tools = []
             if op == "chat":
                 messages = shape_tool_messages(request.get("messages", []))
                 tools = tool_specs(request)
@@ -387,19 +483,28 @@ def main():
                 send_json({"event": "status", "message": NO_TEMPLATE_NOTICE})
             send_json({"event": "begin"})
             splitter = ThinkSplitter()
+            # With tools offered, visible text is held to end-of-turn so a tool
+            # call can be parsed out of the full reply; thinking still streams.
+            collector = [] if tools else None
             stopped = False
 
-            # scanner/splitter are rebound each request; these closures run
-            # synchronously within the same iteration, never a later one.
+            # scanner/splitter/collector are rebound each request; these closures
+            # run synchronously within the same iteration, never a later one.
+            def deliver_text(text):
+                if collector is None:  # noqa: B023
+                    send_json({"event": "text", "text": text})
+                else:
+                    collector.append(text)  # noqa: B023
+
             def emit_text(text):
                 if not text:
                     return False
                 if not scanner.active:  # noqa: B023
-                    send_json({"event": "text", "text": text})
+                    deliver_text(text)
                     return False
                 emit = scanner.feed(text)  # noqa: B023
                 if emit:
-                    send_json({"event": "text", "text": emit})
+                    deliver_text(emit)
                 return scanner.stopped  # noqa: B023
 
             def emit_raw(text):
@@ -434,7 +539,13 @@ def main():
                 if scanner.active:
                     tail = scanner.flush()
                     if tail:
-                        send_json({"event": "text", "text": tail})
+                        deliver_text(tail)
+            if collector is not None:
+                remaining, calls = extract_tool_calls("".join(collector))
+                if remaining and (not calls or remaining.strip()):
+                    send_json({"event": "text", "text": remaining})
+                for call in calls:
+                    send_json({"event": "tool_call", **call})
             send_json(
                 {
                     "event": "done",
