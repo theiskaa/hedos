@@ -11,6 +11,9 @@ documentation.workspace = true
 description = "Discover, install, and serve the local models already on your machine."
 readme = "../README.md"
 
+[features]
+apple-foundation = ["runtime/apple-foundation"]
+
 [[bin]]
 name = "hedos"
 path = "src/main.rs"

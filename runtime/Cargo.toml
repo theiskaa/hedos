@@ -15,6 +15,11 @@ build = "build.rs"
 [lib]
 name = "runtime"
 
+# `apple-foundation` compiles the Swift FoundationModels shim (build.rs) and
+# the FFI backend that drives it. macOS-only; needs Xcode with the macOS 26 SDK.
+[features]
+apple-foundation = []
+
 [dependencies]
 kernel.workspace = true
 fs2.workspace = true

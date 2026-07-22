@@ -43,6 +43,42 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
     let archive_path = Path::new(&out_dir).join("runtimes.archive.gz");
     std::fs::write(&archive_path, compressed).expect("writing the archive to OUT_DIR cannot fail");
+
+    if std::env::var_os("CARGO_FEATURE_APPLE_FOUNDATION").is_some() {
+        build_apple_shim(&manifest_dir, &out_dir);
+    }
+}
+
+/// Compile the Swift shim over Apple's `FoundationModels` framework
+/// (`shim-apple/shim.swift`) into a dylib in `OUT_DIR`, baking its path into
+/// the crate as `HEDOS_APPLE_SHIM_BUILT_DYLIB`. Only runs under the
+/// `apple-foundation` feature, and fails loudly when the toolchain can't
+/// deliver — a requested feature must never ship silently inert.
+fn build_apple_shim(manifest_dir: &str, out_dir: &str) {
+    println!("cargo:rerun-if-changed=shim-apple");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    assert_eq!(
+        target_os, "macos",
+        "the apple-foundation feature only builds for macOS targets"
+    );
+    let dylib = Path::new(out_dir).join("libhedos_apple_shim.dylib");
+    let source = Path::new(manifest_dir).join("shim-apple/shim.swift");
+    let status = std::process::Command::new("xcrun")
+        .args(["-sdk", "macosx", "swiftc", "-O", "-emit-library", "-o"])
+        .arg(&dylib)
+        .arg(&source)
+        .status();
+    let toolchain_hint =
+        "the apple-foundation feature needs Xcode with the FoundationModels SDK (macOS 26+)";
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => panic!("swiftc failed with {status}; {toolchain_hint}"),
+        Err(error) => panic!("running xcrun swiftc: {error}; {toolchain_hint}"),
+    }
+    println!(
+        "cargo:rustc-env=HEDOS_APPLE_SHIM_BUILT_DYLIB={}",
+        dylib.display()
+    );
 }
 
 /// Recursively collect every file under `dir`, keyed by its path relative to
