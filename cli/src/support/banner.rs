@@ -6,6 +6,7 @@
 /// ANSI) so it survives `NO_COLOR`, redirection, and clap's own color handling
 /// untouched. Widest line is 65 columns, so it never wraps an 80-column terminal.
 pub const BANNER: &str = "
+
   ⠀⠀⠀⢰⢊⡩⢍⠑⠤⠔⠒⠢⠔⢉⠭⣉⠱⡀
   ⠀⠀⠀⣇⢸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⠀⡇   hedos
   ⠀⠀⠀⠐⠦⣁⠀⠰⠆⡠⠤⡀⠶⠀⢀⣡⠜⠁   ἕδος — a seat, an abode, a foundation
