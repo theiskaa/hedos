@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use kernel::artifacts::{Artifact, ArtifactStore};
 use kernel::discovery::{DiscoveryService, DiscoverySummary, StoreScanner};
 use kernel::jobs::{JobHistoryStore, reseeded, seeded};
-use kernel::profiles::{Verdict, assess, merged, prompt_characters};
+use kernel::profiles::{BUILTIN_CONTEXT_WINDOW, Verdict, assess, merged, prompt_characters};
 use kernel::records::{Capability, JsonValue, ModelRecord, SourceKind};
 use kernel::resolution::IdentificationCache;
 use kernel::{Registry, RegistryError};
@@ -35,9 +35,6 @@ use crate::resolution::{ResolutionEngine, ResolutionExplanation};
 /// asked for a specific `max_tokens`; below it the window itself is the limit,
 /// so the clamp is always applied.
 const IMPLICIT_MAX_TOKENS: i64 = 4096;
-
-/// A builtin model's fixed context window.
-const BUILTIN_WINDOW: i64 = 4096;
 
 /// Why a kernel request could not be served.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -520,7 +517,7 @@ fn effective_window(
     requested: Option<i64>,
 ) -> Option<i64> {
     if record.source.kind == SourceKind::builtin() {
-        return Some(BUILTIN_WINDOW);
+        return Some(BUILTIN_CONTEXT_WINDOW);
     }
     adapter
         .effective_context_window(record, requested)

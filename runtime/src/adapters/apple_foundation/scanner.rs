@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use kernel::discovery::{DiscoveredModel, ScanResult, StoreScanner};
+use kernel::profiles::BUILTIN_CONTEXT_WINDOW;
 use kernel::records::{Capability, ExecutionMode, Modality, ModelSource, SourceKind};
 
 use super::backend::{AppleFoundationBackend, BuiltinAvailability};
@@ -41,6 +42,9 @@ impl StoreScanner for AppleFoundationScanner {
                 model.modality_hint = Some(Modality::text());
                 model.capabilities_hint = vec![Capability::chat(), Capability::complete()];
                 model.execution_hint = ExecutionMode::Stream;
+                // Recorded so the shelf and /v1/models report the window
+                // honestly; serving budgets already pin builtin to this value.
+                model.context_length_hint = Some(BUILTIN_CONTEXT_WINDOW);
                 ScanResult {
                     discovered: vec![model],
                     ..ScanResult::default()
@@ -115,6 +119,7 @@ mod tests {
             vec![Capability::chat(), Capability::complete()]
         );
         assert_eq!(model.execution_hint, ExecutionMode::Stream);
+        assert_eq!(model.context_length_hint, Some(4096));
         assert_eq!(model.footprint_bytes, 0);
     }
 
