@@ -18,7 +18,10 @@ pub(crate) fn request_json(
     tools: &[ToolSpec],
     options: &BuiltinOptions,
 ) -> String {
-    let wire_messages: Vec<Value> = messages.iter().map(message_value).collect();
+    let wire_messages: Vec<Value> = messages
+        .iter()
+        .map(|message| serde_value(&message.payload_value()))
+        .collect();
     let mut object = Map::new();
     object.insert("messages".to_owned(), Value::Array(wire_messages));
     if !tools.is_empty() {
@@ -46,50 +49,13 @@ pub(crate) fn request_json(
     Value::Object(object).to_string()
 }
 
-/// One message's wire object: role and content, plus the tool calls an
-/// assistant turn emitted and the call a tool turn answers, when present.
-fn message_value(message: &ChatMessage) -> Value {
-    let mut object = Map::new();
-    object.insert("role".to_owned(), json!(message.role.as_str()));
-    object.insert("content".to_owned(), json!(message.content));
-    if !message.tool_calls.is_empty() {
-        let calls = message
-            .tool_calls
-            .iter()
-            .map(|call| serde_value(&call.payload_value()))
-            .collect();
-        object.insert("tool_calls".to_owned(), Value::Array(calls));
-    }
-    if let Some(id) = &message.tool_call_id {
-        object.insert("tool_call_id".to_owned(), json!(id));
-    }
-    if let Some(name) = &message.tool_name {
-        object.insert("tool_name".to_owned(), json!(name));
-    }
-    Value::Object(object)
-}
-
-/// A kernel [`JsonValue`] as a `serde_json` value. Tool specs and calls go
-/// through their canonical `payload_value` forms and then this conversion, so
-/// the shim wire shape is pinned to those forms rather than to whatever the
-/// kernel structs' derived serialization happens to be.
+/// A kernel [`JsonValue`] as a `serde_json` value. Messages, tool specs, and
+/// calls go through their canonical `payload_value` forms and then this
+/// conversion, so the shim wire shape is pinned to those forms rather than to
+/// whatever the kernel structs' derived serialization happens to be. The
+/// fallback is unreachable — every `JsonValue` key is a string.
 fn serde_value(value: &JsonValue) -> Value {
-    match value {
-        JsonValue::Null => Value::Null,
-        JsonValue::Bool(flag) => Value::Bool(*flag),
-        JsonValue::Int(number) => Value::Number((*number).into()),
-        JsonValue::Double(number) => serde_json::Number::from_f64(*number)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        JsonValue::String(text) => Value::String(text.clone()),
-        JsonValue::Array(entries) => Value::Array(entries.iter().map(serde_value).collect()),
-        JsonValue::Object(fields) => Value::Object(
-            fields
-                .iter()
-                .map(|(key, value)| (key.clone(), serde_value(value)))
-                .collect(),
-        ),
-    }
+    serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 /// Parse a tool-call-event payload (`{"id"?,"name","arguments"?:{…}}`) into

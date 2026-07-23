@@ -217,6 +217,7 @@ mod tests {
     use super::super::backend::{BuiltinAvailability, BuiltinEventStream, MissingAppleBackend};
     use super::*;
     use crate::adapters::RuntimeStream;
+    use kernel::capabilities::ToolCall;
     use kernel::records::{ExecutionMode, Modality, ModelSource, ModelState, SourceKind};
 
     type SeenRequest = (Vec<ChatMessage>, Vec<ToolSpec>, BuiltinOptions);
@@ -397,11 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_captured_tool_call_streams_as_a_chunk_before_done() {
-        let call = kernel::capabilities::ToolCall::with_id(
-            "call_1",
-            "read",
-            JsonValue::Object(BTreeMap::new()),
-        );
+        let call = ToolCall::with_id("call_1", "read", JsonValue::Object(BTreeMap::new()));
         let backend = Arc::new(FakeBackend::scripted(vec![
             Ok(BuiltinEvent::Snapshot("Let me check.".to_owned())),
             Ok(BuiltinEvent::ToolCall(call.clone())),
