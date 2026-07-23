@@ -10,6 +10,10 @@ A native runtime for Apple's on-device model (#4). hedos now serves Apple Intell
 - Tool calling works end to end. Apple's model executes tools during generation, so the runtime captures each call as a structured `tool_call`, ends the turn, and replays the result on the next request as tool-call and tool-output history. Tool parameter schemas port into the framework's dynamic schema — strings, numbers, booleans, enums, arrays, and nested objects with required and optional fields — and a tool whose schema the framework cannot express is dropped from the offer rather than failing the request.
 - Apple's on-device model has a fixed 4096-token context window. hedos records that window honestly on the shelf and in `/v1/models`, and warns at pick time when a model's window is too tight for the request ahead of it, instead of letting the run fail deep in the model with a context error.
 
+A native runtime that runs MLX models in-process (#8). MLX-safetensors text models already run through the Python `mlx-lm` sidecar; hedos now also runs them directly in-process through Apple's MLX-Swift framework, with no Python and no sidecar process, and picks that path automatically when it can.
+
+- The runtime bridges Rust to MLX-Swift through a Swift shim that loads the model, applies its own chat template, and streams tokens back over the gateway in every dialect — separating the model's reasoning from its visible answer, honoring stop sequences, and forwarding tool calls. When both can serve a model, the in-process runtime wins over the `mlx-lm` sidecar because it avoids spawning Python; a machine where the bridge could not be built keeps serving the same models through the sidecar, and the two never double-serve one model.
+
 ## v1.1.1 - 2026-07-22
 
 Tool calling now reaches the models served by the Python sidecars (#5). MLX builds from the Hugging Face cache — Llama and Qwen instruct models among them — can drive the coding harnesses and serve tool requests over the gateway, closing the gap where capable weights sat out of `hedos launch` because their runtime never forwarded tools.
