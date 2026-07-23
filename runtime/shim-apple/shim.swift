@@ -321,10 +321,19 @@ private func dynamicSchema(named name: String, from schema: WireValue) -> Dynami
     guard case .object(let fields) = schema else { return nil }
     if case .array(let options)? = fields["enum"] {
         let choices = options.compactMap(\.stringValue)
-        guard choices.count == options.count else { return nil }
+        guard choices.count == options.count, !choices.isEmpty else { return nil }
         return DynamicGenerationSchema(name: name, anyOf: choices)
     }
-    switch fields["type"]?.stringValue ?? "object" {
+    // A present but non-string "type" (the nullable ["string","null"] form,
+    // say) is a shape the framework can't express — distinct from an absent
+    // type, which conventionally means an object.
+    let typeName: String
+    switch fields["type"] {
+    case nil: typeName = "object"
+    case .string(let text)?: typeName = text
+    default: return nil
+    }
+    switch typeName {
     case "string":
         return DynamicGenerationSchema(type: String.self)
     case "number":
@@ -346,12 +355,12 @@ private func dynamicSchema(named name: String, from schema: WireValue) -> Dynami
             required = Set(names.compactMap(\.stringValue))
         }
         var built: [DynamicGenerationSchema.Property] = []
-        for key in properties.keys.sorted() {
-            guard let value = dynamicSchema(named: name + "-" + key, from: properties[key]!)
+        for (key, value) in properties.sorted(by: { $0.key < $1.key }) {
+            guard let property = dynamicSchema(named: name + "-" + key, from: value)
             else { return nil }
             built.append(
                 DynamicGenerationSchema.Property(
-                    name: key, schema: value, isOptional: !required.contains(key)))
+                    name: key, schema: property, isOptional: !required.contains(key)))
         }
         return DynamicGenerationSchema(name: name, properties: built)
     default:
@@ -372,7 +381,15 @@ private struct CapturingTool: FoundationModels.Tool {
     private let events: GenerationEvents
 
     init?(tool: WireTool, events: GenerationEvents) {
-        guard let root = dynamicSchema(named: tool.name, from: tool.parameters ?? .object([:])),
+        // Only object-rooted schemas are offered: the capture path re-parses
+        // the generated arguments as a JSON object (the convention every
+        // dialect on the far side speaks), so a bare-string or array root
+        // would generate arguments the wire cannot carry.
+        let parameters = tool.parameters ?? .object([:])
+        guard case .object(let fields) = parameters,
+            fields["enum"] == nil,
+            fields["type"] == nil || fields["type"]?.stringValue == "object",
+            let root = dynamicSchema(named: tool.name, from: parameters),
             let schema = try? GenerationSchema(root: root, dependencies: [])
         else { return nil }
         self.name = tool.name
@@ -406,22 +423,47 @@ private func makeSession(
                     segments: [.text(Transcript.TextSegment(content: instructions))],
                     toolDefinitions: tools.map { Transcript.ToolDefinition(tool: $0) })))
     }
+    var unansweredCallIds: [String] = []
     for message in history {
         if message.role == "assistant", let calls = message.tool_calls, !calls.isEmpty {
+            // Text the model produced before calling is its own response
+            // entry, so replay keeps the turn's preamble.
+            if !message.content.isEmpty {
+                entries.append(
+                    .response(
+                        Transcript.Response(
+                            assetIDs: [],
+                            segments: [.text(Transcript.TextSegment(content: message.content))])))
+            }
+            let ids = calls.map { $0.id ?? UUID().uuidString.lowercased() }
+            unansweredCallIds.append(contentsOf: ids)
             entries.append(
                 .toolCalls(
                     Transcript.ToolCalls(
-                        calls.map { call in
+                        zip(ids, calls).map { id, call in
                             Transcript.ToolCall(
-                                id: call.id ?? UUID().uuidString.lowercased(),
+                                id: id,
                                 toolName: call.name,
                                 arguments: generatedContent(call.arguments))
                         })))
         } else if message.role == "tool" {
+            // An id-less dialect still needs the output to reference its
+            // call, so the oldest unanswered call id stands in.
+            let id: String
+            if let explicit = message.tool_call_id {
+                id = explicit
+                if let index = unansweredCallIds.firstIndex(of: explicit) {
+                    unansweredCallIds.remove(at: index)
+                }
+            } else if unansweredCallIds.isEmpty {
+                id = UUID().uuidString.lowercased()
+            } else {
+                id = unansweredCallIds.removeFirst()
+            }
             entries.append(
                 .toolOutput(
                     Transcript.ToolOutput(
-                        id: message.tool_call_id ?? UUID().uuidString.lowercased(),
+                        id: id,
                         toolName: message.tool_name ?? "",
                         segments: [.text(Transcript.TextSegment(content: message.content))])))
         } else if message.role == "assistant" {
