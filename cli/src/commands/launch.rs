@@ -245,6 +245,9 @@ async fn preflight(
     if spec.needs_tools && !record.capabilities.contains(&Capability::tools()) {
         return Err(CliError::new(no_tools_reason(record, spec)));
     }
+    if let Some(note) = tight_window_note(record, spec) {
+        out.err(&note);
+    }
 
     let mut spinner = Spinner::start(out);
     spinner.set(&format!("checking {}", record.display_name()));
@@ -283,6 +286,28 @@ async fn preflight(
             error.message
         ))
     })
+}
+
+/// The window below which a harness's opening request — its system prompt plus
+/// the schemas of every tool it registers, commonly north of 10k tokens —
+/// is unlikely to fit.
+const COMFORTABLE_WINDOW: i64 = 16_384;
+
+/// A pick-time warning when the model's known context window is too small for
+/// a harness's opening prompt; `None` when the window is unknown or roomy. A
+/// warning, not a refusal: a stripped-down harness config may still fit. Goes
+/// through the kernel's window policy, so a builtin model warns even on a
+/// shelf whose record predates the window hint.
+fn tight_window_note(record: &ModelRecord, spec: &HarnessSpec) -> Option<String> {
+    let window = kernel::profiles::effective_window(record, None)?;
+    if window >= COMFORTABLE_WINDOW {
+        return None;
+    }
+    Some(format!(
+        "note: {}'s context window is {window} tokens, and {}'s opening prompt often runs past that — expect \"context window\" errors; a model with more room will seat it better",
+        record.display_name(),
+        spec.display
+    ))
 }
 
 /// Why a model without the `tools` capability can't serve `spec`, phrased by
@@ -487,6 +512,44 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn a_tight_window_warns_and_a_roomy_or_unknown_one_does_not() {
+        use kernel::records::{Modality, ModelSource, RuntimeId, SourceKind};
+
+        let spec = harnesses::find("opencode").expect("opencode spec");
+
+        // A builtin record warns from the kernel's fixed-window policy even
+        // when the record itself carries no context length (a shelf that
+        // predates the scanner's hint).
+        let builtin = ModelRecord::new(
+            "Apple Intelligence",
+            Modality::text(),
+            vec![Capability::chat()],
+            ModelSource::new(SourceKind::builtin(), "/System/x"),
+        );
+        assert_eq!(builtin.context_length, None);
+        let note = tight_window_note(&builtin, spec).expect("a warning");
+        assert!(note.contains("4096 tokens"));
+        assert!(note.contains(spec.display));
+
+        let mut served = ModelRecord::new(
+            "small",
+            Modality::text(),
+            vec![Capability::chat()],
+            ModelSource::new(SourceKind::ollama(), "small"),
+        );
+        served.runtime.id = Some(RuntimeId::ollama());
+        assert_eq!(tight_window_note(&served, spec), None);
+        served.context_length = Some(COMFORTABLE_WINDOW - 1);
+        assert!(tight_window_note(&served, spec).is_some());
+        served.context_length = Some(COMFORTABLE_WINDOW);
+        assert_eq!(tight_window_note(&served, spec), None);
+        // A nonpositive window means unknown everywhere else in the kernel,
+        // so it stays quiet here too.
+        served.context_length = Some(0);
+        assert_eq!(tight_window_note(&served, spec), None);
     }
 
     #[test]
