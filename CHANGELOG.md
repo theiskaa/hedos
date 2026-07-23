@@ -2,6 +2,14 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## Unreleased
+
+A native runtime for Apple's on-device model (#4). hedos now serves Apple Intelligence directly through the `FoundationModels` framework, so the model built into the machine appears on the shelf and answers chat and completion requests over the gateway with no download and no sidecar.
+
+- The runtime bridges Rust to the framework through a small Swift shim, streaming the model's output back over the gateway in every dialect. When Apple Intelligence is turned off or still downloading, the shelf says so instead of silently omitting the model.
+- Tool calling works end to end. Apple's model executes tools during generation, so the runtime captures each call as a structured `tool_call`, ends the turn, and replays the result on the next request as tool-call and tool-output history. Tool parameter schemas port into the framework's dynamic schema — strings, numbers, booleans, enums, arrays, and nested objects with required and optional fields — and a tool whose schema the framework cannot express is dropped from the offer rather than failing the request.
+- Apple's on-device model has a fixed 4096-token context window. hedos records that window honestly on the shelf and in `/v1/models`, and warns at pick time when a model's window is too tight for the request ahead of it, instead of letting the run fail deep in the model with a context error.
+
 ## v1.1.1 - 2026-07-22
 
 Tool calling now reaches the models served by the Python sidecars (#5). MLX builds from the Hugging Face cache — Llama and Qwen instruct models among them — can drive the coding harnesses and serve tool requests over the gateway, closing the gap where capable weights sat out of `hedos launch` because their runtime never forwarded tools.

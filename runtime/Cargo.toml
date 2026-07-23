@@ -32,6 +32,11 @@ toml.workspace = true
 [build-dependencies]
 flate2.workspace = true
 
+# The Apple Intelligence bridge loads its Swift shim at runtime; like the
+# framework it wraps, it exists only on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+libloading.workspace = true
+
 [dev-dependencies]
 serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

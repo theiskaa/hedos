@@ -46,6 +46,12 @@ pub fn assess(prompt_characters: i64, window: i64, requested_max_tokens: Option<
     }
 }
 
+/// The context window Apple's built-in model serves: fixed at 4096 tokens per
+/// session. The single source for every consumer — the runtime facade's
+/// budget, the apple-foundation scanner's record hint, and this module's
+/// policy — so the value cannot drift apart.
+pub const BUILTIN_CONTEXT_WINDOW: i64 = 4096;
+
 /// The effective context window for `record`, honoring a per-runtime policy. A
 /// built-in model has a fixed window; other runtimes derive it from the record's
 /// declared context length (and, for Ollama, a caller override).
@@ -54,7 +60,7 @@ pub fn effective_window(
     requested_context_length: Option<i64>,
 ) -> Option<i64> {
     if record.source.kind == SourceKind::builtin() {
-        return Some(4096);
+        return Some(BUILTIN_CONTEXT_WINDOW);
     }
     let window = record_policy_window(record, requested_context_length)?;
     (window > 0).then_some(window)

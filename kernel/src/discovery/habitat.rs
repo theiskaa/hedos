@@ -3,8 +3,9 @@
 //! assembles the [`StoreScanner`]s that sweep them. This is the single place the
 //! four scanners are wired together and pointed at their default locations.
 //!
-//! The Apple-Foundation (builtin) scanner is platform-gated and not yet ported;
-//! `scanners` simply omits it.
+//! The Apple-Foundation (builtin) scanner is not assembled here: its
+//! availability probe lives in the runtime crate's backend bridge, so callers
+//! append it to this list (see the runtime's `apple_foundation_scanner`).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

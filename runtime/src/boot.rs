@@ -8,14 +8,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kernel::artifacts::ArtifactStore;
+use kernel::discovery::StoreScanner;
 use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
 
 use crate::adapters::{
-    A1111Adapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter,
-    LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingWhisperBackend,
-    MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter,
-    WhisperCppAdapter, WhisperEngine,
+    A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
+    ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter, LlamaServerAdapter,
+    LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter,
+    MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter,
+    WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -121,11 +123,36 @@ pub fn discovery_settings(settings: &Settings) -> kernel::discovery::ModelsSetti
     }
 }
 
+/// The bridge to Apple's on-device model, shared by the adapter and the
+/// discovery scanner so both see the same availability. On macOS, the FFI
+/// backend over the Swift shim (degrading to missing when no shim was built
+/// or loads); elsewhere, the missing placeholder — the model does not exist
+/// off Apple platforms.
+fn apple_foundation_backend() -> Arc<dyn AppleFoundationBackend> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::adapters::loaded_apple_backend()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Arc::new(crate::adapters::MissingAppleBackend)
+    }
+}
+
+/// The scanner that puts Apple's built-in model on the shelf. Handed out
+/// separately from the adapter set because scanner assembly happens above the
+/// runtime facade, alongside the kernel's filesystem scanners.
+pub fn apple_foundation_scanner() -> Box<dyn StoreScanner> {
+    Box::new(AppleFoundationScanner::new(apple_foundation_backend()))
+}
+
 /// The built-in adapter set — the port of the Swift `defaultAdapters`. Each
 /// adapter is present regardless of whether its backend (a `llama-server`
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
-/// capability only actually serves when its backend is available. The two
-/// framework-bound adapters (MLX-Swift, Apple Foundation) are intentionally out.
+/// capability only actually serves when its backend is available. The one
+/// framework-bound adapter still out is MLX-Swift (covered by the mlx
+/// sidecars); Apple Foundation serves through the Swift bridge wherever it
+/// could be built and loaded, else registers a missing backend.
 fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<RegisteredAdapter> {
     let bundles = vec![dirs.sub("bundles")];
     let workdirs = dirs.sub("workdirs");
@@ -141,21 +168,20 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
         )
     };
 
-    let mut adapters: Vec<RegisteredAdapter> = Vec::new();
-
     // Streaming adapters.
-    adapters.push(RegisteredAdapter::streaming(Arc::new(
-        LlamaServerAdapter::new(Arc::new(LlamaServerPool::new(Arc::new(
-            LlamaServerSpawner::new("llama-server"),
+    let mut adapters: Vec<RegisteredAdapter> = vec![
+        RegisteredAdapter::streaming(Arc::new(LlamaServerAdapter::new(Arc::new(
+            LlamaServerPool::new(Arc::new(LlamaServerSpawner::new("llama-server"))),
         )))),
-    )));
-    adapters.push(RegisteredAdapter::streaming(Arc::new(
-        WhisperCppAdapter::new(
+        RegisteredAdapter::streaming(Arc::new(WhisperCppAdapter::new(
             governor.clone(),
             WhisperEngine::new(Arc::new(MissingWhisperBackend)),
-        ),
-    )));
-    adapters.push(RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())));
+        ))),
+        RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())),
+        RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(
+            apple_foundation_backend(),
+        ))),
+    ];
     let (g, s, e, b, w) = args("mlx-audio");
     adapters.push(RegisteredAdapter::streaming(Arc::new(
         MlxAudioAdapter::new(g, s, e, b, w),

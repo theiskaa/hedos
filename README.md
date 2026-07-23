@@ -104,8 +104,9 @@ Each runtime is present whether or not its backend is installed. A capability on
 - **OpenAI-compatible endpoints** need a base URL and an API key in the environment.
 - **the Python sidecars** (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux) and **whisper** need [`uv`](https://astral.sh/uv), which provisions their environment on first use. Their runtime code ships inside the binary.
 - **Image daemons** (ComfyUI, AUTOMATIC1111) need the daemon running.
+- **Apple Intelligence** needs a Mac where Apple's on-device model is enabled and ready; the bridge to it is built into macOS binaries whenever the building SDK carries the framework.
 
-The Apple Foundation and MLX-Swift runtimes from the original macOS build are framework-bound and are intentionally out of this headless port.
+The MLX-Swift runtime from the original macOS build is framework-bound and intentionally out of this headless port; its models are served by the MLX sidecars instead.
 
 ## Configuration
 Settings live in one human-editable file at `~/.config/hedos.toml` (or `$XDG_CONFIG_HOME/hedos.toml`). State lives under `~/.local/share/hedos` (or `$XDG_DATA_HOME/hedos`): the registry, generated artifacts, job history, the gateway's audit log, and the sidecar work directories. See [docs/configuration.md](docs/configuration.md).

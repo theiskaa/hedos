@@ -10,6 +10,7 @@
 //! [`RuntimeAdapter::can_serve`].
 
 mod a1111;
+mod apple_foundation;
 mod comfy_ui;
 mod daemon_liveness;
 mod diffusers;
@@ -33,6 +34,11 @@ mod tool_scanner;
 mod whisper;
 
 pub use a1111::A1111Adapter;
+#[cfg(target_os = "macos")]
+pub use apple_foundation::loaded_apple_backend;
+pub use apple_foundation::{
+    AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner, MissingAppleBackend,
+};
 pub use comfy_ui::ComfyUiAdapter;
 pub use daemon_liveness::{Daemon, DaemonLiveness, DaemonState, Snapshot};
 pub use diffusers::DiffusersAdapter;
@@ -172,8 +178,7 @@ pub trait RuntimeAdapter: Send + Sync {
 
     /// Whether this runtime forwards a `tools` array to its backend and parses
     /// tool calls out of the response. Resolution folds the `tools` capability
-    /// onto a record only when its winning runtime does; the Python sidecars
-    /// render only the message list into the prompt, so they keep the default.
+    /// onto a record only when its winning runtime does.
     fn wires_tools(&self) -> bool {
         false
     }
