@@ -24,6 +24,7 @@ mod manifest_sidecar;
 mod mflux;
 mod mlx_audio;
 mod mlx_lm;
+mod mlx_swift;
 mod mlx_vlm;
 mod ollama;
 mod openai;
@@ -54,6 +55,9 @@ pub use manifest_sidecar::ManifestSidecarAdapter;
 pub use mflux::MfluxAdapter;
 pub use mlx_audio::MlxAudioAdapter;
 pub use mlx_lm::MlxLmAdapter;
+#[cfg(target_os = "macos")]
+pub use mlx_swift::loaded_mlx_swift_backend;
+pub use mlx_swift::{MissingMlxSwiftBackend, MlxSwiftAdapter, MlxSwiftBackend};
 pub use mlx_vlm::MlxVlmAdapter;
 pub use ollama::OllamaAdapter;
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};

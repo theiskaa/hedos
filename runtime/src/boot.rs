@@ -16,8 +16,8 @@ use crate::adapters::{
     A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
     ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter, LlamaServerAdapter,
     LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter,
-    MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter,
-    WhisperEngine,
+    MlxLmAdapter, MlxSwiftAdapter, MlxSwiftBackend, MlxVlmAdapter, OllamaAdapter,
+    OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -146,13 +146,30 @@ pub fn apple_foundation_scanner() -> Box<dyn StoreScanner> {
     Box::new(AppleFoundationScanner::new(apple_foundation_backend()))
 }
 
+/// The in-process MLX-Swift bridge for this build. On macOS, the FFI backend
+/// over the Swift MLX shim (degrading to missing when no shim was built or it
+/// fails to load); elsewhere, the missing placeholder. When missing, the
+/// adapter never bids, so MLX models resolve to the Python `mlx-lm` sidecar
+/// instead.
+fn mlx_swift_backend() -> Arc<dyn MlxSwiftBackend> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::adapters::loaded_mlx_swift_backend()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Arc::new(crate::adapters::MissingMlxSwiftBackend)
+    }
+}
+
 /// The built-in adapter set — the port of the Swift `defaultAdapters`. Each
 /// adapter is present regardless of whether its backend (a `llama-server`
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
-/// capability only actually serves when its backend is available. The one
-/// framework-bound adapter still out is MLX-Swift (covered by the mlx
-/// sidecars); Apple Foundation serves through the Swift bridge wherever it
-/// could be built and loaded, else registers a missing backend.
+/// capability only actually serves when its backend is available. Both
+/// framework-bound adapters — Apple Foundation and in-process MLX-Swift —
+/// serve through their Swift bridges wherever those could be built and loaded,
+/// else register a missing backend; MLX-Swift then yields its models to the
+/// Python `mlx-lm` sidecar by declining to bid.
 fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<RegisteredAdapter> {
     let bundles = vec![dirs.sub("bundles")];
     let workdirs = dirs.sub("workdirs");
@@ -180,6 +197,10 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
         RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())),
         RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(
             apple_foundation_backend(),
+        ))),
+        RegisteredAdapter::streaming(Arc::new(MlxSwiftAdapter::new(
+            governor.clone(),
+            mlx_swift_backend(),
         ))),
     ];
     let (g, s, e, b, w) = args("mlx-audio");

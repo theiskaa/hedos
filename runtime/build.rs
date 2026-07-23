@@ -46,7 +46,18 @@ fn main() {
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         build_apple_shim(&manifest_dir, &out_dir);
+        build_mlx_shim(&manifest_dir, &out_dir);
     }
+}
+
+/// Bake the path to the in-process MLX-Swift shim dylib as
+/// `HEDOS_MLX_SHIM_BUILT_DYLIB`. Not yet built here — the seam degrades to the
+/// missing backend (MLX models serve through the `mlx-lm` sidecar) until the
+/// SwiftPM shim build lands. Baking an empty path keeps the macOS-only FFI
+/// module compiling in the meantime.
+fn build_mlx_shim(_manifest_dir: &str, _out_dir: &str) {
+    println!("cargo:rerun-if-changed=shim-mlx");
+    println!("cargo:rustc-env=HEDOS_MLX_SHIM_BUILT_DYLIB=");
 }
 
 /// Compile the Swift shim over Apple's `FoundationModels` framework
