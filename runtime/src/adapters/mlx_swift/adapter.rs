@@ -407,6 +407,10 @@ mod tests {
         );
     }
 
+    // The whole yield-to-sidecar design rests on mlx-swift outranking the
+    // Python mlx-lm sidecar (lower preference wins), pinned at compile time.
+    const _: () = assert!(BidPreference::MLX_SWIFT < BidPreference::MLX_LM);
+
     #[test]
     fn an_unavailable_backend_yields_to_the_sidecar_by_not_bidding() {
         // The missing backend reports unavailable, so mlx-swift stays out of
@@ -421,7 +425,6 @@ mod tests {
                 )
                 .is_none()
         );
-        assert!(BidPreference::MLX_SWIFT < BidPreference::MLX_LM);
     }
 
     #[test]

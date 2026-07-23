@@ -50,14 +50,89 @@ fn main() {
     }
 }
 
-/// Bake the path to the in-process MLX-Swift shim dylib as
-/// `HEDOS_MLX_SHIM_BUILT_DYLIB`. Not yet built here — the seam degrades to the
-/// missing backend (MLX models serve through the `mlx-lm` sidecar) until the
-/// SwiftPM shim build lands. Baking an empty path keeps the macOS-only FFI
-/// module compiling in the meantime.
-fn build_mlx_shim(_manifest_dir: &str, _out_dir: &str) {
-    println!("cargo:rerun-if-changed=shim-mlx");
-    println!("cargo:rustc-env=HEDOS_MLX_SHIM_BUILT_DYLIB=");
+/// Build the in-process MLX-Swift shim (`shim-mlx`, a SwiftPM package that
+/// statically links MLX) into a dylib in `OUT_DIR`, baking its path as
+/// `HEDOS_MLX_SHIM_BUILT_DYLIB`. Runs on every macOS build like the Apple
+/// bridge — but degrades on *any* failure (no `xcodebuild`/Metal Toolchain, no
+/// network to fetch the MLX packages, a compile error) by warning and baking an
+/// empty path rather than failing the whole build: the shim's dependencies are
+/// external and network-fetched, so a build that cannot produce it is an
+/// environment limitation, not a bug that should block the workspace. When
+/// absent, the runtime reports the bridge unavailable and MLX models serve
+/// through the `mlx-lm` sidecar instead.
+///
+/// The first build fetches and compiles MLX (minutes, and needs network); later
+/// builds reuse the package's `.xcode-dd` derivedData. `xcodebuild` is only
+/// re-run when the shim's own sources or `Package.swift` change — `Package.
+/// resolved` is deliberately not watched, since xcodebuild may rewrite it during
+/// resolution and retrigger the build script on every build.
+fn build_mlx_shim(manifest_dir: &str, out_dir: &str) {
+    println!("cargo:rerun-if-changed=shim-mlx/Package.swift");
+    println!("cargo:rerun-if-changed=shim-mlx/Sources");
+    let bake = |path: &str| println!("cargo:rustc-env=HEDOS_MLX_SHIM_BUILT_DYLIB={path}");
+    let package = Path::new(manifest_dir).join("shim-mlx");
+    // xcodebuild, not `swift build`: only it runs the plugin that compiles MLX's
+    // Metal kernels into `default.metallib` (mlx-swift's README states the
+    // SwiftPM CLI cannot). A swift-built shim loads but aborts on the first GPU
+    // op with no metallib. This needs the Metal Toolchain component installed
+    // (`xcodebuild -downloadComponent MetalToolchain`). derivedData is kept in
+    // the package (git-ignored) so it caches across `cargo clean`.
+    let derived = package.join(".xcode-dd");
+    let status = std::process::Command::new("xcodebuild")
+        .args([
+            "build",
+            "-scheme",
+            "HedosMlxShim",
+            "-configuration",
+            "Release",
+            "-destination",
+            "platform=macOS",
+            "-skipPackagePluginValidation",
+            "-skipMacroValidation",
+            "-derivedDataPath",
+        ])
+        .arg(&derived)
+        .current_dir(&package)
+        .status();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            println!("cargo:warning=MLX-Swift bridge skipped: xcodebuild failed with {status}");
+            bake("");
+            return;
+        }
+        Err(error) => {
+            println!("cargo:warning=MLX-Swift bridge skipped: could not run xcodebuild ({error})");
+            bake("");
+            return;
+        }
+    }
+    // The framework binary statically links MLX (self-contained, no sibling
+    // dylib deps), so it loads directly once renamed; the metallib is staged
+    // beside it under the name MLX's colocated lookup expects (`mlx.metallib`).
+    let products = derived.join("Build/Products/Release");
+    let built_dylib =
+        products.join("PackageFrameworks/HedosMlxShim.framework/Versions/A/HedosMlxShim");
+    let built_metallib = products.join("mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib");
+    let staged_dylib = Path::new(out_dir).join("libhedos_mlx_shim.dylib");
+    let staged_metallib = Path::new(out_dir).join("mlx.metallib");
+    if let Err(error) = std::fs::copy(&built_dylib, &staged_dylib) {
+        println!(
+            "cargo:warning=MLX-Swift bridge skipped: built dylib not found at {} ({error})",
+            built_dylib.display()
+        );
+        bake("");
+        return;
+    }
+    if let Err(error) = std::fs::copy(&built_metallib, &staged_metallib) {
+        println!(
+            "cargo:warning=MLX-Swift bridge skipped: metallib not found at {} ({error})",
+            built_metallib.display()
+        );
+        bake("");
+        return;
+    }
+    bake(&staged_dylib.display().to_string());
 }
 
 /// Compile the Swift shim over Apple's `FoundationModels` framework

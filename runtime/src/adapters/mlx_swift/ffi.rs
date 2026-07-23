@@ -216,3 +216,23 @@ impl MlxSwiftBackend for FfiMlxBackend {
         stream
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// When the build script produced the shim, the loader must resolve it, its
+    /// ABI must match, and the availability probe must report the engine usable.
+    /// Skips on a machine whose toolchain could not build the shim (empty bake),
+    /// where the backend is expected to be the missing placeholder.
+    #[test]
+    fn a_built_shim_loads_and_reports_available() {
+        if env!("HEDOS_MLX_SHIM_BUILT_DYLIB").is_empty() {
+            return;
+        }
+        assert!(
+            loaded_mlx_swift_backend().is_available(),
+            "a built MLX-Swift shim should load and report available"
+        );
+    }
+}
