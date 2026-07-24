@@ -2,7 +2,7 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
-## Unreleased
+## v1.2.0 - 2026-07-24
 
 A native runtime for Apple's on-device model (#4). hedos now serves Apple Intelligence directly through the `FoundationModels` framework, so the model built into the machine appears on the shelf and answers chat and completion requests over the gateway with no download and no sidecar.
 
