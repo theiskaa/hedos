@@ -104,7 +104,17 @@ Each runtime is present whether or not its backend is installed. A capability on
 - **OpenAI-compatible endpoints** need a base URL and an API key in the environment.
 - **the Python sidecars** (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux) and **whisper** need [`uv`](https://astral.sh/uv), which provisions their environment on first use. Their runtime code ships inside the binary.
 - **Image daemons** (ComfyUI, AUTOMATIC1111) need the daemon running.
-- **Apple Intelligence** needs a Mac where Apple's on-device model is enabled and ready; the bridge to it is built into macOS binaries whenever the building SDK carries the framework.
+- **Apple Intelligence** needs a Mac where Apple's on-device model is enabled and ready, plus the bridge library beside the `hedos` binary. See the note below.
+
+> **Apple Intelligence and `cargo install`.** The bridge to Apple's model is a companion dynamic library, `libhedos_apple_shim.dylib`, compiled next to the binary during a source build (on a Mac whose SDK carries the `FoundationModels` framework). Installers that copy only the binary, such as `cargo install`, Homebrew, and the prebuilt archives, leave it behind, so Apple Intelligence still lists on the shelf but answers with *"Apple's model needs the Apple Intelligence bridge, which is not built into this binary."* No other runtime is affected. To enable it, build the library from source and drop it next to your `hedos` binary:
+>
+> ```sh
+> cargo build --release
+> cp "$(ls -t target/release/build/hedos-runtime-*/out/libhedos_apple_shim.dylib | head -1)" \
+>    "$(dirname "$(command -v hedos)")/"
+> ```
+>
+> hedos looks for the library next to the binary, so that is all it takes. Alternatively, point the `HEDOS_APPLE_SHIM` environment variable at the library's full path.
 
 The MLX-Swift runtime from the original macOS build is framework-bound and intentionally out of this headless port; its models are served by the MLX sidecars instead.
 

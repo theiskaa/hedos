@@ -45,6 +45,18 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 - **Python sidecars** for mlx-lm, mlx-vlm, speech, embeddings, diffusers, and mflux.
 - **whisper** for transcription.
 - **image daemons** (ComfyUI, AUTOMATIC1111) for models they serve.
-- **Apple Intelligence** — Apple's on-device model — through a Swift bridge compiled into macOS builds whenever the building SDK carries the framework, on Macs where the model is enabled and ready. It appears on the shelf as a built-in model and serves tool calls like any other; on Linux, or on a Mac without it, it simply never shows up.
+- **Apple Intelligence**, Apple's on-device model, served through a Swift bridge on Macs where the model is enabled and ready. It appears on the shelf as a built-in model and serves tool calls like any other; on Linux, or on a Mac without it, it simply never shows up.
+
+> **The Apple bridge is a separate library, and installers do not carry it.** Unlike every other runtime, Apple Intelligence needs a companion dynamic library, `libhedos_apple_shim.dylib`, sitting next to the `hedos` binary. The build script compiles it during a source build whenever the building SDK carries the `FoundationModels` framework (a recent Xcode on macOS 26+). Installs that copy only the binary, such as `cargo install`, Homebrew, and the prebuilt release archives, leave the library behind, so a model that a previous scan recorded still lists on the shelf, but serving it fails with *"Apple's model needs the Apple Intelligence bridge, which is not built into this binary."*
+>
+> To enable it after such an install, build the library from source and place it beside the binary (hedos searches next to the running binary), or point `HEDOS_APPLE_SHIM` at its full path:
+>
+> ```sh
+> cargo build --release
+> cp "$(ls -t target/release/build/hedos-runtime-*/out/libhedos_apple_shim.dylib | head -1)" \
+>    "$(dirname "$(command -v hedos)")/"
+> ```
+>
+> The library and the binary must come from compatible builds (the bridge carries an ABI version the binary checks); a mismatched or absent library is skipped, and Apple Intelligence reports itself unavailable rather than crashing.
 
 The MLX-Swift runtime from the original macOS build is framework-bound and is not part of this headless port; its models are served by the MLX sidecars instead. A model that would need it still appears on the shelf, but hedos will tell you it cannot serve it here rather than dropping it.

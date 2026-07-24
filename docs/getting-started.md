@@ -20,6 +20,8 @@ cargo build --release
 
 The binary is at `target/release/hedos`. Copy it somewhere on your `PATH`, or run it in place with `cargo run --release --bin hedos -- <command>`.
 
+On a Mac, the build also produces the Apple Intelligence bridge, `libhedos_apple_shim.dylib`, under `target/release/build/hedos-runtime-*/out/`. If you copy the binary onto your `PATH`, copy that library next to it too, or Apple Intelligence will report that its bridge is not built in. See [models.md](models.md#runtimes-at-a-glance). No other runtime needs this.
+
 ## Find your models
 
 hedos does not download anything to get started. It reads the models already on your machine.
