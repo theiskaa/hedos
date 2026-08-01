@@ -2,6 +2,12 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.2.1 - 2026-08-02
+
+A fix for model removal. `hedos rm` reported a model deleted but `hedos ls` kept showing it.
+
+- Removing a model now drops its record from the shelf, not just its files. `rm` deleted the weights (or the Ollama tag) but never removed the record from the registry that `ls` reads, so the model lingered — and a rescan only re-flagged it as missing rather than dropping it. A removed model now leaves the shelf immediately and stays gone.
+
 ## v1.2.0 - 2026-07-24
 
 A native runtime for Apple's on-device model (#4). hedos now serves Apple Intelligence directly through the `FoundationModels` framework, so the model built into the machine appears on the shelf and answers chat and completion requests over the gateway with no download and no sidecar.
