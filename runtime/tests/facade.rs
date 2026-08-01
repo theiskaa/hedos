@@ -677,6 +677,29 @@ async fn shelf_lists_registered_models() {
 }
 
 #[tokio::test]
+async fn forget_drops_the_record_so_it_leaves_the_shelf() {
+    let dir = TempDir::new();
+    let kernel = kernel(
+        &dir,
+        Some(record("m")),
+        vec![RegisteredAdapter::streaming(Arc::new(Fake::new(vec![
+            Capability::chat(),
+        ])))],
+    );
+    assert_eq!(kernel.shelf().await.len(), 1);
+
+    let removed = kernel.forget("m").await.expect("forget");
+    assert_eq!(removed.expect("returns the dropped record").id, "m");
+    assert!(
+        kernel.shelf().await.is_empty(),
+        "a forgotten model must not reappear on the shelf"
+    );
+
+    // Forgetting an unknown id is a no-op, not an error.
+    assert!(kernel.forget("m").await.expect("second forget").is_none());
+}
+
+#[tokio::test]
 async fn shelf_reuses_the_same_snapshot_until_the_registry_changes() {
     let dir = TempDir::new();
     let kernel = kernel(

@@ -62,6 +62,9 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
 
     let remover = ModelRemover::new(permanent_delete_trasher(), OllamaModelRemover::new());
     let report = remover.remove(record).await?;
+    // The weights (or the Ollama tag) are gone; forget the record too, or it
+    // lingers in the registry and `hedos ls` keeps showing the deleted model.
+    session.kernel.forget(&report.model_id).await?;
     out.line(&format!(
         "Deleted {} — {} item(s), ~{} MB freed{}",
         report.name,

@@ -482,6 +482,16 @@ impl Kernel {
         Ok(self.engine().resolve_all(&mut registry, None)?)
     }
 
+    /// Drop the record `id` from the registry, returning it if it was present.
+    /// This is the shelf-side of a deletion: once its weights are trashed (or its
+    /// Ollama tag deleted), the record is forgotten so it stops appearing on the
+    /// shelf. Without this a removed model lingers in `models.json` and a rescan
+    /// only re-flags it `Missing` rather than dropping it.
+    pub async fn forget(&self, id: &str) -> Result<Option<ModelRecord>, KernelError> {
+        let mut registry = self.registry.lock().await;
+        Ok(registry.unregister(id)?)
+    }
+
     /// Explain how every registered model would resolve, without changing
     /// anything — the identification and each adapter's bid, winner-first.
     pub async fn explain(&self) -> Vec<ResolutionExplanation> {
