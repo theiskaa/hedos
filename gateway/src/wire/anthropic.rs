@@ -137,7 +137,7 @@ fn decode_message(value: &JsonValue, into: &mut Vec<ChatMessage>) -> Result<(), 
     let role = fields
         .get("role")
         .and_then(JsonValue::as_str)
-        .and_then(ChatRole::from_wire)
+        .and_then(ChatRole::from_value)
         .ok_or_else(|| bad_request("each message needs a role of \"user\" or \"assistant\""))?;
 
     let content = fields.get("content");

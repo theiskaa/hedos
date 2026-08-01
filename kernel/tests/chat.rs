@@ -31,9 +31,9 @@ fn roles_round_trip_through_the_wire() {
         ChatRole::Assistant,
         ChatRole::Tool,
     ] {
-        assert_eq!(ChatRole::from_wire(role.as_str()), Some(role));
+        assert_eq!(ChatRole::from_value(role.as_str()), Some(role));
     }
-    assert_eq!(ChatRole::from_wire("root"), None);
+    assert_eq!(ChatRole::from_value("root"), None);
 }
 
 #[test]

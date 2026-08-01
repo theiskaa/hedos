@@ -117,7 +117,7 @@ pub fn decode_chat_request(
 
 fn decode_message(raw: &BTreeMap<String, JsonValue>) -> Result<ChatMessage, GatewayError> {
     let raw_role = raw.get("role").and_then(JsonValue::as_str).unwrap_or("");
-    let role = ChatRole::from_wire(raw_role)
+    let role = ChatRole::from_value(raw_role)
         .ok_or_else(|| bad_request(format!("unsupported message role {raw_role}")))?;
 
     let mut attachments = Vec::new();

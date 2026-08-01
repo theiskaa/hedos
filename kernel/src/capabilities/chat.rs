@@ -47,7 +47,7 @@ impl ChatRole {
     }
 
     /// The role for a wire string, if it names one.
-    pub fn from_wire(value: &str) -> Option<Self> {
+    pub fn from_value(value: &str) -> Option<Self> {
         match value {
             "system" => Some(ChatRole::System),
             "user" => Some(ChatRole::User),
@@ -186,7 +186,7 @@ impl ChatMessage {
     /// role. Unknown fields and malformed tool calls are dropped, not rejected.
     pub fn from_payload(value: &JsonValue) -> Option<Self> {
         let fields = value.as_object()?;
-        let role = ChatRole::from_wire(fields.get("role")?.as_str()?)?;
+        let role = ChatRole::from_value(fields.get("role")?.as_str()?)?;
         let content = fields
             .get("content")
             .and_then(JsonValue::as_str)
@@ -207,7 +207,7 @@ impl ChatMessage {
         let role = fields
             .get("role")
             .and_then(JsonValue::as_str)
-            .and_then(ChatRole::from_wire)
+            .and_then(ChatRole::from_value)
             .ok_or_else(|| {
                 ChatWireError::PayloadInvalid(format!(
                     "message at index {index} has a missing or unknown role"
