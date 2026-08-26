@@ -179,15 +179,22 @@ fn constraints(column_widths: &[usize; 5], columns: &[usize]) -> Vec<Constraint>
         .collect()
 }
 
+/// Cells of the filter shown in the title while it is typed.
+const FILTER_WIDTH: usize = 24;
+
 /// ` shelf `, or the filter as it is typed with how many rows it keeps, plus
 /// the sort when it is not the shelf's own order.
 fn title(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
     if app.filtering || !app.filter.is_empty() {
         spans.push(Span::styled(" / ", ACCENT));
-        spans.push(Span::raw(app.filter.clone()));
         if app.filtering {
+            let (before, after) = app.filter.view(FILTER_WIDTH);
+            spans.push(Span::raw(before));
             spans.push(Span::styled(CURSOR, BOLD));
+            spans.push(Span::raw(after));
+        } else {
+            spans.push(Span::raw(app.filter.as_str().to_owned()));
         }
         spans.push(Span::styled(
             format!(" {} of {} ", app.order.len(), app.records.len()),

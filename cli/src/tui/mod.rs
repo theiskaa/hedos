@@ -7,6 +7,7 @@
 
 mod app;
 mod chat;
+mod edit;
 mod effect;
 mod event;
 mod facts;

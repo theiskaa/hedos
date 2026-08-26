@@ -12,6 +12,8 @@ use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
 use kernel::records::byte_format::{BYTES_PER_GIB, BYTES_PER_MIB};
 
+use super::edit::LineEdit;
+use super::event::Key;
 use crate::support::install::{installed_names, is_installed};
 use crate::support::shelf_table::verdict;
 
@@ -121,7 +123,7 @@ pub enum Stage {
 /// The pull modal.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PullModal {
-    pub input: String,
+    pub input: LineEdit,
     pub matches: Vec<PullMatch>,
     pub selected: usize,
     pub stage: Stage,
@@ -148,7 +150,7 @@ impl PullModal {
     /// the references already downloading.
     pub fn open(shelf: &[ModelRecord], memory_bytes: u64, pulling: &[String]) -> Self {
         let mut modal = Self {
-            input: String::new(),
+            input: LineEdit::default(),
             matches: Vec::new(),
             selected: 0,
             stage: Stage::Listing,
@@ -190,29 +192,24 @@ impl PullModal {
         self.matches.get(self.selected)
     }
 
-    /// Add `c` to the query.
-    pub fn type_char(&mut self, c: char, now: u64) {
-        self.input.push(c);
-        self.edited(now);
-    }
-
-    /// Drop the last character of the query.
-    pub fn backspace(&mut self, now: u64) {
-        self.input.pop();
-        self.edited(now);
+    /// Edit the query with `key`; a change re-matches and re-arms the search.
+    pub fn edit(&mut self, key: Key, now: u64) {
+        if self.input.apply(key) {
+            self.edited(now);
+        }
     }
 
     fn edited(&mut self, now: u64) {
         self.hits.clear();
         self.rematch();
-        self.search_due = (!self.input.trim().is_empty()).then_some(now + SEARCH_DEBOUNCE_TICKS);
+        self.search_due = (!self.input.trimmed().is_empty()).then_some(now + SEARCH_DEBOUNCE_TICKS);
     }
 
     /// The query to search on `now`, once it has sat still long enough.
     pub fn search_due(&mut self, now: u64) -> Option<String> {
         if self.search_due.is_some_and(|due| now >= due) {
             self.search_due = None;
-            Some(self.input.trim().to_owned())
+            Some(self.input.trimmed().to_owned())
         } else {
             None
         }
@@ -221,7 +218,7 @@ impl PullModal {
     /// Fold in the hits for `query`; whether they applied, which they do not
     /// when the query has moved on.
     pub fn searched(&mut self, query: &str, hits: &[InstallSearchHit]) -> bool {
-        if query != self.input.trim() {
+        if query != self.input.trimmed() {
             return false;
         }
         self.hits = hits.iter().map(PullMatch::from_hit).collect();
@@ -273,7 +270,7 @@ impl PullModal {
     /// (narrowed by the query when there is one), and the search hits, minus
     /// what is on the shelf already and any repeat.
     fn rematch(&mut self) {
-        let typed = self.input.trim();
+        let typed = self.input.trimmed();
         let query = typed.to_lowercase();
         let grouped = query.is_empty();
         let catalog_room = MAX_MATCHES.saturating_sub(self.hits.len());
@@ -363,7 +360,7 @@ mod tests {
     fn a_typed_reference_leads_the_list_and_a_search_falls_due() {
         let mut modal = PullModal::open(&[], MEMORY, &[]);
         for c in "Qwen/Qwen2.5-14B".chars() {
-            modal.type_char(c, 0);
+            modal.edit(Key::Char(c), 0);
         }
         assert_eq!(modal.matches[0].reference, "Qwen/Qwen2.5-14B");
         assert_eq!(modal.matches[0].note, "as typed");
@@ -379,13 +376,13 @@ mod tests {
     fn hits_apply_only_to_the_current_query() {
         let mut modal = PullModal::open(&[], MEMORY, &[]);
         for c in "smol".chars() {
-            modal.type_char(c, 0);
+            modal.edit(Key::Char(c), 0);
         }
         modal.searched("stale", &[hit("x/stale")]);
         assert!(modal.matches.iter().all(|m| m.reference != "x/stale"));
         modal.searched("smol", &[hit("x/smol-1")]);
         assert!(modal.matches.iter().any(|m| m.reference == "x/smol-1"));
-        modal.backspace(5);
+        modal.edit(Key::Backspace, 5);
         assert!(modal.matches.iter().all(|m| m.reference != "x/smol-1"));
     }
 
@@ -428,11 +425,11 @@ mod tests {
     fn a_bare_word_is_a_search_not_a_tag() {
         let mut modal = PullModal::open(&[], MEMORY, &[]);
         for c in "smol".chars() {
-            modal.type_char(c, 0);
+            modal.edit(Key::Char(c), 0);
         }
         assert!(modal.matches.iter().all(|m| m.note != "as typed"));
         for c in ":latest".chars() {
-            modal.type_char(c, 0);
+            modal.edit(Key::Char(c), 0);
         }
         assert_eq!(modal.matches[0].reference, "smol:latest");
     }

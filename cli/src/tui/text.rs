@@ -168,21 +168,6 @@ fn runs(text: &str) -> Vec<&str> {
     tokens
 }
 
-/// The last `width` cells of `text`, for a line that shows its tail.
-pub fn tail(text: &str, width: usize) -> String {
-    let mut taken = 0;
-    let mut chars: Vec<char> = Vec::new();
-    for c in text.chars().rev() {
-        let w = c.width().unwrap_or(0);
-        if taken + w > width {
-            break;
-        }
-        taken += w;
-        chars.push(c);
-    }
-    chars.iter().rev().collect()
-}
-
 /// A context length as `4k`, `32k`, `128k`, or the plain count under 1000.
 pub fn tokens(count: i64) -> String {
     if count >= 1000 {
@@ -221,14 +206,6 @@ mod tests {
         assert_eq!(wrap("aa bb", 2), ["aa", "bb"]);
         assert_eq!(wrap("日本語 text", 6), ["日本語", "text"]);
         assert_eq!(wrap("日本", 1), ["日", "本"]);
-    }
-
-    #[test]
-    fn tail_keeps_the_last_cells() {
-        assert_eq!(tail("hello", 3), "llo");
-        assert_eq!(tail("hi", 5), "hi");
-        assert_eq!(tail("a日本", 4), "日本");
-        assert_eq!(tail("a日本", 3), "本");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::support::banner::KOALA;
 use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
+use crate::tui::edit::LineEdit;
 use crate::tui::launch::LaunchModal;
 use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
@@ -237,7 +238,13 @@ fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
 }
 
 fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'static>> {
-    let mut lines = vec![input_line(&modal.input), Line::default()];
+    let mut lines = vec![
+        input_line(
+            &modal.input,
+            (inner.width as usize).saturating_sub(MARK_CELLS + 1),
+        ),
+        Line::default(),
+    ];
     let listing_rows = modal.rows();
     let visible = (inner.height as usize).saturating_sub(LISTING_CHROME_ROWS);
     let selected_at = listing_rows
@@ -309,12 +316,18 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
     ])
 }
 
-/// ` › text▏`: what is being typed, with the cursor.
-fn input_line(input: &str) -> Line<'static> {
+/// The prompt marker of the pull query, and its width in cells.
+const MARK: &str = " › ";
+const MARK_CELLS: usize = 3;
+
+/// ` › text▏`: what is being typed, with the cursor, windowed to `width`.
+fn input_line(input: &LineEdit, width: usize) -> Line<'static> {
+    let (before, after) = input.view(width);
     Line::from(vec![
-        Span::styled(" › ", BOLD),
-        Span::raw(input.to_owned()),
+        Span::styled(MARK, BOLD),
+        Span::raw(before),
         Span::styled(CURSOR, BOLD),
+        Span::raw(after),
     ])
 }
 

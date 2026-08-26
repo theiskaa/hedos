@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use kernel::capabilities::GenerationStats;
 use kernel::records::{JsonValue, ModelRecord};
 
+use super::edit::LineEdit;
+use super::event::Key;
 use crate::support::payload::{self, message};
 
 /// Who said a turn.
@@ -53,7 +55,7 @@ pub struct ChatPane {
     /// The conversation, oldest first.
     pub turns: Vec<Turn>,
     /// The prompt being typed.
-    pub input: String,
+    pub input: LineEdit,
     /// Lines scrolled up from the bottom of the transcript; zero follows the
     /// newest text.
     pub scroll: usize,
@@ -68,7 +70,7 @@ impl ChatPane {
         Self {
             record,
             turns: Vec::new(),
-            input: String::new(),
+            input: LineEdit::default(),
             scroll: 0,
             generation: 0,
         }
@@ -88,14 +90,9 @@ impl ChatPane {
             .is_some_and(|turn| turn.ending == Ending::Open && turn.text.is_empty())
     }
 
-    /// Add `c` to the prompt.
-    pub fn type_char(&mut self, c: char) {
-        self.input.push(c);
-    }
-
-    /// Drop the last character of the prompt.
-    pub fn backspace(&mut self) {
-        self.input.pop();
+    /// Edit the prompt with `key`.
+    pub fn edit(&mut self, key: Key) {
+        self.input.apply(key);
     }
 
     /// Send what was typed: the user turn joins the transcript, an open model
@@ -103,13 +100,13 @@ impl ChatPane {
     /// with the generation it belongs to. Nothing happens on a blank prompt
     /// or while a reply streams.
     pub fn submit(&mut self) -> Option<(JsonValue, u64)> {
-        let prompt = self.input.trim();
+        let prompt = self.input.trimmed().to_owned();
         if prompt.is_empty() || self.streaming() {
             return None;
         }
         self.turns.push(Turn {
             speaker: Speaker::User,
-            text: prompt.to_owned(),
+            text: prompt,
             ending: Ending::Done(None),
         });
         self.input.clear();
@@ -241,7 +238,7 @@ mod tests {
 
     fn type_in(pane: &mut ChatPane, text: &str) {
         for c in text.chars() {
-            pane.type_char(c);
+            pane.edit(Key::Char(c));
         }
     }
 
@@ -268,7 +265,7 @@ mod tests {
         assert!(pane.streaming());
         type_in(&mut pane, "again");
         assert_eq!(pane.submit(), None);
-        assert_eq!(pane.input, "again");
+        assert_eq!(pane.input.as_str(), "again");
     }
 
     #[test]

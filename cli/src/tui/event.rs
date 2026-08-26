@@ -96,6 +96,36 @@ pub enum Key {
     Char(char),
     /// Ctrl-C.
     Interrupt,
+    /// A page up the chat transcript.
+    PageUp,
+    /// A page down it.
+    PageDown,
+    /// A line-editing key, meaningful only while typing into a field.
+    Edit(Edit),
+}
+
+/// The line-editing keys, named the way a shell names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edit {
+    /// One character back.
+    Left,
+    /// One character forward.
+    Right,
+    /// Option+Left, Alt-b.
+    WordLeft,
+    /// Option+Right, Alt-f.
+    WordRight,
+    /// Ctrl-A.
+    Start,
+    /// Ctrl-E.
+    End,
+    /// Forward delete.
+    Delete,
+    /// Ctrl-U: everything before the cursor. Cmd+Delete never reaches a
+    /// terminal program; a terminal can be told to send this for it.
+    KillToStart,
+    /// Ctrl-W, Option+Delete: the word before the cursor.
+    KillWord,
 }
 
 /// How long the input thread blocks per poll before checking again, so a
@@ -171,16 +201,31 @@ fn translate(key: KeyEvent) -> Option<Key> {
         return None;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
     Some(match key.code {
         KeyCode::Char('c') if ctrl => Key::Interrupt,
+        KeyCode::Char('a') if ctrl => Key::Edit(Edit::Start),
+        KeyCode::Char('e') if ctrl => Key::Edit(Edit::End),
+        KeyCode::Char('u') if ctrl => Key::Edit(Edit::KillToStart),
+        KeyCode::Char('w') if ctrl => Key::Edit(Edit::KillWord),
+        KeyCode::Char('b') if alt => Key::Edit(Edit::WordLeft),
+        KeyCode::Char('f') if alt => Key::Edit(Edit::WordRight),
+        KeyCode::Backspace if alt => Key::Edit(Edit::KillWord),
+        KeyCode::Left if alt => Key::Edit(Edit::WordLeft),
+        KeyCode::Right if alt => Key::Edit(Edit::WordRight),
+        KeyCode::Left => Key::Edit(Edit::Left),
+        KeyCode::Right => Key::Edit(Edit::Right),
+        KeyCode::Delete => Key::Edit(Edit::Delete),
         KeyCode::Up => Key::Up,
         KeyCode::Down => Key::Down,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
         KeyCode::Home => Key::Top,
         KeyCode::End => Key::Bottom,
         KeyCode::Enter => Key::Enter,
         KeyCode::Esc => Key::Escape,
         KeyCode::Backspace => Key::Backspace,
-        KeyCode::Char(c) if !ctrl => Key::Char(c),
+        KeyCode::Char(c) if !ctrl && !alt => Key::Char(c),
         _ => return None,
     })
 }

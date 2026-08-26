@@ -9,6 +9,7 @@ use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
 
 use super::chat::ChatPane;
+use super::edit::LineEdit;
 use super::effect::{Effect, HandOff};
 use super::event::{Event, Key, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
@@ -30,6 +31,8 @@ const IDLE_REFRESH_TICKS: u64 = 10 * TICKS_PER_SECOND;
 /// How long a finished task stays in the strip, and how long a failed one does.
 const DONE_LINGER_TICKS: u64 = 60 * TICKS_PER_SECOND;
 const FAILED_LINGER_TICKS: u64 = 10 * 60 * TICKS_PER_SECOND;
+/// How far a page key moves the chat transcript.
+const PAGE_LINES: usize = 10;
 /// How long a footer notice stays.
 const NOTICE_TICKS: u64 = 2 * TICKS_PER_SECOND;
 
@@ -79,7 +82,7 @@ pub struct App {
     /// The indices into `records` the shelf shows, filtered and sorted.
     pub order: Vec<usize>,
     /// The fuzzy filter over the shelf.
-    pub filter: String,
+    pub filter: LineEdit,
     /// Whether keys are typing into the filter.
     pub filtering: bool,
     /// The sort in effect.
@@ -112,7 +115,7 @@ impl App {
             facts,
             shelf: TableState::new().with_selected(0),
             order,
-            filter: String::new(),
+            filter: LineEdit::default(),
             filtering: false,
             sort: Sort::default(),
             tasks: Vec::new(),
@@ -168,7 +171,7 @@ impl App {
     /// Recompute the shown rows, keeping `keep` selected when it is still
     /// shown.
     fn reorder(&mut self, keep: Option<String>) {
-        self.order = order(&self.records, &self.facts, &self.filter, self.sort);
+        self.order = order(&self.records, &self.facts, self.filter.as_str(), self.sort);
         let index = keep
             .and_then(|id| {
                 self.order
@@ -425,8 +428,9 @@ impl App {
             (Stage::Listing, Key::Escape) => self.modal = None,
             (Stage::Listing, Key::Up) => modal.step(-1),
             (Stage::Listing, Key::Down) => modal.step(1),
-            (Stage::Listing, Key::Backspace) => modal.backspace(now),
-            (Stage::Listing, Key::Char(c)) => modal.type_char(c, now),
+            (Stage::Listing, Key::Char(_) | Key::Backspace | Key::Edit(_)) => {
+                modal.edit(key, now);
+            }
             (Stage::Listing, Key::Enter) => match modal.choose() {
                 Ok((provider, reference)) => return vec![Effect::Plan(provider, reference)],
                 Err(reason) => return self.notify(reason),
@@ -447,14 +451,12 @@ impl App {
     }
 
     fn filter_key(&mut self, key: Key) -> Vec<Effect> {
+        self.dirty = true;
         match key {
-            Key::Char(c) => {
-                self.filter.push(c);
-                self.reorder_in_place();
-            }
-            Key::Backspace => {
-                self.filter.pop();
-                self.reorder_in_place();
+            Key::Char(_) | Key::Backspace | Key::Edit(_) => {
+                if self.filter.apply(key) {
+                    self.reorder_in_place();
+                }
             }
             Key::Escape => {
                 self.filter.clear();
@@ -592,10 +594,11 @@ impl App {
             }
             Key::Escape => self.modal = None,
             Key::Interrupt => return vec![Effect::Quit],
-            Key::Char(c) => pane.type_char(c),
-            Key::Backspace => pane.backspace(),
+            Key::Char(_) | Key::Backspace | Key::Edit(_) => pane.edit(key),
             Key::Up => pane.scroll_up(1),
             Key::Down => pane.scroll_down(1),
+            Key::PageUp => pane.scroll_up(PAGE_LINES),
+            Key::PageDown => pane.scroll_down(PAGE_LINES),
             Key::Top => pane.scroll_to_top(),
             Key::Bottom => pane.scroll_to_bottom(),
             Key::Enter => {
@@ -1207,7 +1210,7 @@ mod tests {
         press(&mut app, Key::Char('p'));
         assert!(app.modal.is_some());
         assert!(press(&mut app, Key::Char('q')).is_empty());
-        assert_eq!(pull(&app).input, "q");
+        assert_eq!(pull(&app).input.as_str(), "q");
         press(&mut app, Key::Backspace);
         let effects = press(&mut app, Key::Enter);
         assert!(matches!(effects.as_slice(), [Effect::Plan(_, _)]));
