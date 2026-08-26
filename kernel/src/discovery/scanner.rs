@@ -74,7 +74,8 @@ pub struct ScanResult {
 
 /// A scanner over one class of on-disk model store. Synchronous: the kernel does
 /// its filesystem work inline (the runtime layer decides about threads).
-pub trait StoreScanner {
+/// `Send`, so a kernel that owns scanners can be driven from a spawned task.
+pub trait StoreScanner: Send {
     /// The source kinds this scanner produces (used to mark wholesale failures).
     fn kinds(&self) -> Vec<SourceKind>;
 
