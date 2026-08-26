@@ -27,7 +27,7 @@ pub async fn run(args: ServeArgs, out: &Out) -> Result<(), CliError> {
 }
 
 /// Serve the gateway on `port` (the configured one when `None`) until
-/// Ctrl-C. Shared by the command and `hedos ui`.
+/// Ctrl-C. Shared by the command and `hedos shelf`.
 pub(crate) async fn serve(session: &Session, port: Option<u16>, out: &Out) -> Result<(), CliError> {
     let port = port.unwrap_or(session.settings.gateway.port);
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;

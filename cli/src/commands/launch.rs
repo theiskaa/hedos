@@ -69,7 +69,7 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
 
 /// Serve `record` to `spec` (the binary at `program`) on an ephemeral gateway
 /// until the harness exits, and return how it exited. Shared by the command
-/// and `hedos ui`. The picker list comes from the live shelf, so a caller's
+/// and `hedos shelf`. The picker list comes from the live shelf, so a caller's
 /// older snapshot never reaches the harness.
 pub(crate) async fn launch(
     session: &Session,

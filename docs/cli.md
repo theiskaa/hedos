@@ -134,7 +134,7 @@ Generate an image and write a PNG file. This runs as a job, with progress on std
 - `--seed <n>` sets the random seed.
 - `-o, --output <path>` sets the output file. The default is a name slugged from the prompt with a `.png` extension in the current directory.
 
-### `hedos ui`
+### `hedos shelf`
 
 Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the machine's memory, what is loaded and by whom, disk per store, and the gateway's state kept on screen. Every key is a subcommand, and the footer shows only the ones that apply to the selected model.
 

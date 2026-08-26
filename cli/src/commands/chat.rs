@@ -52,7 +52,7 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
 }
 
 /// Chat with `record` on stdin/stdout until end-of-input. Shared by the
-/// command and `hedos ui`.
+/// command and `hedos shelf`.
 pub(crate) async fn chat(
     session: &Session,
     record: &ModelRecord,
