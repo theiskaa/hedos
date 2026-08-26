@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
+use kernel::capabilities::GenerationStats;
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::records::ModelRecord;
 use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
@@ -32,6 +33,8 @@ pub enum Event {
     Searched(Searched),
     /// An install plan came back.
     Planned(Planned),
+    /// The chat pane's reply moved.
+    Reply(Reply),
     /// The terminal stopped delivering keys; nothing can drive the UI now.
     InputClosed,
 }
@@ -49,6 +52,25 @@ pub struct Searched {
 pub struct Planned {
     pub reference: String,
     pub result: Result<InstallPlan, String>,
+}
+
+/// A step of a streamed reply, stamped with the ask it answers so a reply
+/// that was stopped can't reach the turn that came after it.
+#[derive(Debug, Clone)]
+pub struct Reply {
+    pub generation: u64,
+    pub step: ReplyStep,
+}
+
+/// What a reply did.
+#[derive(Debug, Clone)]
+pub enum ReplyStep {
+    /// More visible text.
+    Text(String),
+    /// The reply ended, with the runtime's stats if it reported any.
+    Done(Option<GenerationStats>),
+    /// The runtime gave up, with the reason.
+    Failed(String),
 }
 
 /// A fresh shelf and machine facts.

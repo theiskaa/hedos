@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use kernel::install::provider::InstallProviderId;
-use kernel::records::ModelRecord;
+use kernel::records::{JsonValue, ModelRecord};
 
 use super::tasks::{TaskId, TaskKind, TaskLabel};
 use crate::support::harnesses::HarnessSpec;
@@ -21,11 +21,6 @@ pub enum HandOff {
     },
     /// A conversation with a model, through `hedos chat`.
     Chat { record: Box<ModelRecord> },
-    /// One prompt to a model, through `hedos run`.
-    Run {
-        record: Box<ModelRecord>,
-        prompt: String,
-    },
     /// The gateway in the foreground, through `hedos serve`.
     Serve,
 }
@@ -42,10 +37,6 @@ impl HandOff {
             },
             HandOff::Chat { record } => TaskLabel {
                 verb: "chat",
-                subject: record.display_name().to_owned(),
-            },
-            HandOff::Run { record, .. } => TaskLabel {
-                verb: "try",
                 subject: record.display_name().to_owned(),
             },
             HandOff::Serve => TaskLabel {
@@ -75,4 +66,13 @@ pub enum Effect {
     Copy(String),
     /// Step aside for something that owns the terminal until it ends.
     HandOff(Box<HandOff>),
+    /// Stream a chat reply into the pane, reported as [`super::event::Reply`]
+    /// events stamped with `generation`.
+    Ask {
+        record_id: String,
+        payload: JsonValue,
+        generation: u64,
+    },
+    /// Stop the reply in flight.
+    StopAsk,
 }

@@ -6,13 +6,13 @@
 //! loop that connects them.
 
 mod app;
+mod chat;
 mod effect;
 mod event;
 mod facts;
 mod launch;
 mod layout;
 mod order;
-mod prompt;
 mod pull;
 mod state;
 mod tasks;
@@ -27,6 +27,7 @@ use std::time::Instant;
 use base64::Engine;
 
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 
 use self::app::App;
@@ -155,9 +156,6 @@ async fn run_hand_off(
         HandOff::Chat { record } => commands::chat::chat(session, record, None, None, out)
             .await
             .map(|()| None),
-        HandOff::Run { record, prompt } => commands::run::run_prompt(session, record, prompt, out)
-            .await
-            .map(|()| None),
         HandOff::Serve => commands::serve::serve(session, None, out)
             .await
             .map(|()| None),
@@ -176,23 +174,7 @@ async fn run_hand_off(
             TaskState::Failed(error.message)
         }
     };
-    if matches!(hand_off, HandOff::Run { .. }) {
-        // `run` returns the moment the answer ends; hold the screen so it can
-        // be read before the UI paints over it.
-        wait_for_enter(out).await;
-    }
     (label, state)
-}
-
-/// Print a prompt and wait for a line on stdin, in the terminal's cooked
-/// mode; the read blocks a thread, not the runtime.
-async fn wait_for_enter(out: &Out) {
-    out.err("enter to return to hedos");
-    let _ = tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        let _ = io::stdin().read_line(&mut line);
-    })
-    .await;
 }
 
 async fn drive(
@@ -203,6 +185,9 @@ async fn drive(
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
 ) -> Result<Outcome, CliError> {
+    // The reply streaming into the chat pane; aborting it is how a reply
+    // stops, and one is enough since the pane sends one ask at a time.
+    let mut ask: Option<JoinHandle<()>> = None;
     loop {
         if app.take_dirty() {
             terminal
@@ -220,7 +205,10 @@ async fn drive(
         };
         for effect in app.reduce(event) {
             match effect {
-                Effect::Quit => return Ok(Outcome::Quit),
+                Effect::Quit => {
+                    abort(ask.take());
+                    return Ok(Outcome::Quit);
+                }
                 Effect::HandOff(hand_off) => return Ok(Outcome::HandOff(hand_off)),
                 Effect::Spawn(kind) => {
                     let id = tasks::spawn(&kind, context, tx);
@@ -233,8 +221,25 @@ async fn drive(
                 }
                 Effect::Cancel(id) => context.cancel(id),
                 Effect::Copy(text) => copy_to_clipboard(&text),
+                Effect::Ask {
+                    record_id,
+                    payload,
+                    generation,
+                } => {
+                    abort(ask.take());
+                    ask = Some(tasks::spawn_ask(
+                        record_id, payload, generation, context, tx,
+                    ));
+                }
+                Effect::StopAsk => abort(ask.take()),
             }
         }
+    }
+}
+
+fn abort(handle: Option<JoinHandle<()>>) {
+    if let Some(handle) = handle {
+        handle.abort();
     }
 }
 

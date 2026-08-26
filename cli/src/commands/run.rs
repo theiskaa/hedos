@@ -76,20 +76,6 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     Ok(())
 }
 
-/// One prompt to `record` with every knob at its default (no system prompt,
-/// no token cap or temperature, no images), streamed to stdout. The form
-/// `hedos ui` asks for.
-pub(crate) async fn run_prompt(
-    session: &Session,
-    record: &ModelRecord,
-    prompt: &str,
-    out: &Out,
-) -> Result<(), CliError> {
-    let payload = chat_payload(prompt, None, None, Vec::new());
-    stream_answer(session, record, payload, None, out).await?;
-    Ok(())
-}
-
 /// Stream the model's reply to `payload`, a spinner standing in until the
 /// first token; the whole reply, for callers that also report it as JSON.
 async fn stream_answer(

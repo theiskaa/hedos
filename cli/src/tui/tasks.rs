@@ -10,16 +10,17 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
+use kernel::capabilities::CapabilityChunk;
 use kernel::install::event::{InstallEvent, InstallProgress};
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::records::ModelRecord;
+use kernel::records::{Capability, JsonValue, ModelRecord};
 use runtime::install::service::InstallService;
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::event::{Event, Planned, Refreshed, Searched};
+use super::event::{Event, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
 use super::pull::SEARCH_LIMIT;
 use super::text;
@@ -309,6 +310,44 @@ pub fn spawn_plan(
             .map_err(|error| error.to_string());
         let _ = tx.send(Event::Planned(Planned { reference, result }));
     });
+}
+
+/// Stream the chat reply to `payload` from `record_id`, reporting each piece
+/// of text and then the end; aborting the handle drops the stream, which is
+/// how a reply is stopped. Every ask ends with a `Done` or `Failed` step.
+pub fn spawn_ask(
+    record_id: String,
+    payload: JsonValue,
+    generation: u64,
+    context: &Arc<TaskContext>,
+    tx: &mpsc::UnboundedSender<Event>,
+) -> JoinHandle<()> {
+    let context = Arc::clone(context);
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let report = |step: ReplyStep| {
+            let _ = tx.send(Event::Reply(Reply { generation, step }));
+        };
+        let stream = context
+            .session
+            .kernel
+            .invoke_with(&record_id, Capability::chat(), payload, None, None)
+            .await;
+        let mut stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => return report(ReplyStep::Failed(error.to_string())),
+        };
+        let mut stats = None;
+        while let Some(result) = stream.recv().await {
+            match result {
+                Ok(CapabilityChunk::Text(text)) => report(ReplyStep::Text(text)),
+                Ok(CapabilityChunk::Done(reported)) => stats = reported,
+                Ok(_) => {}
+                Err(error) => return report(ReplyStep::Failed(error.to_string())),
+            }
+        }
+        report(ReplyStep::Done(stats));
+    })
 }
 
 /// The next place in the refresh order, for a snapshot taken outside

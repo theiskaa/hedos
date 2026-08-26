@@ -1,4 +1,4 @@
-//! The modals (pull, remove, help), drawn over a dimmed screen.
+//! The modals (pull, remove, help, launch), drawn over a dimmed screen.
 
 use kernel::install::plan::InstallPlan;
 use kernel::profiles::FitVerdict;
@@ -24,7 +24,6 @@ const WIDTH: u16 = 84;
 const PULL_HEIGHT: u16 = (MAX_MATCHES + CATEGORIES.len() + LISTING_CHROME_ROWS + 2) as u16;
 const REMOVE_HEIGHT: u16 = 11;
 const HELP_HEIGHT: u16 = 17;
-const PROMPT_HEIGHT: u16 = 6;
 /// The launch modal: a blank, one row per harness, a blank, the note, a
 /// blank, the keys, and the border.
 const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 7;
@@ -48,7 +47,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Remove(_) => REMOVE_HEIGHT,
         Modal::Help => HELP_HEIGHT,
         Modal::Launch(_) => LAUNCH_HEIGHT,
-        Modal::Prompt(_) => PROMPT_HEIGHT,
+        // The chat pane is drawn as a body of its own, not over the shelf.
+        Modal::Chat(_) => return,
     };
     let rect = centered(area, height);
     let block = Block::bordered().border_style(ACCENT);
@@ -61,15 +61,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             format!(" launch on {} ", modal.record.display_name()),
             launch(modal),
         ),
-        Modal::Prompt(modal) => (
-            format!(" try {} ", modal.record.display_name()),
-            vec![
-                Line::default(),
-                input_line(&modal.input),
-                Line::default(),
-                keys(&[("enter", "ask"), ("esc", "close")]),
-            ],
-        ),
+        Modal::Chat(_) => return,
     };
     frame.render_widget(Clear, rect);
     frame.render_widget(block.title(Span::styled(title, ACCENT)), rect);
@@ -116,7 +108,7 @@ fn help() -> Vec<Line<'static>> {
         ("p", "pull", "s", "scan"),
         ("w u", "warm / unload", "x", "remove"),
         ("l", "launch a harness", "T", "chat"),
-        ("t", "try a prompt", "S", "serve"),
+        ("t", "try in a chat pane", "S", "serve"),
         ("o", "sort", "r", "refresh"),
         ("y Y", "copy path / id", "c", "cancel pull"),
         ("d", "dismiss failure", "q", "quit"),

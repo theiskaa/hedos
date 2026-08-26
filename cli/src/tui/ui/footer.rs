@@ -24,11 +24,24 @@ const ALWAYS: [(&str, &str); 2] = [("?", "help"), ("q", "quit")];
 
 /// Draw the key line, or the current notice, into `area`.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let line = match app.notice() {
-        Some(notice) => Line::from(Span::styled(format!(" {notice}"), BOLD)),
-        None => fitting_line(&app.actions(), area.width as usize),
+    let line = match (app.notice(), app.chat_pane()) {
+        (Some(notice), _) => Line::from(Span::styled(format!(" {notice}"), BOLD)),
+        (None, Some(pane)) => chat_line(pane.streaming()),
+        (None, None) => fitting_line(&app.actions(), area.width as usize),
     };
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The keys of the chat pane; escape reads as stop while a reply streams.
+fn chat_line(streaming: bool) -> Line<'static> {
+    let escape = if streaming { "stop" } else { "close" };
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(key_spans(&[
+        ("enter", "send"),
+        ("↑/↓", "scroll"),
+        ("esc", escape),
+    ]));
+    Line::from(spans)
 }
 
 /// The fullest footer that fits in `width`: everything, then without the copy

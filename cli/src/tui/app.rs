@@ -8,12 +8,12 @@ use kernel::records::{Capability, ModelRecord, ModelState};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
 
+use super::chat::ChatPane;
 use super::effect::{Effect, HandOff};
-use super::event::{Event, Key, Planned, Refreshed, Searched};
+use super::event::{Event, Key, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
 use super::launch::LaunchModal;
 use super::order::{Sort, order};
-use super::prompt::PromptModal;
 use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
@@ -44,8 +44,8 @@ pub enum Modal {
     Help,
     /// Choosing a harness to launch on the selected model.
     Launch(Box<LaunchModal>),
-    /// Typing one prompt to try the selected model with.
-    Prompt(Box<PromptModal>),
+    /// A conversation with the selected model, in place of the shelf.
+    Chat(Box<ChatPane>),
 }
 
 /// A task as the strip shows it. A row for something that ran in the
@@ -311,15 +311,35 @@ impl App {
                 self.planned(planned);
                 Vec::new()
             }
+            Event::Reply(reply) => self.reply(reply),
             Event::InputClosed => vec![Effect::Quit],
         }
     }
 
-    fn key(&mut self, key: Key) -> Vec<Effect> {
-        if key == Key::Interrupt {
-            return vec![Effect::Quit];
+    /// The chat pane, while it is open.
+    pub fn chat_pane(&self) -> Option<&ChatPane> {
+        match &self.modal {
+            Some(Modal::Chat(pane)) => Some(pane),
+            _ => None,
         }
+    }
+
+    /// Ticks since the loop started, for what animates on them.
+    pub fn ticks(&self) -> u64 {
+        self.ticks
+    }
+
+    /// The chat pane, mutably, while it is open.
+    pub fn chat_pane_mut(&mut self) -> Option<&mut ChatPane> {
+        match &mut self.modal {
+            Some(Modal::Chat(pane)) => Some(pane),
+            _ => None,
+        }
+    }
+
+    fn key(&mut self, key: Key) -> Vec<Effect> {
         match self.modal {
+            Some(Modal::Chat(_)) => return self.chat_key(key),
             Some(Modal::Pull(_)) => return self.pull_key(key),
             Some(Modal::Remove(_)) => return self.remove_key(key),
             Some(Modal::Help) => {
@@ -328,8 +348,10 @@ impl App {
                 return Vec::new();
             }
             Some(Modal::Launch(_)) => return self.launch_key(key),
-            Some(Modal::Prompt(_)) => return self.prompt_key(key),
             None => {}
+        }
+        if key == Key::Interrupt {
+            return vec![Effect::Quit];
         }
         if self.filtering && !matches!(key, Key::Up | Key::Down) {
             return self.filter_key(key);
@@ -357,7 +379,7 @@ impl App {
             Key::Char('x') => return self.remove(),
             Key::Char('l') => return self.launch(),
             Key::Char('T') => return self.chat(),
-            Key::Char('t') => return self.try_prompt(),
+            Key::Char('t') => return self.try_chat(),
             Key::Char('S') => return self.serve(),
             Key::Char('/') => {
                 self.filtering = true;
@@ -543,11 +565,12 @@ impl App {
         }
     }
 
-    /// Open the prompt modal for the selected model.
-    fn try_prompt(&mut self) -> Vec<Effect> {
+    /// Open the chat pane on the selected model.
+    fn try_chat(&mut self) -> Vec<Effect> {
         match self.chat_capable() {
             Ok(record) => {
-                self.modal = Some(Modal::Prompt(Box::new(PromptModal::open(record))));
+                self.modal = Some(Modal::Chat(Box::new(ChatPane::open(record))));
+                self.expanded = false;
                 self.dirty = true;
                 Vec::new()
             }
@@ -555,26 +578,60 @@ impl App {
         }
     }
 
-    fn prompt_key(&mut self, key: Key) -> Vec<Effect> {
-        let Some(Modal::Prompt(modal)) = self.modal.as_mut() else {
+    /// Keys while the chat pane is open: typing, sending, scrolling; escape
+    /// or Ctrl-C stops a reply first and closes the pane second.
+    fn chat_key(&mut self, key: Key) -> Vec<Effect> {
+        let Some(Modal::Chat(pane)) = self.modal.as_mut() else {
             return Vec::new();
         };
         self.dirty = true;
         match key {
-            Key::Escape => self.modal = None,
-            Key::Char(c) => modal.type_char(c),
-            Key::Backspace => modal.backspace(),
-            Key::Enter => {
-                let Some(prompt) = modal.submit() else {
-                    return Vec::new();
-                };
-                let record = Box::new(modal.record.clone());
-                self.modal = None;
-                return vec![Effect::HandOff(Box::new(HandOff::Run { record, prompt }))];
+            Key::Escape | Key::Interrupt if pane.streaming() => {
+                pane.stop();
+                return vec![Effect::StopAsk];
             }
-            _ => {}
+            Key::Escape => self.modal = None,
+            Key::Interrupt => return vec![Effect::Quit],
+            Key::Char(c) => pane.type_char(c),
+            Key::Backspace => pane.backspace(),
+            Key::Up => pane.scroll_up(1),
+            Key::Down => pane.scroll_down(1),
+            Key::Top => pane.scroll_to_top(),
+            Key::Bottom => pane.scroll_to_bottom(),
+            Key::Enter => {
+                if let Some((payload, generation)) = pane.submit() {
+                    return vec![Effect::Ask {
+                        record_id: pane.record.id.clone(),
+                        payload,
+                        generation,
+                    }];
+                }
+            }
         }
         Vec::new()
+    }
+
+    /// A streamed reply moved; a finished one refreshes, since the model is
+    /// warm now.
+    fn reply(&mut self, reply: Reply) -> Vec<Effect> {
+        let Some(Modal::Chat(pane)) = self.modal.as_mut() else {
+            return Vec::new();
+        };
+        let applied = match reply.step {
+            ReplyStep::Text(text) => pane.text(reply.generation, &text),
+            ReplyStep::Done(stats) => pane.done(reply.generation, stats),
+            ReplyStep::Failed(reason) => pane.failed(reply.generation, reason),
+        };
+        if !applied {
+            return Vec::new();
+        }
+        let streaming = pane.streaming();
+        self.dirty = true;
+        if streaming {
+            Vec::new()
+        } else {
+            self.refresh()
+        }
     }
 
     /// Hand off to `hedos serve`, unless a gateway is already up.
@@ -804,6 +861,9 @@ impl App {
             && self.ticks >= *until
         {
             self.notice = None;
+            self.dirty = true;
+        }
+        if self.chat_pane().is_some_and(ChatPane::waiting) {
             self.dirty = true;
         }
         let before = self.tasks.len();
@@ -1381,21 +1441,72 @@ mod tests {
         assert_eq!(app.records.len(), 1);
     }
 
+    /// Open the pane on the first model, type `hi`, send it; the ask's number.
+    fn ask(app: &mut App) -> u64 {
+        press(app, Key::Char('t'));
+        for c in "hi".chars() {
+            press(app, Key::Char(c));
+        }
+        match press(app, Key::Enter).as_slice() {
+            [Effect::Ask { generation, .. }] => *generation,
+            other => panic!("expected an ask, got {other:?}"),
+        }
+    }
+
+    fn reply(app: &mut App, generation: u64, step: ReplyStep) -> Vec<Effect> {
+        app.reduce(Event::Reply(Reply { generation, step }))
+    }
+
     #[test]
-    fn try_takes_a_prompt_and_hands_off() {
+    fn try_opens_the_chat_pane_and_enter_asks() {
         let mut app = app(1);
         press(&mut app, Key::Char('t'));
-        assert!(matches!(app.modal, Some(Modal::Prompt(_))));
+        assert!(matches!(app.modal, Some(Modal::Chat(_))));
         assert!(press(&mut app, Key::Enter).is_empty());
-        for c in "hi".chars() {
-            press(&mut app, Key::Char(c));
-        }
-        let effects = press(&mut app, Key::Enter);
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::HandOff(hand_off)] if matches!(**hand_off, HandOff::Run { ref prompt, .. } if prompt == "hi")
-        ));
+        press(&mut app, Key::Escape);
+        assert!(ask(&mut app) > 0);
+        assert!(press(&mut app, Key::Char('q')).is_empty());
+        assert!(matches!(app.modal, Some(Modal::Chat(_))));
+    }
+
+    #[test]
+    fn a_streamed_reply_lands_in_the_pane_and_refreshes_when_done() {
+        let mut app = app(1);
+        let generation = ask(&mut app);
+        app.take_dirty();
+        let effects = reply(&mut app, generation, ReplyStep::Text("yo".to_owned()));
+        assert!(effects.is_empty() && app.take_dirty());
+        let effects = reply(&mut app, generation, ReplyStep::Done(None));
+        assert_eq!(effects, vec![Effect::Refresh]);
+        let pane = app.chat_pane().expect("the pane");
+        assert_eq!(pane.turns.last().map(|turn| turn.text.as_str()), Some("yo"));
+        assert!(!pane.streaming());
+    }
+
+    #[test]
+    fn escape_stops_a_reply_first_and_closes_the_pane_second() {
+        let mut app = app(1);
+        let generation = ask(&mut app);
+        assert_eq!(press(&mut app, Key::Escape), vec![Effect::StopAsk]);
+        app.take_dirty();
+        let effects = reply(&mut app, generation, ReplyStep::Text("late".to_owned()));
+        assert!(effects.is_empty() && !app.take_dirty());
+        assert!(press(&mut app, Key::Escape).is_empty());
         assert!(app.modal.is_none());
+        assert_eq!(press(&mut app, Key::Interrupt), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn a_reopened_pane_never_takes_the_closed_ones_reply() {
+        let mut app = app(1);
+        let first = ask(&mut app);
+        press(&mut app, Key::Escape);
+        press(&mut app, Key::Escape);
+        let second = ask(&mut app);
+        assert!(second > first);
+        reply(&mut app, first, ReplyStep::Text("stale".to_owned()));
+        let pane = app.chat_pane().expect("the pane");
+        assert_eq!(pane.turns.last().map(|turn| turn.text.as_str()), Some(""));
     }
 
     #[test]
