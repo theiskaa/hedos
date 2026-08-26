@@ -56,11 +56,13 @@ async fn ollama_ps_lists_residents_that_are_on_the_shelf() {
             model_id: id.clone(),
             name: "llama3".to_owned(),
             footprint_mb: 2,
+            expires_at_millis: Some(1_700_000_000_000),
         },
         GatewayResident {
             model_id: "gone".to_owned(),
             name: "gone".to_owned(),
             footprint_mb: 1,
+            expires_at_millis: None,
         },
     ];
     let (responder, rx) = GatewayResponder::new();
@@ -74,6 +76,7 @@ async fn ollama_ps_lists_residents_that_are_on_the_shelf() {
     assert_eq!(models[0]["id"], id);
     assert_eq!(models[0]["name"], "llama3");
     assert_eq!(models[0]["size"], 2 * 1_048_576);
+    assert_eq!(models[0]["expires_at"], "2023-11-14T22:13:20Z");
 }
 
 #[tokio::test]

@@ -45,6 +45,7 @@ impl GatewayPort for KernelGateway {
                         model_id: entry.model_id?,
                         name: entry.name,
                         footprint_mb: entry.footprint_mb,
+                        expires_at_millis: entry.expires_at_millis,
                     })
                 })
                 .collect()

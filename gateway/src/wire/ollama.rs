@@ -460,7 +460,8 @@ pub fn tags(records: &[ModelRecord]) -> Value {
 }
 
 /// The `/api/ps` body: the residents that are also on the shelf, shaped like
-/// `/api/tags` plus `size_vram` and hedos's record `id` for matching by id.
+/// `/api/tags` plus `size_vram`, `expires_at` when an idle unload is armed, and
+/// hedos's record `id` for matching by id.
 pub fn ps(residents: &[GatewayResident], shelf: &[ModelRecord]) -> Value {
     let models: Vec<Value> = residents
         .iter()
@@ -468,7 +469,7 @@ pub fn ps(residents: &[GatewayResident], shelf: &[ModelRecord]) -> Value {
             let record = shelf.iter().find(|record| record.id == resident.model_id)?;
             let name = record.wire_id();
             let size = resident.footprint_mb * BYTES_PER_MIB;
-            Some(json!({
+            let mut model = json!({
                 "id": record.id,
                 "name": name,
                 "model": name,
@@ -476,7 +477,11 @@ pub fn ps(residents: &[GatewayResident], shelf: &[ModelRecord]) -> Value {
                 "size_vram": size,
                 "digest": "",
                 "details": details(record),
-            }))
+            });
+            if let Some(expires_at) = resident.expires_at_millis {
+                model["expires_at"] = Value::String(timestamp::iso8601(expires_at));
+            }
+            Some(model)
         })
         .collect();
     json!({ "models": models })

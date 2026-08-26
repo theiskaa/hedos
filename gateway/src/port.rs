@@ -29,6 +29,8 @@ pub struct GatewayResident {
     pub name: String,
     /// Its footprint in megabytes.
     pub footprint_mb: i64,
+    /// When its idle unload fires, in Unix milliseconds, if a timer is armed.
+    pub expires_at_millis: Option<i64>,
 }
 
 /// Everything a handler needs from the running kernel: the shelf, streaming and
