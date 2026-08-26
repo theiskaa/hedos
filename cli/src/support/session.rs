@@ -17,8 +17,8 @@ use crate::support::serving::{self, GatewayLive};
 
 /// An open kernel plus the settings and directories it was built from.
 pub struct Session {
-    /// The production kernel.
-    pub kernel: Kernel,
+    /// The production kernel, shared with whatever serves it for a while.
+    pub kernel: Arc<Kernel>,
     /// The loaded settings.
     pub settings: Settings,
     /// The data directories.
@@ -30,7 +30,7 @@ impl Session {
     pub fn open() -> Result<Self, CliError> {
         let dirs = HedosDirs::detect();
         let settings = SettingsStore::discover().load();
-        let kernel = boot::build_kernel(&dirs, &settings)?;
+        let kernel = Arc::new(boot::build_kernel(&dirs, &settings)?);
         Ok(Self {
             kernel,
             settings,

@@ -11,8 +11,10 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::{ACCENT, BOLD, CURSOR, DIM, field_line, keys};
 use crate::support::banner::KOALA;
+use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
+use crate::tui::launch::LaunchModal;
 use crate::tui::pull::{PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
 
@@ -20,6 +22,9 @@ const WIDTH: u16 = 84;
 const PULL_HEIGHT: u16 = 18;
 const REMOVE_HEIGHT: u16 = 11;
 const HELP_HEIGHT: u16 = 17;
+/// The launch modal: a blank, one row per harness, a blank, the note, a
+/// blank, the keys, and the border.
+const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 7;
 /// Width of the labels in the preview and remove bodies.
 const LABEL_WIDTH: usize = 10;
 /// Width of the provider column: `huggingface` is the longest id.
@@ -39,6 +44,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Pull(_) => PULL_HEIGHT,
         Modal::Remove(_) => REMOVE_HEIGHT,
         Modal::Help => HELP_HEIGHT,
+        Modal::Launch(_) => LAUNCH_HEIGHT,
     };
     let rect = centered(area, height);
     let block = Block::bordered().border_style(ACCENT);
@@ -47,20 +53,57 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Pull(modal) => (" pull ".to_owned(), pull(modal, app, inner)),
         Modal::Remove(preview) => (format!(" remove {} ", preview.name), remove(preview, app)),
         Modal::Help => (" help ".to_owned(), help()),
+        Modal::Launch(modal) => (
+            format!(" launch on {} ", modal.record.display_name()),
+            launch(modal),
+        ),
     };
     frame.render_widget(Clear, rect);
     frame.render_widget(block.title(Span::styled(title, ACCENT)), rect);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Every harness, the ones this model can seat selectable, the rest dim with
+/// the reason.
+fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::default()];
+    for (index, row) in modal.rows.iter().enumerate() {
+        let mut line = Line::from(vec![
+            Span::raw(format!(" {:<12}", row.spec.display)),
+            Span::styled(format!("{:<10}", row.spec.binary), DIM),
+            Span::styled(row.blocked.clone().unwrap_or_default(), DIM),
+        ]);
+        if row.blocked.is_some() {
+            line = line.style(DIM);
+        }
+        if index == modal.selected {
+            line = line.style(Style::new().add_modifier(Modifier::REVERSED));
+        }
+        lines.push(line);
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        " the ui steps aside while the harness runs, and comes back when it exits",
+        DIM,
+    )));
+    lines.push(Line::default());
+    lines.push(keys(&[
+        ("enter", "launch"),
+        ("↑/↓", "move"),
+        ("esc", "close"),
+    ]));
+    lines
+}
+
 /// The key table beside the koala, and the one idea behind it.
 fn help() -> Vec<Line<'static>> {
-    const ROWS: [(&str, &str, &str, &str); 7] = [
+    const ROWS: [(&str, &str, &str, &str); 8] = [
         ("j k ↑ ↓", "move", "g G", "top / bottom"),
         ("/", "filter", "enter", "expand detail"),
         ("p", "pull", "s", "scan"),
         ("w u", "warm / unload", "x", "remove"),
-        ("o", "sort", "r", "refresh"),
+        ("l", "launch a harness", "o", "sort"),
+        ("r", "refresh", "", ""),
         ("y Y", "copy path / id", "c", "cancel pull"),
         ("d", "dismiss failure", "q", "quit"),
     ];

@@ -10,7 +10,7 @@ use super::{BOLD, keys};
 use crate::tui::app::App;
 
 /// The keys the footer teaches, in display order.
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("j/k", "move"),
     ("/", "filter"),
     ("o", "sort"),
@@ -18,6 +18,7 @@ const KEYS: [(&str, &str); 10] = [
     ("s", "scan"),
     ("w", "warm"),
     ("u", "unload"),
+    ("l", "launch"),
     ("x", "remove"),
     ("?", "help"),
     ("q", "quit"),

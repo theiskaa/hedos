@@ -7,13 +7,14 @@ use kernel::records::{Capability, ModelRecord};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
 
-use super::effect::Effect;
+use super::effect::{Effect, HandOff};
 use super::event::{Event, Key, Planned, Refreshed, Searched};
 use super::facts::Facts;
+use super::launch::LaunchModal;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage};
 use super::state::UiState;
-use super::tasks::{TaskEvent, TaskId, TaskKind, TaskState};
+use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::residency::Holder;
 
 /// How often the loop ticks; every cadence below is counted in these.
@@ -37,13 +38,17 @@ pub enum Modal {
     Remove(ModelDeletionPreview),
     /// The key table.
     Help,
+    /// Choosing a harness to launch on the selected model.
+    Launch(Box<LaunchModal>),
 }
 
-/// A task as the strip shows it.
+/// A task as the strip shows it. A row for something that ran in the
+/// foreground while the UI stepped aside has no kind: nothing spawned it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRow {
     pub id: TaskId,
-    pub kind: TaskKind,
+    pub label: TaskLabel,
+    pub kind: Option<TaskKind>,
     pub state: TaskState,
     /// The tick the task finished on, for expiry.
     finished_at: Option<u64>,
@@ -186,7 +191,8 @@ impl App {
     pub fn started(&mut self, id: TaskId, kind: TaskKind) {
         self.tasks.push(TaskRow {
             id,
-            kind,
+            label: kind.label(),
+            kind: Some(kind),
             state: TaskState::Running,
             finished_at: None,
         });
@@ -215,6 +221,7 @@ impl App {
                 self.planned(planned);
                 Vec::new()
             }
+            Event::InputClosed => vec![Effect::Quit],
         }
     }
 
@@ -230,6 +237,7 @@ impl App {
                 self.dirty = true;
                 return Vec::new();
             }
+            Some(Modal::Launch(_)) => return self.launch_key(key),
             None => {}
         }
         if self.filtering && !matches!(key, Key::Up | Key::Down) {
@@ -255,6 +263,7 @@ impl App {
                 self.dirty = true;
             }
             Key::Char('x') => return self.remove(),
+            Key::Char('l') => return self.launch(),
             Key::Char('/') => {
                 self.filtering = true;
                 self.expanded = false;
@@ -389,6 +398,65 @@ impl App {
         }
     }
 
+    /// Open the harness picker for the selected model, or say why not.
+    fn launch(&mut self) -> Vec<Effect> {
+        let Some(record) = self.selected_record() else {
+            return Vec::new();
+        };
+        if !record.capabilities.contains(&Capability::chat()) {
+            let name = record.display_name().to_owned();
+            return self.notify(format!("{name} can't chat, so no harness can use it"));
+        }
+        self.modal = Some(Modal::Launch(Box::new(LaunchModal::open(record))));
+        self.dirty = true;
+        Vec::new()
+    }
+
+    fn launch_key(&mut self, key: Key) -> Vec<Effect> {
+        let Some(Modal::Launch(modal)) = self.modal.as_mut() else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        match key {
+            Key::Escape => self.modal = None,
+            Key::Up | Key::Char('k') => modal.step(-1),
+            Key::Down | Key::Char('j') => modal.step(1),
+            Key::Enter => {
+                let row = modal.selected_row().clone();
+                if let Some(reason) = row.blocked {
+                    return self.notify(reason);
+                }
+                let Some(program) = row.program else {
+                    return Vec::new();
+                };
+                let hand_off = HandOff::Launch {
+                    harness: row.spec,
+                    program,
+                    record: Box::new(modal.record.clone()),
+                };
+                self.modal = None;
+                return vec![Effect::HandOff(Box::new(hand_off))];
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// The UI is back from a hand-off: a fresh shelf and facts stamped with
+    /// `sequence` (so a refresh spawned before leaving can't overwrite them),
+    /// and a row saying how it went.
+    pub fn came_back(&mut self, snapshot: Refreshed, label: TaskLabel, state: TaskState) {
+        self.refreshed(snapshot);
+        self.tasks.push(TaskRow {
+            id: TaskId::next(),
+            label,
+            kind: None,
+            state,
+            finished_at: Some(self.ticks),
+        });
+        self.dirty = true;
+    }
+
     /// Open the removal confirmation for the selected model, or say why not.
     fn remove(&mut self) -> Vec<Effect> {
         let Some(record) = self.selected_record() else {
@@ -457,7 +525,7 @@ impl App {
             .tasks
             .iter()
             .rev()
-            .find(|row| row.running() && matches!(row.kind, TaskKind::Pull(_)));
+            .find(|row| row.running() && matches!(row.kind, Some(TaskKind::Pull(_))));
         match pull {
             Some(row) => vec![Effect::Cancel(row.id)],
             None => self.notify("nothing is downloading".to_owned()),
@@ -533,7 +601,7 @@ impl App {
     fn busy_with(&self, id: &str) -> bool {
         self.tasks
             .iter()
-            .any(|row| row.running() && row.kind.model_id() == Some(id))
+            .any(|row| row.running() && row.kind.as_ref().and_then(TaskKind::model_id) == Some(id))
     }
 
     /// Whether a task of `kind`'s shape is already running. Pulls match on
@@ -542,10 +610,11 @@ impl App {
         self.tasks.iter().any(|row| {
             row.running()
                 && match (&row.kind, kind) {
-                    (TaskKind::Pull(running), TaskKind::Pull(wanted)) => {
+                    (Some(TaskKind::Pull(running)), TaskKind::Pull(wanted)) => {
                         running.provider == wanted.provider && running.reference == wanted.reference
                     }
-                    (running, wanted) => running == wanted,
+                    (Some(running), wanted) => running == wanted,
+                    (None, _) => false,
                 }
         })
     }
@@ -1070,6 +1139,60 @@ mod tests {
         press(&mut app, Key::Char('j'));
         assert!(app.modal.is_none());
         assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn launch_offers_harnesses_and_hands_off_on_an_allowed_one() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('l'));
+        assert!(matches!(app.modal, Some(Modal::Launch(_))));
+        press(&mut app, Key::Escape);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn launch_is_refused_for_a_model_that_cannot_chat() {
+        let mut app = app(1);
+        app.records[0].capabilities = vec![Capability::speak()];
+        app.reorder_in_place();
+        assert!(press(&mut app, Key::Char('l')).is_empty());
+        assert!(app.notice().unwrap().contains("can't chat"));
+    }
+
+    #[test]
+    fn coming_back_adds_a_finished_row_and_keeps_the_selection() {
+        let mut app = app(3);
+        press(&mut app, Key::Char('G'));
+        let kept = app.records[2].clone();
+        app.came_back(
+            Refreshed {
+                sequence: 5,
+                records: vec![kept.clone(), record(7)],
+                facts: Facts::default(),
+            },
+            TaskLabel {
+                verb: "launch",
+                subject: "x".to_owned(),
+            },
+            TaskState::Done("ran 4m".to_owned()),
+        );
+        assert_eq!(app.selected_record().map(|r| &r.id), Some(&kept.id));
+        assert_eq!(app.tasks.len(), 1);
+        assert!(!app.busy());
+        // A refresh that was in flight before leaving is older and must lose.
+        app.reduce(Event::Refreshed(Refreshed {
+            sequence: 4,
+            records: Vec::new(),
+            facts: Facts::default(),
+        }));
+        assert_eq!(app.records.len(), 2);
+        // A refresh spawned after coming back still applies.
+        app.reduce(Event::Refreshed(Refreshed {
+            sequence: 6,
+            records: vec![record(1)],
+            facts: Facts::default(),
+        }));
+        assert_eq!(app.records.len(), 1);
     }
 
     #[test]

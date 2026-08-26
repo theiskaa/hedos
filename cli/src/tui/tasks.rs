@@ -72,6 +72,11 @@ impl TaskContext {
         }
     }
 
+    /// The session the tasks run against.
+    pub fn session(&self) -> &Arc<Session> {
+        &self.session
+    }
+
     /// Whether a mutating task is still running.
     pub fn busy(&self) -> bool {
         self.mutating
@@ -136,7 +141,22 @@ pub enum TaskKind {
     Remove { id: String, name: String },
 }
 
+/// What the strip calls a task: a verb and its subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskLabel {
+    pub verb: &'static str,
+    pub subject: String,
+}
+
 impl TaskKind {
+    /// The label the strip shows for this kind.
+    pub fn label(&self) -> TaskLabel {
+        TaskLabel {
+            verb: self.verb(),
+            subject: self.subject().to_owned(),
+        }
+    }
+
     /// The verb the strip shows.
     pub fn verb(&self) -> &'static str {
         match self {
@@ -218,9 +238,10 @@ pub struct TaskEvent {
 pub fn spawn(
     kind: &TaskKind,
     context: &Arc<TaskContext>,
-    tx: mpsc::UnboundedSender<Event>,
+    tx: &mpsc::UnboundedSender<Event>,
 ) -> TaskId {
     let id = TaskId::next();
+    let tx = tx.clone();
     let mutating = matches!(kind, TaskKind::Pull(_) | TaskKind::Remove { .. });
     let context = Arc::clone(context);
     let kind = kind.clone();
@@ -258,8 +279,9 @@ pub fn spawn(
 }
 
 /// Search the providers for `query`, reporting the hits.
-pub fn spawn_search(query: String, context: &Arc<TaskContext>, tx: mpsc::UnboundedSender<Event>) {
+pub fn spawn_search(query: String, context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>) {
     let context = Arc::clone(context);
+    let tx = tx.clone();
     tokio::spawn(async move {
         let result = context.install.browse(&query, SEARCH_LIMIT).await;
         let _ = tx.send(Event::Searched(Searched {
@@ -275,9 +297,10 @@ pub fn spawn_plan(
     provider: InstallProviderId,
     reference: String,
     context: &Arc<TaskContext>,
-    tx: mpsc::UnboundedSender<Event>,
+    tx: &mpsc::UnboundedSender<Event>,
 ) {
     let context = Arc::clone(context);
+    let tx = tx.clone();
     tokio::spawn(async move {
         let result = context
             .install
@@ -288,11 +311,18 @@ pub fn spawn_plan(
     });
 }
 
+/// The next place in the refresh order, for a snapshot taken outside
+/// [`spawn_refresh`] so it still outranks every refresh spawned before it.
+pub fn next_refresh_sequence() -> u64 {
+    NEXT_REFRESH.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Re-read the shelf and the machine facts, reporting them as one event
 /// stamped with a sequence so a slow older refresh never overwrites a newer.
-pub fn spawn_refresh(context: &Arc<TaskContext>, tx: mpsc::UnboundedSender<Event>) {
-    let sequence = NEXT_REFRESH.fetch_add(1, Ordering::Relaxed);
+pub fn spawn_refresh(context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>) {
+    let sequence = next_refresh_sequence();
     let context = Arc::clone(context);
+    let tx = tx.clone();
     tokio::spawn(async move {
         let Snapshot { records, facts } = context.snapshot().await;
         let _ = tx.send(Event::Refreshed(Refreshed {

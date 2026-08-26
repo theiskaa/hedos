@@ -22,9 +22,9 @@ use crate::support::http::probe_json;
 
 /// Build the router that serves `kernel`, auditing into `audit_dir` and
 /// admitting at most `max_inference` concurrent inference requests.
-pub fn router(kernel: Kernel, audit_dir: &Path, max_inference: usize) -> Arc<GatewayRouter> {
+pub fn router(kernel: Arc<Kernel>, audit_dir: &Path, max_inference: usize) -> Arc<GatewayRouter> {
     Arc::new(GatewayRouter::new(
-        Arc::new(KernelGateway::new(Arc::new(kernel))),
+        Arc::new(KernelGateway::new(kernel)),
         Box::new(OpenAuth),
         Box::new(GatewayAuditLog::new(audit_dir)),
         standard_routes(),

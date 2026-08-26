@@ -9,6 +9,7 @@ mod app;
 mod effect;
 mod event;
 mod facts;
+mod launch;
 mod layout;
 mod order;
 mod pull;
@@ -19,22 +20,32 @@ mod ui;
 
 use std::io::{self, Write};
 use std::sync::Arc;
+use std::time::Instant;
 
 use base64::Engine;
 
 use tokio::sync::mpsc;
-use tokio::time::Interval;
+use tokio::time::{Interval, MissedTickBehavior};
 
 use self::app::App;
-use self::effect::Effect;
-use self::event::Event;
+use self::effect::{Effect, HandOff};
+use self::event::{Event, Input, Refreshed};
 use self::state::UiState;
-use self::tasks::TaskContext;
+use self::tasks::{TaskContext, TaskLabel, TaskState};
+use crate::commands;
 use crate::error::CliError;
 use crate::support::output::Out;
 use crate::support::session::Session;
 
-/// Run the UI over `session` on the terminal until it asks to quit.
+/// Why `drive` returned.
+enum Outcome {
+    Quit,
+    HandOff(Box<HandOff>),
+}
+
+/// Run the UI over `session` on the terminal until it asks to quit. When it
+/// hands the terminal to something else, that runs here in between, and the
+/// UI comes back with a fresh snapshot once it is over.
 pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     session.shelf_or_discover().await?;
     let state_dir = session.dirs.sub("ui");
@@ -46,31 +57,32 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     let mut app = App::new(records, facts);
     app.restore(&UiState::load(&state_dir));
     let (tx, mut rx) = mpsc::unbounded_channel();
-    // The input thread owns the only strong sender: when it dies the channel
-    // closes and the loop ends, instead of ticking on with no way to quit.
-    let weak = tx.downgrade();
-    event::spawn_input(tx);
     let mut ticks = tokio::time::interval(app::TICK);
+    // Ticks missed while something else had the terminal are not owed: a
+    // burst of them would age the strip and fire a refresh per 10 s away.
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    // `try_init` installs a panic hook that restores the terminal, but a
-    // failure between raw mode and the alternate screen leaves raw mode on.
-    let mut terminal = match ratatui::try_init() {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            ratatui::restore();
-            return Err(terminal_error(error));
+    let outcome = loop {
+        match on_terminal(&mut app, &context, &tx, &mut rx, &mut ticks).await {
+            Ok(Outcome::HandOff(hand_off)) => {
+                let (label, state) = run_hand_off(*hand_off, &context, out).await;
+                let sequence = tasks::next_refresh_sequence();
+                let tasks::Snapshot { records, facts } = context.snapshot().await;
+                app.came_back(
+                    Refreshed {
+                        sequence,
+                        records,
+                        facts,
+                    },
+                    label,
+                    state,
+                );
+                ticks.reset();
+            }
+            Ok(Outcome::Quit) => break Ok(()),
+            Err(error) => break Err(error),
         }
     };
-    let outcome = drive(
-        &mut terminal,
-        &mut app,
-        &context,
-        &weak,
-        &mut rx,
-        &mut ticks,
-    )
-    .await;
-    ratatui::restore();
     app.remembered().save(&state_dir);
     // A pull or removal is finished rather than cut mid-way; a scan runs to
     // completion inside one poll anyway. Either way, say why the prompt is late.
@@ -81,14 +93,74 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     outcome
 }
 
+/// Own the terminal and the input thread for one stretch of the UI: set
+/// both up, drive until something ends the stretch, and give both back.
+async fn on_terminal(
+    app: &mut App,
+    context: &Arc<TaskContext>,
+    tx: &mpsc::UnboundedSender<Event>,
+    rx: &mut mpsc::UnboundedReceiver<Event>,
+    ticks: &mut Interval,
+) -> Result<Outcome, CliError> {
+    let input = Input::spawn(tx.clone());
+    // `try_init` installs a panic hook that restores the terminal, but a
+    // failure between raw mode and the alternate screen leaves raw mode on.
+    let mut terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            ratatui::restore();
+            return Err(terminal_error(error));
+        }
+    };
+    let outcome = drive(&mut terminal, app, context, tx, rx, ticks).await;
+    ratatui::restore();
+    input.stop();
+    outcome
+}
+
+/// Run `hand_off` in the foreground and describe how it went as a task row.
+async fn run_hand_off(
+    hand_off: HandOff,
+    context: &Arc<TaskContext>,
+    out: &Out,
+) -> (TaskLabel, TaskState) {
+    let started = Instant::now();
+    let (label, result) = match hand_off {
+        HandOff::Launch {
+            harness,
+            program,
+            record,
+        } => {
+            let label = TaskLabel {
+                verb: "launch",
+                subject: format!("{} on {}", harness.display, record.display_name()),
+            };
+            let result =
+                commands::launch::launch(context.session(), harness, &program, &record, &[], out)
+                    .await;
+            (label, result)
+        }
+    };
+    let ran = text::duration(started.elapsed().as_secs() as i64);
+    let state = match result {
+        Ok(status) => match status.code() {
+            Some(0) => TaskState::Done(format!("ran {ran}")),
+            Some(code) => TaskState::Done(format!("ran {ran} · exit {code}")),
+            None => TaskState::Failed(format!("ran {ran} · {status}")),
+        },
+        Err(error) => TaskState::Failed(error.message),
+    };
+    (label, state)
+}
+
 async fn drive(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
     context: &Arc<TaskContext>,
-    tx: &mpsc::WeakUnboundedSender<Event>,
+    tx: &mpsc::UnboundedSender<Event>,
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
-) -> Result<(), CliError> {
+) -> Result<Outcome, CliError> {
     loop {
         if app.take_dirty() {
             terminal
@@ -98,16 +170,16 @@ async fn drive(
         let event = tokio::select! {
             received = rx.recv() => match received {
                 Some(event) => event,
-                None => return Ok(()),
+                // Unreachable while `tx` lives here; the reducer turns the
+                // input thread's own `InputClosed` into a quit.
+                None => return Ok(Outcome::Quit),
             },
             _ = ticks.tick() => Event::Tick,
         };
         for effect in app.reduce(event) {
-            let Some(tx) = tx.upgrade() else {
-                return Ok(());
-            };
             match effect {
-                Effect::Quit => return Ok(()),
+                Effect::Quit => return Ok(Outcome::Quit),
+                Effect::HandOff(hand_off) => return Ok(Outcome::HandOff(hand_off)),
                 Effect::Spawn(kind) => {
                     let id = tasks::spawn(&kind, context, tx);
                     app.started(id, kind);

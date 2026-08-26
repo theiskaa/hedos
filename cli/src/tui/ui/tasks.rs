@@ -9,7 +9,7 @@ use kernel::install::event::InstallProgress;
 
 use super::{ACCENT, BOLD, DIM, FAILED, bar};
 use crate::tui::app::{App, TaskRow};
-use crate::tui::tasks::TaskState;
+use crate::tui::tasks::{TaskKind, TaskState};
 use crate::tui::text;
 
 /// Cells the download bar spans.
@@ -31,16 +31,17 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn line(row: &TaskRow) -> Line<'static> {
+    let activity = row.kind.as_ref().map_or("", TaskKind::activity);
     let (verb_style, detail) = match &row.state {
-        TaskState::Running => (ACCENT, vec![Span::styled(row.kind.activity(), DIM)]),
+        TaskState::Running => (ACCENT, vec![Span::styled(activity, DIM)]),
         TaskState::Status(status) => (ACCENT, vec![Span::styled(status.clone(), DIM)]),
         TaskState::Downloading(progress) => (ACCENT, download(progress)),
         TaskState::Done(summary) => (DIM, vec![Span::styled(summary.clone(), DIM)]),
         TaskState::Failed(reason) => (FAILED, vec![Span::styled(reason.clone(), FAILED)]),
     };
     let mut spans = vec![
-        Span::styled(format!(" {:<6} ", row.kind.verb()), verb_style),
-        Span::raw(format!("{}  ", row.kind.subject())),
+        Span::styled(format!(" {:<6} ", row.label.verb), verb_style),
+        Span::raw(format!("{}  ", row.label.subject)),
     ];
     spans.extend(detail);
     Line::from(spans)

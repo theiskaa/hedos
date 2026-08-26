@@ -2,6 +2,8 @@
 //! from background tasks, and a refreshed shelf. Keys are translated into the
 //! app's own [`Key`] here so the reducer never sees terminal types.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -30,6 +32,8 @@ pub enum Event {
     Searched(Searched),
     /// An install plan came back.
     Planned(Planned),
+    /// The terminal stopped delivering keys; nothing can drive the UI now.
+    InputClosed,
 }
 
 /// The hits for a query, or why there are none.
@@ -73,34 +77,71 @@ pub enum Key {
 }
 
 /// How long the input thread blocks per poll before checking again, so a
-/// closed receiver ends the thread promptly.
+/// stop request is honoured promptly.
 const POLL: Duration = Duration::from_millis(100);
 
-/// Read terminal events on a blocking thread and forward them to `tx` until
-/// the receiver goes away. Dropping `tx` when the thread ends is how the loop
-/// learns that input is gone.
-pub fn spawn_input(tx: mpsc::UnboundedSender<Event>) {
-    thread::spawn(move || {
-        loop {
-            match event::poll(POLL) {
-                Ok(true) => {}
-                Ok(false) if tx.is_closed() => return,
-                Ok(false) => continue,
-                Err(_) => return,
+/// The input thread, stopped and joined when the UI steps aside so whatever
+/// takes the terminal is the only reader of stdin.
+pub struct Input {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Input {
+    /// Read terminal events on a blocking thread and forward them to `tx`
+    /// until stopped. A terminal that stops delivering keys is reported as
+    /// [`Event::InputClosed`] so the loop can end instead of ticking on.
+    pub fn spawn(tx: mpsc::UnboundedSender<Event>) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            loop {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                match event::poll(POLL) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => {
+                        let _ = tx.send(Event::InputClosed);
+                        return;
+                    }
+                }
+                let forwarded = match event::read() {
+                    Ok(event::Event::Key(key)) => translate(key).map(Event::Key),
+                    Ok(event::Event::Resize(_, _)) => Some(Event::Resize),
+                    Ok(_) => None,
+                    Err(_) => {
+                        let _ = tx.send(Event::InputClosed);
+                        return;
+                    }
+                };
+                if let Some(event) = forwarded
+                    && tx.send(event).is_err()
+                {
+                    return;
+                }
             }
-            let forwarded = match event::read() {
-                Ok(event::Event::Key(key)) => translate(key).map(Event::Key),
-                Ok(event::Event::Resize(_, _)) => Some(Event::Resize),
-                Ok(_) => None,
-                Err(_) => return,
-            };
-            if let Some(event) = forwarded
-                && tx.send(event).is_err()
-            {
-                return;
-            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
         }
-    });
+    }
+
+    /// Stop reading and wait for the thread to let go of the terminal;
+    /// dropping the handle does the same, so an early return never leaves a
+    /// reader on stdin.
+    pub fn stop(self) {}
+}
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 fn translate(key: KeyEvent) -> Option<Key> {
