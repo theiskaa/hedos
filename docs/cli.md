@@ -134,6 +134,12 @@ Generate an image and write a PNG file. This runs as a job, with progress on std
 - `--seed <n>` sets the random seed.
 - `-o, --output <path>` sets the output file. The default is a name slugged from the prompt with a `.png` extension in the current directory.
 
+### `hedos ui`
+
+Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the machine's memory, what is loaded and by whom, disk per store, and the gateway's state kept on screen. Every key is a subcommand: `p` pulls, `s` scans, `w` warms, `u` unloads, `x` removes. Pulls show a plan (size, destination, fit) before a byte moves and run in a task strip with progress; removals show exactly what leaves the disk and ask first. `/` filters, `o` sorts, `enter` expands the selected model's detail with its gateway activity, `y`/`Y` copy the weights path or id, `?` lists every key, `q` quits. Selection, sort, and filter are remembered between runs.
+
+A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal; it never chats or serves.
+
 ### `hedos warm [model]`
 
 Load a model into residency with a tiny request, so the next real request starts warm. Reports whether the model is resident.

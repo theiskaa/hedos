@@ -57,6 +57,7 @@ hedos serves whatever your machine can already run, so nothing else is required 
 ```sh
 hedos scan                          # discover every model on this machine
 hedos ls                            # list them with runtime, store, fit, and capabilities
+hedos ui                            # manage the shelf in a terminal ui
 hedos pull qwen2.5:3b               # install from ollama or hugging face
 hedos run gemma3 "explain this"     # stream a completion to your terminal
 hedos run llava "describe" --image photo.png   # ask a vision model about an image
