@@ -53,7 +53,13 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let panes = Panes::compute(frame.area(), app.order.len(), app.tasks.len(), app.expanded);
+    let panes = Panes::compute(
+        frame.area(),
+        app.order.len(),
+        machine::lines(&app.facts),
+        app.tasks.len(),
+        app.expanded,
+    );
     header::draw(frame, panes.header, app);
     if !app.expanded {
         shelf::draw(frame, panes.shelf, app);

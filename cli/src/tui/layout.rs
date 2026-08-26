@@ -14,12 +14,12 @@ const SHELF_PERCENT: u16 = 55;
 const TALL_ROWS: u16 = 44;
 /// The koala header needs room for the koala and a panel beside it.
 const TALL_COLUMNS: u16 = 70;
-/// Rows of the koala header: the koala plus a blank line under it.
-pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 1;
+/// Rows of the koala header: the koala with a blank line above and below.
+pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 2;
 /// The most task rows the strip shows at once.
 const MAX_TASK_ROWS: u16 = 4;
-/// Rows of the machine block: a border, memory, legend or disk, a border.
-const MACHINE_ROWS: u16 = 5;
+/// Rows of the machine block's borders; its lines are added per call.
+const MACHINE_CHROME_ROWS: u16 = 2;
 /// Rows of the gateway block under the detail: a border, two lines, a border.
 const GATEWAY_ROWS: u16 = 4;
 /// The shelf never shrinks below this many rows, borders included.
@@ -47,9 +47,17 @@ pub struct Panes {
 }
 
 impl Panes {
-    /// Split `area` into panes for a shelf of `shelf_rows` models, `task_rows`
-    /// tasks, and the detail alone when `expanded`.
-    pub fn compute(area: Rect, shelf_rows: usize, task_rows: usize, expanded: bool) -> Self {
+    /// Split `area` into panes for a shelf of `shelf_rows` models, a machine
+    /// block of `machine_lines`, `task_rows` tasks, and the detail alone when
+    /// `expanded`.
+    pub fn compute(
+        area: Rect,
+        shelf_rows: usize,
+        machine_lines: u16,
+        task_rows: usize,
+        expanded: bool,
+    ) -> Self {
+        let machine_block = machine_lines + MACHINE_CHROME_ROWS;
         let header_rows = if Self::tall(area) {
             TALL_HEADER_ROWS
         } else {
@@ -91,12 +99,12 @@ impl Panes {
             } else {
                 0
             };
-            let machine_rows = if body.height >= MIN_SHELF_ROWS + STACKED_DETAIL_ROWS + MACHINE_ROWS
-            {
-                MACHINE_ROWS
-            } else {
-                0
-            };
+            let machine_rows =
+                if body.height >= MIN_SHELF_ROWS + STACKED_DETAIL_ROWS + machine_block {
+                    machine_block
+                } else {
+                    0
+                };
             let [shelf, detail, machine] = Layout::vertical([
                 Constraint::Min(0),
                 Constraint::Length(detail_rows),
@@ -115,8 +123,8 @@ impl Panes {
         }
         // A long shelf scrolls rather than pushing the machine facts off;
         // only a terminal too short for both loses the block.
-        let with_machine = body.height >= MIN_SHELF_ROWS + MACHINE_ROWS;
-        let machine_rows = if with_machine { MACHINE_ROWS } else { 0 };
+        let with_machine = body.height >= MIN_SHELF_ROWS + machine_block;
+        let machine_rows = if with_machine { machine_block } else { 0 };
         let [left, right] =
             Layout::horizontal([Constraint::Percentage(SHELF_PERCENT), Constraint::Min(0)])
                 .areas(body);
@@ -159,8 +167,10 @@ impl Panes {
 mod tests {
     use super::*;
 
+    const MACHINE: u16 = 3 + MACHINE_CHROME_ROWS;
+
     fn panes(width: u16, height: u16) -> Panes {
-        Panes::compute(Rect::new(0, 0, width, height), 14, 0, false)
+        Panes::compute(Rect::new(0, 0, width, height), 14, 3, 0, false)
     }
 
     #[test]
@@ -177,7 +187,7 @@ mod tests {
         let panes = panes(110, 32);
         assert_eq!(panes.shelf.height, 14 + SHELF_CHROME_ROWS);
         assert_eq!(panes.machine.y, panes.shelf.y + panes.shelf.height);
-        assert_eq!(panes.machine.height, MACHINE_ROWS);
+        assert_eq!(panes.machine.height, MACHINE);
         assert_eq!(panes.gateway.x, panes.detail.x);
         assert_eq!(panes.gateway.y + GATEWAY_ROWS, panes.footer.y);
         assert_eq!(
@@ -188,10 +198,10 @@ mod tests {
 
     #[test]
     fn a_long_shelf_keeps_the_machine_block_while_it_fits() {
-        let panes = Panes::compute(Rect::new(0, 0, 110, 32), 40, 0, false);
-        assert_eq!(panes.machine.height, MACHINE_ROWS);
-        assert_eq!(panes.shelf.height, 30 - MACHINE_ROWS);
-        let short = Panes::compute(Rect::new(0, 0, 110, 12), 40, 0, false);
+        let panes = Panes::compute(Rect::new(0, 0, 110, 32), 40, 3, 0, false);
+        assert_eq!(panes.machine.height, MACHINE);
+        assert_eq!(panes.shelf.height, 30 - MACHINE);
+        let short = Panes::compute(Rect::new(0, 0, 110, 12), 40, 3, 0, false);
         assert_eq!(short.machine.height, 0);
         assert_eq!(short.shelf.height, 10);
     }
@@ -203,28 +213,28 @@ mod tests {
         assert_eq!(panes.detail.y, panes.shelf.y + panes.shelf.height);
         assert_eq!(panes.detail.height, STACKED_DETAIL_ROWS);
         assert_eq!(panes.gateway.width, 0);
-        assert_eq!(panes.machine.height, MACHINE_ROWS);
+        assert_eq!(panes.machine.height, MACHINE);
     }
 
     #[test]
     fn a_short_narrow_terminal_keeps_the_shelf_floor() {
-        let panes = Panes::compute(Rect::new(0, 0, 80, 13), 14, 0, false);
+        let panes = Panes::compute(Rect::new(0, 0, 80, 13), 14, 3, 0, false);
         assert_eq!(panes.machine.height, 0);
         assert_eq!(panes.detail.height, 0);
         assert_eq!(panes.shelf.height, 11);
-        let roomier = Panes::compute(Rect::new(0, 0, 80, 20), 14, 0, false);
+        let roomier = Panes::compute(Rect::new(0, 0, 80, 20), 14, 3, 0, false);
         assert_eq!(roomier.detail.height, STACKED_DETAIL_ROWS);
-        assert_eq!(roomier.machine.height, MACHINE_ROWS);
+        assert_eq!(roomier.machine.height, MACHINE);
         assert!(roomier.shelf.height >= MIN_SHELF_ROWS);
     }
 
     #[test]
     fn a_short_wide_terminal_drops_the_machine_and_gateway_blocks() {
-        let panes = Panes::compute(Rect::new(0, 0, 110, 12), 14, 0, false);
+        let panes = Panes::compute(Rect::new(0, 0, 110, 12), 14, 3, 0, false);
         assert_eq!(panes.machine.height, 0);
         assert_eq!(panes.gateway.height, 0);
         assert_eq!(panes.shelf.height, 10);
-        let tiny = Panes::compute(Rect::new(0, 0, 110, 32), 1, 0, false);
+        let tiny = Panes::compute(Rect::new(0, 0, 110, 32), 1, 3, 0, false);
         assert_eq!(tiny.shelf.height, MIN_SHELF_ROWS);
     }
 
@@ -238,17 +248,17 @@ mod tests {
     #[test]
     fn the_task_strip_takes_rows_only_when_there_are_tasks() {
         let area = Rect::new(0, 0, 110, 32);
-        assert_eq!(Panes::compute(area, 14, 0, false).tasks.height, 0);
-        assert_eq!(Panes::compute(area, 14, 1, false).tasks.height, 3);
+        assert_eq!(Panes::compute(area, 14, 3, 0, false).tasks.height, 0);
+        assert_eq!(Panes::compute(area, 14, 3, 1, false).tasks.height, 3);
         assert_eq!(
-            Panes::compute(area, 14, 9, false).tasks.height,
+            Panes::compute(area, 14, 3, 9, false).tasks.height,
             MAX_TASK_ROWS + 2
         );
     }
 
     #[test]
     fn an_expanded_detail_takes_the_whole_body() {
-        let panes = Panes::compute(Rect::new(0, 0, 110, 32), 14, 0, true);
+        let panes = Panes::compute(Rect::new(0, 0, 110, 32), 14, 3, 0, true);
         assert_eq!(panes.shelf.width, 0);
         assert_eq!(panes.machine.height, 0);
         assert_eq!(panes.detail.width, 110);

@@ -19,6 +19,12 @@ const SEGMENT_STYLES: [Style; 3] = [BOLD, Style::new(), DIM];
 const FIGURE_WIDTH: u16 = 18;
 const MIN_BAR_WIDTH: u16 = 10;
 
+/// How many lines the machine block needs: memory and disk, plus the legend
+/// when something is loaded.
+pub(super) fn lines(facts: &Facts) -> u16 {
+    if facts.residents.is_empty() { 2 } else { 3 }
+}
+
 /// Draw the machine block into `machine` and the gateway block into
 /// `gateway`; each is skipped when its rect has no room.
 pub(super) fn draw(frame: &mut Frame, machine: Rect, gateway: Rect, app: &App) {

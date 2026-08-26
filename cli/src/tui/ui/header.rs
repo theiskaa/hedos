@@ -48,14 +48,19 @@ fn summary_line(app: &App) -> Line<'static> {
 fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
     let [koala, panel] =
         Layout::horizontal([Constraint::Length(KOALA_WIDTH + 5), Constraint::Min(0)]).areas(area);
-    let koala_lines: Vec<Line> = KOALA
-        .iter()
-        .map(|row| Line::from(Span::styled(format!("  {row}"), BOLD)))
+    // A blank row above the koala keeps it off the terminal's top edge.
+    let koala_lines: Vec<Line> = std::iter::once(Line::default())
+        .chain(
+            KOALA
+                .iter()
+                .map(|row| Line::from(Span::styled(format!("  {row}"), BOLD))),
+        )
         .collect();
     frame.render_widget(Paragraph::new(koala_lines), koala);
 
     let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
     let mut lines = vec![
+        Line::default(),
         Line::default(),
         Line::from(vec![
             Span::styled(" hedos", BOLD),
