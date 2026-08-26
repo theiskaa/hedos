@@ -89,6 +89,8 @@ pub struct ResidentEntry {
     pub name: String,
     /// The footprint in megabytes.
     pub footprint_mb: i64,
+    /// When the idle unload fires, in Unix milliseconds, if a timer is armed.
+    pub expires_at_millis: Option<i64>,
 }
 
 /// An adapter registered with the kernel, plus its job-running handle when the
@@ -435,6 +437,7 @@ impl Kernel {
             .resident()
             .into_iter()
             .map(|resident| ResidentEntry {
+                expires_at_millis: self.governor.idle_deadline_millis(&resident.model_id),
                 model_id: Some(resident.model_id),
                 name: resident.name,
                 footprint_mb: resident.footprint_mb,

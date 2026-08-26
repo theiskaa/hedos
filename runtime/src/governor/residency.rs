@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::task::AbortHandle;
 
@@ -18,9 +18,14 @@ struct State {
     default_warm_window: Duration,
     warm_windows: HashMap<String, Duration>,
     unloaders: HashMap<String, Unloader>,
-    idle_tasks: HashMap<String, AbortHandle>,
+    idle_tasks: HashMap<String, IdleTimer>,
     unload_locks: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     suspended: bool,
+}
+
+struct IdleTimer {
+    handle: AbortHandle,
+    deadline: Instant,
 }
 
 struct Inner {
@@ -59,8 +64,8 @@ impl ResidencyManager {
         if let Some(window) = warm_window {
             state.warm_windows.insert(model_id.to_owned(), window);
         }
-        if let Some(handle) = state.idle_tasks.remove(model_id) {
-            handle.abort();
+        if let Some(timer) = state.idle_tasks.remove(model_id) {
+            timer.handle.abort();
         }
     }
 
@@ -69,8 +74,8 @@ impl ResidencyManager {
         let mut state = lock(&self.inner.state);
         state.unloaders.remove(model_id);
         state.warm_windows.remove(model_id);
-        if let Some(handle) = state.idle_tasks.remove(model_id) {
-            handle.abort();
+        if let Some(timer) = state.idle_tasks.remove(model_id) {
+            timer.handle.abort();
         }
     }
 
@@ -82,8 +87,8 @@ impl ResidencyManager {
         if state.suspended || !state.unloaders.contains_key(model_id) {
             return;
         }
-        if let Some(handle) = state.idle_tasks.remove(model_id) {
-            handle.abort();
+        if let Some(timer) = state.idle_tasks.remove(model_id) {
+            timer.handle.abort();
         }
         let window = warm_window(&state, model_id);
         let this = self.clone();
@@ -92,15 +97,27 @@ impl ResidencyManager {
             tokio::time::sleep(window).await;
             this.unload_now(&id).await;
         });
-        state
+        state.idle_tasks.insert(
+            model_id.to_owned(),
+            IdleTimer {
+                handle: handle.abort_handle(),
+                deadline: Instant::now() + window,
+            },
+        );
+    }
+
+    /// When `model_id`'s pending idle unload fires, if one is armed.
+    pub fn idle_deadline(&self, model_id: &str) -> Option<Instant> {
+        lock(&self.inner.state)
             .idle_tasks
-            .insert(model_id.to_owned(), handle.abort_handle());
+            .get(model_id)
+            .map(|timer| timer.deadline)
     }
 
     /// Cancel `model_id`'s pending idle-unload timer, if any.
     pub fn cancel_idle_unload(&self, model_id: &str) {
-        if let Some(handle) = lock(&self.inner.state).idle_tasks.remove(model_id) {
-            handle.abort();
+        if let Some(timer) = lock(&self.inner.state).idle_tasks.remove(model_id) {
+            timer.handle.abort();
         }
     }
 
@@ -173,8 +190,8 @@ impl ResidencyManager {
     pub fn suspend_all(&self) {
         let mut state = lock(&self.inner.state);
         state.suspended = true;
-        for (_, handle) in state.idle_tasks.drain() {
-            handle.abort();
+        for (_, timer) in state.idle_tasks.drain() {
+            timer.handle.abort();
         }
     }
 }
@@ -202,4 +219,25 @@ fn warm_window(state: &State, model_id: &str) -> Duration {
         .get(model_id)
         .copied()
         .unwrap_or(state.default_warm_window)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_armed_timer_reports_its_deadline() {
+        let manager = ResidencyManager::new(Duration::from_secs(600));
+        manager.register("m", None, Arc::new(|| Box::pin(async { true })));
+        assert!(manager.idle_deadline("m").is_none());
+        manager.schedule_idle_unload("m");
+        let remaining = manager
+            .idle_deadline("m")
+            .expect("armed")
+            .saturating_duration_since(Instant::now());
+        assert!(remaining <= Duration::from_secs(600));
+        assert!(remaining > Duration::from_secs(590));
+        manager.cancel_idle_unload("m");
+        assert!(manager.idle_deadline("m").is_none());
+    }
 }
