@@ -1,21 +1,25 @@
-//! The pull modal, drawn over a dimmed screen.
+//! The modals (pull, remove), drawn over a dimmed screen.
 
 use kernel::install::plan::InstallPlan;
 use kernel::profiles::FitVerdict;
+use kernel::removal::ModelDeletionPreview;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::{BOLD, DIM, keys};
+use super::{BOLD, DIM, field, keys};
 use crate::support::shelf_table::verdict_label;
-use crate::tui::app::App;
+use crate::tui::app::{App, Modal};
 use crate::tui::pull::{PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
 
 const WIDTH: u16 = 84;
 const HEIGHT: u16 = 18;
+const REMOVE_HEIGHT: u16 = 11;
+/// Width of the labels in the preview and remove bodies.
+const LABEL_WIDTH: usize = 10;
 /// Width of the provider column: `huggingface` is the longest id.
 const PROVIDER_WIDTH: usize = 11;
 /// Width of the trailing fit verdict or popularity note.
@@ -23,19 +27,66 @@ const NOTE_WIDTH: usize = 14;
 /// Rows of the listing that are not matches: the input, a blank, the keys.
 const LISTING_CHROME_ROWS: usize = 3;
 
-/// Draw the pull modal over `area` when it is open.
+/// Draw the open modal over `area`, if there is one.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(modal) = &app.pull else {
+    let Some(modal) = &app.modal else {
         return;
     };
     frame.buffer_mut().set_style(area, DIM);
-    let rect = centered(area);
-    frame.render_widget(Clear, rect);
-    let block = Block::bordered().title(" pull ").border_style(DIM);
+    let height = match modal {
+        Modal::Pull(_) => HEIGHT,
+        Modal::Remove(_) => REMOVE_HEIGHT,
+    };
+    let rect = centered(area, height);
+    let block = Block::bordered().border_style(DIM);
     let inner = block.inner(rect);
-    frame.render_widget(block, rect);
+    let (title, lines) = match modal {
+        Modal::Pull(modal) => (" pull ".to_owned(), pull(modal, app, inner)),
+        Modal::Remove(preview) => (format!(" remove {} ", preview.name), remove(preview, app)),
+    };
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block.title(title), rect);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
-    let lines = match &modal.stage {
+/// What removing the model does, in the store's own terms.
+fn remove(preview: &ModelDeletionPreview, app: &App) -> Vec<Line<'static>> {
+    let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
+    let what = if preview.via_daemon {
+        "removes the tag through the Ollama daemon (ollama rm)".to_owned()
+    } else if preview.paths.is_empty() {
+        "nothing is left on disk; this forgets the record".to_owned()
+    } else {
+        format!(
+            "deletes {} permanently, not to the trash",
+            text::count(preview.paths.len(), "path")
+        )
+    };
+    let mut lines = vec![
+        Line::default(),
+        row("store", preview.kind.as_str().to_owned()),
+        row("on disk", text::bytes(preview.bytes_estimate)),
+    ];
+    if let Some(path) = preview.paths.first() {
+        lines.push(row("path", path.clone()));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(format!(" {what}")));
+    lines.push(Line::from(Span::styled(
+        format!(
+            " after: {} on disk",
+            text::bytes((app.facts.disk_bytes() - preview.bytes_estimate).max(0))
+        ),
+        DIM,
+    )));
+    lines.push(Line::default());
+    lines.push(keys(&[("y", "remove"), ("n", "keep")]));
+    lines
+}
+
+/// The pull modal's body for its current stage.
+fn pull(modal: &PullModal, app: &App, inner: Rect) -> Vec<Line<'static>> {
+    match &modal.stage {
         Stage::Listing => listing(modal, app.facts.memory_bytes, inner),
         Stage::Planning(reference) => vec![
             Line::default(),
@@ -53,18 +104,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Line::default(),
             keys(&[("esc", "back")]),
         ],
-    };
-    frame.render_widget(Paragraph::new(lines), inner);
+    }
 }
 
 fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
     let memory = app.facts.memory_bytes;
-    let field = |label: &str, value: String| {
-        Line::from(vec![
-            Span::styled(format!(" {label:<9} "), DIM),
-            Span::raw(value),
-        ])
-    };
+    let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
     let size = match plan.total_bytes {
         Some(total) => format!(
             "{} · {} when warm",
@@ -84,14 +129,14 @@ fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
         Line::default(),
         Line::from(Span::styled(format!(" {}", plan.display_name), BOLD)),
         Line::default(),
-        field(
+        row(
             "from",
             format!("{} · {}", plan.provider.as_str(), plan.reference),
         ),
-        field("to", plan.destination.clone()),
-        field("size", size),
-        field("download", download),
-        field(
+        row("to", plan.destination.clone()),
+        row("size", size),
+        row("download", download),
+        row(
             "after",
             format!(
                 "{} on disk",
@@ -165,10 +210,10 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
     ])
 }
 
-fn centered(area: Rect) -> Rect {
+fn centered(area: Rect, height: u16) -> Rect {
     let [_, middle, _] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(HEIGHT.min(area.height)),
+        Constraint::Length(height.min(area.height)),
         Constraint::Fill(1),
     ])
     .areas(area);

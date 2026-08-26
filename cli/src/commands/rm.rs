@@ -2,6 +2,8 @@
 //! asks for confirmation; non-interactively it only previews unless `-y` is given.
 
 use clap::Args;
+use kernel::records::ModelRecord;
+use kernel::removal::ModelDeletionReport;
 use runtime::removal::{ModelRemover, OllamaModelRemover, permanent_delete_trasher};
 
 use crate::error::CliError;
@@ -60,11 +62,7 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
         }
     }
 
-    let remover = ModelRemover::new(permanent_delete_trasher(), OllamaModelRemover::new());
-    let report = remover.remove(record).await?;
-    // The weights (or the Ollama tag) are gone; forget the record too, or it
-    // lingers in the registry and `hedos ls` keeps showing the deleted model.
-    session.kernel.forget(&report.model_id).await?;
+    let report = remove_and_forget(&session, record).await?;
     out.line(&format!(
         "Deleted {} — {} item(s), ~{} MB freed{}",
         report.name,
@@ -85,4 +83,16 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
         "deleted": true,
     }));
     Ok(())
+}
+
+/// Delete `record`'s weights (or its Ollama tag), then forget the record, or
+/// it lingers in the registry and `hedos ls` keeps showing the deleted model.
+pub(crate) async fn remove_and_forget(
+    session: &Session,
+    record: &ModelRecord,
+) -> Result<ModelDeletionReport, CliError> {
+    let remover = ModelRemover::new(permanent_delete_trasher(), OllamaModelRemover::new());
+    let report = remover.remove(record).await?;
+    session.kernel.forget(&report.model_id).await?;
+    Ok(report)
 }

@@ -16,6 +16,8 @@ use tokio::sync::mpsc;
 use super::event::{Event, Planned, Refreshed, Searched};
 use super::facts::Facts;
 use super::pull::SEARCH_LIMIT;
+use super::text;
+use crate::commands::rm::remove_and_forget;
 use crate::commands::warm::{is_resident, residency_outcome, warm_request};
 use crate::support::session::Session;
 
@@ -76,6 +78,8 @@ pub enum TaskKind {
     Unload { id: String, name: String },
     /// Download a model along a resolved plan.
     Pull(InstallPlan),
+    /// Delete a model's weights and forget its record.
+    Remove { id: String, name: String },
 }
 
 impl TaskKind {
@@ -86,6 +90,7 @@ impl TaskKind {
             TaskKind::Warm { .. } | TaskKind::WarmViaGateway { .. } => "warm",
             TaskKind::Unload { .. } => "unload",
             TaskKind::Pull(_) => "pull",
+            TaskKind::Remove { .. } => "remove",
         }
     }
 
@@ -95,7 +100,8 @@ impl TaskKind {
             TaskKind::Scan => "this machine",
             TaskKind::Warm { name, .. }
             | TaskKind::WarmViaGateway { name, .. }
-            | TaskKind::Unload { name, .. } => name,
+            | TaskKind::Unload { name, .. }
+            | TaskKind::Remove { name, .. } => name,
             TaskKind::Pull(plan) => &plan.reference,
         }
     }
@@ -106,7 +112,8 @@ impl TaskKind {
             TaskKind::Scan | TaskKind::Pull(_) => None,
             TaskKind::Warm { id, .. }
             | TaskKind::WarmViaGateway { id, .. }
-            | TaskKind::Unload { id, .. } => Some(id),
+            | TaskKind::Unload { id, .. }
+            | TaskKind::Remove { id, .. } => Some(id),
         }
     }
 
@@ -118,6 +125,7 @@ impl TaskKind {
             TaskKind::WarmViaGateway { .. } => "loading on the gateway",
             TaskKind::Unload { .. } => "evicting",
             TaskKind::Pull(_) => "starting",
+            TaskKind::Remove { .. } => "deleting",
         }
     }
 }
@@ -176,6 +184,7 @@ pub fn spawn(
                 context.installs().remove(&id);
                 outcome
             }
+            TaskKind::Remove { id, .. } => remove(session, &id).await,
         };
         report(match outcome {
             Ok(summary) => TaskState::Done(summary),
@@ -330,4 +339,25 @@ async fn pull(
         .await
         .map_err(|error| error.to_string())?;
     Ok(format!("pulled {reference}"))
+}
+
+/// Delete the weights the way `hedos rm` does, then forget the record so the
+/// shelf stops listing it.
+async fn remove(session: &Session, id: &str) -> Result<String, String> {
+    let shelf = session.shelf().await;
+    let record = shelf
+        .iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| "no longer on the shelf".to_owned())?;
+    let report = remove_and_forget(session, record)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(if report.daemon_deleted {
+        format!(
+            "removed through the Ollama daemon, up to {} freed",
+            text::bytes(report.freed_bytes_estimate)
+        )
+    } else {
+        format!("freed {}", text::bytes(report.freed_bytes_estimate))
+    })
 }

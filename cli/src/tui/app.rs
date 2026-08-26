@@ -12,6 +12,7 @@ use super::event::{Event, Key, Planned, Refreshed, Searched};
 use super::facts::{Facts, Holder};
 use super::pull::{PullModal, Stage};
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskState};
+use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 
 /// How often the loop ticks; every cadence below is counted in these.
 pub(super) const TICK: Duration = Duration::from_millis(250);
@@ -24,6 +25,15 @@ const DONE_LINGER_TICKS: u64 = 60 * TICKS_PER_SECOND;
 const FAILED_LINGER_TICKS: u64 = 10 * 60 * TICKS_PER_SECOND;
 /// How long a footer notice stays.
 const NOTICE_TICKS: u64 = 2 * TICKS_PER_SECOND;
+
+/// What can sit in front of the shelf.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Modal {
+    /// Choosing a model to download.
+    Pull(Box<PullModal>),
+    /// Confirming a removal, with what it would delete.
+    Remove(ModelDeletionPreview),
+}
 
 /// A task as the strip shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,8 +63,8 @@ pub struct App {
     pub shelf: TableState,
     /// Background work, oldest first.
     pub tasks: Vec<TaskRow>,
-    /// The pull modal, while it is open.
-    pub pull: Option<PullModal>,
+    /// The modal in front of the shelf, while one is open.
+    pub modal: Option<Modal>,
     /// A short message in the footer, until the tick it expires on.
     notice: Option<(String, u64)>,
     /// Ticks since the loop started; every cadence is counted in these.
@@ -74,7 +84,7 @@ impl App {
             facts,
             shelf: TableState::new().with_selected(0),
             tasks: Vec::new(),
-            pull: None,
+            modal: None,
             notice: None,
             ticks: 0,
             last_refresh: 0,
@@ -169,8 +179,10 @@ impl App {
         if key == Key::Interrupt {
             return vec![Effect::Quit];
         }
-        if self.pull.is_some() {
-            return self.pull_key(key);
+        match self.modal {
+            Some(Modal::Pull(_)) => return self.pull_key(key),
+            Some(Modal::Remove(_)) => return self.remove_key(key),
+            None => {}
         }
         match key {
             Key::Char('q') => return vec![Effect::Quit],
@@ -185,9 +197,13 @@ impl App {
             Key::Char('w') => return self.warm(),
             Key::Char('u') => return self.unload(),
             Key::Char('p') => {
-                self.pull = Some(PullModal::open(&self.records, self.facts.memory_bytes));
+                self.modal = Some(Modal::Pull(Box::new(PullModal::open(
+                    &self.records,
+                    self.facts.memory_bytes,
+                ))));
                 self.dirty = true;
             }
+            Key::Char('x') => return self.remove(),
             Key::Char('c') => return self.cancel_pull(),
             _ => {}
         }
@@ -196,12 +212,12 @@ impl App {
 
     fn pull_key(&mut self, key: Key) -> Vec<Effect> {
         let now = self.ticks;
-        let Some(modal) = self.pull.as_mut() else {
+        let Some(Modal::Pull(modal)) = self.modal.as_mut() else {
             return Vec::new();
         };
         self.dirty = true;
         match (&modal.stage, key) {
-            (Stage::Listing, Key::Escape) => self.pull = None,
+            (Stage::Listing, Key::Escape) => self.modal = None,
             (Stage::Listing, Key::Up) => modal.step(-1),
             (Stage::Listing, Key::Down) => modal.step(1),
             (Stage::Listing, Key::Backspace) => modal.backspace(now),
@@ -217,7 +233,7 @@ impl App {
                     let reference = kind.subject().to_owned();
                     return self.notify(format!("{reference} is already downloading"));
                 }
-                self.pull = None;
+                self.modal = None;
                 return vec![Effect::Spawn(kind)];
             }
             (Stage::Preview(_) | Stage::Note(_), Key::Escape | Key::Backspace) => modal.back(),
@@ -225,6 +241,68 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Open the removal confirmation for the selected model, or say why not.
+    fn remove(&mut self) -> Vec<Effect> {
+        let Some(record) = self.selected_record() else {
+            return Vec::new();
+        };
+        if let Err(reason) = self.removable(record) {
+            return self.notify(reason);
+        }
+        self.modal = Some(Modal::Remove(preview(record)));
+        self.dirty = true;
+        Vec::new()
+    }
+
+    /// Why `record` can't be removed right now, if it can't.
+    fn removable(&self, record: &ModelRecord) -> Result<(), String> {
+        let name = record.display_name();
+        if self.busy_with(&record.id) {
+            Err(format!("{name} is busy"))
+        } else if self.facts.is_warm(&record.id) {
+            Err(format!("{name} is warm; unload it first"))
+        } else if record.downloading {
+            Err(format!("{name} is still downloading; cancel it first"))
+        } else if !is_deletable(record) {
+            Err(format!("{name} can't be removed from here"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// `y` re-checks everything `x` checked: the shelf and facts refresh
+    /// behind the modal while it waits.
+    fn remove_key(&mut self, key: Key) -> Vec<Effect> {
+        let Some(Modal::Remove(shown)) = &self.modal else {
+            return Vec::new();
+        };
+        let confirmed = match key {
+            Key::Char('y') => true,
+            Key::Char('n') | Key::Escape => false,
+            _ => return Vec::new(),
+        };
+        let model_id = shown.model_id.clone();
+        let shown = shown.clone();
+        self.modal = None;
+        self.dirty = true;
+        if !confirmed {
+            return Vec::new();
+        }
+        let Some(record) = self.records.iter().find(|record| record.id == model_id) else {
+            return self.notify(format!("{} is no longer on the shelf", shown.name));
+        };
+        if let Err(reason) = self.removable(record) {
+            return self.notify(reason);
+        }
+        if preview(record) != shown {
+            return self.notify(format!("{} changed on disk; look again", shown.name));
+        }
+        vec![Effect::Spawn(TaskKind::Remove {
+            id: model_id,
+            name: shown.name,
+        })]
     }
 
     /// Cancel the newest pull still downloading.
@@ -241,7 +319,7 @@ impl App {
     }
 
     fn searched(&mut self, searched: Searched) {
-        let Some(modal) = self.pull.as_mut() else {
+        let Some(Modal::Pull(modal)) = self.modal.as_mut() else {
             return;
         };
         let applied = modal.searched(&searched.query, &searched.hits);
@@ -255,7 +333,7 @@ impl App {
     }
 
     fn planned(&mut self, planned: Planned) {
-        if let Some(modal) = self.pull.as_mut() {
+        if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
             modal.planned(&planned.reference, planned.result);
             self.dirty = true;
         }
@@ -331,7 +409,9 @@ impl App {
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
         let now = self.ticks;
-        if let Some(query) = self.pull.as_mut().and_then(|modal| modal.search_due(now)) {
+        if let Some(Modal::Pull(modal)) = self.modal.as_mut()
+            && let Some(query) = modal.search_due(now)
+        {
             return vec![Effect::Search(query)];
         }
         if let Some((_, until)) = &self.notice
@@ -440,6 +520,13 @@ mod tests {
             bytes: 0,
             holder,
             expires_at_millis: None,
+        }
+    }
+
+    fn pull(app: &App) -> &PullModal {
+        match &app.modal {
+            Some(Modal::Pull(modal)) => modal,
+            _ => panic!("no pull modal"),
         }
     }
 
@@ -658,16 +745,16 @@ mod tests {
     fn the_pull_modal_captures_keys_until_it_closes() {
         let mut app = app(1);
         press(&mut app, Key::Char('p'));
-        assert!(app.pull.is_some());
+        assert!(app.modal.is_some());
         assert!(press(&mut app, Key::Char('q')).is_empty());
-        assert_eq!(app.pull.as_ref().unwrap().input, "q");
+        assert_eq!(pull(&app).input, "q");
         press(&mut app, Key::Backspace);
         let effects = press(&mut app, Key::Enter);
         assert!(matches!(effects.as_slice(), [Effect::Plan(_, _)]));
         press(&mut app, Key::Escape);
-        assert_eq!(app.pull.as_ref().unwrap().stage, Stage::Listing);
+        assert_eq!(pull(&app).stage, Stage::Listing);
         press(&mut app, Key::Escape);
-        assert!(app.pull.is_none());
+        assert!(app.modal.is_none());
         assert_eq!(press(&mut app, Key::Interrupt), vec![Effect::Quit]);
     }
 
@@ -700,10 +787,42 @@ mod tests {
         app.started(id, TaskKind::Pull(plan.clone()));
         assert_eq!(press(&mut app, Key::Char('c')), vec![Effect::Cancel(id)]);
 
-        app.pull = Some(PullModal::open(&[], 0));
-        app.pull.as_mut().unwrap().stage = Stage::Preview(plan);
+        let mut modal = PullModal::open(&[], 0);
+        modal.stage = Stage::Preview(plan);
+        app.modal = Some(Modal::Pull(Box::new(modal)));
         assert!(press(&mut app, Key::Enter).is_empty());
         assert_eq!(app.notice(), Some("x is already downloading"));
+    }
+
+    #[test]
+    fn remove_asks_first_and_refuses_warm_models() {
+        let mut app = app(1);
+        let id = app.records[0].id.clone();
+        app.facts.residents.push(resident(&id, Holder::Local));
+        assert!(press(&mut app, Key::Char('x')).is_empty());
+        assert_eq!(app.notice(), Some("model-0 is warm; unload it first"));
+        app.facts.residents.clear();
+
+        press(&mut app, Key::Char('x'));
+        assert!(matches!(app.modal, Some(Modal::Remove(_))));
+        assert!(press(&mut app, Key::Char('n')).is_empty());
+        assert!(app.modal.is_none());
+
+        press(&mut app, Key::Char('x'));
+        assert_eq!(
+            press(&mut app, Key::Char('y')),
+            vec![Effect::Spawn(TaskKind::Remove {
+                id: id.clone(),
+                name: "model-0".to_owned()
+            })]
+        );
+        assert!(app.modal.is_none());
+
+        press(&mut app, Key::Char('x'));
+        app.facts.residents.push(resident(&id, Holder::Gateway));
+        assert!(press(&mut app, Key::Char('y')).is_empty());
+        assert_eq!(app.notice(), Some("model-0 is warm; unload it first"));
+        assert!(app.modal.is_none());
     }
 
     #[test]
