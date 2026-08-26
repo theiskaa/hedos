@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::OK_OUTCOME;
 use crate::wire::timestamp::{iso8601, millis_from_iso8601};
 
 /// One line of the audit log: who called, what they asked for, and how it went.
@@ -129,7 +130,19 @@ struct UnauthorizedWindow {
     suppressed: u64,
 }
 
+impl GatewayAuditEntry {
+    /// Whether the request was served (as opposed to rejected or failed).
+    pub fn is_ok(&self) -> bool {
+        self.outcome == OK_OUTCOME
+    }
+}
+
 impl GatewayAuditLog {
+    /// The live log file; rotated generations sit beside it.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// A log writing `audit.jsonl` inside `directory`, rotating at 5 MiB.
     pub fn new(directory: impl AsRef<Path>) -> Self {
         Self::with_max_bytes(directory, DEFAULT_MAX_BYTES)

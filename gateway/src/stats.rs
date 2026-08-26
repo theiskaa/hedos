@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::audit::GatewayAuditEntry;
-use crate::identity::OK_OUTCOME;
 
 /// A summary of the audit log: overall totals plus a per-model breakdown.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -44,6 +43,8 @@ pub struct ModelStats {
     /// rejected requests do not skew the numbers. `None` when the model has no
     /// successful request to measure.
     pub latency: Option<LatencyPercentiles>,
+    /// When the model was last requested, in Unix milliseconds.
+    pub last_seen_millis: i64,
 }
 
 /// Serving-latency percentiles in milliseconds, by nearest-rank.
@@ -63,6 +64,7 @@ struct ModelTally {
     requests: u64,
     errors: u64,
     ok_durations: Vec<i64>,
+    last_seen_millis: i64,
 }
 
 /// Summarize `entries` into overall totals and a per-model breakdown. Pure over
@@ -74,13 +76,14 @@ pub fn summarize(entries: &[GatewayAuditEntry]) -> GatewayStats {
     let mut per_model: BTreeMap<&str, ModelTally> = BTreeMap::new();
 
     for entry in entries {
-        let ok = entry.outcome == OK_OUTCOME;
+        let ok = entry.is_ok();
         if !ok {
             rejected_requests += 1;
         }
         if let Some(model) = entry.model.as_deref() {
             let tally = per_model.entry(model).or_default();
             tally.requests += 1;
+            tally.last_seen_millis = tally.last_seen_millis.max(entry.ts_millis);
             if ok {
                 tally.ok_durations.push(entry.duration_ms);
             } else {
@@ -97,6 +100,7 @@ pub fn summarize(entries: &[GatewayAuditEntry]) -> GatewayStats {
             errors: tally.errors,
             error_rate: rate(tally.errors, tally.requests),
             latency: percentiles(tally.ok_durations),
+            last_seen_millis: tally.last_seen_millis,
         })
         .collect();
     // Busiest first; the name is the tie-break, and since the source is a
@@ -120,7 +124,7 @@ fn rate(numerator: u64, denominator: u64) -> f64 {
 }
 
 /// The p50/p90/p99 of `durations` by nearest-rank, or `None` when empty.
-fn percentiles(mut durations: Vec<i64>) -> Option<LatencyPercentiles> {
+pub fn percentiles(mut durations: Vec<i64>) -> Option<LatencyPercentiles> {
     if durations.is_empty() {
         return None;
     }
@@ -246,6 +250,19 @@ mod tests {
     fn a_model_with_no_ok_requests_has_no_latency() {
         let stats = summarize(&[entry(Some("m"), "error", 3)]);
         assert!(stats.models[0].latency.is_none());
+    }
+
+    #[test]
+    fn last_seen_is_the_newest_request_whatever_its_outcome() {
+        let mut entries = [
+            entry(Some("a"), "ok", 10),
+            entry(Some("a"), "error", 10),
+            entry(Some("a"), "ok", 10),
+        ];
+        entries[0].ts_millis = 1_000;
+        entries[1].ts_millis = 5_000;
+        entries[2].ts_millis = 3_000;
+        assert_eq!(summarize(&entries).models[0].last_seen_millis, 5_000);
     }
 
     #[test]
