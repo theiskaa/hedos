@@ -136,9 +136,14 @@ Generate an image and write a PNG file. This runs as a job, with progress on std
 
 ### `hedos ui`
 
-Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the machine's memory, what is loaded and by whom, disk per store, and the gateway's state kept on screen. Every key is a subcommand: `p` pulls, `s` scans, `w` warms, `u` unloads, `x` removes. Pulls show a plan (size, destination, fit) before a byte moves and run in a task strip with progress; removals show exactly what leaves the disk and ask first. `/` filters, `o` sorts, `enter` expands the selected model's detail with its gateway activity, `y`/`Y` copy the weights path or id, `?` lists every key, `q` quits. Selection, sort, and filter are remembered between runs.
+Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the machine's memory, what is loaded and by whom, disk per store, and the gateway's state kept on screen. Every key is a subcommand, and the footer shows only the ones that apply to the selected model.
 
-A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal; it never chats or serves.
+- `p` pulls: a catalog grouped by what you'd use a model for, a search over Hugging Face as you type, and a plan (size, destination, fit) before a byte moves. Downloads run in a task strip with progress; `c` cancels. A finished pull lands on the model it added.
+- `w` / `u` warm and unload, through the Ollama daemon when the daemon holds the model. `x` removes, showing exactly what leaves the disk and asking first.
+- `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it, `t` sends it one prompt, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
+- `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path, `?` lists every key, `q` quits. The selection is remembered between runs.
+
+A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal.
 
 ### `hedos warm [model]`
 
