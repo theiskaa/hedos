@@ -17,6 +17,9 @@ const TALL_COLUMNS: u16 = 70;
 /// Rows of the koala header: the koala plus a blank line under it.
 pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 1;
 
+/// The most task rows the strip shows at once.
+const MAX_TASK_ROWS: u16 = 4;
+
 /// The panes of the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Panes {
@@ -26,22 +29,29 @@ pub struct Panes {
     pub shelf: Rect,
     /// The selected model's detail.
     pub detail: Rect,
+    /// The task strip; zero-height when there are no tasks.
+    pub tasks: Rect,
     /// The one-line key footer.
     pub footer: Rect,
 }
 
 impl Panes {
-    /// Split `area` into panes: a one-line header, the shelf beside or above
-    /// the detail pane, and a one-line footer.
-    pub fn compute(area: Rect) -> Self {
+    /// Split `area` into panes: the header, the shelf beside or above the
+    /// detail pane, a strip for `task_rows` tasks, and a one-line footer.
+    pub fn compute(area: Rect, task_rows: usize) -> Self {
         let header_rows = if Self::tall(area) {
             TALL_HEADER_ROWS
         } else {
             1
         };
-        let [header, body, footer] = Layout::vertical([
+        let strip_rows = match task_rows {
+            0 => 0,
+            rows => (rows as u16).min(MAX_TASK_ROWS) + 2,
+        };
+        let [header, body, tasks, footer] = Layout::vertical([
             Constraint::Length(header_rows),
             Constraint::Min(0),
+            Constraint::Length(strip_rows),
             Constraint::Length(1),
         ])
         .areas(area);
@@ -56,6 +66,7 @@ impl Panes {
             header,
             shelf,
             detail,
+            tasks,
             footer,
         }
     }
@@ -71,7 +82,16 @@ mod tests {
     use super::*;
 
     fn panes(width: u16, height: u16) -> Panes {
-        Panes::compute(Rect::new(0, 0, width, height))
+        Panes::compute(Rect::new(0, 0, width, height), 0)
+    }
+
+    #[test]
+    fn the_task_strip_takes_rows_only_when_there_are_tasks() {
+        let area = Rect::new(0, 0, 110, 32);
+        assert_eq!(Panes::compute(area, 0).tasks.height, 0);
+        assert_eq!(Panes::compute(area, 1).tasks.height, 3);
+        assert_eq!(Panes::compute(area, 9).tasks.height, MAX_TASK_ROWS + 2);
+        assert_eq!(Panes::compute(area, 1).footer.y, 31);
     }
 
     #[test]

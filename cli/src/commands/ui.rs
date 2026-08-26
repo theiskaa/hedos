@@ -1,6 +1,7 @@
 //! `hedos ui` — manage the shelf in a terminal UI.
 
 use std::io::{self, IsTerminal};
+use std::sync::Arc;
 
 use clap::Args;
 
@@ -25,5 +26,5 @@ pub async fn run(_args: UiArgs, out: &Out) -> Result<(), CliError> {
     let shelf = session.shelf_or_discover().await?;
     let facts = Facts::collect(&session, &shelf).await;
     let app = App::new(shelf.to_vec(), facts);
-    tui::run(app).await
+    tui::run(app, Arc::new(session), out).await
 }

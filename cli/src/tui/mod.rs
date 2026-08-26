@@ -1,35 +1,40 @@
 //! The shelf TUI: a ratatui screen over the same verbs the subcommands expose.
 //!
 //! `app` holds every piece of state and reduces events to effects without
-//! touching the kernel; `ui` draws that state; this module owns the terminal
-//! and the loop that connects them.
+//! touching the kernel; `tasks` performs the effects that need the kernel, on
+//! the runtime; `ui` draws the state; this module owns the terminal and the
+//! loop that connects them.
 
 mod app;
 mod effect;
 mod event;
 pub(crate) mod facts;
 mod layout;
+mod tasks;
 mod text;
 mod ui;
 
 use std::io;
-use std::time::Duration;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio::time::Interval;
 
 pub use self::app::App;
 use self::effect::Effect;
 use self::event::Event;
 use crate::error::CliError;
+use crate::support::output::Out;
+use crate::support::session::Session;
 
-/// How often the loop wakes without input, for animations and expiry.
-const TICK: Duration = Duration::from_millis(250);
-
-/// Run `app` on the terminal until it asks to quit.
-pub async fn run(mut app: App) -> Result<(), CliError> {
+/// Run `app` over `session` on the terminal until it asks to quit.
+pub async fn run(mut app: App, session: Arc<Session>, out: &Out) -> Result<(), CliError> {
     let (tx, mut rx) = mpsc::unbounded_channel();
+    // The input thread owns the only strong sender: when it dies the channel
+    // closes and the loop ends, instead of ticking on with no way to quit.
+    let weak = tx.downgrade();
     event::spawn_input(tx);
-    let mut ticks = tokio::time::interval(TICK);
+    let mut ticks = tokio::time::interval(app::TICK);
 
     // `try_init` installs a panic hook that restores the terminal, but a
     // failure between raw mode and the alternate screen leaves raw mode on.
@@ -40,16 +45,31 @@ pub async fn run(mut app: App) -> Result<(), CliError> {
             return Err(terminal_error(error));
         }
     };
-    let outcome = drive(&mut terminal, &mut app, &mut rx, &mut ticks).await;
+    let outcome = drive(
+        &mut terminal,
+        &mut app,
+        &session,
+        &weak,
+        &mut rx,
+        &mut ticks,
+    )
+    .await;
     ratatui::restore();
+    if app.busy() {
+        // A scan runs to completion inside one poll, so the runtime waits for
+        // it before the process can exit; say why the prompt is late.
+        out.line("finishing background work…");
+    }
     outcome
 }
 
 async fn drive(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
+    session: &Arc<Session>,
+    tx: &mpsc::WeakUnboundedSender<Event>,
     rx: &mut mpsc::UnboundedReceiver<Event>,
-    ticks: &mut tokio::time::Interval,
+    ticks: &mut Interval,
 ) -> Result<(), CliError> {
     loop {
         if app.take_dirty() {
@@ -60,13 +80,22 @@ async fn drive(
         let event = tokio::select! {
             received = rx.recv() => match received {
                 Some(event) => event,
-                // The input thread is gone; nothing can drive the UI anymore.
                 None => return Ok(()),
             },
             _ = ticks.tick() => Event::Tick,
         };
-        if app.reduce(event).contains(&Effect::Quit) {
-            return Ok(());
+        for effect in app.reduce(event) {
+            let Some(tx) = tx.upgrade() else {
+                return Ok(());
+            };
+            match effect {
+                Effect::Quit => return Ok(()),
+                Effect::Spawn(kind) => {
+                    let id = tasks::spawn(&kind, session, tx);
+                    app.started(id, kind);
+                }
+                Effect::Refresh => tasks::spawn_refresh(session, tx),
+            }
         }
     }
 }

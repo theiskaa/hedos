@@ -5,6 +5,7 @@ mod detail;
 mod footer;
 mod header;
 mod shelf;
+mod tasks;
 
 use ratatui::Frame;
 use ratatui::style::{Modifier, Style};
@@ -17,6 +18,8 @@ use super::layout::Panes;
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 /// The loud register: the wordmark, warm models, the selected title.
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+/// The one colour on the screen: a muted warm tone for a task that failed.
+const FAILED: Style = Style::new().fg(ratatui::style::Color::Rgb(201, 138, 106));
 
 /// A `label   value` pair, the label dim and padded to `width`.
 fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span<'a>> {
@@ -28,9 +31,10 @@ fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let panes = Panes::compute(frame.area());
+    let panes = Panes::compute(frame.area(), app.tasks.len());
     header::draw(frame, panes.header, app);
     shelf::draw(frame, panes.shelf, app);
     detail::draw(frame, panes.detail, app);
-    footer::draw(frame, panes.footer);
+    tasks::draw(frame, panes.tasks, app);
+    footer::draw(frame, panes.footer, app);
 }

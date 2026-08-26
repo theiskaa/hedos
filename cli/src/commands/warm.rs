@@ -36,28 +36,41 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
         result?;
     }
 
-    let resident = session.kernel.governor().is_resident(&record.id);
-    let held_by_daemon = session
-        .kernel
-        .resident_models()
-        .iter()
-        .any(|entry| entry.model_id.as_deref() == Some(record.id.as_str()));
+    let resident = is_resident(&session, &record.id);
     out.line(&format!(
         "{} is {}",
         record.display_name(),
-        if resident || held_by_daemon {
-            "warm"
-        } else {
-            "loaded (residency not tracked for this runtime)"
-        },
+        residency_outcome(resident)
     ));
-    out.json(&serde_json::json!({ "model": record.id, "resident": resident || held_by_daemon }));
+    out.json(&serde_json::json!({ "model": record.id, "resident": resident }));
     Ok(())
+}
+
+/// Whether the kernel holds `id` after a load: tracked by the governor, or
+/// reported by a daemon that loaded it outside the governor's accounting.
+pub(crate) fn is_resident(session: &Session, id: &str) -> bool {
+    session.kernel.governor().is_resident(id)
+        || session
+            .kernel
+            .resident_models()
+            .iter()
+            .any(|entry| entry.model_id.as_deref() == Some(id))
+}
+
+/// The word for a finished load, by whether residency is tracked for it.
+pub(crate) fn residency_outcome(resident: bool) -> &'static str {
+    if resident {
+        "warm"
+    } else {
+        "loaded (residency not tracked for this runtime)"
+    }
 }
 
 /// The smallest request that loads `record`: a one-token chat/complete, or a
 /// dot of speech. `None` if the model serves none of those.
-fn warm_request(record: &kernel::records::ModelRecord) -> Option<(Capability, JsonValue)> {
+pub(crate) fn warm_request(
+    record: &kernel::records::ModelRecord,
+) -> Option<(Capability, JsonValue)> {
     let has = |cap: &Capability| record.capabilities.contains(cap);
     if has(&Capability::chat()) {
         let mut payload = BTreeMap::new();
