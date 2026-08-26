@@ -12,7 +12,7 @@ use runtime::facade::Kernel;
 use runtime::settings::{Settings, SettingsStore};
 
 use crate::error::CliError;
-use crate::support::ollama;
+use crate::support::residency;
 use crate::support::serving::{self, GatewayLive};
 
 /// An open kernel plus the settings and directories it was built from.
@@ -55,37 +55,15 @@ impl Session {
         Ok(self.kernel.shelf().await)
     }
 
-    /// The ids of the models currently held resident, for the warm marker.
-    pub fn warm_set(&self) -> HashSet<String> {
-        self.kernel
-            .resident_models()
-            .into_iter()
-            .filter_map(|entry| entry.model_id)
-            .collect()
-    }
-
     /// The gateway on the configured port, if one is running.
     pub async fn live_gateway(&self) -> Option<GatewayLive> {
         serving::probe(self.settings.gateway.port).await
     }
 
-    /// [`Self::warm_set`] plus whatever a running gateway or the Ollama
-    /// daemon holds of `shelf`, so a cold process still marks the models that
-    /// are actually loaded.
+    /// The ids of everything loaded of `shelf`, wherever it is loaded, for
+    /// the warm marker.
     pub async fn warm_set_anywhere(&self, shelf: &[ModelRecord]) -> HashSet<String> {
-        let mut warm = self.warm_set();
-        if let Some(live) = self.live_gateway().await {
-            warm.extend(live.residents.into_iter().map(|resident| resident.id));
-        }
-        if let Some(residents) = ollama::residents().await {
-            warm.extend(
-                shelf
-                    .iter()
-                    .filter(|record| ollama::held(&residents, record).is_some())
-                    .map(|record| record.id.clone()),
-            );
-        }
-        warm
+        residency::loaded(self, shelf).await.ids()
     }
 
     /// Scan the machine's model stores, reconcile the registry, and resolve

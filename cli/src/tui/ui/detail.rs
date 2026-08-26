@@ -2,20 +2,19 @@
 //! beside what is already loaded, and what the gateway has served of it.
 
 use kernel::profiles::{FitAssessment, FitVerdict};
-use kernel::records::byte_format::BYTES_PER_MIB;
 use kernel::records::{Capability, ModelRecord};
-use kernel::time::now_millis;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{BOLD, DIM, field, styled_field};
 use std::path::PathBuf;
 
+use super::{ACCENT, BOLD, DIM, WARM, field, field_line, styled_field};
+use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
-use crate::tui::facts::{Facts, HOURS, Holder, ModelActivity};
+use crate::tui::facts::{Facts, HOURS, ModelActivity};
 use crate::tui::text;
 
 /// Width of the labels in the pane.
@@ -30,9 +29,18 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(block, area);
         return;
     };
+    // Expanded, the pane is a mode of its own: the accent says so.
+    let (title_style, border_style) = if app.expanded {
+        (ACCENT, ACCENT)
+    } else {
+        (BOLD, DIM)
+    };
     let block = Block::bordered()
-        .title(Span::styled(format!(" {} ", record.display_name()), BOLD))
-        .border_style(DIM);
+        .title(Span::styled(
+            format!(" {} ", record.display_name()),
+            title_style,
+        ))
+        .border_style(border_style);
     let mut lines = lines(
         record,
         &app.facts,
@@ -44,19 +52,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> Vec<Line<'static>> {
-    let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
-    let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), DIM));
-    let size = match (record.footprint_mb, record.context_length) {
-        (Some(mb), Some(context)) if mb > 0 => {
-            format!(
-                "{} · ctx {}",
-                text::bytes(mb * BYTES_PER_MIB),
-                text::tokens(context)
-            )
+    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
+    let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), ACCENT));
+    let size = match (record.footprint_bytes(), record.context_length) {
+        (Some(bytes), Some(context)) => {
+            format!("{} · ctx {}", text::bytes(bytes), text::tokens(context))
         }
-        (Some(mb), None) if mb > 0 => text::bytes(mb * BYTES_PER_MIB),
-        (_, Some(context)) => format!("ctx {}", text::tokens(context)),
-        _ => DASH.to_owned(),
+        (Some(bytes), None) => text::bytes(bytes),
+        (None, Some(context)) => format!("ctx {}", text::tokens(context)),
+        (None, None) => DASH.to_owned(),
     };
     let mut lines = vec![
         eyebrow("MODEL"),
@@ -85,7 +89,11 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
         Line::default(),
         eyebrow("GATEWAY"),
     ];
-    lines.extend(activity_lines(facts.activity.for_record(record), expanded));
+    lines.extend(activity_lines(
+        facts.activity.for_record(record),
+        facts.collected_at_millis,
+        expanded,
+    ));
     lines.push(Line::default());
     if let Some(path) = &record.primary_weight_path {
         let home = std::env::var_os("HOME").map(PathBuf::from);
@@ -111,8 +119,12 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
 
 /// The last day of gateway traffic for the model: served requests, their
 /// latency, and a sparkline per hour; when expanded, the hours are labelled.
-fn activity_lines(activity: Option<&ModelActivity>, expanded: bool) -> Vec<Line<'static>> {
-    let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
+fn activity_lines(
+    activity: Option<&ModelActivity>,
+    now: i64,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
     let absent = |label, value: String| Line::from(styled_field(label, value, LABEL_WIDTH, DIM));
     let Some(activity) = activity else {
         return vec![absent(
@@ -122,7 +134,7 @@ fn activity_lines(activity: Option<&ModelActivity>, expanded: bool) -> Vec<Line<
     };
     let mut lines = vec![row(
         "last used",
-        text::duration((now_millis() - activity.last_seen_millis) / 1000) + " ago",
+        text::duration((now - activity.last_seen_millis) / 1000) + " ago",
     )];
     if activity.requests == 0 {
         lines.push(absent("last 24h", "no requests".to_owned()));
@@ -193,7 +205,7 @@ fn residency_line(record: &ModelRecord, facts: &Facts) -> Line<'static> {
     let mut spans = field("residency", "", LABEL_WIDTH);
     match facts.resident(&record.id) {
         Some(resident) => {
-            spans.push(Span::styled("warm", BOLD));
+            spans.push(Span::styled("warm", WARM));
             let holder = match resident.holder {
                 Holder::Local => " · this process".to_owned(),
                 Holder::Daemon => " · Ollama daemon".to_owned(),

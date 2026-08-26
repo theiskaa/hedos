@@ -3,18 +3,18 @@
 
 use std::time::Duration;
 
-use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord};
+use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
 
 use super::effect::Effect;
 use super::event::{Event, Key, Planned, Refreshed, Searched};
-use super::facts::{Facts, Holder};
+use super::facts::Facts;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage};
 use super::state::UiState;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskState};
-use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
+use crate::support::residency::Holder;
 
 /// How often the loop ticks; every cadence below is counted in these.
 pub(super) const TICK: Duration = Duration::from_millis(250);
@@ -165,27 +165,6 @@ impl App {
         self.shelf
             .select(Some(index.min(self.order.len().saturating_sub(1))));
         self.dirty = true;
-    }
-
-    /// The machine's memory, for fit labels.
-    pub fn memory_budget_bytes(&self) -> u64 {
-        self.facts.memory_bytes
-    }
-
-    /// How many models on the shelf can't run on this machine.
-    pub fn too_big_count(&self) -> usize {
-        self.records
-            .iter()
-            .filter(|record| too_big(record, self.facts.memory_bytes))
-            .count()
-    }
-
-    /// How many models on the shelf are held in memory.
-    pub fn warm_count(&self) -> usize {
-        self.records
-            .iter()
-            .filter(|record| self.facts.is_warm(&record.id))
-            .count()
     }
 
     /// The footer notice, if one is showing.
@@ -450,8 +429,8 @@ impl App {
             Key::Char('n') | Key::Escape => false,
             _ => return Vec::new(),
         };
-        let model_id = shown.model_id.clone();
         let shown = shown.clone();
+        let model_id = shown.model_id.clone();
         self.modal = None;
         self.dirty = true;
         if !confirmed {
@@ -557,11 +536,18 @@ impl App {
             .any(|row| row.running() && row.kind.model_id() == Some(id))
     }
 
-    /// Whether a task of `kind`'s shape is already running.
+    /// Whether a task of `kind`'s shape is already running. Pulls match on
+    /// what they fetch: two plans for one reference are one download.
     fn already_running(&self, kind: &TaskKind) -> bool {
-        self.tasks
-            .iter()
-            .any(|row| row.running() && &row.kind == kind)
+        self.tasks.iter().any(|row| {
+            row.running()
+                && match (&row.kind, kind) {
+                    (TaskKind::Pull(running), TaskKind::Pull(wanted)) => {
+                        running.provider == wanted.provider && running.reference == wanted.reference
+                    }
+                    (running, wanted) => running == wanted,
+                }
+        })
     }
 
     fn notify(&mut self, text: String) -> Vec<Effect> {
@@ -590,7 +576,6 @@ impl App {
             self.dirty = true;
         }
         let before = self.tasks.len();
-        let now = self.ticks;
         self.tasks.retain(|row| {
             row.finished_at.is_none_or(|finished| {
                 let linger = match row.state {
@@ -651,16 +636,10 @@ impl App {
     }
 }
 
-/// Whether `record` is judged too large for a machine with `memory_bytes`.
-pub(crate) fn too_big(record: &ModelRecord, memory_bytes: u64) -> bool {
-    FitVerdict::assess(record.footprint_mb, memory_bytes)
-        .is_some_and(|fit| fit.verdict == FitVerdict::TooLarge)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::facts::Resident;
+    use crate::support::residency::Resident;
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
     fn record(index: usize) -> ModelRecord {
@@ -751,18 +730,6 @@ mod tests {
         assert!(app.take_dirty());
         app.reduce(Event::Resize);
         assert!(app.take_dirty());
-    }
-
-    #[test]
-    fn warm_count_only_counts_shelf_models() {
-        let mut app = app(2);
-        app.facts
-            .residents
-            .push(resident(&app.records[0].id, Holder::Local));
-        app.facts
-            .residents
-            .push(resident("not-on-the-shelf", Holder::Local));
-        assert_eq!(app.warm_count(), 1);
     }
 
     #[test]
@@ -959,7 +926,9 @@ mod tests {
         assert_eq!(press(&mut app, Key::Char('c')), vec![Effect::Cancel(id)]);
 
         let mut modal = PullModal::open(&[], 0);
-        modal.stage = Stage::Preview(plan);
+        let mut replanned = plan;
+        replanned.remaining_bytes = Some(5);
+        modal.stage = Stage::Preview(replanned);
         app.modal = Some(Modal::Pull(Box::new(modal)));
         assert!(press(&mut app, Key::Enter).is_empty());
         assert_eq!(app.notice(), Some("x is already downloading"));

@@ -43,7 +43,7 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
 
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
 
     // Tool calling is what every harness but aider drives the model through, so
     // the picker offers only tool-capable models for those. An explicit `-m`

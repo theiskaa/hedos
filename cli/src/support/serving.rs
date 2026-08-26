@@ -18,6 +18,7 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 
 use crate::error::CliError;
+use crate::support::http::probe_json;
 
 /// Build the router that serves `kernel`, auditing into `audit_dir` and
 /// admitting at most `max_inference` concurrent inference requests.
@@ -64,11 +65,11 @@ pub(crate) struct LiveResident {
     /// The footprint in bytes.
     pub size: i64,
     /// When the gateway's idle unload fires, if one is armed (ISO 8601).
-    pub expires_at: Option<String>,
+    expires_at: Option<String>,
 }
 
 impl LiveResident {
-    /// [`Self::expires_at`] as Unix milliseconds.
+    /// When the gateway's idle unload fires, in Unix milliseconds.
     pub fn expires_at_millis(&self) -> Option<i64> {
         self.expires_at.as_deref().and_then(millis_from_iso8601)
     }
@@ -83,20 +84,8 @@ struct PsBody {
 /// [`PROBE_TIMEOUT`] and the answer is a hedos gateway's (a stock Ollama
 /// daemon's entries carry no `id`).
 pub(crate) async fn probe(port: u16) -> Option<GatewayLive> {
-    let client = reqwest::Client::builder()
-        .timeout(PROBE_TIMEOUT)
-        .build()
-        .ok()?;
-    let body: PsBody = client
-        .get(format!("http://127.0.0.1:{port}/api/ps"))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let body: PsBody =
+        probe_json(&format!("http://127.0.0.1:{port}/api/ps"), PROBE_TIMEOUT).await?;
     Some(GatewayLive {
         port,
         residents: body.models,

@@ -3,16 +3,15 @@
 
 use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
-use kernel::records::byte_format::BYTES_PER_MIB;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 
-use super::{BOLD, DIM};
+use super::{ACCENT, BOLD, CAUTION, CURSOR, DIM, FAILED, WARM};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
-use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
+use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
 use crate::tui::app::App;
 use crate::tui::order::Sort;
 use crate::tui::text;
@@ -32,8 +31,6 @@ const CHROME_WIDTH: u16 = 2;
 const COLUMN_SETS: [&[usize]; 3] = [&[0, 1, 2, 3, 4], &[0, 1, 2, 4], &[0, 1, 4]];
 /// The gutter mark on the selected row.
 const SELECTED: &str = "▎";
-/// The text cursor shown while the filter is being typed.
-const CURSOR: &str = "▏";
 
 /// Draw the shelf into `area`, scrolled so the selection stays in view, or
 /// the first-run invitation when there is nothing on it.
@@ -42,7 +39,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         draw_empty(frame, area, app);
         return;
     }
-    let budget = app.memory_budget_bytes();
+    let budget = app.facts.memory_bytes;
     let shown: Vec<&ModelRecord> = app.shown().collect();
     let rows: Vec<ShelfRow> = shown
         .iter()
@@ -57,19 +54,33 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         .zip(&rows)
         .enumerate()
         .map(|(index, (record, row))| {
-            let style = if row.verdict == Some(FitVerdict::TooLarge) {
-                DIM
-            } else if app.facts.is_warm(&record.id) {
-                BOLD
-            } else {
-                Style::new()
+            let style = match (row.verdict, row.warm) {
+                (Some(FitVerdict::TooLarge), _) => DIM,
+                (_, true) => BOLD,
+                _ => Style::new(),
+            };
+            let size_style = match row.verdict {
+                Some(FitVerdict::TightFit) => CAUTION,
+                Some(FitVerdict::TooLarge) => FAILED,
+                _ => Style::new(),
+            };
+            let marker = |mark: &str| {
+                let text = format!("{mark}{}", row.cells[0]);
+                if row.warm {
+                    Cell::from(Span::styled(text, WARM))
+                } else {
+                    Cell::from(text)
+                }
             };
             let cells = columns.iter().map(|&column| match column {
-                0 if index == selected => Cell::from(format!("{SELECTED}{}", row.cells[0])),
-                0 => Cell::from(format!(" {}", row.cells[0])),
-                SIZE => Cell::from(Line::from(row.cells[SIZE].clone()).right_aligned()),
+                0 if index == selected => marker(SELECTED),
+                0 => marker(" "),
+                SIZE => Cell::from(
+                    Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
+                ),
                 _ => Cell::from(row.cells[column].clone()),
             });
+            let _ = record;
             Row::new(cells).style(style)
         });
 
@@ -96,15 +107,15 @@ struct ShelfRow {
     /// the size with the verdict when it is not `fits`.
     cells: [String; 5],
     verdict: Option<FitVerdict>,
+    warm: bool,
 }
 
 impl ShelfRow {
     fn new(record: &ModelRecord, warm: bool, budget: u64) -> Self {
-        let verdict = FitVerdict::assess(record.footprint_mb, budget).map(|fit| fit.verdict);
-        let mut size = match record.footprint_mb {
-            Some(mb) if mb > 0 => text::bytes(mb * BYTES_PER_MIB),
-            _ => DASH.to_owned(),
-        };
+        let verdict = verdict(record.footprint_mb, budget);
+        let mut size = record
+            .footprint_bytes()
+            .map_or(DASH.to_owned(), text::bytes);
         if matches!(verdict, Some(FitVerdict::TightFit | FitVerdict::TooLarge)) {
             size = format!("{size} {}", verdict_label(verdict));
         }
@@ -117,6 +128,7 @@ impl ShelfRow {
                 size,
             ],
             verdict,
+            warm,
         }
     }
 }
@@ -172,7 +184,7 @@ fn constraints(column_widths: &[usize; 5], columns: &[usize]) -> Vec<Constraint>
 fn title(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
     if app.filtering || !app.filter.is_empty() {
-        spans.push(Span::styled(" / ", BOLD));
+        spans.push(Span::styled(" / ", ACCENT));
         spans.push(Span::raw(app.filter.clone()));
         if app.filtering {
             spans.push(Span::styled(CURSOR, BOLD));
@@ -196,7 +208,7 @@ fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let memory = match app.memory_budget_bytes() {
+    let memory = match app.facts.memory_bytes {
         0 => String::new(),
         bytes => format!("      {} GiB on this machine", text::gib(bytes as i64)),
     };
@@ -255,7 +267,7 @@ mod tests {
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
     const WIDTHS: [usize; 5] = [2, 20, 10, 8, 7];
-    const GIB: u64 = 1 << 30;
+    const GIB: u64 = kernel::records::byte_format::BYTES_PER_GIB as u64;
 
     fn record(footprint_mb: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(

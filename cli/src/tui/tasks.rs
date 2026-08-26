@@ -3,9 +3,13 @@
 //! module in the UI that awaits kernel calls.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, SystemTime};
 
+use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::install::event::{InstallEvent, InstallProgress};
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -13,15 +17,19 @@ use kernel::records::ModelRecord;
 use runtime::install::service::InstallService;
 use serde_json::json;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use super::event::{Event, Planned, Refreshed, Searched};
-use super::facts::{AuditReader, Facts};
+use super::facts::Facts;
 use super::pull::SEARCH_LIMIT;
 use super::text;
-use crate::commands::rm::remove_and_forget;
-use crate::commands::unload::unload_anywhere;
-use crate::commands::warm::{is_resident, residency_outcome, warm_request};
+use crate::support::removal::remove_and_forget;
+use crate::support::residency::{is_resident, residency_outcome, unload_anywhere, warm_request};
 use crate::support::session::Session;
+
+/// How long a warm through the gateway may take; a large model legitimately
+/// loads for minutes, so this only catches a gateway that never answers.
+const GATEWAY_WARM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The shelf and the facts about it, read together.
 pub struct Snapshot {
@@ -36,6 +44,9 @@ pub struct TaskContext {
     install: InstallService,
     audit: AuditReader,
     installs: Mutex<HashMap<TaskId, String>>,
+    /// Tasks that change the shelf or the disk; the loop waits for them on
+    /// quit, so a removal is never cut between deleting and forgetting.
+    mutating: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl TaskContext {
@@ -47,7 +58,27 @@ impl TaskContext {
             install,
             audit,
             installs: Mutex::new(HashMap::new()),
+            mutating: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Wait for every mutating task still running; the tasks that were only
+    /// reading are dropped with the runtime.
+    pub async fn settle(&self) {
+        let handles: Vec<JoinHandle<()>> =
+            std::mem::take(&mut *self.mutating.lock().unwrap_or_else(PoisonError::into_inner));
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Whether a mutating task is still running.
+    pub fn busy(&self) -> bool {
+        self.mutating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|handle| !handle.is_finished())
     }
 
     /// The shelf and facts as they are now. The audit log is parsed on a
@@ -190,9 +221,11 @@ pub fn spawn(
     tx: mpsc::UnboundedSender<Event>,
 ) -> TaskId {
     let id = TaskId::next();
+    let mutating = matches!(kind, TaskKind::Pull(_) | TaskKind::Remove { .. });
     let context = Arc::clone(context);
     let kind = kind.clone();
-    tokio::spawn(async move {
+    let owner = Arc::clone(&context);
+    let handle = tokio::spawn(async move {
         let session = &context.session;
         let report = |state: TaskState| {
             let _ = tx.send(Event::Task(TaskEvent { id, state }));
@@ -214,6 +247,13 @@ pub fn spawn(
             Err(reason) => TaskState::Failed(reason),
         });
     });
+    if mutating {
+        owner
+            .mutating
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(handle);
+    }
     id
 }
 
@@ -302,7 +342,10 @@ async fn warm_via_gateway(id: &str, port: u16) -> Result<String, String> {
         "stream": false,
         "options": { "num_predict": 1 },
     });
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(GATEWAY_WARM_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?
         .post(format!("http://127.0.0.1:{port}/api/chat"))
         .json(&body)
         .send()
@@ -371,13 +414,21 @@ async fn pull(
 }
 
 /// Delete the weights the way `hedos rm` does, then forget the record so the
-/// shelf stops listing it.
+/// shelf stops listing it. The warm check is repeated here on live state: the
+/// facts the modal read may be a refresh behind.
 async fn remove(session: &Session, id: &str) -> Result<String, String> {
     let shelf = session.shelf().await;
     let record = shelf
         .iter()
         .find(|record| record.id == id)
         .ok_or_else(|| "no longer on the shelf".to_owned())?;
+    let gateway_holds = session
+        .live_gateway()
+        .await
+        .is_some_and(|live| live.residents.iter().any(|resident| resident.id == id));
+    if gateway_holds || is_resident(session, record).await {
+        return Err("is warm; unload it first".to_owned());
+    }
     let report = remove_and_forget(session, record)
         .await
         .map_err(|error| error.to_string())?;
@@ -389,4 +440,46 @@ async fn remove(session: &Session, id: &str) -> Result<String, String> {
     } else {
         format!("freed {}", text::bytes(report.freed_bytes_estimate))
     })
+}
+
+/// The gateway audit log, re-read only when the live file changes.
+pub struct AuditReader {
+    log: GatewayAuditLog,
+    cache: Mutex<Option<AuditSnapshot>>,
+}
+
+/// The entries as read when the live file had this size and mtime.
+struct AuditSnapshot {
+    stamp: (u64, Option<SystemTime>),
+    entries: Arc<[GatewayAuditEntry]>,
+}
+
+impl AuditReader {
+    /// A reader over the audit log in `directory`.
+    pub fn new(directory: PathBuf) -> Self {
+        Self {
+            log: GatewayAuditLog::new(directory),
+            cache: Mutex::new(None),
+        }
+    }
+
+    /// Every entry, from the cache unless the live file's size or mtime moved.
+    /// Reads and parses on the calling thread; run it off the async workers.
+    pub fn entries(&self) -> Arc<[GatewayAuditEntry]> {
+        let stamp = fs::metadata(self.log.path())
+            .map(|meta| (meta.len(), meta.modified().ok()))
+            .unwrap_or((0, None));
+        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(snapshot) = cache.as_ref()
+            && snapshot.stamp == stamp
+        {
+            return Arc::clone(&snapshot.entries);
+        }
+        let entries: Arc<[GatewayAuditEntry]> = self.log.read_all().into();
+        *cache = Some(AuditSnapshot {
+            stamp,
+            entries: Arc::clone(&entries),
+        });
+        entries
+    }
 }

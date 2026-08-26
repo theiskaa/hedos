@@ -7,7 +7,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use kernel::install::event::InstallProgress;
 
-use super::{BOLD, DIM, FAILED};
+use super::{ACCENT, BOLD, DIM, FAILED, bar};
 use crate::tui::app::{App, TaskRow};
 use crate::tui::tasks::TaskState;
 use crate::tui::text;
@@ -32,9 +32,9 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
 fn line(row: &TaskRow) -> Line<'static> {
     let (verb_style, detail) = match &row.state {
-        TaskState::Running => (BOLD, vec![Span::styled(row.kind.activity(), DIM)]),
-        TaskState::Status(status) => (BOLD, vec![Span::styled(status.clone(), DIM)]),
-        TaskState::Downloading(progress) => (BOLD, download(progress)),
+        TaskState::Running => (ACCENT, vec![Span::styled(row.kind.activity(), DIM)]),
+        TaskState::Status(status) => (ACCENT, vec![Span::styled(status.clone(), DIM)]),
+        TaskState::Downloading(progress) => (ACCENT, download(progress)),
         TaskState::Done(summary) => (DIM, vec![Span::styled(summary.clone(), DIM)]),
         TaskState::Failed(reason) => (FAILED, vec![Span::styled(reason.clone(), FAILED)]),
     };
@@ -51,13 +51,17 @@ fn download(progress: &InstallProgress) -> Vec<Span<'static>> {
     let done = text::bytes(progress.bytes_downloaded);
     match (progress.fraction(), progress.total_bytes) {
         (Some(fraction), Some(total)) => {
-            let filled = ((fraction * BAR_WIDTH as f64).round() as usize).min(BAR_WIDTH);
-            vec![
-                Span::raw("█".repeat(filled)),
-                Span::styled("░".repeat(BAR_WIDTH - filled), DIM),
-                Span::styled(format!("  {:>3}%", (fraction * 100.0) as u64), BOLD),
-                Span::styled(format!("  {done} / {}", text::bytes(total)), DIM),
-            ]
+            let filled = (fraction * BAR_WIDTH as f64).round() as usize;
+            let mut spans = bar(filled, BAR_WIDTH, ACCENT).to_vec();
+            spans.push(Span::styled(
+                format!("  {:>3}%", (fraction * 100.0) as u64),
+                BOLD,
+            ));
+            spans.push(Span::styled(
+                format!("  {done} / {}", text::bytes(total)),
+                DIM,
+            ));
+            spans
         }
         _ => vec![Span::styled(format!("{done} so far"), DIM)],
     }

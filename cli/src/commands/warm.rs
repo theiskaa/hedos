@@ -1,14 +1,11 @@
 //! `hedos warm <model>` — load a model into residency with a tiny request.
 
-use std::collections::BTreeMap;
-
 use clap::Args;
-use kernel::records::{Capability, JsonValue, ModelRecord};
 
 use crate::error::CliError;
 use crate::support::interactive;
-use crate::support::ollama;
 use crate::support::output::Out;
+use crate::support::residency::{is_resident, residency_outcome, warm_request};
 use crate::support::session::Session;
 
 /// Arguments for `warm`.
@@ -32,7 +29,6 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
         .kernel
         .invoke(&record.id, capability, payload)
         .await?;
-    // Drain the (tiny) response to complete the load.
     while let Some(result) = stream.recv().await {
         result?;
     }
@@ -45,47 +41,4 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     ));
     out.json(&serde_json::json!({ "model": record.id, "resident": resident }));
     Ok(())
-}
-
-/// Whether `record` is loaded after a warm: tracked by this process's
-/// governor, or held by the Ollama daemon, which loads its models itself.
-pub(crate) async fn is_resident(session: &Session, record: &ModelRecord) -> bool {
-    session.kernel.governor().is_resident(&record.id) || ollama::holds_now(record).await
-}
-
-/// The word for a finished load, by whether residency is tracked for it.
-pub(crate) fn residency_outcome(resident: bool) -> &'static str {
-    if resident {
-        "warm"
-    } else {
-        "loaded (residency not tracked for this runtime)"
-    }
-}
-
-/// The smallest request that loads `record`: a one-token chat/complete, or a
-/// dot of speech. `None` if the model serves none of those.
-pub(crate) fn warm_request(
-    record: &kernel::records::ModelRecord,
-) -> Option<(Capability, JsonValue)> {
-    let has = |cap: &Capability| record.capabilities.contains(cap);
-    if has(&Capability::chat()) {
-        let mut payload = BTreeMap::new();
-        payload.insert(
-            "messages".to_owned(),
-            JsonValue::Array(vec![crate::support::payload::message("user", "hi")]),
-        );
-        payload.insert("max_tokens".to_owned(), JsonValue::Int(1));
-        Some((Capability::chat(), JsonValue::Object(payload)))
-    } else if has(&Capability::complete()) {
-        let mut payload = BTreeMap::new();
-        payload.insert("prompt".to_owned(), JsonValue::String("hi".to_owned()));
-        payload.insert("max_tokens".to_owned(), JsonValue::Int(1));
-        Some((Capability::complete(), JsonValue::Object(payload)))
-    } else if has(&Capability::speak()) {
-        let mut payload = BTreeMap::new();
-        payload.insert("text".to_owned(), JsonValue::String(".".to_owned()));
-        Some((Capability::speak(), JsonValue::Object(payload)))
-    } else {
-        None
-    }
 }

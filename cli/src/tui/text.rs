@@ -1,15 +1,13 @@
-//! Short human forms for the numbers the screen shows.
+//! The labels and numbers the screen shows, in their short human forms.
 
 use std::path::Path;
 
-use kernel::records::byte_format::{format_bytes, one_decimal};
-
-const GIB: f64 = (1u64 << 30) as f64;
+use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
 
-/// Bytes as `4.7 GB` / `512 MB`, the same form `hedos ls --json` readers see.
+/// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
     format_bytes(bytes)
 }
@@ -17,7 +15,7 @@ pub fn bytes(bytes: i64) -> String {
 /// Bytes in gibibytes with one decimal, for memory figures set against a
 /// machine total: `14.2`. Negative counts read as zero.
 pub fn gib(bytes: i64) -> String {
-    one_decimal(bytes.max(0) as f64 / GIB)
+    one_decimal(bytes.max(0) as f64 / BYTES_PER_GIB as f64)
 }
 
 /// A duration in seconds as its largest whole unit: `45s`, `26m`, `3h`, `2d`.

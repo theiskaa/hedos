@@ -8,7 +8,7 @@
 mod app;
 mod effect;
 mod event;
-pub(crate) mod facts;
+mod facts;
 mod layout;
 mod order;
 mod pull;
@@ -25,7 +25,7 @@ use base64::Engine;
 use tokio::sync::mpsc;
 use tokio::time::Interval;
 
-pub use self::app::App;
+use self::app::App;
 use self::effect::Effect;
 use self::event::Event;
 use self::state::UiState;
@@ -72,11 +72,12 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     .await;
     ratatui::restore();
     app.remembered().save(&state_dir);
-    if app.busy() {
-        // A scan runs to completion inside one poll, so the runtime waits for
-        // it before the process can exit; say why the prompt is late.
+    // A pull or removal is finished rather than cut mid-way; a scan runs to
+    // completion inside one poll anyway. Either way, say why the prompt is late.
+    if context.busy() || app.busy() {
         out.line("finishing background work…");
     }
+    context.settle().await;
     outcome
 }
 

@@ -36,7 +36,7 @@ pub struct SpeakArgs {
 pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
     let record = interactive::choose_model(
         out,
         args.model.as_deref(),

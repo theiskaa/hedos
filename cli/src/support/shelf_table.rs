@@ -1,6 +1,5 @@
-//! Shared rendering of shelf rows: the aligned columns `hedos ls` prints and the
-//! interactive model picker offers. Both draw from one column layout so a model
-//! looks identical whether it is listed or selected.
+//! The aligned shelf table `hedos ls` prints and the interactive picker offers,
+//! plus the label helpers the UI's own table shares with it.
 
 use std::collections::HashSet;
 
@@ -32,6 +31,12 @@ pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
     record.runtime.id.as_ref().map_or(DASH, |id| id.as_str())
 }
 
+/// How a model of `footprint_mb` fits in `memory_bytes`, when the footprint
+/// is known.
+pub(crate) fn verdict(footprint_mb: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
+    FitVerdict::assess(footprint_mb, memory_bytes).map(|fit| fit.verdict)
+}
+
 /// The short human form of a verdict: `fits` / `tight` / `too big`, empty
 /// when there is none.
 pub(crate) fn verdict_label(verdict: Option<FitVerdict>) -> &'static str {
@@ -47,8 +52,8 @@ pub(crate) fn verdict_label(verdict: Option<FitVerdict>) -> &'static str {
 /// when the footprint is unknown (the same dash the runtime column uses for an
 /// unresolved runtime).
 fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
-    match FitVerdict::assess(record.footprint_mb, total_memory_bytes) {
-        Some(fit) => verdict_label(Some(fit.verdict)),
+    match verdict(record.footprint_mb, total_memory_bytes) {
+        Some(fit) => verdict_label(Some(fit)),
         None => DASH,
     }
 }

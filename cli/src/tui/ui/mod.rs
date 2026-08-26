@@ -1,5 +1,8 @@
 //! Drawing the app state. Panes read the app and write to the frame; the only
-//! mutable state they touch is the shelf's scroll position.
+//! mutable state they touch is the shelf's scroll position. Colour is used
+//! sparingly: an orange accent for what is in focus or names a mode, and the
+//! terminal's own green for what is loaded, yellow for a tight fit, red for
+//! what failed or won't fit.
 
 mod detail;
 mod footer;
@@ -10,7 +13,7 @@ mod shelf;
 mod tasks;
 
 use ratatui::Frame;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::app::App;
@@ -20,8 +23,21 @@ use super::layout::Panes;
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 /// The loud register: the wordmark, warm models, the selected title.
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-/// The one colour on the screen: a muted warm tone for a task that failed.
-const FAILED: Style = Style::new().fg(ratatui::style::Color::Rgb(201, 138, 106));
+/// What is in focus or names a mode: titles, eyebrows, the expanded detail.
+/// A fixed orange, since no terminal palette has one and it should not drift
+/// into the warning yellow.
+const ACCENT: Style = Style::new().fg(Color::Rgb(232, 142, 68));
+/// What is loaded.
+const WARM: Style = Style::new().fg(Color::Green);
+/// What only just fits.
+const CAUTION: Style = Style::new().fg(Color::Yellow);
+/// What failed or won't fit.
+const FAILED: Style = Style::new().fg(Color::Red);
+/// The glyphs of a horizontal bar: filled, then empty.
+const BAR_FILLED: &str = "█";
+const BAR_EMPTY: &str = "░";
+/// The text cursor shown while something is being typed.
+const CURSOR: &str = "▏";
 
 /// A `label   value` pair, the label dim and padded to `width`.
 fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span<'a>> {
@@ -38,6 +54,33 @@ fn styled_field<'a>(
     vec![
         Span::styled(format!(" {label:<width$}"), DIM),
         Span::styled(value.into(), style),
+    ]
+}
+
+/// A `label   value` line.
+fn field_line(label: &str, value: impl Into<String>, width: usize) -> Line<'static> {
+    Line::from(
+        styled_field(label, value, width, Style::new())
+            .into_iter()
+            .map(|span| Span::styled(span.content.into_owned(), span.style))
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// The wordmark: `hedos` bold, the version dim.
+fn wordmark() -> [Span<'static>; 2] {
+    [
+        Span::styled(" hedos", BOLD),
+        Span::styled(format!(" v{}", env!("CARGO_PKG_VERSION")), DIM),
+    ]
+}
+
+/// A bar of `width` cells, `filled` of them lit in `style`.
+fn bar(filled: usize, width: usize, style: Style) -> [Span<'static>; 2] {
+    let filled = filled.min(width);
+    [
+        Span::styled(BAR_FILLED.repeat(filled), style),
+        Span::styled(BAR_EMPTY.repeat(width - filled), DIM),
     ]
 }
 

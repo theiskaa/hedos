@@ -96,7 +96,7 @@ pub fn order(records: &[ModelRecord], facts: &Facts, query: &str, sort: Sort) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::facts::{Holder, Resident};
+    use crate::support::residency::{Holder, Resident};
     use kernel::records::{Modality, ModelSource, SourceKind};
 
     fn record(name: &str, footprint_mb: Option<i64>) -> ModelRecord {

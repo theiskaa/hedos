@@ -1,20 +1,15 @@
-//! The machine facts the header and detail pane show, gathered once per
-//! refresh: memory, what is loaded and by whom, disk by store, the gateway.
+//! The machine facts the screen shows, gathered once per refresh: memory,
+//! what is loaded and by whom, disk by store, and what the gateway served.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::SystemTime;
 
-use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
+use gateway::audit::GatewayAuditEntry;
 use gateway::stats::{LatencyPercentiles, percentiles};
-use kernel::records::ModelRecord;
-use kernel::records::byte_format::BYTES_PER_MIB;
-use kernel::time::{millis_from_iso8601, now_millis};
+use kernel::records::{ModelRecord, ModelState};
+use kernel::time::now_millis;
 
 use crate::support::machine;
-use crate::support::ollama;
+use crate::support::residency::{self, Resident};
 use crate::support::session::Session;
 
 const HOUR_MILLIS: i64 = 3_600_000;
@@ -22,48 +17,6 @@ const DAY_MILLIS: i64 = 24 * HOUR_MILLIS;
 const MINUTE_MILLIS: i64 = 60_000;
 /// Hourly buckets in the activity sparkline.
 pub const HOURS: usize = 24;
-
-/// The gateway audit log, re-read only when the live file changes.
-pub struct AuditReader {
-    log: GatewayAuditLog,
-    cache: Mutex<Option<AuditSnapshot>>,
-}
-
-/// The entries as read when the live file had this size and mtime.
-struct AuditSnapshot {
-    stamp: (u64, Option<SystemTime>),
-    entries: Arc<[GatewayAuditEntry]>,
-}
-
-impl AuditReader {
-    /// A reader over the audit log in `directory`.
-    pub fn new(directory: PathBuf) -> Self {
-        Self {
-            log: GatewayAuditLog::new(directory),
-            cache: Mutex::new(None),
-        }
-    }
-
-    /// Every entry, from the cache unless the live file's size or mtime moved.
-    /// Reads and parses on the calling thread; run it off the async workers.
-    pub fn entries(&self) -> Arc<[GatewayAuditEntry]> {
-        let stamp = fs::metadata(self.log.path())
-            .map(|meta| (meta.len(), meta.modified().ok()))
-            .unwrap_or((0, None));
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(snapshot) = cache.as_ref()
-            && snapshot.stamp == stamp
-        {
-            return Arc::clone(&snapshot.entries);
-        }
-        let entries: Arc<[GatewayAuditEntry]> = self.log.read_all().into();
-        *cache = Some(AuditSnapshot {
-            stamp,
-            entries: Arc::clone(&entries),
-        });
-        entries
-    }
-}
 
 /// One model's slice of the gateway's recent history. Only served requests
 /// count: the gateway records no model on the ones it rejects.
@@ -144,42 +97,6 @@ impl Activity {
     }
 }
 
-/// Who holds a resident model in memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Holder {
-    /// This process's own kernel.
-    Local,
-    /// A `hedos serve` on the configured port.
-    Gateway,
-    /// The Ollama daemon, which loads the models it serves itself.
-    Daemon,
-}
-
-/// One model held in memory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resident {
-    /// The record id.
-    pub id: String,
-    /// The display name.
-    pub name: String,
-    /// The footprint in bytes.
-    pub bytes: i64,
-    /// Who holds it.
-    pub holder: Holder,
-    /// When its idle unload fires, in Unix milliseconds, if a timer is armed.
-    pub expires_at_millis: Option<i64>,
-}
-
-impl Resident {
-    /// Seconds until the idle unload fires, if one is armed and still ahead.
-    /// A deadline the clock has passed is a snapshot gone stale, not a countdown.
-    pub fn expires_in_seconds(&self) -> Option<i64> {
-        self.expires_at_millis
-            .map(|deadline| (deadline - now_millis()) / 1000)
-            .filter(|seconds| *seconds > 0)
-    }
-}
-
 /// Everything about the machine the screen shows.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
@@ -193,6 +110,9 @@ pub struct Facts {
     pub disk_by_store: Vec<(String, i64)>,
     /// What the gateway has served, from its audit log.
     pub activity: Activity,
+    /// When these facts were read, in Unix milliseconds; ages are measured
+    /// from here so the screen never needs a clock.
+    pub collected_at_millis: i64,
 }
 
 impl Facts {
@@ -203,71 +123,15 @@ impl Facts {
         records: &[ModelRecord],
         entries: &[GatewayAuditEntry],
     ) -> Self {
-        let live = session.live_gateway().await;
-        let activity = Activity::from_entries(entries, now_millis());
-        let name_of = |id: &str| {
-            records
-                .iter()
-                .find(|record| record.id == id)
-                .map(|record| record.display_name().to_owned())
-        };
-
-        let mut residents: Vec<Resident> = session
-            .kernel
-            .resident_models()
-            .into_iter()
-            .filter_map(|entry| {
-                let id = entry.model_id?;
-                Some(Resident {
-                    name: name_of(&id).unwrap_or(entry.name),
-                    id,
-                    bytes: entry.footprint_mb * BYTES_PER_MIB,
-                    holder: Holder::Local,
-                    expires_at_millis: entry.expires_at_millis,
-                })
-            })
-            .collect();
-        if let Some(live) = &live {
-            for resident in &live.residents {
-                if residents.iter().any(|known| known.id == resident.id) {
-                    continue;
-                }
-                let Some(name) = name_of(&resident.id) else {
-                    continue;
-                };
-                residents.push(Resident {
-                    id: resident.id.clone(),
-                    name,
-                    bytes: resident.size,
-                    holder: Holder::Gateway,
-                    expires_at_millis: resident.expires_at_millis(),
-                });
-            }
-        }
-
-        if let Some(daemon) = ollama::residents().await {
-            for record in records {
-                if residents.iter().any(|known| known.id == record.id) {
-                    continue;
-                }
-                let Some(held) = ollama::held(&daemon, record) else {
-                    continue;
-                };
-                residents.push(Resident {
-                    id: record.id.clone(),
-                    name: record.display_name().to_owned(),
-                    bytes: held.size,
-                    holder: Holder::Daemon,
-                    expires_at_millis: held.expires_at.as_deref().and_then(millis_from_iso8601),
-                });
-            }
-        }
+        let now = now_millis();
+        let loaded = residency::loaded(session, records).await;
         Self {
             memory_bytes: machine::memory_budget_bytes(),
-            residents,
-            gateway_port: live.map(|live| live.port),
+            residents: loaded.residents,
+            gateway_port: loaded.gateway_port,
             disk_by_store: disk_by_store(records),
-            activity,
+            activity: Activity::from_entries(entries, now),
+            collected_at_millis: now,
         }
     }
 
@@ -297,12 +161,16 @@ impl Facts {
     }
 }
 
-/// Footprints summed per store kind, largest first, ties by name.
+/// Footprints summed per store kind, largest first, ties by name. A record
+/// whose weights are gone holds no disk.
 fn disk_by_store(records: &[ModelRecord]) -> Vec<(String, i64)> {
     let mut totals: BTreeMap<&str, i64> = BTreeMap::new();
     for record in records {
+        if record.state == ModelState::Missing {
+            continue;
+        }
         *totals.entry(record.source.kind.as_str()).or_default() +=
-            record.footprint_mb.unwrap_or(0) * BYTES_PER_MIB;
+            record.footprint_bytes().unwrap_or(0);
     }
     let mut stores: Vec<(String, i64)> = totals
         .into_iter()
@@ -315,6 +183,8 @@ fn disk_by_store(records: &[ModelRecord]) -> Vec<(String, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::support::residency::Holder;
+    use kernel::records::byte_format::BYTES_PER_MIB;
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
     fn record(name: &str, kind: SourceKind, footprint_mb: Option<i64>) -> ModelRecord {
@@ -335,6 +205,15 @@ mod tests {
             record("b", SourceKind::huggingface_cache(), Some(5)),
             record("c", SourceKind::ollama(), Some(2)),
             record("d", SourceKind::file(), None),
+        ];
+        let mut gone = record("e", SourceKind::ollama(), Some(100));
+        gone.state = ModelState::Missing;
+        let records = [
+            records[0].clone(),
+            records[1].clone(),
+            records[2].clone(),
+            records[3].clone(),
+            gone,
         ];
         let stores = disk_by_store(&records);
         assert_eq!(stores[0].0, "huggingface-cache");
@@ -366,6 +245,7 @@ mod tests {
             gateway_port: None,
             disk_by_store: vec![("ollama".into(), 7), ("file".into(), 3)],
             activity: Activity::default(),
+            collected_at_millis: 0,
         };
         assert_eq!(facts.resident_bytes(), 15);
         assert_eq!(facts.disk_bytes(), 10);

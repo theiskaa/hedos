@@ -18,6 +18,9 @@ pub const KOALA: [&str; 10] = [
     "⠀⠀⠀⠀⠀⠉⠉⠑⠒⠤⠤⠤⠃⠀⠉⠀⠀⠀",
 ];
 
+/// What ἕδος means, as the wordmark says it.
+pub const GLOSS: &str = "ἕδος · a seat, an abode, a foundation";
+
 /// The koala's width in terminal cells.
 pub const KOALA_WIDTH: u16 = 18;
 
@@ -25,7 +28,7 @@ pub const KOALA_WIDTH: u16 = 18;
 const IDENTITY: [&str; 10] = [
     "",
     "hedos",
-    "ἕδος — a seat, an abode, a foundation",
+    GLOSS,
     "",
     "A headless engine for the local models",
     "already on your machine. It finds them,",

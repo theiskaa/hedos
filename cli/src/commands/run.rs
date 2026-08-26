@@ -39,7 +39,7 @@ pub struct RunArgs {
 pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
 
     // A named model resolves against the whole shelf, then an image run checks
     // `see` explicitly — so a named non-vision model gets a precise reason instead

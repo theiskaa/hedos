@@ -10,8 +10,10 @@ use kernel::install::provider::InstallProviderId;
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
 use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
+use kernel::records::byte_format::{BYTES_PER_GIB, BYTES_PER_MIB};
 
-use crate::commands::pull::{installed_names, is_installed};
+use crate::support::install::{installed_names, is_installed};
+use crate::support::shelf_table::verdict;
 
 /// How many quiet ticks after a keystroke before the typed query is searched.
 pub const SEARCH_DEBOUNCE_TICKS: u64 = 2;
@@ -19,11 +21,9 @@ pub const SEARCH_DEBOUNCE_TICKS: u64 = 2;
 const MAX_MATCHES: usize = 12;
 /// Hugging Face hits requested per search.
 pub const SEARCH_LIMIT: usize = 8;
-const GIB: f64 = (1u64 << 30) as f64;
-
 /// How a model of `bytes` fits in `memory_bytes`, when its size is known.
 pub fn fit(bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
-    FitVerdict::assess(bytes.map(|bytes| bytes >> 20), memory_bytes).map(|fit| fit.verdict)
+    verdict(bytes.map(|bytes| bytes / BYTES_PER_MIB), memory_bytes)
 }
 
 /// One installable model the list offers.
@@ -42,7 +42,7 @@ impl PullMatch {
         Self {
             provider: entry.provider.clone(),
             reference: entry.reference.clone(),
-            bytes: Some((entry.size_gb * GIB) as i64),
+            bytes: Some((entry.size_gb * BYTES_PER_GIB as f64) as i64),
             note: entry.blurb.clone(),
         }
     }

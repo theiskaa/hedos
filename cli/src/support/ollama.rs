@@ -6,9 +6,12 @@
 use std::time::Duration;
 
 use kernel::records::{ModelRecord, SourceKind};
+use kernel::time::millis_from_iso8601;
 use runtime::adapters::OLLAMA_BASE_URL;
 use serde::Deserialize;
 use serde_json::json;
+
+use crate::support::http::probe_json;
 
 /// How long a probe waits for the daemon before deciding it is not running.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
@@ -23,7 +26,14 @@ pub(crate) struct DaemonResident {
     /// Bytes in memory.
     pub size: i64,
     /// When the daemon lets it go, in its own RFC 3339 form, if it says.
-    pub expires_at: Option<String>,
+    expires_at: Option<String>,
+}
+
+impl DaemonResident {
+    /// When the daemon lets the model go, in Unix milliseconds.
+    pub fn expires_at_millis(&self) -> Option<i64> {
+        self.expires_at.as_deref().and_then(millis_from_iso8601)
+    }
 }
 
 #[derive(Deserialize)]
@@ -31,22 +41,9 @@ struct PsBody {
     models: Vec<DaemonResident>,
 }
 
-fn client(timeout: Duration) -> Option<reqwest::Client> {
-    reqwest::Client::builder().timeout(timeout).build().ok()
-}
-
 /// The models the daemon holds, or `None` when nothing answers `/api/ps`.
 pub(crate) async fn residents() -> Option<Vec<DaemonResident>> {
-    let body: PsBody = client(PROBE_TIMEOUT)?
-        .get(format!("{OLLAMA_BASE_URL}/api/ps"))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
+    let body: PsBody = probe_json(&format!("{OLLAMA_BASE_URL}/api/ps"), PROBE_TIMEOUT).await?;
     Some(body.models)
 }
 
@@ -74,8 +71,10 @@ pub(crate) fn tag_of(record: &ModelRecord) -> Option<&str> {
 /// Ask the daemon to unload `tag` now (a generate with `keep_alive: 0`). Only
 /// call it for a tag the daemon holds: on a cold one it would load first.
 pub(crate) async fn unload(tag: &str) -> Result<(), String> {
-    client(UNLOAD_TIMEOUT)
-        .ok_or_else(|| "no http client".to_owned())?
+    reqwest::Client::builder()
+        .timeout(UNLOAD_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?
         .post(format!("{OLLAMA_BASE_URL}/api/generate"))
         .json(&json!({ "model": tag, "keep_alive": 0 }))
         .send()

@@ -2,8 +2,6 @@
 //! reference it installs directly; without one it searches Hugging Face (or offers
 //! RAM-fit recommendations) and lets you pick. Ctrl-C cancels a download.
 
-use std::collections::HashSet;
-
 use clap::Args;
 use kernel::install::event::InstallEvent;
 use kernel::install::reference::{hugging_face_repo, ollama_install_tag};
@@ -15,6 +13,7 @@ use runtime::install::service::InstallService;
 
 use crate::error::CliError;
 use crate::support::download::Download;
+use crate::support::install::{installed_names, is_installed};
 use crate::support::output::Out;
 use crate::support::session::Session;
 use crate::support::{interactive, machine, signals};
@@ -212,29 +211,6 @@ async fn search_candidates(
             reference: hit.reference.clone(),
         })
         .collect())
-}
-
-/// The lowercased ids, names, and display names of every model on the shelf, for
-/// matching an install reference against what is already present.
-pub(crate) fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
-    shelf
-        .iter()
-        .flat_map(|record| {
-            [
-                record.id.to_lowercase(),
-                record.name.to_lowercase(),
-                record.display_name().to_lowercase(),
-            ]
-        })
-        .collect()
-}
-
-/// Whether `reference` names a model already on the shelf: a direct match, or a
-/// match on its last path segment (so `org/Model` matches an installed `Model`).
-pub(crate) fn is_installed(reference: &str, installed: &HashSet<String>) -> bool {
-    let reference = reference.to_lowercase();
-    installed.contains(&reference)
-        || installed.contains(reference.rsplit('/').next().unwrap_or(&reference))
 }
 
 /// A picker label for a search hit: the reference plus download and like counts.

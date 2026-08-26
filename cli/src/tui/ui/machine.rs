@@ -7,14 +7,15 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{BOLD, DIM, field};
+use super::{ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, field};
 use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
 
 const LABEL_WIDTH: usize = 7;
-/// The three brightness steps the memory bar cycles through, one per resident.
-const SEGMENT_STYLES: [Style; 3] = [BOLD, Style::new(), DIM];
+/// The steps the memory bar cycles through, one per resident: the accent,
+/// then two brightnesses of the plain foreground.
+const SEGMENT_STYLES: [Style; 3] = [ACCENT, Style::new(), DIM];
 /// Cells the memory figure to the right of the bar needs: `  14.2 of 64 GiB`.
 const FIGURE_WIDTH: u16 = 18;
 const MIN_BAR_WIDTH: u16 = 10;
@@ -64,7 +65,7 @@ fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
     let block = Block::bordered().title(" gateway ").border_style(DIM);
     let inner = block.inner(area);
     let state = match facts.gateway_port {
-        Some(_) => Span::styled(format!(" {}", gateway_state(facts)), BOLD),
+        Some(_) => Span::styled(format!(" {}", gateway_state(facts)), WARM),
         None => Span::styled(" off · hedos serve to start", DIM),
     };
     let lines = vec![
@@ -105,7 +106,7 @@ fn served_line(facts: &Facts) -> String {
     }
     format!(
         "last request {} ago · {} all time",
-        text::duration((kernel::time::now_millis() - activity.last_request_millis) / 1000),
+        text::duration((facts.collected_at_millis - activity.last_request_millis) / 1000),
         text::count(activity.total_requests as usize, "request")
     )
 }
@@ -138,11 +139,11 @@ fn memory_bar(facts: &Facts, bar_width: usize) -> Vec<Span<'static>> {
         }
         used += cells;
         spans.push(Span::styled(
-            "█".repeat(cells),
+            BAR_FILLED.repeat(cells),
             SEGMENT_STYLES[index % SEGMENT_STYLES.len()],
         ));
     }
-    spans.push(Span::styled("░".repeat(bar_width - used), DIM));
+    spans.push(Span::styled(BAR_EMPTY.repeat(bar_width - used), DIM));
     spans
 }
 

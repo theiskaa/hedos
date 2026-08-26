@@ -1,4 +1,4 @@
-//! The modals (pull, remove), drawn over a dimmed screen.
+//! The modals (pull, remove, help), drawn over a dimmed screen.
 
 use kernel::install::plan::InstallPlan;
 use kernel::profiles::FitVerdict;
@@ -9,7 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::{BOLD, DIM, field, keys};
+use super::{ACCENT, BOLD, CURSOR, DIM, field_line, keys};
 use crate::support::banner::KOALA;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
@@ -17,7 +17,7 @@ use crate::tui::pull::{PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
 
 const WIDTH: u16 = 84;
-const HEIGHT: u16 = 18;
+const PULL_HEIGHT: u16 = 18;
 const REMOVE_HEIGHT: u16 = 11;
 const HELP_HEIGHT: u16 = 17;
 /// Width of the labels in the preview and remove bodies.
@@ -36,12 +36,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     };
     frame.buffer_mut().set_style(area, DIM);
     let height = match modal {
-        Modal::Pull(_) => HEIGHT,
+        Modal::Pull(_) => PULL_HEIGHT,
         Modal::Remove(_) => REMOVE_HEIGHT,
         Modal::Help => HELP_HEIGHT,
     };
     let rect = centered(area, height);
-    let block = Block::bordered().border_style(DIM);
+    let block = Block::bordered().border_style(ACCENT);
     let inner = block.inner(rect);
     let (title, lines) = match modal {
         Modal::Pull(modal) => (" pull ".to_owned(), pull(modal, app, inner)),
@@ -49,7 +49,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Help => (" help ".to_owned(), help()),
     };
     frame.render_widget(Clear, rect);
-    frame.render_widget(block.title(title), rect);
+    frame.render_widget(block.title(Span::styled(title, ACCENT)), rect);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -90,7 +90,7 @@ fn help() -> Vec<Line<'static>> {
 
 /// What removing the model does, in the store's own terms.
 fn remove(preview: &ModelDeletionPreview, app: &App) -> Vec<Line<'static>> {
-    let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
+    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
     let what = if preview.via_daemon {
         "removes the tag through the Ollama daemon (ollama rm)".to_owned()
     } else if preview.paths.is_empty() {
@@ -148,7 +148,7 @@ fn pull(modal: &PullModal, app: &App, inner: Rect) -> Vec<Line<'static>> {
 
 fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
     let memory = app.facts.memory_bytes;
-    let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
+    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
     let size = match plan.total_bytes {
         Some(total) => format!(
             "{} · {} when warm",
@@ -192,7 +192,7 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
         Line::from(vec![
             Span::styled(" › ", BOLD),
             Span::raw(modal.input.clone()),
-            Span::styled("▏", BOLD),
+            Span::styled(CURSOR, BOLD),
         ]),
         Line::default(),
     ];
