@@ -23,7 +23,13 @@ pub struct ServeArgs {
 /// Run the `serve` command; blocks until Ctrl-C.
 pub async fn run(args: ServeArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let port = args.port.unwrap_or(session.settings.gateway.port);
+    serve(&session, args.port, out).await
+}
+
+/// Serve the gateway on `port` (the configured one when `None`) until
+/// Ctrl-C. Shared by the command and `hedos ui`.
+pub(crate) async fn serve(session: &Session, port: Option<u16>, out: &Out) -> Result<(), CliError> {
+    let port = port.unwrap_or(session.settings.gateway.port);
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;
     let audit_dir = session.dirs.sub("gateway");
 

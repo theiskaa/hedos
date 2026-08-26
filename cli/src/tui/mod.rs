@@ -12,6 +12,7 @@ mod facts;
 mod launch;
 mod layout;
 mod order;
+mod prompt;
 mod pull;
 mod state;
 mod tasks;
@@ -19,6 +20,7 @@ mod text;
 mod ui;
 
 use std::io::{self, Write};
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,6 +38,7 @@ use crate::commands;
 use crate::error::CliError;
 use crate::support::output::Out;
 use crate::support::session::Session;
+use crate::support::signals;
 
 /// Why `drive` returned.
 enum Outcome {
@@ -56,6 +59,16 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     let tasks::Snapshot { records, facts } = context.snapshot().await;
     let mut app = App::new(records, facts);
     app.restore(&UiState::load(&state_dir));
+    // Ctrl-C reaches the UI as a key in raw mode, and the hand-offs in cooked
+    // mode either watch for it themselves or leave it to their child; either
+    // way it must never kill this process with unsaved state and pulls in
+    // flight. Holding the handler for the whole run makes that true from the
+    // first frame, not only after the first serve installed one.
+    let interrupt_guard = tokio::spawn(async {
+        loop {
+            signals::wait_for_ctrl_c().await;
+        }
+    });
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mut ticks = tokio::time::interval(app::TICK);
     // Ticks missed while something else had the terminal are not owed: a
@@ -90,6 +103,7 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         out.line("finishing background work…");
     }
     context.settle().await;
+    interrupt_guard.abort();
     outcome
 }
 
@@ -124,33 +138,58 @@ async fn run_hand_off(
     context: &Arc<TaskContext>,
     out: &Out,
 ) -> (TaskLabel, TaskState) {
+    let session = context.session();
+    let label = hand_off.label(session.settings.gateway.port);
     let started = Instant::now();
-    let (label, result) = match hand_off {
+    let result: Result<Option<ExitStatus>, CliError> = match &hand_off {
         HandOff::Launch {
             harness,
             program,
             record,
-        } => {
-            let label = TaskLabel {
-                verb: "launch",
-                subject: format!("{} on {}", harness.display, record.display_name()),
-            };
-            let result =
-                commands::launch::launch(context.session(), harness, &program, &record, &[], out)
-                    .await;
-            (label, result)
-        }
+        } => commands::launch::launch(session, harness, program, record, &[], out)
+            .await
+            .map(Some),
+        HandOff::Chat { record } => commands::chat::chat(session, record, None, None, out)
+            .await
+            .map(|()| None),
+        HandOff::Run { record, prompt } => commands::run::run_prompt(session, record, prompt, out)
+            .await
+            .map(|()| None),
+        HandOff::Serve => commands::serve::serve(session, None, out)
+            .await
+            .map(|()| None),
     };
     let ran = text::duration(started.elapsed().as_secs() as i64);
     let state = match result {
-        Ok(status) => match status.code() {
+        Ok(None) => TaskState::Done(format!("ran {ran}")),
+        Ok(Some(status)) => match status.code() {
             Some(0) => TaskState::Done(format!("ran {ran}")),
             Some(code) => TaskState::Done(format!("ran {ran} · exit {code}")),
             None => TaskState::Failed(format!("ran {ran} · {status}")),
         },
-        Err(error) => TaskState::Failed(error.message),
+        Err(error) => {
+            // The answer's screen is about to be held; the reason belongs on it.
+            out.err(&error.message);
+            TaskState::Failed(error.message)
+        }
     };
+    if matches!(hand_off, HandOff::Run { .. }) {
+        // `run` returns the moment the answer ends; hold the screen so it can
+        // be read before the UI paints over it.
+        wait_for_enter(out).await;
+    }
     (label, state)
+}
+
+/// Print a prompt and wait for a line on stdin, in the terminal's cooked
+/// mode; the read blocks a thread, not the runtime.
+async fn wait_for_enter(out: &Out) {
+    out.err("enter to return to hedos");
+    let _ = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        let _ = io::stdin().read_line(&mut line);
+    })
+    .await;
 }
 
 async fn drive(

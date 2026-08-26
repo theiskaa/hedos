@@ -5,13 +5,14 @@ use std::io::{BufRead, IsTerminal, Write};
 
 use clap::Args;
 use kernel::capabilities::CapabilityChunk;
-use kernel::records::{Capability, JsonValue};
+use kernel::records::{Capability, JsonValue, ModelRecord};
 
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload::{self, message};
 use crate::support::session::Session;
+use crate::support::signals;
 
 /// Arguments for `chat`.
 #[derive(Args)]
@@ -40,10 +41,29 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
         &warm,
     )?;
 
+    chat(
+        &session,
+        record,
+        args.system.as_deref(),
+        args.max_tokens,
+        out,
+    )
+    .await
+}
+
+/// Chat with `record` on stdin/stdout until end-of-input. Shared by the
+/// command and `hedos ui`.
+pub(crate) async fn chat(
+    session: &Session,
+    record: &ModelRecord,
+    system: Option<&str>,
+    max_tokens: Option<i64>,
+    out: &Out,
+) -> Result<(), CliError> {
     let tty = std::io::stdin().is_terminal() && !out.is_json();
     if tty {
         out.err(&format!(
-            "chatting with {} — Ctrl-D to end",
+            "chatting with {} — Ctrl-C stops a reply, Ctrl-D ends",
             record.display_name()
         ));
     }
@@ -54,33 +74,35 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
             eprint!("› ");
             let _ = std::io::stderr().flush();
         }
-        let mut line = String::new();
-        if std::io::stdin().lock().read_line(&mut line)? == 0 {
+        let Some(line) = read_line().await? else {
             break; // Ctrl-D
-        }
+        };
         let prompt = line.trim_end();
         if prompt.is_empty() {
             continue;
         }
 
         history.push(message("user", prompt));
-        let payload = chat_payload(&history, args.max_tokens);
+        let payload = chat_payload(&history, max_tokens);
         let mut stream = session
             .kernel
-            .invoke_with(
-                &record.id,
-                Capability::chat(),
-                payload,
-                args.system.as_deref(),
-                None,
-            )
+            .invoke_with(&record.id, Capability::chat(), payload, system, None)
             .await?;
 
         let mut reply = String::new();
-        while let Some(result) = stream.recv().await {
-            if let CapabilityChunk::Text(chunk) = result? {
-                out.raw(&chunk);
-                reply.push_str(&chunk);
+        loop {
+            tokio::select! {
+                received = stream.recv() => match received {
+                    Some(result) => {
+                        if let CapabilityChunk::Text(chunk) = result? {
+                            out.raw(&chunk);
+                            reply.push_str(&chunk);
+                        }
+                    }
+                    None => break,
+                },
+                // Ctrl-C cuts the reply short and returns to the prompt.
+                () = signals::wait_for_ctrl_c() => break,
             }
         }
         if out.is_json() {
@@ -91,6 +113,21 @@ pub async fn run(args: ChatArgs, out: &Out) -> Result<(), CliError> {
         history.push(message("assistant", &reply));
     }
     Ok(())
+}
+
+/// One line from stdin, or `None` at end of input; read on a blocking thread
+/// so a waiting prompt never holds a runtime worker.
+async fn read_line() -> Result<Option<String>, CliError> {
+    let line = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map(|read| (read > 0).then_some(line))
+    })
+    .await
+    .map_err(|error| CliError::new(error.to_string()))??;
+    Ok(line)
 }
 
 /// A chat payload carrying the running `history` and an optional token cap.

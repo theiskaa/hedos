@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 use kernel::capabilities::{AttachmentKind, CapabilityChunk, ChatAttachment};
-use kernel::records::{Capability, JsonValue};
+use kernel::records::{Capability, JsonValue, ModelRecord};
 use serde_json::json;
 
 use crate::error::CliError;
@@ -12,6 +12,7 @@ use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload;
 use crate::support::session::Session;
+use crate::support::signals;
 use crate::support::spinner::Spinner;
 
 /// Arguments for `run`.
@@ -68,40 +69,68 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     let attachments = read_images(&args.images)?;
     let prompt = interactive::text_or_prompt(out, args.prompt, "prompt")?;
     let payload = chat_payload(&prompt, args.max_tokens, args.temperature, attachments);
+    let text = stream_answer(&session, record, payload, args.system.as_deref(), out).await?;
+    if out.is_json() {
+        out.json(&json!({ "model": record.id, "text": text }));
+    }
+    Ok(())
+}
+
+/// One prompt to `record` with every knob at its default (no system prompt,
+/// no token cap or temperature, no images), streamed to stdout. The form
+/// `hedos ui` asks for.
+pub(crate) async fn run_prompt(
+    session: &Session,
+    record: &ModelRecord,
+    prompt: &str,
+    out: &Out,
+) -> Result<(), CliError> {
+    let payload = chat_payload(prompt, None, None, Vec::new());
+    stream_answer(session, record, payload, None, out).await?;
+    Ok(())
+}
+
+/// Stream the model's reply to `payload`, a spinner standing in until the
+/// first token; the whole reply, for callers that also report it as JSON.
+async fn stream_answer(
+    session: &Session,
+    record: &ModelRecord,
+    payload: JsonValue,
+    system: Option<&str>,
+    out: &Out,
+) -> Result<String, CliError> {
     let mut stream = session
         .kernel
-        .invoke_with(
-            &record.id,
-            Capability::chat(),
-            payload,
-            args.system.as_deref(),
-            None,
-        )
+        .invoke_with(&record.id, Capability::chat(), payload, system, None)
         .await?;
 
     let mut text = String::new();
     let mut spinner = Spinner::start(out);
-    while let Some(result) = stream.recv().await {
-        match result? {
-            CapabilityChunk::Text(chunk) => {
-                // Clear the spinner before the reply starts, so they don't collide.
-                spinner.clear();
-                out.raw(&chunk);
-                text.push_str(&chunk);
-            }
-            CapabilityChunk::Status(status) => spinner.set(&status),
-            _ => {}
+    loop {
+        tokio::select! {
+            received = stream.recv() => match received {
+                Some(result) => match result? {
+                    CapabilityChunk::Text(chunk) => {
+                        // Clear the spinner before the reply starts, so they don't collide.
+                        spinner.clear();
+                        out.raw(&chunk);
+                        text.push_str(&chunk);
+                    }
+                    CapabilityChunk::Status(status) => spinner.set(&status),
+                    _ => {}
+                },
+                None => break,
+            },
+            // Ctrl-C cuts the answer short; what streamed so far stands.
+            () = signals::wait_for_ctrl_c() => break,
         }
     }
     spinner.clear();
-
-    if out.is_json() {
-        out.json(&json!({ "model": record.id, "text": text }));
-    } else {
+    if !out.is_json() {
         // Terminate the streamed line.
         out.raw("\n");
     }
-    Ok(())
+    Ok(text)
 }
 
 /// A one-user-turn chat payload with optional sampling knobs and image attachments.

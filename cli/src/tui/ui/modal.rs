@@ -22,6 +22,7 @@ const WIDTH: u16 = 84;
 const PULL_HEIGHT: u16 = 18;
 const REMOVE_HEIGHT: u16 = 11;
 const HELP_HEIGHT: u16 = 17;
+const PROMPT_HEIGHT: u16 = 6;
 /// The launch modal: a blank, one row per harness, a blank, the note, a
 /// blank, the keys, and the border.
 const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 7;
@@ -45,6 +46,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Remove(_) => REMOVE_HEIGHT,
         Modal::Help => HELP_HEIGHT,
         Modal::Launch(_) => LAUNCH_HEIGHT,
+        Modal::Prompt(_) => PROMPT_HEIGHT,
     };
     let rect = centered(area, height);
     let block = Block::bordered().border_style(ACCENT);
@@ -56,6 +58,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Launch(modal) => (
             format!(" launch on {} ", modal.record.display_name()),
             launch(modal),
+        ),
+        Modal::Prompt(modal) => (
+            format!(" try {} ", modal.record.display_name()),
+            vec![
+                Line::default(),
+                input_line(&modal.input),
+                Line::default(),
+                keys(&[("enter", "ask"), ("esc", "close")]),
+            ],
         ),
     };
     frame.render_widget(Clear, rect);
@@ -97,13 +108,14 @@ fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
 
 /// The key table beside the koala, and the one idea behind it.
 fn help() -> Vec<Line<'static>> {
-    const ROWS: [(&str, &str, &str, &str); 8] = [
+    const ROWS: [(&str, &str, &str, &str); 9] = [
         ("j k ↑ ↓", "move", "g G", "top / bottom"),
         ("/", "filter", "enter", "expand detail"),
         ("p", "pull", "s", "scan"),
         ("w u", "warm / unload", "x", "remove"),
-        ("l", "launch a harness", "o", "sort"),
-        ("r", "refresh", "", ""),
+        ("l", "launch a harness", "T", "chat"),
+        ("t", "try a prompt", "S", "serve"),
+        ("o", "sort", "r", "refresh"),
         ("y Y", "copy path / id", "c", "cancel pull"),
         ("d", "dismiss failure", "q", "quit"),
     ];
@@ -231,14 +243,7 @@ fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
 }
 
 fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(" › ", BOLD),
-            Span::raw(modal.input.clone()),
-            Span::styled(CURSOR, BOLD),
-        ]),
-        Line::default(),
-    ];
+    let mut lines = vec![input_line(&modal.input), Line::default()];
     let rows = (inner.height as usize).saturating_sub(LISTING_CHROME_ROWS);
     let first = modal.selected.saturating_sub(rows.saturating_sub(1));
     for (index, candidate) in modal.matches.iter().enumerate().skip(first).take(rows) {
@@ -289,6 +294,15 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
         ),
         Span::raw(format!("{reference:<head_width$} ")),
         Span::styled(tail, style),
+    ])
+}
+
+/// ` › text▏`: what is being typed, with the cursor.
+fn input_line(input: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(" › ", BOLD),
+        Span::raw(input.to_owned()),
+        Span::styled(CURSOR, BOLD),
     ])
 }
 

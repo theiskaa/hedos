@@ -66,7 +66,7 @@ fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
     let inner = block.inner(area);
     let state = match facts.gateway_port {
         Some(_) => Span::styled(format!(" {}", gateway_state(facts)), WARM),
-        None => Span::styled(" off · hedos serve to start", DIM),
+        None => Span::styled(" off · S to serve", DIM),
     };
     let lines = vec![
         Line::from(state),

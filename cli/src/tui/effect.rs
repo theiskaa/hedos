@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use kernel::install::provider::InstallProviderId;
 use kernel::records::ModelRecord;
 
-use super::tasks::{TaskId, TaskKind};
+use super::tasks::{TaskId, TaskKind, TaskLabel};
 use crate::support::harnesses::HarnessSpec;
 
 /// Something that needs the terminal for a while: the UI steps aside, it
@@ -19,6 +19,41 @@ pub enum HandOff {
         program: PathBuf,
         record: Box<ModelRecord>,
     },
+    /// A conversation with a model, through `hedos chat`.
+    Chat { record: Box<ModelRecord> },
+    /// One prompt to a model, through `hedos run`.
+    Run {
+        record: Box<ModelRecord>,
+        prompt: String,
+    },
+    /// The gateway in the foreground, through `hedos serve`.
+    Serve,
+}
+
+impl HandOff {
+    /// The label the strip shows once it is over.
+    pub fn label(&self, gateway_port: u16) -> TaskLabel {
+        match self {
+            HandOff::Launch {
+                harness, record, ..
+            } => TaskLabel {
+                verb: "launch",
+                subject: format!("{} on {}", harness.display, record.display_name()),
+            },
+            HandOff::Chat { record } => TaskLabel {
+                verb: "chat",
+                subject: record.display_name().to_owned(),
+            },
+            HandOff::Run { record, .. } => TaskLabel {
+                verb: "try",
+                subject: record.display_name().to_owned(),
+            },
+            HandOff::Serve => TaskLabel {
+                verb: "serve",
+                subject: format!(":{gateway_port}"),
+            },
+        }
+    }
 }
 
 /// A side effect requested by [`crate::tui::app::App::reduce`].

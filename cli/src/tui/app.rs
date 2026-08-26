@@ -12,6 +12,7 @@ use super::event::{Event, Key, Planned, Refreshed, Searched};
 use super::facts::Facts;
 use super::launch::LaunchModal;
 use super::order::{Sort, order};
+use super::prompt::PromptModal;
 use super::pull::{PullModal, Stage};
 use super::state::UiState;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
@@ -40,6 +41,8 @@ pub enum Modal {
     Help,
     /// Choosing a harness to launch on the selected model.
     Launch(Box<LaunchModal>),
+    /// Typing one prompt to try the selected model with.
+    Prompt(Box<PromptModal>),
 }
 
 /// A task as the strip shows it. A row for something that ran in the
@@ -238,6 +241,7 @@ impl App {
                 return Vec::new();
             }
             Some(Modal::Launch(_)) => return self.launch_key(key),
+            Some(Modal::Prompt(_)) => return self.prompt_key(key),
             None => {}
         }
         if self.filtering && !matches!(key, Key::Up | Key::Down) {
@@ -264,6 +268,9 @@ impl App {
             }
             Key::Char('x') => return self.remove(),
             Key::Char('l') => return self.launch(),
+            Key::Char('T') => return self.chat(),
+            Key::Char('t') => return self.try_prompt(),
+            Key::Char('S') => return self.serve(),
             Key::Char('/') => {
                 self.filtering = true;
                 self.expanded = false;
@@ -400,16 +407,14 @@ impl App {
 
     /// Open the harness picker for the selected model, or say why not.
     fn launch(&mut self) -> Vec<Effect> {
-        let Some(record) = self.selected_record() else {
-            return Vec::new();
-        };
-        if !record.capabilities.contains(&Capability::chat()) {
-            let name = record.display_name().to_owned();
-            return self.notify(format!("{name} can't chat, so no harness can use it"));
+        match self.chat_capable() {
+            Ok(record) => {
+                self.modal = Some(Modal::Launch(Box::new(LaunchModal::open(&record))));
+                self.dirty = true;
+                Vec::new()
+            }
+            Err(reason) => self.notify(format!("{reason}, so no harness can use it")),
         }
-        self.modal = Some(Modal::Launch(Box::new(LaunchModal::open(record))));
-        self.dirty = true;
-        Vec::new()
     }
 
     fn launch_key(&mut self, key: Key) -> Vec<Effect> {
@@ -440,6 +445,70 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Hand off to `hedos chat` on the selected model.
+    fn chat(&mut self) -> Vec<Effect> {
+        match self.chat_capable() {
+            Ok(record) => vec![Effect::HandOff(Box::new(HandOff::Chat {
+                record: Box::new(record),
+            }))],
+            Err(reason) => self.notify(reason),
+        }
+    }
+
+    /// Open the prompt modal for the selected model.
+    fn try_prompt(&mut self) -> Vec<Effect> {
+        match self.chat_capable() {
+            Ok(record) => {
+                self.modal = Some(Modal::Prompt(Box::new(PromptModal::open(record))));
+                self.dirty = true;
+                Vec::new()
+            }
+            Err(reason) => self.notify(reason),
+        }
+    }
+
+    fn prompt_key(&mut self, key: Key) -> Vec<Effect> {
+        let Some(Modal::Prompt(modal)) = self.modal.as_mut() else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        match key {
+            Key::Escape => self.modal = None,
+            Key::Char(c) => modal.type_char(c),
+            Key::Backspace => modal.backspace(),
+            Key::Enter => {
+                let Some(prompt) = modal.submit() else {
+                    return Vec::new();
+                };
+                let record = Box::new(modal.record.clone());
+                self.modal = None;
+                return vec![Effect::HandOff(Box::new(HandOff::Run { record, prompt }))];
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Hand off to `hedos serve`, unless a gateway is already up.
+    fn serve(&mut self) -> Vec<Effect> {
+        match self.facts.gateway_port {
+            Some(port) => self.notify(format!("the gateway is already on :{port}")),
+            None => vec![Effect::HandOff(Box::new(HandOff::Serve))],
+        }
+    }
+
+    /// The selected record, when it can chat; otherwise why not.
+    fn chat_capable(&self) -> Result<ModelRecord, String> {
+        let record = self
+            .selected_record()
+            .ok_or_else(|| "nothing is selected".to_owned())?;
+        if record.capabilities.contains(&Capability::chat()) {
+            Ok(record.clone())
+        } else {
+            Err(format!("{} can't chat", record.display_name()))
+        }
     }
 
     /// The UI is back from a hand-off: a fresh shelf and facts stamped with
@@ -1156,7 +1225,10 @@ mod tests {
         app.records[0].capabilities = vec![Capability::speak()];
         app.reorder_in_place();
         assert!(press(&mut app, Key::Char('l')).is_empty());
-        assert!(app.notice().unwrap().contains("can't chat"));
+        assert_eq!(
+            app.notice(),
+            Some("model-0 can't chat, so no harness can use it")
+        );
     }
 
     #[test]
@@ -1193,6 +1265,39 @@ mod tests {
             facts: Facts::default(),
         }));
         assert_eq!(app.records.len(), 1);
+    }
+
+    #[test]
+    fn try_takes_a_prompt_and_hands_off() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('t'));
+        assert!(matches!(app.modal, Some(Modal::Prompt(_))));
+        assert!(press(&mut app, Key::Enter).is_empty());
+        for c in "hi".chars() {
+            press(&mut app, Key::Char(c));
+        }
+        let effects = press(&mut app, Key::Enter);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::HandOff(hand_off)] if matches!(**hand_off, HandOff::Run { ref prompt, .. } if prompt == "hi")
+        ));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn chat_and_serve_hand_off_when_they_can() {
+        let mut app = app(1);
+        assert!(matches!(
+            press(&mut app, Key::Char('T')).as_slice(),
+            [Effect::HandOff(hand_off)] if matches!(**hand_off, HandOff::Chat { .. })
+        ));
+        assert!(matches!(
+            press(&mut app, Key::Char('S')).as_slice(),
+            [Effect::HandOff(hand_off)] if matches!(**hand_off, HandOff::Serve)
+        ));
+        app.facts.gateway_port = Some(4321);
+        assert!(press(&mut app, Key::Char('S')).is_empty());
+        assert_eq!(app.notice(), Some("the gateway is already on :4321"));
     }
 
     #[test]
