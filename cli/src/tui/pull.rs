@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use kernel::install::catalog::{InstallCatalogEntry, recommended};
+use kernel::install::catalog::{InstallCatalogEntry, InstallCategory, recommended};
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::install::provider::InstallProviderId;
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
@@ -18,13 +18,22 @@ use crate::support::shelf_table::verdict;
 /// How many quiet ticks after a keystroke before the typed query is searched.
 pub const SEARCH_DEBOUNCE_TICKS: u64 = 2;
 /// The most matches the list keeps; search hits always keep their places.
-const MAX_MATCHES: usize = 12;
+/// The grouped catalog can fill it: up to three per category.
+pub(crate) const MAX_MATCHES: usize = 12;
 /// Hugging Face hits requested per search.
 pub const SEARCH_LIMIT: usize = 8;
 /// How a model of `bytes` fits in `memory_bytes`, when its size is known.
 pub fn fit(bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
     verdict(bytes.map(|bytes| bytes / BYTES_PER_MIB), memory_bytes)
 }
+
+/// The catalog's groups, in the order the list shows them.
+pub(crate) const CATEGORIES: [InstallCategory; 4] = [
+    InstallCategory::Code,
+    InstallCategory::Chat,
+    InstallCategory::Voice,
+    InstallCategory::Image,
+];
 
 /// One installable model the list offers.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,15 +44,34 @@ pub struct PullMatch {
     pub bytes: Option<i64>,
     /// A one-line note: the catalog blurb, or the hit's popularity.
     pub note: String,
+    /// The catalog group; set only on a blank query, where the list is
+    /// grouped, so an eyebrow goes wherever it changes.
+    pub category: Option<InstallCategory>,
+    /// Whether a pull of it is already running.
+    pub pulling: bool,
 }
 
 impl PullMatch {
-    fn from_catalog(entry: &InstallCatalogEntry) -> Self {
+    fn new(provider: InstallProviderId, reference: String, note: String) -> Self {
         Self {
-            provider: entry.provider.clone(),
-            reference: entry.reference.clone(),
+            provider,
+            reference,
+            bytes: None,
+            note,
+            category: None,
+            pulling: false,
+        }
+    }
+
+    fn from_catalog(entry: &InstallCatalogEntry, grouped: bool) -> Self {
+        Self {
             bytes: Some((entry.size_gb * BYTES_PER_GIB as f64) as i64),
-            note: entry.blurb.clone(),
+            category: grouped.then_some(entry.category),
+            ..Self::new(
+                entry.provider.clone(),
+                entry.reference.clone(),
+                entry.blurb.clone(),
+            )
         }
     }
 
@@ -55,12 +83,7 @@ impl PullMatch {
         if let Some(likes) = hit.likes {
             note.push(format!("♥{likes}"));
         }
-        Self {
-            provider: hit.provider.clone(),
-            reference: hit.reference.clone(),
-            bytes: None,
-            note: note.join("  "),
-        }
+        Self::new(hit.provider.clone(), hit.reference.clone(), note.join("  "))
     }
 
     /// A row for a reference typed in full: `owner/repo` or `name:tag`. A bare
@@ -73,12 +96,7 @@ impl PullMatch {
         } else {
             return None;
         };
-        Some(Self {
-            provider,
-            reference,
-            bytes: None,
-            note: "as typed".to_owned(),
-        })
+        Some(Self::new(provider, reference, "as typed".to_owned()))
     }
 
     /// How the model fits in `memory_bytes`, when its size is known.
@@ -112,12 +130,23 @@ pub struct PullModal {
     /// Hits from the last search; dropped on the next edit.
     hits: Vec<PullMatch>,
     installed: HashSet<String>,
+    /// Lowercased references with a pull already running, shown but not
+    /// choosable.
+    pulling: HashSet<String>,
     memory_bytes: u64,
 }
 
+/// A line of the listing: a category eyebrow, or a match by its index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListingRow {
+    Eyebrow(InstallCategory),
+    Match(usize),
+}
+
 impl PullModal {
-    /// A fresh modal offering the machine's recommendations.
-    pub fn open(shelf: &[ModelRecord], memory_bytes: u64) -> Self {
+    /// A fresh modal offering the machine's recommendations; `pulling` names
+    /// the references already downloading.
+    pub fn open(shelf: &[ModelRecord], memory_bytes: u64, pulling: &[String]) -> Self {
         let mut modal = Self {
             input: String::new(),
             matches: Vec::new(),
@@ -126,10 +155,34 @@ impl PullModal {
             search_due: None,
             hits: Vec::new(),
             installed: installed_names(shelf),
+            pulling: lowercased(pulling),
             memory_bytes,
         };
         modal.rematch();
         modal
+    }
+
+    /// The shelf or the running pulls changed under the open modal.
+    pub fn refresh(&mut self, shelf: &[ModelRecord], pulling: &[String]) {
+        self.installed = installed_names(shelf);
+        self.pulling = lowercased(pulling);
+        self.rematch();
+    }
+
+    /// The matches with an eyebrow wherever the category changes.
+    pub fn rows(&self) -> Vec<ListingRow> {
+        let mut rows = Vec::new();
+        let mut current = None;
+        for (index, candidate) in self.matches.iter().enumerate() {
+            if candidate.category.is_some() && candidate.category != current {
+                current = candidate.category;
+                rows.push(ListingRow::Eyebrow(
+                    candidate.category.unwrap_or(InstallCategory::Chat),
+                ));
+            }
+            rows.push(ListingRow::Match(index));
+        }
+        rows
     }
 
     /// The highlighted match.
@@ -182,11 +235,18 @@ impl PullModal {
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
     }
 
-    /// Ask for the plan of the highlighted match; the reference to plan, if any.
-    pub fn choose(&mut self) -> Option<(InstallProviderId, String)> {
-        let chosen = self.selected_match()?.clone();
+    /// Ask for the plan of the highlighted match; the reference to plan, or
+    /// why not.
+    pub fn choose(&mut self) -> Result<(InstallProviderId, String), String> {
+        let chosen = self
+            .selected_match()
+            .ok_or_else(|| "nothing to pull".to_owned())?
+            .clone();
+        if chosen.pulling {
+            return Err(already_downloading(&chosen.reference));
+        }
         self.stage = Stage::Planning(chosen.reference.clone());
-        Some((chosen.provider, chosen.reference))
+        Ok((chosen.provider, chosen.reference))
     }
 
     /// The plan for `reference` came back.
@@ -209,23 +269,26 @@ impl PullModal {
         self.stage = Stage::Listing;
     }
 
-    /// The typed reference itself, the catalog entries matching the query, and
-    /// the search hits, minus what is on the shelf already and any repeat.
+    /// The typed reference itself, the catalog's grouped recommendations
+    /// (narrowed by the query when there is one), and the search hits, minus
+    /// what is on the shelf already and any repeat.
     fn rematch(&mut self) {
         let typed = self.input.trim();
         let query = typed.to_lowercase();
+        let grouped = query.is_empty();
         let catalog_room = MAX_MATCHES.saturating_sub(self.hits.len());
         let mut matches: Vec<PullMatch> = Vec::new();
         matches.extend(PullMatch::direct(typed));
         matches.extend(
-            recommended(None, self.memory_bytes, None)
+            CATEGORIES
                 .iter()
+                .flat_map(|category| recommended(Some(*category), self.memory_bytes, None))
                 .filter(|entry| {
-                    query.is_empty()
+                    grouped
                         || entry.reference.to_lowercase().contains(&query)
                         || entry.name.to_lowercase().contains(&query)
                 })
-                .map(PullMatch::from_catalog)
+                .map(|entry| PullMatch::from_catalog(&entry, grouped))
                 .take(catalog_room),
         );
         matches.extend(self.hits.iter().cloned());
@@ -237,9 +300,24 @@ impl PullModal {
                     candidate.reference.to_lowercase(),
                 ))
         });
+        for candidate in &mut matches {
+            candidate.pulling = self.pulling.contains(&candidate.reference.to_lowercase());
+        }
         self.matches = matches;
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
+}
+
+/// The notice for a reference that is already being pulled.
+pub fn already_downloading(reference: &str) -> String {
+    format!("{reference} is already downloading")
+}
+
+fn lowercased(references: &[String]) -> HashSet<String> {
+    references
+        .iter()
+        .map(|reference| reference.to_lowercase())
+        .collect()
 }
 
 #[cfg(test)]
@@ -262,7 +340,7 @@ mod tests {
 
     #[test]
     fn a_blank_query_offers_recommendations() {
-        let modal = PullModal::open(&[], MEMORY);
+        let modal = PullModal::open(&[], MEMORY, &[]);
         assert!(!modal.matches.is_empty());
         assert!(modal.matches.iter().all(|m| m.bytes.is_some()));
         assert_eq!(fit(Some(4 << 30), MEMORY), Some(FitVerdict::RunsWell));
@@ -270,20 +348,20 @@ mod tests {
 
     #[test]
     fn installed_models_are_left_out() {
-        let first = PullModal::open(&[], MEMORY).matches[0].clone();
+        let first = PullModal::open(&[], MEMORY, &[]).matches[0].clone();
         let record = ModelRecord::new(
             &first.reference,
             Modality::text(),
             vec![Capability::chat()],
             ModelSource::new(SourceKind::ollama(), &first.reference),
         );
-        let modal = PullModal::open(&[record], MEMORY);
+        let modal = PullModal::open(&[record], MEMORY, &[]);
         assert!(modal.matches.iter().all(|m| m.reference != first.reference));
     }
 
     #[test]
     fn a_typed_reference_leads_the_list_and_a_search_falls_due() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         for c in "Qwen/Qwen2.5-14B".chars() {
             modal.type_char(c, 0);
         }
@@ -299,7 +377,7 @@ mod tests {
 
     #[test]
     fn hits_apply_only_to_the_current_query() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         for c in "smol".chars() {
             modal.type_char(c, 0);
         }
@@ -327,7 +405,7 @@ mod tests {
 
     #[test]
     fn choosing_plans_and_the_plan_moves_to_a_preview() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         let (_, reference) = modal.choose().expect("a match");
         assert_eq!(modal.stage, Stage::Planning(reference.clone()));
         modal.planned("other", Err("ignored".to_owned()));
@@ -340,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_gated_plan_becomes_a_note() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         let (_, reference) = modal.choose().expect("a match");
         modal.planned(&reference, Ok(plan(&reference, true)));
         assert!(matches!(modal.stage, Stage::Note(ref note) if note.contains("gated")));
@@ -348,7 +426,7 @@ mod tests {
 
     #[test]
     fn a_bare_word_is_a_search_not_a_tag() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         for c in "smol".chars() {
             modal.type_char(c, 0);
         }
@@ -361,7 +439,7 @@ mod tests {
 
     #[test]
     fn repeats_and_overflow_never_hide_search_hits() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         let first = modal.matches[0].reference.clone();
         let mut hits: Vec<InstallSearchHit> = (0..SEARCH_LIMIT)
             .map(|index| hit(&format!("x/hit-{index}")))
@@ -380,8 +458,48 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_query_is_grouped_by_category_in_order() {
+        let modal = PullModal::open(&[], MEMORY, &[]);
+        let categories: Vec<InstallCategory> =
+            modal.matches.iter().filter_map(|m| m.category).collect();
+        let mut order: Vec<usize> = categories
+            .iter()
+            .map(|c| CATEGORIES.iter().position(|k| k == c).unwrap())
+            .collect();
+        let sorted = {
+            let mut s = order.clone();
+            s.sort_unstable();
+            s
+        };
+        assert_eq!(order, sorted);
+        order.dedup();
+        assert!(order.len() > 1);
+        for category in CATEGORIES {
+            assert!(
+                modal
+                    .matches
+                    .iter()
+                    .filter(|m| m.category == Some(category))
+                    .count()
+                    <= 3
+            );
+        }
+    }
+
+    #[test]
+    fn an_in_flight_pull_is_listed_but_not_choosable() {
+        let first = PullModal::open(&[], MEMORY, &[]).matches[0]
+            .reference
+            .clone();
+        let mut modal = PullModal::open(&[], MEMORY, std::slice::from_ref(&first));
+        assert!(modal.matches[0].pulling);
+        assert!(modal.choose().unwrap_err().contains("already downloading"));
+        assert_eq!(modal.stage, Stage::Listing);
+    }
+
+    #[test]
     fn stepping_clamps() {
-        let mut modal = PullModal::open(&[], MEMORY);
+        let mut modal = PullModal::open(&[], MEMORY, &[]);
         modal.step(-3);
         assert_eq!(modal.selected, 0);
         modal.step(100);

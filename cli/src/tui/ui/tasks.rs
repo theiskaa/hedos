@@ -36,7 +36,13 @@ fn line(row: &TaskRow) -> Line<'static> {
         TaskState::Running => (ACCENT, vec![Span::styled(activity, DIM)]),
         TaskState::Status(status) => (ACCENT, vec![Span::styled(status.clone(), DIM)]),
         TaskState::Downloading(progress) => (ACCENT, download(progress)),
-        TaskState::Done(summary) => (DIM, vec![Span::styled(summary.clone(), DIM)]),
+        TaskState::Done(summary) => {
+            let mut spans = vec![Span::styled(summary.clone(), DIM)];
+            if matches!(row.kind, Some(TaskKind::Pull(_))) {
+                spans.push(Span::styled("   w warm · l launch", DIM));
+            }
+            (DIM, spans)
+        }
         TaskState::Failed(reason) => (FAILED, vec![Span::styled(reason.clone(), FAILED)]),
     };
     let mut spans = vec![
@@ -50,7 +56,7 @@ fn line(row: &TaskRow) -> Line<'static> {
 /// A bar and figures when the total is firm, bytes so far when it is not.
 fn download(progress: &InstallProgress) -> Vec<Span<'static>> {
     let done = text::bytes(progress.bytes_downloaded);
-    match (progress.fraction(), progress.total_bytes) {
+    let mut spans = match (progress.fraction(), progress.total_bytes) {
         (Some(fraction), Some(total)) => {
             let filled = (fraction * BAR_WIDTH as f64).round() as usize;
             let mut spans = bar(filled, BAR_WIDTH, ACCENT).to_vec();
@@ -65,5 +71,7 @@ fn download(progress: &InstallProgress) -> Vec<Span<'static>> {
             spans
         }
         _ => vec![Span::styled(format!("{done} so far"), DIM)],
-    }
+    };
+    spans.push(Span::styled("   c cancel", DIM));
+    spans
 }

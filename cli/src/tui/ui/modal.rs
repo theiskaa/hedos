@@ -15,11 +15,13 @@ use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
 use crate::tui::launch::LaunchModal;
-use crate::tui::pull::{PullMatch, PullModal, Stage, fit};
+use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
 
 const WIDTH: u16 = 84;
-const PULL_HEIGHT: u16 = 18;
+/// The pull modal: the border, the input and a blank, every match with an
+/// eyebrow per category, and the keys.
+const PULL_HEIGHT: u16 = (MAX_MATCHES + CATEGORIES.len() + LISTING_CHROME_ROWS + 2) as u16;
 const REMOVE_HEIGHT: u16 = 11;
 const HELP_HEIGHT: u16 = 17;
 const PROMPT_HEIGHT: u16 = 6;
@@ -244,14 +246,28 @@ fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
 
 fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'static>> {
     let mut lines = vec![input_line(&modal.input), Line::default()];
-    let rows = (inner.height as usize).saturating_sub(LISTING_CHROME_ROWS);
-    let first = modal.selected.saturating_sub(rows.saturating_sub(1));
-    for (index, candidate) in modal.matches.iter().enumerate().skip(first).take(rows) {
-        let mut line = row(candidate, memory_bytes, inner.width);
-        if index == modal.selected {
-            line = line.style(Style::new().add_modifier(Modifier::REVERSED));
+    let listing_rows = modal.rows();
+    let visible = (inner.height as usize).saturating_sub(LISTING_CHROME_ROWS);
+    let selected_at = listing_rows
+        .iter()
+        .position(|entry| matches!(entry, ListingRow::Match(index) if *index == modal.selected))
+        .unwrap_or(0);
+    let first = selected_at.saturating_sub(visible.saturating_sub(1));
+    for entry in listing_rows.iter().skip(first).take(visible) {
+        match entry {
+            ListingRow::Eyebrow(category) => lines.push(Line::from(Span::styled(
+                format!(" {}", category.as_str().to_uppercase()),
+                ACCENT,
+            ))),
+            ListingRow::Match(index) => {
+                let candidate = &modal.matches[*index];
+                let mut line = row(candidate, memory_bytes, inner.width);
+                if *index == modal.selected {
+                    line = line.style(Style::new().add_modifier(Modifier::REVERSED));
+                }
+                lines.push(line);
+            }
         }
-        lines.push(line);
     }
     if modal.matches.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -274,15 +290,19 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
 /// clipped so the columns hold.
 fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
     let verdict = candidate.fit(memory_bytes);
-    let (size, note) = match candidate.bytes {
-        Some(bytes) => (text::bytes(bytes), verdict_label(verdict).to_owned()),
-        None => (String::new(), candidate.note.clone()),
+    let (size, note) = match (candidate.pulling, candidate.bytes) {
+        (true, bytes) => (
+            bytes.map(text::bytes).unwrap_or_default(),
+            "downloading".to_owned(),
+        ),
+        (false, Some(bytes)) => (text::bytes(bytes), verdict_label(verdict).to_owned()),
+        (false, None) => (String::new(), candidate.note.clone()),
     };
     let note: String = note.chars().take(NOTE_WIDTH).collect();
     let tail = format!("{size:>8}  {note:<NOTE_WIDTH$}");
     let head_width = (width as usize).saturating_sub(tail.chars().count() + PROVIDER_WIDTH + 3);
     let reference: String = candidate.reference.chars().take(head_width).collect();
-    let style = if verdict == Some(FitVerdict::TooLarge) {
+    let style = if candidate.pulling || verdict == Some(FitVerdict::TooLarge) {
         DIM
     } else {
         Style::new()

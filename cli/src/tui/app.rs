@@ -13,9 +13,10 @@ use super::facts::Facts;
 use super::launch::LaunchModal;
 use super::order::{Sort, order};
 use super::prompt::PromptModal;
-use super::pull::{PullModal, Stage};
+use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
+use crate::support::install::find_installed;
 use crate::support::residency::Holder;
 
 /// How often the loop ticks; every cadence below is counted in these.
@@ -89,6 +90,8 @@ pub struct App {
     pub expanded: bool,
     /// A short message in the footer, until the tick it expires on.
     notice: Option<(String, u64)>,
+    /// A reference just pulled; the next refresh selects the record it became.
+    select_pulled: Option<String>,
     /// Ticks since the loop started; every cadence is counted in these.
     ticks: u64,
     /// The tick of the last refresh request.
@@ -114,6 +117,7 @@ impl App {
             modal: None,
             expanded: false,
             notice: None,
+            select_pulled: None,
             ticks: 0,
             last_refresh: 0,
             applied_refresh: 0,
@@ -263,6 +267,7 @@ impl App {
                 self.modal = Some(Modal::Pull(Box::new(PullModal::open(
                     &self.records,
                     self.facts.memory_bytes,
+                    &self.pulling(),
                 ))));
                 self.dirty = true;
             }
@@ -317,16 +322,14 @@ impl App {
             (Stage::Listing, Key::Down) => modal.step(1),
             (Stage::Listing, Key::Backspace) => modal.backspace(now),
             (Stage::Listing, Key::Char(c)) => modal.type_char(c, now),
-            (Stage::Listing, Key::Enter) => {
-                if let Some((provider, reference)) = modal.choose() {
-                    return vec![Effect::Plan(provider, reference)];
-                }
-            }
+            (Stage::Listing, Key::Enter) => match modal.choose() {
+                Ok((provider, reference)) => return vec![Effect::Plan(provider, reference)],
+                Err(reason) => return self.notify(reason),
+            },
             (Stage::Preview(plan), Key::Enter) => {
                 let kind = TaskKind::Pull(plan.clone());
                 if self.already_running(&kind) {
-                    let reference = kind.subject().to_owned();
-                    return self.notify(format!("{reference} is already downloading"));
+                    return self.notify(already_downloading(kind.subject()));
                 }
                 self.modal = None;
                 return vec![Effect::Spawn(kind)];
@@ -673,6 +676,18 @@ impl App {
             .any(|row| row.running() && row.kind.as_ref().and_then(TaskKind::model_id) == Some(id))
     }
 
+    /// The references of the pulls still running.
+    fn pulling(&self) -> Vec<String> {
+        self.tasks
+            .iter()
+            .filter(|row| row.running())
+            .filter_map(|row| match &row.kind {
+                Some(TaskKind::Pull(plan)) => Some(plan.reference.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Whether a task of `kind`'s shape is already running. Pulls match on
     /// what they fetch: two plans for one reference are one download.
     fn already_running(&self, kind: &TaskKind) -> bool {
@@ -745,6 +760,9 @@ impl App {
         row.state = event.state;
         if finished {
             row.finished_at = Some(self.ticks);
+            if let (Some(TaskKind::Pull(plan)), TaskState::Done(_)) = (&row.kind, &row.state) {
+                self.select_pulled = Some(plan.reference.clone());
+            }
         }
         self.dirty = true;
         if finished { self.refresh() } else { Vec::new() }
@@ -761,7 +779,21 @@ impl App {
         if self.records.is_empty() {
             self.expanded = false;
         }
-        self.reorder(selected_id);
+        // The intent outlives refreshes that predate the record: a cadence
+        // refresh can read the shelf before the pull's own scan lands.
+        let pulled = self
+            .select_pulled
+            .as_deref()
+            .and_then(|reference| find_installed(&self.records, reference))
+            .map(|record| record.id.clone());
+        if pulled.is_some() {
+            self.select_pulled = None;
+        }
+        self.reorder(pulled.or(selected_id));
+        let pulling = self.pulling();
+        if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
+            modal.refresh(&self.records, &pulling);
+        }
     }
 
     fn select(&mut self, index: usize) {
@@ -815,6 +847,20 @@ mod tests {
         match &app.modal {
             Some(Modal::Pull(modal)) => modal,
             _ => panic!("no pull modal"),
+        }
+    }
+
+    fn plan(reference: &str) -> kernel::install::plan::InstallPlan {
+        kernel::install::plan::InstallPlan {
+            provider: kernel::install::provider::InstallProviderId::ollama(),
+            reference: reference.to_owned(),
+            display_name: reference.to_owned(),
+            revision: None,
+            files: Vec::new(),
+            total_bytes: None,
+            remaining_bytes: None,
+            destination: String::new(),
+            requires_auth: false,
         }
     }
 
@@ -1049,21 +1095,11 @@ mod tests {
         assert!(press(&mut app, Key::Char('c')).is_empty());
         assert_eq!(app.notice(), Some("nothing is downloading"));
         let id = TaskId::next();
-        let plan = kernel::install::plan::InstallPlan {
-            provider: kernel::install::provider::InstallProviderId::ollama(),
-            reference: "x".to_owned(),
-            display_name: "x".to_owned(),
-            revision: None,
-            files: Vec::new(),
-            total_bytes: None,
-            remaining_bytes: None,
-            destination: String::new(),
-            requires_auth: false,
-        };
+        let plan = plan("x");
         app.started(id, TaskKind::Pull(plan.clone()));
         assert_eq!(press(&mut app, Key::Char('c')), vec![Effect::Cancel(id)]);
 
-        let mut modal = PullModal::open(&[], 0);
+        let mut modal = PullModal::open(&[], 0, &[]);
         let mut replanned = plan;
         replanned.remaining_bytes = Some(5);
         modal.stage = Stage::Preview(replanned);
@@ -1298,6 +1334,41 @@ mod tests {
         app.facts.gateway_port = Some(4321);
         assert!(press(&mut app, Key::Char('S')).is_empty());
         assert_eq!(app.notice(), Some("the gateway is already on :4321"));
+    }
+
+    #[test]
+    fn a_finished_pull_selects_what_it_pulled_on_the_next_refresh() {
+        let mut app = app(2);
+        let id = TaskId::next();
+        let plan = plan("qwen2.5:14b");
+        app.started(id, TaskKind::Pull(plan));
+        let effects = app.reduce(Event::Task(TaskEvent {
+            id,
+            state: TaskState::Done("pulled".to_owned()),
+        }));
+        assert_eq!(effects, vec![Effect::Refresh]);
+        // A refresh that predates the pulled record leaves the intent alone.
+        app.reduce(Event::Refreshed(Refreshed {
+            sequence: 8,
+            records: app.records.clone(),
+            facts: Facts::default(),
+        }));
+        let mut records = app.records.clone();
+        records.push(ModelRecord::new(
+            "qwen2.5:14b",
+            Modality::text(),
+            vec![Capability::chat()],
+            ModelSource::new(SourceKind::ollama(), "qwen2.5:14b"),
+        ));
+        app.reduce(Event::Refreshed(Refreshed {
+            sequence: 9,
+            records,
+            facts: Facts::default(),
+        }));
+        assert_eq!(
+            app.selected_record().map(|r| r.name.as_str()),
+            Some("qwen2.5:14b")
+        );
     }
 
     #[test]
