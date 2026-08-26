@@ -498,6 +498,8 @@ dependencies = [
  "hedos-kernel",
  "hedos-runtime",
  "indicatif",
+ "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

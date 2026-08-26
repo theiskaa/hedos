@@ -21,7 +21,7 @@ pub struct WarmArgs {
 pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set();
+    let warm = session.warm_set_with_gateway().await;
     let record =
         interactive::choose_model(out, args.model.as_deref(), &shelf, None, "warm", &warm)?;
 

@@ -12,6 +12,7 @@ use runtime::facade::Kernel;
 use runtime::settings::{Settings, SettingsStore};
 
 use crate::error::CliError;
+use crate::support::serving::{self, LiveResident};
 
 /// An open kernel plus the settings and directories it was built from.
 pub struct Session {
@@ -60,6 +61,21 @@ impl Session {
             .into_iter()
             .filter_map(|entry| entry.model_id)
             .collect()
+    }
+
+    /// The models a gateway on the configured port holds, if one is running.
+    pub async fn gateway_residents(&self) -> Option<Vec<LiveResident>> {
+        serving::probe(self.settings.gateway.port).await
+    }
+
+    /// [`Self::warm_set`] plus whatever a running gateway holds, so a cold
+    /// process still marks the models that are actually loaded.
+    pub async fn warm_set_with_gateway(&self) -> HashSet<String> {
+        let mut warm = self.warm_set();
+        if let Some(residents) = self.gateway_residents().await {
+            warm.extend(residents.into_iter().map(|resident| resident.id));
+        }
+        warm
     }
 
     /// Scan the machine's model stores, reconcile the registry, and resolve
