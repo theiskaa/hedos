@@ -6,6 +6,8 @@ const KB: i64 = 1 << 10;
 
 /// Bytes in one mebibyte, for footprints recorded in MiB.
 pub const BYTES_PER_MIB: i64 = MB;
+/// Bytes in one gibibyte, for memory figures.
+pub const BYTES_PER_GIB: i64 = GB;
 
 /// `value` with one decimal place, a trailing `.0` trimmed: `4.7`, `64`.
 pub fn one_decimal(value: f64) -> String {

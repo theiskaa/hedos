@@ -231,6 +231,13 @@ impl ModelRecord {
         self.display_name()
     }
 
+    /// The recorded footprint in bytes, when one is recorded and positive.
+    pub fn footprint_bytes(&self) -> Option<i64> {
+        self.footprint_mb
+            .filter(|mb| *mb > 0)
+            .map(|mb| mb * crate::records::byte_format::BYTES_PER_MIB)
+    }
+
     /// Whether the model can perform `capability`.
     pub fn can(&self, capability: &Capability) -> bool {
         self.capabilities.contains(capability)
