@@ -8,7 +8,7 @@ use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord};
 
 /// The six columns shown for a model: warm marker, name, runtime, store, fit, caps.
-fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
+pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
     [
         if warm { "●" } else { "○" }.to_owned(),
         record.display_name().to_owned(),
@@ -42,7 +42,7 @@ fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
 }
 
 /// Column widths wide enough for every row and the optional header.
-fn widths(rows: &[[String; 6]], headers: Option<&[&str; 6]>) -> [usize; 6] {
+pub(crate) fn widths(rows: &[[String; 6]], headers: Option<&[&str; 6]>) -> [usize; 6] {
     let mut widths = headers.map_or([0; 6], |headers| headers.map(str::len));
     for row in rows {
         for (column, cell) in row.iter().enumerate() {
@@ -67,6 +67,9 @@ fn format_row(cells: &[String; 6], widths: &[usize; 6]) -> String {
         .to_owned()
 }
 
+/// The `hedos ls` header row, one label per column.
+pub(crate) const HEADERS: [&str; 6] = ["", "NAME", "RUNTIME", "STORE", "FIT", "CAPABILITIES"];
+
 /// The full `hedos ls` table: a header row followed by one aligned row per model,
 /// with fit judged against `total_memory_bytes`.
 pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_bytes: u64) -> String {
@@ -74,11 +77,10 @@ pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_byte
         .iter()
         .map(|record| cells(record, warm.contains(&record.id), total_memory_bytes))
         .collect();
-    let headers = ["", "NAME", "RUNTIME", "STORE", "FIT", "CAPABILITIES"];
-    let widths = widths(&rows, Some(&headers));
+    let widths = widths(&rows, Some(&HEADERS));
 
     let mut lines = Vec::with_capacity(rows.len() + 1);
-    lines.push(format_row(&headers.map(String::from), &widths));
+    lines.push(format_row(&HEADERS.map(String::from), &widths));
     for row in &rows {
         lines.push(format_row(row, &widths));
     }

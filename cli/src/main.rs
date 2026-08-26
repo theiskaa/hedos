@@ -5,6 +5,7 @@
 mod commands;
 mod error;
 mod support;
+mod tui;
 
 use clap::{Parser, Subcommand};
 
@@ -54,6 +55,8 @@ enum Command {
     Image(commands::image::ImageArgs),
     /// Show aggregate statistics from the gateway audit log.
     Stats(commands::stats::StatsArgs),
+    /// Manage the shelf in a terminal UI.
+    Ui(commands::ui::UiArgs),
     /// Load a model into residency.
     Warm(commands::warm::WarmArgs),
     /// Evict a model from residency.
@@ -77,6 +80,7 @@ async fn main() {
         Command::Transcribe(args) => commands::transcribe::run(args, &out).await,
         Command::Image(args) => commands::image::run(args, &out).await,
         Command::Stats(args) => commands::stats::run(args, &out).await,
+        Command::Ui(args) => commands::ui::run(args, &out).await,
         Command::Warm(args) => commands::warm::run(args, &out).await,
         Command::Unload(args) => commands::unload::run(args, &out).await,
     };

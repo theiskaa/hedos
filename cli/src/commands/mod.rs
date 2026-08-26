@@ -12,5 +12,6 @@ pub mod serve;
 pub mod speak;
 pub mod stats;
 pub mod transcribe;
+pub mod ui;
 pub mod unload;
 pub mod warm;
