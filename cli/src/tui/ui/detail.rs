@@ -10,15 +10,15 @@ use ratatui::widgets::{Block, Paragraph};
 
 use std::path::PathBuf;
 
-use super::{ACCENT, BOLD, DIM, WARM, field, field_line, styled_field};
+use super::{ACCENT, BOLD, DIM, WARM, field, field_line, key_spans, styled_field};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
 use crate::tui::facts::{Facts, HOURS, ModelActivity};
 use crate::tui::text;
 
-/// Width of the labels in the pane.
-const LABEL_WIDTH: usize = 10;
+/// Width of the labels in the pane: the longest, `runtime id`, plus a gap.
+const LABEL_WIDTH: usize = 11;
 
 /// Draw the detail pane into `area` for the selected model.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -44,6 +44,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = lines(
         record,
         &app.facts,
+        &app.actions(),
         app.expanded,
         area.width.saturating_sub(2) as usize,
     );
@@ -51,7 +52,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> Vec<Line<'static>> {
+fn lines(
+    record: &ModelRecord,
+    facts: &Facts,
+    actions: &[(&str, &str)],
+    expanded: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
     let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
     let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), ACCENT));
     let size = match (record.footprint_bytes(), record.context_length) {
@@ -86,6 +93,7 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
         eyebrow("MEMORY"),
         row("fit", fit_line(record, facts)),
         residency_line(record, facts),
+        actions_line(actions),
         Line::default(),
         eyebrow("GATEWAY"),
     ];
@@ -115,6 +123,18 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
         lines.push(row("state", record.state.as_str().to_owned()));
     }
     lines
+}
+
+/// `actions   w warm  l launch …`: the same verbs the footer offers, beside
+/// the model on a wide screen.
+fn actions_line(actions: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = field("actions", "", LABEL_WIDTH);
+    if actions.is_empty() {
+        spans.push(Span::styled("none right now", DIM));
+    } else {
+        spans.extend(key_spans(actions));
+    }
+    Line::from(spans)
 }
 
 /// The last day of gateway traffic for the model: served requests, their

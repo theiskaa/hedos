@@ -44,16 +44,17 @@ impl UiState {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::*;
 
     fn temp_dir() -> PathBuf {
+        // Tests run in parallel and the clock is not unique enough on its own.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "hedos-ui-state-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).expect("temp dir");
         dir

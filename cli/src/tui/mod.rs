@@ -59,6 +59,9 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     let tasks::Snapshot { records, facts } = context.snapshot().await;
     let mut app = App::new(records, facts);
     app.restore(&UiState::load(&state_dir));
+    // `shelf_or_discover` already scanned an empty shelf; with still nothing
+    // to show, the useful first screen is what could be pulled.
+    app.offer_pull_when_empty();
     // Ctrl-C reaches the UI as a key in raw mode, and the hand-offs in cooked
     // mode either watch for it themselves or leave it to their child; either
     // way it must never kill this process with unsaved state and pulls in

@@ -84,13 +84,23 @@ fn bar(filled: usize, width: usize, style: Style) -> [Span<'static>; 2] {
     ]
 }
 
-/// A key line: each key dim, its verb plain.
+/// `pairs` as spans: each key dim, its verb plain, two spaces after.
+fn key_spans(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
+    pairs
+        .iter()
+        .flat_map(|(key, verb)| {
+            [
+                Span::styled((*key).to_owned(), DIM),
+                Span::raw(format!(" {verb}  ")),
+            ]
+        })
+        .collect()
+}
+
+/// A key line: a leading space, then [`key_spans`].
 fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
-    for (key, verb) in pairs {
-        spans.push(Span::styled((*key).to_owned(), DIM));
-        spans.push(Span::raw(format!(" {verb}  ")));
-    }
+    spans.extend(key_spans(pairs));
     Line::from(spans)
 }
 

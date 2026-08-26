@@ -224,8 +224,8 @@ fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
         ("Face cache, LM Studio, and loose GGUF or".to_owned(), plain),
         ("safetensors files in your folders.".to_owned(), plain),
         (String::new(), plain),
-        ("s scan this machine".to_owned(), plain),
         (format!("p pull a model{memory}"), plain),
+        ("s scan again".to_owned(), plain),
         (String::new(), plain),
     ];
     let width = KOALA_WIDTH

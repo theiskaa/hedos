@@ -3,7 +3,8 @@
 
 use std::time::Duration;
 
-use kernel::records::{Capability, ModelRecord};
+use kernel::profiles::FitVerdict;
+use kernel::records::{Capability, ModelRecord, ModelState};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
 
@@ -17,7 +18,8 @@ use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::install::find_installed;
-use crate::support::residency::Holder;
+use crate::support::residency::{Holder, warm_request};
+use crate::support::shelf_table::verdict;
 
 /// How often the loop ticks; every cadence below is counted in these.
 pub(super) const TICK: Duration = Duration::from_millis(250);
@@ -177,6 +179,87 @@ impl App {
         self.shelf
             .select(Some(index.min(self.order.len().saturating_sub(1))));
         self.dirty = true;
+    }
+
+    /// Open the pull modal when the shelf is empty, so a first run lands on
+    /// something to do rather than a blank pane.
+    pub fn offer_pull_when_empty(&mut self) {
+        if self.records.is_empty() {
+            self.modal = Some(Modal::Pull(Box::new(PullModal::open(
+                &self.records,
+                self.facts.memory_bytes,
+                &[],
+            ))));
+            self.dirty = true;
+        }
+    }
+
+    /// What can be done with the selected model right now, as `(key, verb)`
+    /// pairs in footer order: exactly the keys whose guards would let them
+    /// through.
+    pub fn actions(&self) -> Vec<(&'static str, &'static str)> {
+        let Some(record) = self.selected_record() else {
+            return Vec::new();
+        };
+        let mut actions = Vec::new();
+        if self.warmable(record).is_ok() {
+            actions.push(("w", "warm"));
+        }
+        if self.unloadable(record).is_ok() {
+            actions.push(("u", "unload"));
+        }
+        if record.capabilities.contains(&Capability::chat()) {
+            actions.extend([("l", "launch"), ("t", "try"), ("T", "chat")]);
+        }
+        if self.removable(record).is_ok() {
+            actions.push(("x", "remove"));
+        }
+        if record.primary_weight_path.is_some() {
+            actions.push(("y", "copy path"));
+        }
+        actions
+    }
+
+    /// Why `record` can't be warmed right now, if it can't.
+    fn warmable(&self, record: &ModelRecord) -> Result<(), String> {
+        let name = record.display_name();
+        if self.busy_with(&record.id) {
+            Err(format!("{name} is busy"))
+        } else if self.facts.is_warm(&record.id) {
+            Err(format!("{name} is already warm"))
+        } else if record.state == ModelState::Missing {
+            Err(format!("{name}'s weights are gone"))
+        } else if verdict(record.footprint_mb, self.facts.memory_bytes)
+            == Some(FitVerdict::TooLarge)
+        {
+            Err(format!("{name} is too big for this machine"))
+        } else if warm_request(record).is_none() {
+            Err(format!("{name} can't be warmed"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Why `record` can't be unloaded from here, if it can't.
+    fn unloadable(&self, record: &ModelRecord) -> Result<(), String> {
+        let name = record.display_name();
+        if self.busy_with(&record.id) {
+            return Err(format!("{name} is busy"));
+        }
+        match self
+            .facts
+            .resident(&record.id)
+            .map(|resident| resident.holder)
+        {
+            None => Err(format!("{name} is not warm")),
+            Some(Holder::Gateway) => {
+                let port = self.facts.gateway_port.unwrap_or_default();
+                Err(format!(
+                    "{name} is held by the gateway on :{port}; it unloads there after its warm window"
+                ))
+            }
+            Some(Holder::Local | Holder::Daemon) => Ok(()),
+        }
     }
 
     /// The footer notice, if one is showing.
@@ -629,11 +712,12 @@ impl App {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
-        if self.busy_with(&record.id) {
-            return Vec::new();
-        }
-        if self.facts.is_warm(&record.id) {
-            return self.notify(format!("{} is already warm", record.display_name()));
+        if let Err(reason) = self.warmable(record) {
+            return if self.busy_with(&record.id) {
+                Vec::new()
+            } else {
+                self.notify(reason)
+            };
         }
         let id = record.id.clone();
         let name = record.display_name().to_owned();
@@ -650,23 +734,17 @@ impl App {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
-        let name = record.display_name().to_owned();
-        let id = record.id.clone();
-        if self.busy_with(&id) {
-            return Vec::new();
+        if let Err(reason) = self.unloadable(record) {
+            return if self.busy_with(&record.id) {
+                Vec::new()
+            } else {
+                self.notify(reason)
+            };
         }
-        match self.facts.resident(&id).map(|resident| resident.holder) {
-            None => self.notify(format!("{name} is not warm")),
-            Some(Holder::Gateway) => {
-                let port = self.facts.gateway_port.unwrap_or_default();
-                self.notify(format!(
-                    "{name} is held by the gateway on :{port}; it unloads there after its warm window"
-                ))
-            }
-            Some(Holder::Local | Holder::Daemon) => {
-                vec![Effect::Spawn(TaskKind::Unload { id, name })]
-            }
-        }
+        vec![Effect::Spawn(TaskKind::Unload {
+            id: record.id.clone(),
+            name: record.display_name().to_owned(),
+        })]
     }
 
     /// Whether a running task already concerns model `id`.
@@ -1369,6 +1447,47 @@ mod tests {
             app.selected_record().map(|r| r.name.as_str()),
             Some("qwen2.5:14b")
         );
+    }
+
+    #[test]
+    fn actions_follow_the_selected_model() {
+        let mut one = app(1);
+        let id = one.records[0].id.clone();
+        assert_eq!(
+            one.actions(),
+            vec![
+                ("w", "warm"),
+                ("l", "launch"),
+                ("t", "try"),
+                ("T", "chat"),
+                ("x", "remove")
+            ]
+        );
+        one.facts.residents.push(resident(&id, Holder::Daemon));
+        assert_eq!(
+            one.actions(),
+            vec![
+                ("u", "unload"),
+                ("l", "launch"),
+                ("t", "try"),
+                ("T", "chat")
+            ]
+        );
+        one.facts.residents[0].holder = Holder::Gateway;
+        assert_eq!(
+            one.actions(),
+            vec![("l", "launch"), ("t", "try"), ("T", "chat")]
+        );
+        one.facts.residents.clear();
+        one.records[0].capabilities = vec![Capability::speak()];
+        one.records[0].primary_weight_path = Some("/w".to_owned());
+        one.reorder_in_place();
+        assert_eq!(
+            one.actions(),
+            vec![("w", "warm"), ("x", "remove"), ("y", "copy path")]
+        );
+        let empty = app(0);
+        assert!(empty.actions().is_empty());
     }
 
     #[test]
