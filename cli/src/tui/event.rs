@@ -10,7 +10,7 @@ use std::time::Duration;
 use kernel::capabilities::GenerationStats;
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::records::ModelRecord;
-use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use tokio::sync::mpsc;
 
 use super::facts::Facts;
@@ -96,6 +96,9 @@ pub enum Key {
     Char(char),
     /// Ctrl-C.
     Interrupt,
+    /// The wheel or trackpad, a notch at a time.
+    ScrollUp,
+    ScrollDown,
     /// A page up the chat transcript.
     PageUp,
     /// A page down it.
@@ -161,6 +164,11 @@ impl Input {
                 }
                 let forwarded = match event::read() {
                     Ok(event::Event::Key(key)) => translate(key).map(Event::Key),
+                    Ok(event::Event::Mouse(mouse)) => match mouse.kind {
+                        MouseEventKind::ScrollUp => Some(Event::Key(Key::ScrollUp)),
+                        MouseEventKind::ScrollDown => Some(Event::Key(Key::ScrollDown)),
+                        _ => None,
+                    },
                     Ok(event::Event::Resize(_, _)) => Some(Event::Resize),
                     Ok(_) => None,
                     Err(_) => {

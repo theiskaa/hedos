@@ -31,8 +31,9 @@ const IDLE_REFRESH_TICKS: u64 = 10 * TICKS_PER_SECOND;
 /// How long a finished task stays in the strip, and how long a failed one does.
 const DONE_LINGER_TICKS: u64 = 60 * TICKS_PER_SECOND;
 const FAILED_LINGER_TICKS: u64 = 10 * 60 * TICKS_PER_SECOND;
-/// How far a page key moves the chat transcript.
+/// How far a page key moves the chat transcript, and a wheel notch.
 const PAGE_LINES: usize = 10;
+const WHEEL_LINES: usize = 3;
 /// How long a footer notice stays.
 const NOTICE_TICKS: u64 = 2 * TICKS_PER_SECOND;
 
@@ -345,6 +346,9 @@ impl App {
             Some(Modal::Chat(_)) => return self.chat_key(key),
             Some(Modal::Pull(_)) => return self.pull_key(key),
             Some(Modal::Remove(_)) => return self.remove_key(key),
+            Some(Modal::Help) if matches!(key, Key::ScrollUp | Key::ScrollDown) => {
+                return Vec::new();
+            }
             Some(Modal::Help) => {
                 self.modal = None;
                 self.dirty = true;
@@ -356,13 +360,17 @@ impl App {
         if key == Key::Interrupt {
             return vec![Effect::Quit];
         }
-        if self.filtering && !matches!(key, Key::Up | Key::Down) {
+        if self.filtering && !matches!(key, Key::Up | Key::Down | Key::ScrollUp | Key::ScrollDown) {
             return self.filter_key(key);
         }
         match key {
             Key::Char('q') => return vec![Effect::Quit],
-            Key::Down | Key::Char('j') => self.select(self.selected().saturating_add(1)),
-            Key::Up | Key::Char('k') => self.select(self.selected().saturating_sub(1)),
+            Key::Down | Key::ScrollDown | Key::Char('j') => {
+                self.select(self.selected().saturating_add(1));
+            }
+            Key::Up | Key::ScrollUp | Key::Char('k') => {
+                self.select(self.selected().saturating_sub(1));
+            }
             Key::Top | Key::Char('g') => self.select(0),
             Key::Bottom | Key::Char('G') => self.select(usize::MAX),
             Key::Char('s') if !self.already_running(&TaskKind::Scan) => {
@@ -426,8 +434,8 @@ impl App {
         self.dirty = true;
         match (&modal.stage, key) {
             (Stage::Listing, Key::Escape) => self.modal = None,
-            (Stage::Listing, Key::Up) => modal.step(-1),
-            (Stage::Listing, Key::Down) => modal.step(1),
+            (Stage::Listing, Key::Up | Key::ScrollUp) => modal.step(-1),
+            (Stage::Listing, Key::Down | Key::ScrollDown) => modal.step(1),
             (Stage::Listing, Key::Char(_) | Key::Backspace | Key::Edit(_)) => {
                 modal.edit(key, now);
             }
@@ -534,8 +542,8 @@ impl App {
         self.dirty = true;
         match key {
             Key::Escape => self.modal = None,
-            Key::Up | Key::Char('k') => modal.step(-1),
-            Key::Down | Key::Char('j') => modal.step(1),
+            Key::Up | Key::ScrollUp | Key::Char('k') => modal.step(-1),
+            Key::Down | Key::ScrollDown | Key::Char('j') => modal.step(1),
             Key::Enter => {
                 let row = modal.selected_row().clone();
                 if let Some(reason) = row.blocked {
@@ -597,6 +605,8 @@ impl App {
             Key::Char(_) | Key::Backspace | Key::Edit(_) => pane.edit(key),
             Key::Up => pane.scroll_up(1),
             Key::Down => pane.scroll_down(1),
+            Key::ScrollUp => pane.scroll_up(WHEEL_LINES),
+            Key::ScrollDown => pane.scroll_down(WHEEL_LINES),
             Key::PageUp => pane.scroll_up(PAGE_LINES),
             Key::PageDown => pane.scroll_down(PAGE_LINES),
             Key::Top => pane.scroll_to_top(),

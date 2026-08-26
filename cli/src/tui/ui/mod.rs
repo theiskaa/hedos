@@ -1,5 +1,6 @@
 //! Drawing the app state. Panes read the app and write to the frame; the only
-//! mutable state they touch is the shelf's scroll position. Colour is used
+//! mutable state they touch is the shelf's scroll position and the chat
+//! pane's measure of how far its transcript scrolls. Colour is used
 //! sparingly: an orange accent for what is in focus or names a mode, a
 //! lavender for the user's own voice in the chat pane, and the
 //! terminal's own green for what is loaded, yellow for a tight fit, red for

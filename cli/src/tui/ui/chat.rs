@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::{ACCENT, BOLD, CAUTION, CURSOR, DIM, FAILED, VOICE};
 use crate::tui::app::App;
-use crate::tui::chat::{ChatPane, Ending, Speaker, Turn};
+use crate::tui::chat::{ChatPane, Ending, Speaker, Turn, View};
 use crate::tui::edit::LineEdit;
 use crate::tui::text;
 
@@ -42,12 +42,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             text::count(turns, "turn")
         )
     };
-    let block = Block::bordered()
-        .title(Span::styled(title, ACCENT))
-        .border_style(DIM);
+    let block = Block::bordered().border_style(DIM);
     let inner = block.inner(area);
-    frame.render_widget(block, area);
     if inner.height < PROMPT_ROWS + 1 {
+        frame.render_widget(block.title(Span::styled(title, ACCENT)), area);
         return;
     }
     let [transcript_area, rule, prompt] = Layout::vertical([
@@ -61,9 +59,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let width = inner.width.saturating_sub(1) as usize;
     let lines = transcript(pane, width, ticks);
     let visible = transcript_area.height as usize;
-    let furthest = lines.len().saturating_sub(visible);
-    pane.scroll = pane.scroll.min(furthest);
-    let first = furthest - pane.scroll;
+    pane.measured(lines.len().saturating_sub(visible));
+    let first = pane.first_line();
+    let mut spans = vec![Span::styled(title, ACCENT)];
+    if pane.view != View::Follow {
+        spans.push(Span::styled(
+            format!("line {} of {} ", first + 1, lines.len()),
+            DIM,
+        ));
+    }
+    frame.render_widget(block.title(Line::from(spans)), area);
     let shown: Vec<Line> = lines.into_iter().skip(first).take(visible).collect();
     frame.render_widget(Paragraph::new(shown), transcript_area);
     frame.render_widget(

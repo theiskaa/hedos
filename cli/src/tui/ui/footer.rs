@@ -38,7 +38,7 @@ fn chat_line(streaming: bool) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     spans.extend(key_spans(&[
         ("enter", "send"),
-        ("↑/↓", "scroll"),
+        ("↑/↓ wheel", "scroll"),
         ("esc", escape),
     ]));
     Line::from(spans)

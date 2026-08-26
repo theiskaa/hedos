@@ -47,6 +47,17 @@ pub struct Turn {
 /// the pane it was asked in can never match an ask in the next one.
 static NEXT_ASK: AtomicU64 = AtomicU64::new(1);
 
+/// Where the transcript is read from: the newest text, or a line held
+/// still while more streams in below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// The bottom, moving with every new line.
+    Follow,
+    /// A first line counted from the top, clamped to what the drawer last
+    /// measured.
+    Held(usize),
+}
+
 /// The chat pane.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatPane {
@@ -56,9 +67,11 @@ pub struct ChatPane {
     pub turns: Vec<Turn>,
     /// The prompt being typed.
     pub input: LineEdit,
-    /// Lines scrolled up from the bottom of the transcript; zero follows the
-    /// newest text.
-    pub scroll: usize,
+    /// Where the transcript is read from.
+    pub view: View,
+    /// The furthest line the transcript can start on and still fill the
+    /// pane, as the drawer last measured it; only the drawer knows the width.
+    furthest: usize,
     /// The ask the open model turn belongs to, so a reply that was stopped
     /// can't write into the turn that came after it; zero before the first.
     generation: u64,
@@ -71,7 +84,8 @@ impl ChatPane {
             record,
             turns: Vec::new(),
             input: LineEdit::default(),
-            scroll: 0,
+            view: View::Follow,
+            furthest: 0,
             generation: 0,
         }
     }
@@ -117,7 +131,7 @@ impl ChatPane {
             ending: Ending::Open,
         });
         self.generation = NEXT_ASK.fetch_add(1, Ordering::Relaxed);
-        self.scroll = 0;
+        self.view = View::Follow;
         Some((payload, self.generation))
     }
 
@@ -143,7 +157,6 @@ impl ChatPane {
             return false;
         };
         turn.text.push_str(chunk);
-        self.scroll = 0;
         true
     }
 
@@ -181,24 +194,50 @@ impl ChatPane {
             .filter(|turn| turn.ending == Ending::Open)
     }
 
-    /// Scroll the transcript up by `lines`; the pane clamps it when it draws.
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.scroll = self.scroll.saturating_add(lines);
+    /// The first line shown, given what the drawer last measured.
+    pub fn first_line(&self) -> usize {
+        match self.view {
+            View::Follow => self.furthest,
+            View::Held(first) => first.min(self.furthest),
+        }
     }
 
-    /// Scroll the transcript back down by `lines`.
+    /// Take the drawer's measurement of how far the transcript can scroll; a
+    /// held view that reached the bottom follows again.
+    pub fn measured(&mut self, furthest: usize) {
+        self.furthest = furthest;
+        if self.view != View::Follow {
+            self.hold(self.first_line());
+        }
+    }
+
+    /// Hold the transcript at `first`, or follow when that is the bottom.
+    fn hold(&mut self, first: usize) {
+        self.view = if first >= self.furthest {
+            View::Follow
+        } else {
+            View::Held(first)
+        };
+    }
+
+    /// Hold the transcript `lines` further up.
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.hold(self.first_line().saturating_sub(lines));
+    }
+
+    /// Let the transcript `lines` back down; at the bottom it follows again.
     pub fn scroll_down(&mut self, lines: usize) {
-        self.scroll = self.scroll.saturating_sub(lines);
+        self.hold(self.first_line().saturating_add(lines));
     }
 
     /// Show the start of the transcript.
     pub fn scroll_to_top(&mut self) {
-        self.scroll = usize::MAX;
+        self.hold(0);
     }
 
     /// Follow the newest text again.
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll = 0;
+        self.view = View::Follow;
     }
 }
 
@@ -313,6 +352,36 @@ mod tests {
         let turn = pane.turns.last().expect("a turn");
         assert_eq!(turn.text, "par");
         assert_eq!(turn.ending, Ending::Failed("sidecar died".to_owned()));
+    }
+
+    #[test]
+    fn a_held_view_stays_put_while_text_streams_and_follows_from_the_bottom() {
+        let mut pane = pane();
+        type_in(&mut pane, "hi");
+        let (_, generation) = pane.submit().expect("sent");
+        pane.measured(40);
+        assert_eq!(pane.first_line(), 40);
+        pane.scroll_up(5);
+        assert_eq!(pane.view, View::Held(35));
+        pane.text(generation, "more");
+        pane.measured(60);
+        assert_eq!(pane.first_line(), 35);
+        pane.scroll_down(30);
+        assert_eq!(pane.view, View::Follow);
+        pane.scroll_to_top();
+        assert_eq!(pane.first_line(), 0);
+        pane.scroll_up(3);
+        assert_eq!(pane.view, View::Held(0));
+        pane.measured(0);
+        assert_eq!(pane.view, View::Follow);
+        pane.measured(9);
+        pane.scroll_up(4);
+        pane.measured(2);
+        assert_eq!(pane.view, View::Follow);
+        type_in(&mut pane, "again");
+        pane.done(generation, None);
+        pane.submit();
+        assert_eq!(pane.view, View::Follow);
     }
 
     #[test]

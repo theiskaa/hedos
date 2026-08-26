@@ -26,6 +26,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use base64::Engine;
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::execute;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -131,10 +133,32 @@ async fn on_terminal(
             return Err(terminal_error(error));
         }
     };
+    let mouse = MouseCapture::enable();
     let outcome = drive(&mut terminal, app, context, tx, rx, ticks).await;
+    drop(mouse);
     ratatui::restore();
     input.stop();
     outcome
+}
+
+/// Mouse reporting for the wheel, which scrolls the transcript and the
+/// shelf; without capture the terminal would scroll its own (empty) history.
+/// Held as a guard because ratatui's panic hook restores the screen but
+/// knows nothing about the mouse, and a shell left reporting the mouse
+/// prints a code on every move.
+struct MouseCapture;
+
+impl MouseCapture {
+    fn enable() -> Self {
+        let _ = execute!(io::stdout(), EnableMouseCapture);
+        Self
+    }
+}
+
+impl Drop for MouseCapture {
+    fn drop(&mut self) {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+    }
 }
 
 /// Run `hand_off` in the foreground and describe how it went as a task row.
