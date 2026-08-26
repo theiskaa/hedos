@@ -10,6 +10,7 @@ use kernel::capabilities::{
     AttachmentKind, ChatAttachment, ChatMessage, ChatRole, GenerationStats, ToolCall, ToolSpec,
     decode_tool_specs,
 };
+use kernel::records::byte_format::BYTES_PER_MIB;
 use kernel::records::{JsonValue, ModelRecord};
 use regex::Regex;
 use serde_json::{Value, json};
@@ -18,9 +19,6 @@ use crate::error::{GatewayError, GatewayErrorKind};
 use crate::port::GatewayResident;
 use crate::wire::{param_decoding, timestamp};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
-
-/// The number of bytes in a mebibyte, for the `size` field.
-const BYTES_PER_MIB: i64 = 1_048_576;
 
 /// `i64::MIN`/`i64::MAX` as floats, for range-checking integer-valued floats.
 /// `i64::MAX as f64` rounds up to 2^63, one past the real max, so the upper
