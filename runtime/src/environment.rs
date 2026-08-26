@@ -267,6 +267,7 @@ pub async fn run_process(
     }
     command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::piped());
+    command.process_group(0);
 
     let mut child = command.spawn()?;
     // Drain stderr in its own task so the timeout below covers the whole run,

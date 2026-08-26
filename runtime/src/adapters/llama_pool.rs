@@ -105,6 +105,9 @@ impl ServerSpawner for LlamaServerSpawner {
             .args(&self.extra_args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            // Its own group, so a Ctrl-C typed at hedos (or a foreground
+            // command hedos runs) never reaches the server.
+            .process_group(0)
             // The OS reaps the server when the handle drops (pool teardown / a
             // failed readiness wait).
             .kill_on_drop(true)

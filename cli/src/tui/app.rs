@@ -342,6 +342,9 @@ impl App {
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
+        if key == Key::Interrupt && !matches!(self.modal, Some(Modal::Chat(_))) {
+            return vec![Effect::Quit];
+        }
         match self.modal {
             Some(Modal::Chat(_)) => return self.chat_key(key),
             Some(Modal::Pull(_)) => return self.pull_key(key),
@@ -356,9 +359,6 @@ impl App {
             }
             Some(Modal::Launch(_)) => return self.launch_key(key),
             None => {}
-        }
-        if key == Key::Interrupt {
-            return vec![Effect::Quit];
         }
         if self.filtering && !matches!(key, Key::Up | Key::Down | Key::ScrollUp | Key::ScrollDown) {
             return self.filter_key(key);
@@ -600,8 +600,7 @@ impl App {
                 pane.stop();
                 return vec![Effect::StopAsk];
             }
-            Key::Escape => self.modal = None,
-            Key::Interrupt => return vec![Effect::Quit],
+            Key::Escape | Key::Interrupt => self.modal = None,
             Key::Char(_) | Key::Backspace | Key::Edit(_) => pane.edit(key),
             Key::Up => pane.scroll_up(1),
             Key::Down => pane.scroll_down(1),
@@ -1507,6 +1506,20 @@ mod tests {
         assert!(press(&mut app, Key::Escape).is_empty());
         assert!(app.modal.is_none());
         assert_eq!(press(&mut app, Key::Interrupt), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn ctrl_c_closes_an_idle_chat_pane_and_quits_from_every_other_modal() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('t'));
+        assert!(press(&mut app, Key::Interrupt).is_empty());
+        assert!(app.modal.is_none());
+        for open in ['p', 'x', 'l', '?'] {
+            press(&mut app, Key::Char(open));
+            assert!(app.modal.is_some(), "{open} opens a modal");
+            assert_eq!(press(&mut app, Key::Interrupt), vec![Effect::Quit]);
+            app.modal = None;
+        }
     }
 
     #[test]

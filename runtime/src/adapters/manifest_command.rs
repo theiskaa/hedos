@@ -322,6 +322,7 @@ impl Execution {
             .envs(scrubbed_environment(std::env::vars(), &overrides))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
 
         let mut child = command

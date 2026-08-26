@@ -84,8 +84,18 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     // burst of them would age the strip and fire a refresh per 10 s away.
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    let terminal_modes = TerminalModes::capture();
     let outcome = loop {
-        match on_terminal(&mut app, &context, &tx, &mut rx, &mut ticks).await {
+        match on_terminal(
+            &mut app,
+            &context,
+            &tx,
+            &mut rx,
+            &mut ticks,
+            &terminal_modes,
+        )
+        .await
+        {
             Ok(Outcome::HandOff(hand_off)) => {
                 let (label, state) = run_hand_off(*hand_off, &context, out).await;
                 let sequence = tasks::next_refresh_sequence();
@@ -113,6 +123,7 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     }
     context.settle().await;
     interrupt_guard.abort();
+    terminal_modes.restore();
     outcome
 }
 
@@ -124,7 +135,11 @@ async fn on_terminal(
     tx: &mpsc::UnboundedSender<Event>,
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
+    terminal_modes: &TerminalModes,
 ) -> Result<Outcome, CliError> {
+    // Whatever the last hand-off left the terminal in, the UI starts from
+    // the modes the user's shell had, and those are what `restore` returns.
+    terminal_modes.restore();
     let input = Input::spawn(tx.clone());
     // `try_init` installs a panic hook that restores the terminal, but a
     // failure between raw mode and the alternate screen leaves raw mode on.
@@ -139,8 +154,48 @@ async fn on_terminal(
     let outcome = drive(&mut terminal, app, context, tx, rx, ticks).await;
     drop(mouse);
     ratatui::restore();
-    input.stop();
+    drop(input);
+    // Keys read in the moment before the reader stopped would otherwise act
+    // on the UI when it comes back, in a screen they were not typed at.
+    let mut kept = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if !matches!(event, Event::Key(_)) {
+            kept.push(event);
+        }
+    }
+    for event in kept {
+        let _ = tx.send(event);
+    }
     outcome
+}
+
+/// The terminal's line discipline as the UI found it. Raw mode is switched
+/// on and off around every stretch of the UI, and crossterm's idea of the
+/// "original" modes is whatever it sees when switching on; a hand-off that
+/// died with raw mode still set would otherwise become the baseline that
+/// quitting restores.
+struct TerminalModes(Option<libc::termios>);
+
+impl TerminalModes {
+    fn capture() -> Self {
+        let mut modes = std::mem::MaybeUninit::<libc::termios>::uninit();
+        // SAFETY: `tcgetattr` writes a `termios` into the buffer it is given
+        // and reports failure through its return value, in which case the
+        // buffer is left untouched and never read.
+        let captured = unsafe { libc::tcgetattr(libc::STDIN_FILENO, modes.as_mut_ptr()) } == 0;
+        // SAFETY: only read once `tcgetattr` reported that it filled the buffer.
+        Self(captured.then(|| unsafe { modes.assume_init() }))
+    }
+
+    fn restore(&self) {
+        if let Some(modes) = &self.0 {
+            // SAFETY: `modes` is a `termios` that `tcgetattr` produced for
+            // this same descriptor.
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, modes);
+            }
+        }
+    }
 }
 
 /// Mouse reporting for the wheel, which scrolls the transcript and the

@@ -856,6 +856,7 @@ dependencies = [
  "hedos-kernel",
  "hedos-runtime",
  "indicatif",
+ "libc",
  "ratatui",
  "reqwest",
  "serde",

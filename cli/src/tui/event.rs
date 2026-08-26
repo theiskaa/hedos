@@ -135,8 +135,9 @@ pub enum Edit {
 /// stop request is honoured promptly.
 const POLL: Duration = Duration::from_millis(100);
 
-/// The input thread, stopped and joined when the UI steps aside so whatever
-/// takes the terminal is the only reader of stdin.
+/// The input thread. Dropping it stops the reader and waits for it to let
+/// go of the terminal, so whatever takes the terminal next is the only
+/// reader of stdin, and an early return never leaves a reader behind.
 pub struct Input {
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
@@ -150,6 +151,11 @@ impl Input {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
         let thread = thread::spawn(move || {
+            // Whatever crossterm parsed while the UI was away was typed at
+            // something else.
+            while matches!(event::poll(Duration::ZERO), Ok(true)) {
+                let _ = event::read();
+            }
             loop {
                 if flag.load(Ordering::Relaxed) {
                     return;
@@ -188,11 +194,6 @@ impl Input {
             thread: Some(thread),
         }
     }
-
-    /// Stop reading and wait for the thread to let go of the terminal;
-    /// dropping the handle does the same, so an early return never leaves a
-    /// reader on stdin.
-    pub fn stop(self) {}
 }
 
 impl Drop for Input {

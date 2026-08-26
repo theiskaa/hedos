@@ -4,6 +4,7 @@
 //! [`Aggregator`](kernel::install::ollama_pull::Aggregator).
 
 use std::collections::HashMap;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -334,6 +335,9 @@ pub(crate) async fn start_daemon(
         .arg("serve")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        // The daemon outlives this call and must not die with a Ctrl-C
+        // typed at hedos, so it gets a process group of its own.
+        .process_group(0)
         .spawn()
         .map_err(|error| {
             InstallError::ProviderUnavailable(format!("couldn't start Ollama: {error}"))
