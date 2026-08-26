@@ -17,6 +17,7 @@ use super::launch::LaunchModal;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
+use super::strip::TaskStrip;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::install::find_installed;
 use crate::support::residency::{Holder, warm_request};
@@ -24,13 +25,10 @@ use crate::support::shelf_table::verdict;
 
 /// How often the loop ticks; every cadence below is counted in these.
 pub(super) const TICK: Duration = Duration::from_millis(250);
-const TICKS_PER_SECOND: u64 = 1000 / TICK.as_millis() as u64;
+pub(super) const TICKS_PER_SECOND: u64 = 1000 / TICK.as_millis() as u64;
 /// Refresh cadence while a task runs, and while idle.
 const BUSY_REFRESH_TICKS: u64 = 2 * TICKS_PER_SECOND;
 const IDLE_REFRESH_TICKS: u64 = 10 * TICKS_PER_SECOND;
-/// How long a finished task stays in the strip, and how long a failed one does.
-const DONE_LINGER_TICKS: u64 = 60 * TICKS_PER_SECOND;
-const FAILED_LINGER_TICKS: u64 = 10 * 60 * TICKS_PER_SECOND;
 /// How far a page key moves the chat transcript, and a wheel notch.
 const PAGE_LINES: usize = 10;
 const WHEEL_LINES: usize = 3;
@@ -52,23 +50,18 @@ pub enum Modal {
     Chat(Box<ChatPane>),
 }
 
-/// A task as the strip shows it. A row for something that ran in the
-/// foreground while the UI stepped aside has no kind: nothing spawned it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskRow {
-    pub id: TaskId,
-    pub label: TaskLabel,
-    pub kind: Option<TaskKind>,
-    pub state: TaskState,
-    /// The tick the task finished on, for expiry.
-    finished_at: Option<u64>,
+/// Why a verb is refused for the selected model: quietly, when the model
+/// is busy and the strip already shows with what, or with a reason for the
+/// footer.
+enum Refusal {
+    Busy,
+    Because(String),
 }
 
-impl TaskRow {
-    /// Whether the task is still going.
-    pub fn running(&self) -> bool {
-        self.state.running()
-    }
+/// A footer message and the tick it expires on.
+struct Notice {
+    text: String,
+    until: u64,
 }
 
 /// Everything the screen shows.
@@ -88,14 +81,14 @@ pub struct App {
     pub filtering: bool,
     /// The sort in effect.
     pub sort: Sort,
-    /// Background work, oldest first.
-    pub tasks: Vec<TaskRow>,
+    /// Background work and what ran in the foreground, oldest first.
+    pub tasks: TaskStrip,
     /// The modal in front of the shelf, while one is open.
     pub modal: Option<Modal>,
     /// Whether the detail pane has the whole body.
     pub expanded: bool,
     /// A short message in the footer, until the tick it expires on.
-    notice: Option<(String, u64)>,
+    notice: Option<Notice>,
     /// A reference just pulled; the next refresh selects the record it became.
     select_pulled: Option<String>,
     /// Ticks since the loop started; every cadence is counted in these.
@@ -119,7 +112,7 @@ impl App {
             filter: LineEdit::default(),
             filtering: false,
             sort: Sort::default(),
-            tasks: Vec::new(),
+            tasks: TaskStrip::default(),
             modal: None,
             expanded: false,
             notice: None,
@@ -212,7 +205,7 @@ impl App {
         if self.unloadable(record).is_ok() {
             actions.push(("u", "unload"));
         }
-        if record.capabilities.contains(&Capability::chat()) {
+        if Self::chat_capable(record).is_ok() {
             actions.extend([("l", "launch"), ("t", "try"), ("T", "chat")]);
         }
         if self.removable(record).is_ok() {
@@ -225,55 +218,89 @@ impl App {
     }
 
     /// Why `record` can't be warmed right now, if it can't.
-    fn warmable(&self, record: &ModelRecord) -> Result<(), String> {
+    fn warmable(&self, record: &ModelRecord) -> Result<(), Refusal> {
         let name = record.display_name();
-        if self.busy_with(&record.id) {
-            Err(format!("{name} is busy"))
+        if self.tasks.running_on(&record.id) {
+            Err(Refusal::Busy)
         } else if self.facts.is_warm(&record.id) {
-            Err(format!("{name} is already warm"))
+            Err(Refusal::Because(format!("{name} is already warm")))
         } else if record.state == ModelState::Missing {
-            Err(format!("{name}'s weights are gone"))
+            Err(Refusal::Because(format!("{name}'s weights are gone")))
         } else if verdict(record.footprint_mb, self.facts.memory_bytes)
             == Some(FitVerdict::TooLarge)
         {
-            Err(format!("{name} is too big for this machine"))
+            Err(Refusal::Because(format!(
+                "{name} is too big for this machine"
+            )))
         } else if warm_request(record).is_none() {
-            Err(format!("{name} can't be warmed"))
+            Err(Refusal::Because(format!("{name} can't be warmed")))
         } else {
             Ok(())
         }
     }
 
     /// Why `record` can't be unloaded from here, if it can't.
-    fn unloadable(&self, record: &ModelRecord) -> Result<(), String> {
+    fn unloadable(&self, record: &ModelRecord) -> Result<(), Refusal> {
         let name = record.display_name();
-        if self.busy_with(&record.id) {
-            return Err(format!("{name} is busy"));
+        if self.tasks.running_on(&record.id) {
+            return Err(Refusal::Busy);
         }
         match self
             .facts
             .resident(&record.id)
             .map(|resident| resident.holder)
         {
-            None => Err(format!("{name} is not warm")),
+            None => Err(Refusal::Because(format!("{name} is not warm"))),
             Some(Holder::Gateway) => {
                 let port = self.facts.gateway_port.unwrap_or_default();
-                Err(format!(
+                Err(Refusal::Because(format!(
                     "{name} is held by the gateway on :{port}; it unloads there after its warm window"
-                ))
+                )))
             }
             Some(Holder::Local | Holder::Daemon) => Ok(()),
         }
     }
 
+    /// Why `record` can't chat, if it can't.
+    fn chat_capable(record: &ModelRecord) -> Result<(), Refusal> {
+        if record.capabilities.contains(&Capability::chat()) {
+            Ok(())
+        } else {
+            Err(Refusal::Because(format!(
+                "{} can't chat",
+                record.display_name()
+            )))
+        }
+    }
+
+    /// Answer a refusal: silence for a busy model, the reason otherwise.
+    fn refuse(&mut self, refusal: Refusal) -> Vec<Effect> {
+        match refusal {
+            Refusal::Busy => Vec::new(),
+            Refusal::Because(reason) => self.notify(reason),
+        }
+    }
+
+    /// Put `modal` in front of the shelf.
+    fn open(&mut self, modal: Modal) {
+        self.modal = Some(modal);
+        self.dirty = true;
+    }
+
+    /// Take down whatever is in front of the shelf.
+    fn close_modal(&mut self) {
+        self.modal = None;
+        self.dirty = true;
+    }
+
     /// The footer notice, if one is showing.
     pub fn notice(&self) -> Option<&str> {
-        self.notice.as_ref().map(|(text, _)| text.as_str())
+        self.notice.as_ref().map(|notice| notice.text.as_str())
     }
 
     /// Whether any task is still running.
     pub fn busy(&self) -> bool {
-        self.tasks.iter().any(TaskRow::running)
+        self.tasks.busy()
     }
 
     /// Whether something changed since the last draw; reading it clears it.
@@ -283,13 +310,7 @@ impl App {
 
     /// Record that the loop started `kind` as task `id`.
     pub fn started(&mut self, id: TaskId, kind: TaskKind) {
-        self.tasks.push(TaskRow {
-            id,
-            label: kind.label(),
-            kind: Some(kind),
-            state: TaskState::Running,
-            finished_at: None,
-        });
+        self.tasks.start(id, kind);
         self.dirty = true;
     }
 
@@ -353,8 +374,7 @@ impl App {
                 return Vec::new();
             }
             Some(Modal::Help) => {
-                self.modal = None;
-                self.dirty = true;
+                self.close_modal();
                 return Vec::new();
             }
             Some(Modal::Launch(_)) => return self.launch_key(key),
@@ -373,24 +393,21 @@ impl App {
             }
             Key::Top | Key::Char('g') => self.select(0),
             Key::Bottom | Key::Char('G') => self.select(usize::MAX),
-            Key::Char('s') if !self.already_running(&TaskKind::Scan) => {
+            Key::Char('s') if !self.tasks.already_running(&TaskKind::Scan) => {
                 return vec![Effect::Spawn(TaskKind::Scan)];
             }
             Key::Char('r') => return self.refresh(),
             Key::Char('w') => return self.warm(),
             Key::Char('u') => return self.unload(),
-            Key::Char('p') => {
-                self.modal = Some(Modal::Pull(Box::new(PullModal::open(
-                    &self.records,
-                    self.facts.memory_bytes,
-                    &self.pulling(),
-                ))));
-                self.dirty = true;
-            }
+            Key::Char('p') => self.open(Modal::Pull(Box::new(PullModal::open(
+                &self.records,
+                self.facts.memory_bytes,
+                &self.tasks.pulling(),
+            )))),
             Key::Char('x') => return self.remove(),
             Key::Char('l') => return self.launch(),
-            Key::Char('T') => return self.chat(),
-            Key::Char('t') => return self.try_chat(),
+            Key::Char('T') => return self.hand_off_chat(),
+            Key::Char('t') => return self.open_chat(),
             Key::Char('S') => return self.serve(),
             Key::Char('/') => {
                 self.filtering = true;
@@ -412,10 +429,7 @@ impl App {
             Key::Char('y') => return self.copy_path(),
             Key::Char('Y') => return self.copy_id(),
             Key::Char('d') => return self.dismiss(),
-            Key::Char('?') => {
-                self.modal = Some(Modal::Help);
-                self.dirty = true;
-            }
+            Key::Char('?') => self.open(Modal::Help),
             Key::Enter if self.selected_record().is_some() => {
                 self.expanded = !self.expanded;
                 self.dirty = true;
@@ -447,7 +461,7 @@ impl App {
             },
             (Stage::Preview(plan), Key::Enter) => {
                 let kind = TaskKind::Pull(plan.clone());
-                if self.already_running(&kind) {
+                if self.tasks.already_running(&kind) {
                     return self.notify(already_downloading(kind.subject()));
                 }
                 self.modal = None;
@@ -511,29 +525,25 @@ impl App {
 
     /// Drop the newest failed task from the strip.
     fn dismiss(&mut self) -> Vec<Effect> {
-        let failed = self
-            .tasks
-            .iter()
-            .rposition(|row| matches!(row.state, TaskState::Failed(_)));
-        match failed {
-            Some(index) => {
-                self.tasks.remove(index);
-                self.dirty = true;
-                Vec::new()
-            }
-            None => self.notify("nothing to dismiss".to_owned()),
+        if self.tasks.dismiss_newest_failure() {
+            self.dirty = true;
+            Vec::new()
+        } else {
+            self.notify("nothing to dismiss".to_owned())
         }
     }
 
     /// Open the harness picker for the selected model, or say why not.
     fn launch(&mut self) -> Vec<Effect> {
-        match self.chat_capable() {
+        match self.chatting_record() {
             Ok(record) => {
-                self.modal = Some(Modal::Launch(Box::new(LaunchModal::open(&record))));
-                self.dirty = true;
+                self.open(Modal::Launch(Box::new(LaunchModal::open(&record))));
                 Vec::new()
             }
-            Err(reason) => self.notify(format!("{reason}, so no harness can use it")),
+            Err(Refusal::Because(reason)) => {
+                self.notify(format!("{reason}, so no harness can use it"))
+            }
+            Err(refusal) => self.refuse(refusal),
         }
     }
 
@@ -568,25 +578,24 @@ impl App {
     }
 
     /// Hand off to `hedos chat` on the selected model.
-    fn chat(&mut self) -> Vec<Effect> {
-        match self.chat_capable() {
+    fn hand_off_chat(&mut self) -> Vec<Effect> {
+        match self.chatting_record() {
             Ok(record) => vec![Effect::HandOff(Box::new(HandOff::Chat {
                 record: Box::new(record),
             }))],
-            Err(reason) => self.notify(reason),
+            Err(refusal) => self.refuse(refusal),
         }
     }
 
     /// Open the chat pane on the selected model.
-    fn try_chat(&mut self) -> Vec<Effect> {
-        match self.chat_capable() {
+    fn open_chat(&mut self) -> Vec<Effect> {
+        match self.chatting_record() {
             Ok(record) => {
-                self.modal = Some(Modal::Chat(Box::new(ChatPane::open(record))));
                 self.expanded = false;
-                self.dirty = true;
+                self.open(Modal::Chat(Box::new(ChatPane::open(record))));
                 Vec::new()
             }
-            Err(reason) => self.notify(reason),
+            Err(refusal) => self.refuse(refusal),
         }
     }
 
@@ -656,16 +665,13 @@ impl App {
         }
     }
 
-    /// The selected record, when it can chat; otherwise why not.
-    fn chat_capable(&self) -> Result<ModelRecord, String> {
+    /// The selected record, cloned for a verb that needs it to chat.
+    fn chatting_record(&self) -> Result<ModelRecord, Refusal> {
         let record = self
             .selected_record()
-            .ok_or_else(|| "nothing is selected".to_owned())?;
-        if record.capabilities.contains(&Capability::chat()) {
-            Ok(record.clone())
-        } else {
-            Err(format!("{} can't chat", record.display_name()))
-        }
+            .ok_or_else(|| Refusal::Because("nothing is selected".to_owned()))?;
+        Self::chat_capable(record)?;
+        Ok(record.clone())
     }
 
     /// The UI is back from a hand-off: a fresh shelf and facts stamped with
@@ -673,14 +679,7 @@ impl App {
     /// and a row saying how it went.
     pub fn came_back(&mut self, snapshot: Refreshed, label: TaskLabel, state: TaskState) {
         self.refreshed(snapshot);
-        self.tasks.push(TaskRow {
-            id: TaskId::next(),
-            label,
-            kind: None,
-            state,
-            finished_at: Some(self.ticks),
-        });
-        self.dirty = true;
+        self.tasks.record(label, state, self.ticks);
     }
 
     /// Open the removal confirmation for the selected model, or say why not.
@@ -688,25 +687,28 @@ impl App {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
-        if let Err(reason) = self.removable(record) {
-            return self.notify(reason);
+        if let Err(refusal) = self.removable(record) {
+            return self.refuse(refusal);
         }
-        self.modal = Some(Modal::Remove(preview(record)));
-        self.dirty = true;
+        self.open(Modal::Remove(preview(record)));
         Vec::new()
     }
 
     /// Why `record` can't be removed right now, if it can't.
-    fn removable(&self, record: &ModelRecord) -> Result<(), String> {
+    fn removable(&self, record: &ModelRecord) -> Result<(), Refusal> {
         let name = record.display_name();
-        if self.busy_with(&record.id) {
-            Err(format!("{name} is busy"))
+        if self.tasks.running_on(&record.id) {
+            Err(Refusal::Busy)
         } else if self.facts.is_warm(&record.id) {
-            Err(format!("{name} is warm; unload it first"))
+            Err(Refusal::Because(format!("{name} is warm; unload it first")))
         } else if record.downloading {
-            Err(format!("{name} is still downloading; cancel it first"))
+            Err(Refusal::Because(format!(
+                "{name} is still downloading; cancel it first"
+            )))
         } else if !is_deletable(record) {
-            Err(format!("{name} can't be removed from here"))
+            Err(Refusal::Because(format!(
+                "{name} can't be removed from here"
+            )))
         } else {
             Ok(())
         }
@@ -715,17 +717,15 @@ impl App {
     /// `y` re-checks everything `x` checked: the shelf and facts refresh
     /// behind the modal while it waits.
     fn remove_key(&mut self, key: Key) -> Vec<Effect> {
-        let Some(Modal::Remove(shown)) = &self.modal else {
-            return Vec::new();
-        };
         let confirmed = match key {
             Key::Char('y') => true,
             Key::Char('n') | Key::Escape => false,
             _ => return Vec::new(),
         };
-        let shown = shown.clone();
+        let Some(Modal::Remove(shown)) = self.modal.take() else {
+            return Vec::new();
+        };
         let model_id = shown.model_id.clone();
-        self.modal = None;
         self.dirty = true;
         if !confirmed {
             return Vec::new();
@@ -733,8 +733,8 @@ impl App {
         let Some(record) = self.records.iter().find(|record| record.id == model_id) else {
             return self.notify(format!("{} is no longer on the shelf", shown.name));
         };
-        if let Err(reason) = self.removable(record) {
-            return self.notify(reason);
+        if let Err(refusal) = self.removable(record) {
+            return self.refuse(refusal);
         }
         if preview(record) != shown {
             return self.notify(format!("{} changed on disk; look again", shown.name));
@@ -747,13 +747,8 @@ impl App {
 
     /// Cancel the newest pull still downloading.
     fn cancel_pull(&mut self) -> Vec<Effect> {
-        let pull = self
-            .tasks
-            .iter()
-            .rev()
-            .find(|row| row.running() && matches!(row.kind, Some(TaskKind::Pull(_))));
-        match pull {
-            Some(row) => vec![Effect::Cancel(row.id)],
+        match self.tasks.newest_running_pull() {
+            Some(id) => vec![Effect::Cancel(id)],
             None => self.notify("nothing is downloading".to_owned()),
         }
     }
@@ -783,12 +778,8 @@ impl App {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
-        if let Err(reason) = self.warmable(record) {
-            return if self.busy_with(&record.id) {
-                Vec::new()
-            } else {
-                self.notify(reason)
-            };
+        if let Err(refusal) = self.warmable(record) {
+            return self.refuse(refusal);
         }
         let id = record.id.clone();
         let name = record.display_name().to_owned();
@@ -805,12 +796,8 @@ impl App {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
-        if let Err(reason) = self.unloadable(record) {
-            return if self.busy_with(&record.id) {
-                Vec::new()
-            } else {
-                self.notify(reason)
-            };
+        if let Err(refusal) = self.unloadable(record) {
+            return self.refuse(refusal);
         }
         vec![Effect::Spawn(TaskKind::Unload {
             id: record.id.clone(),
@@ -818,42 +805,11 @@ impl App {
         })]
     }
 
-    /// Whether a running task already concerns model `id`.
-    fn busy_with(&self, id: &str) -> bool {
-        self.tasks
-            .iter()
-            .any(|row| row.running() && row.kind.as_ref().and_then(TaskKind::model_id) == Some(id))
-    }
-
-    /// The references of the pulls still running.
-    fn pulling(&self) -> Vec<String> {
-        self.tasks
-            .iter()
-            .filter(|row| row.running())
-            .filter_map(|row| match &row.kind {
-                Some(TaskKind::Pull(plan)) => Some(plan.reference.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Whether a task of `kind`'s shape is already running. Pulls match on
-    /// what they fetch: two plans for one reference are one download.
-    fn already_running(&self, kind: &TaskKind) -> bool {
-        self.tasks.iter().any(|row| {
-            row.running()
-                && match (&row.kind, kind) {
-                    (Some(TaskKind::Pull(running)), TaskKind::Pull(wanted)) => {
-                        running.provider == wanted.provider && running.reference == wanted.reference
-                    }
-                    (Some(running), wanted) => running == wanted,
-                    (None, _) => false,
-                }
-        })
-    }
-
     fn notify(&mut self, text: String) -> Vec<Effect> {
-        self.notice = Some((text, self.ticks + NOTICE_TICKS));
+        self.notice = Some(Notice {
+            text,
+            until: self.ticks + NOTICE_TICKS,
+        });
         self.dirty = true;
         Vec::new()
     }
@@ -866,13 +822,16 @@ impl App {
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
         let now = self.ticks;
+        let mut effects = Vec::new();
         if let Some(Modal::Pull(modal)) = self.modal.as_mut()
             && let Some(query) = modal.search_due(now)
         {
-            return vec![Effect::Search(query)];
+            effects.push(Effect::Search(query));
         }
-        if let Some((_, until)) = &self.notice
-            && self.ticks >= *until
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|notice| now >= notice.until)
         {
             self.notice = None;
             self.dirty = true;
@@ -880,17 +839,7 @@ impl App {
         if self.chat_pane().is_some_and(ChatPane::waiting) {
             self.dirty = true;
         }
-        let before = self.tasks.len();
-        self.tasks.retain(|row| {
-            row.finished_at.is_none_or(|finished| {
-                let linger = match row.state {
-                    TaskState::Failed(_) => FAILED_LINGER_TICKS,
-                    _ => DONE_LINGER_TICKS,
-                };
-                now < finished + linger
-            })
-        });
-        if self.tasks.len() != before {
+        if self.tasks.expire(now) {
             self.dirty = true;
         }
         let cadence = if self.busy() {
@@ -898,23 +847,19 @@ impl App {
         } else {
             IDLE_REFRESH_TICKS
         };
-        if self.ticks - self.last_refresh >= cadence {
-            return self.refresh();
+        if now - self.last_refresh >= cadence {
+            effects.extend(self.refresh());
         }
-        Vec::new()
+        effects
     }
 
     fn task(&mut self, event: TaskEvent) -> Vec<Effect> {
-        let Some(row) = self.tasks.iter_mut().find(|row| row.id == event.id) else {
+        let Some(row) = self.tasks.moved(event, self.ticks) else {
             return Vec::new();
         };
-        let finished = !event.state.running();
-        row.state = event.state;
-        if finished {
-            row.finished_at = Some(self.ticks);
-            if let (Some(TaskKind::Pull(plan)), TaskState::Done(_)) = (&row.kind, &row.state) {
-                self.select_pulled = Some(plan.reference.clone());
-            }
+        let finished = !row.running();
+        if let (Some(TaskKind::Pull(plan)), TaskState::Done(_)) = (&row.kind, &row.state) {
+            self.select_pulled = Some(plan.reference.clone());
         }
         self.dirty = true;
         if finished { self.refresh() } else { Vec::new() }
@@ -942,7 +887,7 @@ impl App {
             self.select_pulled = None;
         }
         self.reorder(pulled.or(selected_id));
-        let pulling = self.pulling();
+        let pulling = self.tasks.pulling();
         if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
             modal.refresh(&self.records, &pulling);
         }
@@ -962,6 +907,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::support::residency::Resident;
+    use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
     fn record(index: usize) -> ModelRecord {
@@ -1165,9 +1111,9 @@ mod tests {
         }));
         assert_eq!(effects, vec![Effect::Refresh]);
         assert!(app.take_dirty());
-        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks.rows().len(), 1);
         ticks(&mut app, DONE_LINGER_TICKS + 1);
-        assert!(app.tasks.is_empty());
+        assert!(app.tasks.rows().is_empty());
     }
 
     #[test]
@@ -1180,9 +1126,9 @@ mod tests {
             state: TaskState::Failed("no".to_owned()),
         }));
         ticks(&mut app, DONE_LINGER_TICKS * 2);
-        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks.rows().len(), 1);
         ticks(&mut app, FAILED_LINGER_TICKS);
-        assert!(app.tasks.is_empty());
+        assert!(app.tasks.rows().is_empty());
     }
 
     #[test]
@@ -1370,7 +1316,7 @@ mod tests {
             state: TaskState::Failed("no".to_owned()),
         }));
         press(&mut app, Key::Char('d'));
-        assert!(app.tasks.is_empty());
+        assert!(app.tasks.rows().is_empty());
         press(&mut app, Key::Char('d'));
         assert_eq!(app.notice(), Some("nothing to dismiss"));
     }
@@ -1437,7 +1383,7 @@ mod tests {
             TaskState::Done("ran 4m".to_owned()),
         );
         assert_eq!(app.selected_record().map(|r| &r.id), Some(&kept.id));
-        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks.rows().len(), 1);
         assert!(!app.busy());
         // A refresh that was in flight before leaving is older and must lose.
         app.reduce(Event::Refreshed(Refreshed {

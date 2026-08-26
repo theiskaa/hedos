@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, Paragraph};
 use kernel::install::event::InstallProgress;
 
 use super::{ACCENT, BOLD, DIM, FAILED, bar};
-use crate::tui::app::{App, TaskRow};
+use crate::tui::app::App;
+use crate::tui::strip::TaskRow;
 use crate::tui::tasks::{TaskKind, TaskState};
 use crate::tui::text;
 
@@ -21,6 +22,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let visible = area.height.saturating_sub(2) as usize;
     let lines: Vec<Line> = app
         .tasks
+        .rows()
         .iter()
         .rev()
         .take(visible)

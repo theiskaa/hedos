@@ -112,7 +112,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.area(),
         app.order.len(),
         machine::lines(&app.facts),
-        app.tasks.len(),
+        app.tasks.rows().len(),
         app.expanded || app.chat_pane().is_some(),
     );
     header::draw(frame, panes.header, app);

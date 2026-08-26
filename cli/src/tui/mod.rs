@@ -17,6 +17,7 @@ mod markup;
 mod order;
 mod pull;
 mod state;
+mod strip;
 mod tasks;
 mod text;
 mod ui;
