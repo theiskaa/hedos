@@ -17,6 +17,10 @@
 
 hedos is a headless engine for the local models already on your machine. It finds them wherever they live, installs new ones, and serves each through the runtime that actually fits, all from one binary and a local HTTP gateway. There is no app and no browser wrapper. Everything runs on your hardware, offline.
 
+<p align="center">
+  <img alt="hedos shelf: the shelf of models, the selected model's detail, the machine's memory, the gateway, and the running tasks, in one terminal screen" src="assets/ui-shelf.png" width="920">
+</p>
+
 It scans the places models really sit (the Ollama store, the Hugging Face cache, LM Studio's library, and loose GGUF or safetensors files in your folders) and puts them on a single shelf: text, image, and speech together, each tagged by where it came from. Weights are never moved, copied, or re-downloaded. The records simply point at the files where they already are, so every other tool on the machine still sees the same models.
 
 For each model it detects the format, works out what it is and what it can do, and resolves it to a runtime: local GGUF through a `llama-server` process, an OpenAI-compatible endpoint, the Ollama daemon, or a managed Python sidecar (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, whisper). It reads each model's real context length, chat template, senses, and tool-calling dialect and serves that, so a conversation behaves the same across engines. Where a model genuinely cannot do something, the shelf says so up front instead of failing quietly.
@@ -57,7 +61,7 @@ hedos serves whatever your machine can already run, so nothing else is required 
 ```sh
 hedos scan                          # discover every model on this machine
 hedos ls                            # list them with runtime, store, fit, and capabilities
-hedos ui                            # manage the shelf in a terminal ui
+hedos shelf                         # the shelf as a terminal screen
 hedos pull qwen2.5:3b               # install from ollama or hugging face
 hedos run gemma3 "explain this"     # stream a completion to your terminal
 hedos run llava "describe" --image photo.png   # ask a vision model about an image
@@ -69,6 +73,17 @@ hedos stats                         # per-model usage from the gateway audit log
 ```
 
 Every command takes `--json` when you want machine-readable output instead of formatted text. `hedos ls` shows a fit verdict — whether each model will actually run in this machine's memory — next to its capabilities.
+
+## The shelf in the terminal
+`hedos shelf` is the same shelf as a screen you keep open: every model with its runtime, store, and size; the selected one's fit, residency, and capabilities; what is loaded and by whom, with a memory bar per model; disk per store; and what the gateway served in the last day. The footer shows only the keys that apply to the model under the cursor, and every key is a subcommand: `p` pulls, `w` and `u` warm and unload, `x` removes with a preview, `S` serves.
+
+Press `t` and the shelf gives way to a conversation with the selected model. The reply streams in, keeps its markdown, scrolls with the wheel or the arrows and holds still while more text arrives, and the model stays warm for whatever comes next. `T` opens `hedos chat` in the plain terminal instead, `l` launches a coding harness on the model: the UI steps aside for anything that needs the terminal and is back the moment it ends, with a row in the task strip saying how it went.
+
+<p align="center">
+  <img alt="The chat pane inside hedos shelf: the prompt in bold, the reply streaming in with its markdown, a download running in the task strip underneath" src="assets/ui-chat.png" width="920">
+</p>
+
+Pulls download in the task strip while you keep working, with `c` to cancel. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
 
 ## Coding harnesses
 `hedos launch` runs a coding harness against a local model with nothing to configure. The gateway starts inside the same process on a free port, the harness is wired to it, and both stop together:
