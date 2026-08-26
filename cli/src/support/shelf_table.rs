@@ -12,12 +12,7 @@ pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -
     [
         if warm { "●" } else { "○" }.to_owned(),
         record.display_name().to_owned(),
-        record
-            .runtime
-            .id
-            .as_ref()
-            .map_or("—", |id| id.as_str())
-            .to_owned(),
+        runtime_label(record).to_owned(),
         record.source.kind.as_str().to_owned(),
         fit_label(record, total_memory_bytes).to_owned(),
         record
@@ -29,6 +24,14 @@ pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -
     ]
 }
 
+/// The placeholder for a value the record does not have.
+pub(crate) const DASH: &str = "—";
+
+/// The runtime id, or [`DASH`] for an unresolved runtime.
+pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
+    record.runtime.id.as_ref().map_or(DASH, |id| id.as_str())
+}
+
 /// A short human fit label from the model's footprint and the machine's memory:
 /// `fits` / `tight` / `too big`, or `—` when the footprint is unknown (the same
 /// dash the runtime column uses for an unresolved runtime).
@@ -37,7 +40,7 @@ fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
         Some(FitVerdict::RunsWell) => "fits",
         Some(FitVerdict::TightFit) => "tight",
         Some(FitVerdict::TooLarge) => "too big",
-        None => "—",
+        None => DASH,
     }
 }
 

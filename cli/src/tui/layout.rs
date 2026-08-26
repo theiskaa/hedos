@@ -9,6 +9,13 @@ const WIDE_COLUMNS: u16 = 100;
 const STACKED_DETAIL_ROWS: u16 = 4;
 /// Share of the width the shelf takes when side by side.
 const SHELF_PERCENT: u16 = 55;
+/// From this many rows the koala header, a row taller than the koala, earns
+/// its place; below it the header is one line.
+const TALL_ROWS: u16 = 40;
+/// The koala header needs room for the koala and a panel beside it.
+const TALL_COLUMNS: u16 = 70;
+/// Rows of the koala header: the koala plus a blank line under it.
+pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 1;
 
 /// The panes of the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +34,13 @@ impl Panes {
     /// Split `area` into panes: a one-line header, the shelf beside or above
     /// the detail pane, and a one-line footer.
     pub fn compute(area: Rect) -> Self {
+        let header_rows = if Self::tall(area) {
+            TALL_HEADER_ROWS
+        } else {
+            1
+        };
         let [header, body, footer] = Layout::vertical([
-            Constraint::Length(1),
+            Constraint::Length(header_rows),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -46,6 +58,11 @@ impl Panes {
             detail,
             footer,
         }
+    }
+
+    /// Whether `area` gets the koala header.
+    pub fn tall(area: Rect) -> bool {
+        area.height >= TALL_ROWS && area.width >= TALL_COLUMNS
     }
 }
 
@@ -72,6 +89,13 @@ mod tests {
         assert_eq!(panes.shelf.x, panes.detail.x);
         assert_eq!(panes.detail.y, panes.shelf.y + panes.shelf.height);
         assert_eq!(panes.detail.height, STACKED_DETAIL_ROWS);
+    }
+
+    #[test]
+    fn the_koala_header_needs_height_and_width() {
+        assert_eq!(panes(110, 44).header.height, TALL_HEADER_ROWS);
+        assert_eq!(panes(110, 32).header.height, 1);
+        assert_eq!(panes(60, 44).header.height, 1);
     }
 
     #[test]

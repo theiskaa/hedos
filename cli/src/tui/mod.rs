@@ -7,7 +7,9 @@
 mod app;
 mod effect;
 mod event;
+pub(crate) mod facts;
 mod layout;
+mod text;
 mod ui;
 
 use std::io;

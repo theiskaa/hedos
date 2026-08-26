@@ -12,6 +12,7 @@ use gateway::audit::GatewayAuditLog;
 use gateway::auth::OpenAuth;
 use gateway::kernel_gateway::KernelGateway;
 use gateway::router::{GatewayRouter, standard_routes};
+use kernel::time::millis_from_iso8601;
 use runtime::facade::Kernel;
 use serde::Deserialize;
 use tokio::net::TcpListener;
@@ -46,11 +47,31 @@ pub async fn bind(port: u16) -> Result<TcpListener, CliError> {
 /// Loopback answers in milliseconds; anything slower is a stuck process.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
+/// A gateway found listening on loopback, and what it holds in memory.
+#[derive(Debug, Clone)]
+pub(crate) struct GatewayLive {
+    /// The port it answered on.
+    pub port: u16,
+    /// The models it reports resident.
+    pub residents: Vec<LiveResident>,
+}
+
 /// One resident model as a running gateway's `/api/ps` reports it.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct LiveResident {
     /// The hedos record id.
     pub id: String,
+    /// The footprint in bytes.
+    pub size: i64,
+    /// When the gateway's idle unload fires, if one is armed (ISO 8601).
+    pub expires_at: Option<String>,
+}
+
+impl LiveResident {
+    /// [`Self::expires_at`] as Unix milliseconds.
+    pub fn expires_at_millis(&self) -> Option<i64> {
+        self.expires_at.as_deref().and_then(millis_from_iso8601)
+    }
 }
 
 #[derive(Deserialize)]
@@ -58,10 +79,10 @@ struct PsBody {
     models: Vec<LiveResident>,
 }
 
-/// The models a gateway on loopback `port` holds. `None` when nothing answers
-/// `/api/ps` there within [`PROBE_TIMEOUT`], or the answer is not a hedos
-/// gateway's (a stock Ollama daemon's entries carry no `id`).
-pub(crate) async fn probe(port: u16) -> Option<Vec<LiveResident>> {
+/// The gateway on loopback `port`, if one answers `/api/ps` within
+/// [`PROBE_TIMEOUT`] and the answer is a hedos gateway's (a stock Ollama
+/// daemon's entries carry no `id`).
+pub(crate) async fn probe(port: u16) -> Option<GatewayLive> {
     let client = reqwest::Client::builder()
         .timeout(PROBE_TIMEOUT)
         .build()
@@ -76,5 +97,8 @@ pub(crate) async fn probe(port: u16) -> Option<Vec<LiveResident>> {
         .json()
         .await
         .ok()?;
-    Some(body.models)
+    Some(GatewayLive {
+        port,
+        residents: body.models,
+    })
 }

@@ -6,9 +6,9 @@ use clap::Args;
 
 use crate::error::CliError;
 use crate::support::interactive;
-use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::session::Session;
+use crate::tui::facts::Facts;
 use crate::tui::{self, App};
 
 /// Arguments for `ui`.
@@ -23,7 +23,7 @@ pub async fn run(_args: UiArgs, out: &Out) -> Result<(), CliError> {
     }
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set_with_gateway().await;
-    let app = App::new(shelf.to_vec(), warm, machine::memory_budget_bytes());
+    let facts = Facts::collect(&session, &shelf).await;
+    let app = App::new(shelf.to_vec(), facts);
     tui::run(app).await
 }

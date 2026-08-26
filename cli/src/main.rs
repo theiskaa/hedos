@@ -18,7 +18,7 @@ use crate::support::output::Out;
     name = "hedos",
     version,
     about = "Run and serve local models headlessly.",
-    before_help = BANNER
+    before_help = BANNER.as_str()
 )]
 struct Cli {
     /// Emit machine-readable JSON instead of formatted text.

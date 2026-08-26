@@ -8,6 +8,7 @@ mod shelf;
 
 use ratatui::Frame;
 use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
 
 use super::app::App;
 use super::layout::Panes;
@@ -16,6 +17,14 @@ use super::layout::Panes;
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 /// The loud register: the wordmark, warm models, the selected title.
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+
+/// A `label   value` pair, the label dim and padded to `width`.
+fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span<'a>> {
+    vec![
+        Span::styled(format!(" {label:<width$}"), DIM),
+        Span::raw(value.into()),
+    ]
+}
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {

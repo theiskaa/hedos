@@ -1,22 +1,20 @@
 //! The whole UI state and the reducer over it. Pure: it never touches the
 //! kernel or the terminal, so every transition is unit-testable.
 
-use std::collections::HashSet;
-
+use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
 use ratatui::widgets::TableState;
 
 use super::effect::Effect;
 use super::event::{Event, Key};
+use super::facts::Facts;
 
 /// Everything the screen shows.
 pub struct App {
     /// The shelf, in the order it is listed.
     pub records: Vec<ModelRecord>,
-    /// The ids of the models currently held in memory.
-    pub warm: HashSet<String>,
-    /// The machine's memory, for fit labels.
-    pub memory_budget_bytes: u64,
+    /// The machine facts from the last refresh.
+    pub facts: Facts,
     /// The shelf's selection and scroll position; ratatui keeps the selected
     /// row in view through it.
     pub shelf: TableState,
@@ -25,11 +23,10 @@ pub struct App {
 
 impl App {
     /// A UI over `records`, selecting the first.
-    pub fn new(records: Vec<ModelRecord>, warm: HashSet<String>, memory_budget_bytes: u64) -> Self {
+    pub fn new(records: Vec<ModelRecord>, facts: Facts) -> Self {
         Self {
             records,
-            warm,
-            memory_budget_bytes,
+            facts,
             shelf: TableState::new().with_selected(0),
             dirty: true,
         }
@@ -45,11 +42,24 @@ impl App {
         self.records.get(self.selected())
     }
 
+    /// The machine's memory, for fit labels.
+    pub fn memory_budget_bytes(&self) -> u64 {
+        self.facts.memory_bytes
+    }
+
+    /// How many models on the shelf can't run on this machine.
+    pub fn too_big_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| too_big(record, self.facts.memory_bytes))
+            .count()
+    }
+
     /// How many models on the shelf are held in memory.
     pub fn warm_count(&self) -> usize {
         self.records
             .iter()
-            .filter(|record| self.warm.contains(&record.id))
+            .filter(|record| self.facts.is_warm(&record.id))
             .count()
     }
 
@@ -92,9 +102,16 @@ impl App {
     }
 }
 
+/// Whether `record` is judged too large for a machine with `memory_bytes`.
+pub(crate) fn too_big(record: &ModelRecord, memory_bytes: u64) -> bool {
+    FitVerdict::assess(record.footprint_mb, memory_bytes)
+        .is_some_and(|fit| fit.verdict == FitVerdict::TooLarge)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::facts::{Holder, Resident};
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
     fn app(count: usize) -> App {
@@ -108,7 +125,7 @@ mod tests {
                 )
             })
             .collect();
-        App::new(records, HashSet::new(), 1 << 30)
+        App::new(records, Facts::default())
     }
 
     fn press(app: &mut App, key: Key) -> Vec<Effect> {
@@ -165,8 +182,15 @@ mod tests {
     #[test]
     fn warm_count_only_counts_shelf_models() {
         let mut app = app(2);
-        app.warm.insert(app.records[0].id.clone());
-        app.warm.insert("not-on-the-shelf".to_owned());
+        for id in [app.records[0].id.clone(), "not-on-the-shelf".to_owned()] {
+            app.facts.residents.push(Resident {
+                id,
+                name: String::new(),
+                bytes: 0,
+                holder: Holder::Local,
+                expires_at_millis: None,
+            });
+        }
         assert_eq!(app.warm_count(), 1);
     }
 }

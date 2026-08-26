@@ -12,7 +12,7 @@ use runtime::facade::Kernel;
 use runtime::settings::{Settings, SettingsStore};
 
 use crate::error::CliError;
-use crate::support::serving::{self, LiveResident};
+use crate::support::serving::{self, GatewayLive};
 
 /// An open kernel plus the settings and directories it was built from.
 pub struct Session {
@@ -63,8 +63,8 @@ impl Session {
             .collect()
     }
 
-    /// The models a gateway on the configured port holds, if one is running.
-    pub async fn gateway_residents(&self) -> Option<Vec<LiveResident>> {
+    /// The gateway on the configured port, if one is running.
+    pub async fn live_gateway(&self) -> Option<GatewayLive> {
         serving::probe(self.settings.gateway.port).await
     }
 
@@ -72,8 +72,8 @@ impl Session {
     /// process still marks the models that are actually loaded.
     pub async fn warm_set_with_gateway(&self) -> HashSet<String> {
         let mut warm = self.warm_set();
-        if let Some(residents) = self.gateway_residents().await {
-            warm.extend(residents.into_iter().map(|resident| resident.id));
+        if let Some(live) = self.live_gateway().await {
+            warm.extend(live.residents.into_iter().map(|resident| resident.id));
         }
         warm
     }

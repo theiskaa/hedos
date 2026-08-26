@@ -1,14 +1,16 @@
 //! The shelf table, in the same columns `hedos ls` prints.
 
-use kernel::profiles::FitVerdict;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Row, Table};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph, Row, Table};
 
 use super::{BOLD, DIM};
+use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{HEADERS, cells, widths};
-use crate::tui::app::App;
+use crate::tui::app::{App, too_big};
+use crate::tui::text;
 
 /// Space between columns, matching `hedos ls`.
 const COLUMN_SPACING: u16 = 2;
@@ -26,26 +28,26 @@ const COLUMN_SETS: [&[usize]; 4] = [
     &[0, 1, 4],
 ];
 
-/// Draw the shelf into `area`, scrolled so the selection stays in view.
+/// Draw the shelf into `area`, scrolled so the selection stays in view, or
+/// the first-run invitation when there is nothing on it.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+    if app.records.is_empty() {
+        draw_empty(frame, area, app);
+        return;
+    }
+    let budget = app.memory_budget_bytes();
     let rows: Vec<[String; 6]> = app
         .records
         .iter()
-        .map(|record| {
-            cells(
-                record,
-                app.warm.contains(&record.id),
-                app.memory_budget_bytes,
-            )
-        })
+        .map(|record| cells(record, app.facts.is_warm(&record.id), budget))
         .collect();
     let column_widths = widths(&rows, Some(&HEADERS));
     let columns = fitting_columns(&column_widths, area.width);
 
     let body = app.records.iter().zip(&rows).map(|(record, row)| {
-        let style = if too_big(record, app.memory_budget_bytes) {
+        let style = if too_big(record, budget) {
             DIM
-        } else if app.warm.contains(&record.id) {
+        } else if app.facts.is_warm(&record.id) {
             BOLD
         } else {
             Style::new()
@@ -61,9 +63,62 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(table, area, &mut app.shelf);
 }
 
-fn too_big(record: &kernel::records::ModelRecord, memory_budget_bytes: u64) -> bool {
-    FitVerdict::assess(record.footprint_mb, memory_budget_bytes)
-        .is_some_and(|fit| fit.verdict == FitVerdict::TooLarge)
+/// The koala and where to start, for a shelf with nothing on it yet.
+fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().title(" shelf ").border_style(DIM);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let memory = match app.memory_budget_bytes() {
+        0 => String::new(),
+        bytes => format!("      {} GiB on this machine", text::gib(bytes as i64)),
+    };
+    let plain = Style::new();
+    let copy: [(String, Style); 10] = [
+        (String::new(), plain),
+        ("nothing on the shelf yet".to_owned(), BOLD),
+        (String::new(), plain),
+        (
+            "hedos looks in the Ollama store, the Hugging".to_owned(),
+            plain,
+        ),
+        ("Face cache, LM Studio, and loose GGUF or".to_owned(), plain),
+        ("safetensors files in your folders.".to_owned(), plain),
+        (String::new(), plain),
+        ("s scan this machine".to_owned(), plain),
+        (format!("p pull a model{memory}"), plain),
+        (String::new(), plain),
+    ];
+    let width = KOALA_WIDTH
+        + 3
+        + copy
+            .iter()
+            .map(|(line, _)| line.chars().count())
+            .max()
+            .unwrap_or(0) as u16;
+    let lines: Vec<Line> = KOALA
+        .iter()
+        .zip(copy)
+        .map(|(koala, (line, style))| {
+            Line::from(vec![
+                Span::styled(format!("{koala}   "), BOLD),
+                Span::styled(line, style),
+            ])
+        })
+        .collect();
+    let [_, centered, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(KOALA.len() as u16),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    let [_, centered, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width),
+        Constraint::Fill(1),
+    ])
+    .areas(centered);
+    frame.render_widget(Paragraph::new(lines), centered);
 }
 
 /// The fullest column set whose natural widths fit in `width`, or the
