@@ -32,6 +32,20 @@ pub fn duration(seconds: i64) -> String {
     }
 }
 
+/// `buckets` as one bar per bucket, scaled to the largest; a flat line when
+/// every bucket is empty.
+pub fn sparkline(buckets: &[u32]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let top = buckets.iter().copied().max().unwrap_or(0).max(1) as f64;
+    buckets
+        .iter()
+        .map(|&count| {
+            let level = ((count as f64 / top) * (BARS.len() - 1) as f64).round() as usize;
+            BARS[level.min(BARS.len() - 1)]
+        })
+        .collect()
+}
+
 /// A count with a noun that takes a plain `s` plural: `1 model`, `12 models`.
 pub fn count(count: usize, noun: &str) -> String {
     if count == 1 {
@@ -60,6 +74,13 @@ mod tests {
         assert_eq!(duration(3 * 3600), "3h");
         assert_eq!(duration(2 * 86_400 + 5), "2d");
         assert_eq!(duration(-5), "0s");
+    }
+
+    #[test]
+    fn sparklines_scale_to_the_busiest_bucket() {
+        assert_eq!(sparkline(&[0, 0, 0]), "▁▁▁");
+        assert_eq!(sparkline(&[1, 4, 8]), "▂▅█");
+        assert_eq!(sparkline(&[]), "");
     }
 
     #[test]

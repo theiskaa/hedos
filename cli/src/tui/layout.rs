@@ -37,8 +37,9 @@ pub struct Panes {
 
 impl Panes {
     /// Split `area` into panes: the header, the shelf beside or above the
-    /// detail pane, a strip for `task_rows` tasks, and a one-line footer.
-    pub fn compute(area: Rect, task_rows: usize) -> Self {
+    /// detail pane (or the detail alone when `expanded`), a strip for
+    /// `task_rows` tasks, and a one-line footer.
+    pub fn compute(area: Rect, task_rows: usize, expanded: bool) -> Self {
         let header_rows = if Self::tall(area) {
             TALL_HEADER_ROWS
         } else {
@@ -55,7 +56,9 @@ impl Panes {
             Constraint::Length(1),
         ])
         .areas(area);
-        let [shelf, detail] = if area.width >= WIDE_COLUMNS {
+        let [shelf, detail] = if expanded {
+            [Rect::default(), body]
+        } else if area.width >= WIDE_COLUMNS {
             Layout::horizontal([Constraint::Percentage(SHELF_PERCENT), Constraint::Min(0)])
                 .areas(body)
         } else {
@@ -82,16 +85,27 @@ mod tests {
     use super::*;
 
     fn panes(width: u16, height: u16) -> Panes {
-        Panes::compute(Rect::new(0, 0, width, height), 0)
+        Panes::compute(Rect::new(0, 0, width, height), 0, false)
     }
 
     #[test]
     fn the_task_strip_takes_rows_only_when_there_are_tasks() {
         let area = Rect::new(0, 0, 110, 32);
-        assert_eq!(Panes::compute(area, 0).tasks.height, 0);
-        assert_eq!(Panes::compute(area, 1).tasks.height, 3);
-        assert_eq!(Panes::compute(area, 9).tasks.height, MAX_TASK_ROWS + 2);
-        assert_eq!(Panes::compute(area, 1).footer.y, 31);
+        assert_eq!(Panes::compute(area, 0, false).tasks.height, 0);
+        assert_eq!(Panes::compute(area, 1, false).tasks.height, 3);
+        assert_eq!(
+            Panes::compute(area, 9, false).tasks.height,
+            MAX_TASK_ROWS + 2
+        );
+        assert_eq!(Panes::compute(area, 1, false).footer.y, 31);
+    }
+
+    #[test]
+    fn an_expanded_detail_takes_the_whole_body() {
+        let panes = Panes::compute(Rect::new(0, 0, 110, 32), 0, true);
+        assert_eq!(panes.shelf.width, 0);
+        assert_eq!(panes.detail.width, 110);
+        assert_eq!(panes.detail.height, 30);
     }
 
     #[test]

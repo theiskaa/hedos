@@ -65,6 +65,8 @@ pub struct App {
     pub tasks: Vec<TaskRow>,
     /// The modal in front of the shelf, while one is open.
     pub modal: Option<Modal>,
+    /// Whether the detail pane has the whole body.
+    pub expanded: bool,
     /// A short message in the footer, until the tick it expires on.
     notice: Option<(String, u64)>,
     /// Ticks since the loop started; every cadence is counted in these.
@@ -85,6 +87,7 @@ impl App {
             shelf: TableState::new().with_selected(0),
             tasks: Vec::new(),
             modal: None,
+            expanded: false,
             notice: None,
             ticks: 0,
             last_refresh: 0,
@@ -204,6 +207,14 @@ impl App {
                 self.dirty = true;
             }
             Key::Char('x') => return self.remove(),
+            Key::Enter if self.selected_record().is_some() => {
+                self.expanded = !self.expanded;
+                self.dirty = true;
+            }
+            Key::Escape if self.expanded => {
+                self.expanded = false;
+                self.dirty = true;
+            }
             Key::Char('c') => return self.cancel_pull(),
             _ => {}
         }
@@ -466,6 +477,9 @@ impl App {
         let selected_id = self.selected_record().map(|record| record.id.clone());
         self.records = refreshed.records;
         self.facts = refreshed.facts;
+        if self.records.is_empty() {
+            self.expanded = false;
+        }
         let index = selected_id
             .and_then(|id| self.records.iter().position(|record| record.id == id))
             .unwrap_or(self.selected());
@@ -823,6 +837,25 @@ mod tests {
         assert!(press(&mut app, Key::Char('y')).is_empty());
         assert_eq!(app.notice(), Some("model-0 is warm; unload it first"));
         assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn enter_expands_the_detail_and_escape_folds_it() {
+        let mut one = app(1);
+        press(&mut one, Key::Enter);
+        assert!(one.expanded);
+        press(&mut one, Key::Escape);
+        assert!(!one.expanded);
+        let mut empty = app(0);
+        press(&mut empty, Key::Enter);
+        assert!(!empty.expanded);
+        press(&mut one, Key::Enter);
+        one.reduce(Event::Refreshed(Refreshed {
+            sequence: 9,
+            records: Vec::new(),
+            facts: Facts::default(),
+        }));
+        assert!(!one.expanded);
     }
 
     #[test]

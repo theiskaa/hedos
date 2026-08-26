@@ -9,34 +9,56 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use kernel::install::event::{InstallEvent, InstallProgress};
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
+use kernel::records::ModelRecord;
 use runtime::install::service::InstallService;
 use serde_json::json;
 use tokio::sync::mpsc;
 
 use super::event::{Event, Planned, Refreshed, Searched};
-use super::facts::Facts;
+use super::facts::{AuditReader, Facts};
 use super::pull::SEARCH_LIMIT;
 use super::text;
 use crate::commands::rm::remove_and_forget;
 use crate::commands::warm::{is_resident, residency_outcome, warm_request};
 use crate::support::session::Session;
 
+/// The shelf and the facts about it, read together.
+pub struct Snapshot {
+    pub records: Vec<ModelRecord>,
+    pub facts: Facts,
+}
+
 /// What tasks run against: the kernel session, the install service, and the
 /// install ids of the pulls in flight, so a row in the strip can be cancelled.
 pub struct TaskContext {
     session: Arc<Session>,
     install: InstallService,
+    audit: AuditReader,
     installs: Mutex<HashMap<TaskId, String>>,
 }
 
 impl TaskContext {
     /// A context over `session`, installing through `install`.
     pub fn new(session: Arc<Session>, install: InstallService) -> Self {
+        let audit = AuditReader::new(session.dirs.sub("gateway"));
         Self {
             session,
             install,
+            audit,
             installs: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The shelf and facts as they are now. The audit log is parsed on a
+    /// blocking thread so a busy gateway's log never stalls the loop.
+    pub async fn snapshot(self: &Arc<Self>) -> Snapshot {
+        let records = self.session.shelf().await.to_vec();
+        let reader = Arc::clone(self);
+        let entries = tokio::task::spawn_blocking(move || reader.audit.entries())
+            .await
+            .unwrap_or_else(|_| Vec::new().into());
+        let facts = Facts::collect(&self.session, &records, &entries).await;
+        Snapshot { records, facts }
     }
 
     /// Cancel the pull running as task `id`, if it has begun downloading.
@@ -229,10 +251,9 @@ pub fn spawn_plan(
 /// stamped with a sequence so a slow older refresh never overwrites a newer.
 pub fn spawn_refresh(context: &Arc<TaskContext>, tx: mpsc::UnboundedSender<Event>) {
     let sequence = NEXT_REFRESH.fetch_add(1, Ordering::Relaxed);
-    let session = Arc::clone(&context.session);
+    let context = Arc::clone(context);
     tokio::spawn(async move {
-        let records = session.shelf().await.to_vec();
-        let facts = Facts::collect(&session, &records).await;
+        let Snapshot { records, facts } = context.snapshot().await;
         let _ = tx.send(Event::Refreshed(Refreshed {
             sequence,
             records,

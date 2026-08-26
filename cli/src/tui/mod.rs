@@ -29,12 +29,15 @@ use crate::error::CliError;
 use crate::support::output::Out;
 use crate::support::session::Session;
 
-/// Run `app` over `session` on the terminal until it asks to quit.
-pub async fn run(mut app: App, session: Arc<Session>, out: &Out) -> Result<(), CliError> {
+/// Run the UI over `session` on the terminal until it asks to quit.
+pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
+    session.shelf_or_discover().await?;
     let context = Arc::new(TaskContext::new(
-        session,
+        Arc::new(session),
         runtime::boot::default_install_service(),
     ));
+    let tasks::Snapshot { records, facts } = context.snapshot().await;
+    let mut app = App::new(records, facts);
     let (tx, mut rx) = mpsc::unbounded_channel();
     // The input thread owns the only strong sender: when it dies the channel
     // closes and the loop ends, instead of ticking on with no way to quit.

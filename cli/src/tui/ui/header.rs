@@ -50,10 +50,14 @@ fn summary_line(app: &App) -> Line<'static> {
     ])
 }
 
-/// `on :11434` or `off`, with the hint to start one when `hint` is set.
+/// `on :11434 · 3 req/min` or `off`, with the hint to start one when `hint`
+/// is set.
 fn gateway_state(facts: &Facts, hint: bool) -> String {
     match (facts.gateway_port, hint) {
-        (Some(port), _) => format!("on :{port}"),
+        (Some(port), _) => format!(
+            "on :{port} · {} req/min",
+            facts.activity.requests_last_minute
+        ),
         (None, true) => "off · hedos serve to start".to_owned(),
         (None, false) => "off".to_owned(),
     }

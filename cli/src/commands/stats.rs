@@ -4,6 +4,7 @@
 use clap::Args;
 use gateway::audit::GatewayAuditLog;
 use gateway::stats::{self, GatewayStats, ModelStats};
+use kernel::time::iso8601;
 use runtime::boot::HedosDirs;
 
 use crate::error::CliError;
@@ -47,10 +48,21 @@ fn header(summary: &GatewayStats) -> String {
     )
 }
 
+/// Columns of the per-model table.
+const COLUMNS: usize = 7;
+
 /// The per-model table, columns aligned to their widest cell.
 fn table(models: &[ModelStats]) -> String {
-    let headers = ["MODEL", "REQUESTS", "ERRORS", "P50", "P90", "P99"];
-    let rows: Vec<[String; 6]> = models
+    let headers = [
+        "MODEL",
+        "REQUESTS",
+        "ERRORS",
+        "P50",
+        "P90",
+        "P99",
+        "LAST SEEN",
+    ];
+    let rows: Vec<[String; COLUMNS]> = models
         .iter()
         .map(|model| {
             let [p50, p90, p99] = match &model.latency {
@@ -64,6 +76,7 @@ fn table(models: &[ModelStats]) -> String {
                 p50,
                 p90,
                 p99,
+                iso8601(model.last_seen_millis),
             ]
         })
         .collect();
@@ -86,7 +99,7 @@ fn table(models: &[ModelStats]) -> String {
 
 /// One padded, space-separated row. Every column is left-aligned; the trailing
 /// column is not padded so there is no dangling whitespace.
-fn render_row(cells: &[String; 6], widths: &[usize; 6]) -> String {
+fn render_row(cells: &[String; COLUMNS], widths: &[usize; COLUMNS]) -> String {
     cells
         .iter()
         .enumerate()
@@ -133,6 +146,7 @@ mod tests {
             errors,
             error_rate: errors as f64 / requests as f64,
             latency,
+            last_seen_millis: 0,
         }
     }
 

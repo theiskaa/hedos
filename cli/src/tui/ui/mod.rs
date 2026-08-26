@@ -24,9 +24,19 @@ const FAILED: Style = Style::new().fg(ratatui::style::Color::Rgb(201, 138, 106))
 
 /// A `label   value` pair, the label dim and padded to `width`.
 fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span<'a>> {
+    styled_field(label, value, width, Style::new())
+}
+
+/// [`field`] with the value in `style`; dim for a value that is an absence.
+fn styled_field<'a>(
+    label: &'a str,
+    value: impl Into<String>,
+    width: usize,
+    style: Style,
+) -> Vec<Span<'a>> {
     vec![
         Span::styled(format!(" {label:<width$}"), DIM),
-        Span::raw(value.into()),
+        Span::styled(value.into(), style),
     ]
 }
 
@@ -42,9 +52,11 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let panes = Panes::compute(frame.area(), app.tasks.len());
+    let panes = Panes::compute(frame.area(), app.tasks.len(), app.expanded);
     header::draw(frame, panes.header, app);
-    shelf::draw(frame, panes.shelf, app);
+    if !app.expanded {
+        shelf::draw(frame, panes.shelf, app);
+    }
     detail::draw(frame, panes.detail, app);
     tasks::draw(frame, panes.tasks, app);
     footer::draw(frame, panes.footer, app);
