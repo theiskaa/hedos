@@ -16,7 +16,8 @@ use crate::handlers::generate::{OllamaGenerateHandler, OpenAICompletionsHandler}
 use crate::handlers::images::OpenAIImagesHandler;
 use crate::handlers::messages::AnthropicMessagesHandler;
 use crate::handlers::models::{
-    OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
+    OllamaPsHandler, OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler,
+    OpenAIModelsHandler,
 };
 use crate::handlers::speech::OpenAISpeechHandler;
 use crate::handlers::transcriptions::OpenAITranscriptionsHandler;
@@ -106,6 +107,8 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             .described("Ollama", "Chat over the Ollama NDJSON protocol"),
         GatewayRoute::new("GET", "/api/tags", Box::new(OllamaTagsHandler))
             .described("Ollama", "List models, Ollama-style"),
+        GatewayRoute::new("GET", "/api/ps", Box::new(OllamaPsHandler))
+            .described("Ollama", "List the models held in memory"),
         GatewayRoute::new("GET", "/api/version", Box::new(OllamaVersionHandler))
             .described("Ollama", "Version handshake for stock clients"),
         GatewayRoute::new("POST", "/api/show", Box::new(OllamaShowHandler))

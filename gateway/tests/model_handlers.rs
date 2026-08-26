@@ -6,9 +6,11 @@ mod common;
 use common::MockPort;
 use gateway::handlers::GatewayHandling;
 use gateway::handlers::models::{
-    OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler, OpenAIModelsHandler,
+    OllamaPsHandler, OllamaShowHandler, OllamaTagsHandler, OllamaVersionHandler,
+    OpenAIModelsHandler,
 };
 use gateway::identity::GatewayIdentity;
+use gateway::port::GatewayResident;
 use gateway::request::GatewayRequest;
 use gateway::responder::{GatewayResponder, ResponsePart};
 use gateway::scopes::GatewayScopes;
@@ -44,6 +46,45 @@ async fn openai_models_lists_ready_models() {
     assert_eq!(value["object"], "list");
     assert_eq!(value["data"][0]["id"], "llama3");
     assert_eq!(value["data"][0]["owned_by"], "hedos");
+}
+
+#[tokio::test]
+async fn ollama_ps_lists_residents_that_are_on_the_shelf() {
+    let (mut port, id) = MockPort::with_ready_model("llama3");
+    port.resident = vec![
+        GatewayResident {
+            model_id: id.clone(),
+            name: "llama3".to_owned(),
+            footprint_mb: 2,
+        },
+        GatewayResident {
+            model_id: "gone".to_owned(),
+            name: "gone".to_owned(),
+            footprint_mb: 1,
+        },
+    ];
+    let (responder, rx) = GatewayResponder::new();
+    OllamaPsHandler
+        .handle(&get("/api/ps"), &identity(), &port, &responder)
+        .await
+        .unwrap();
+    let value = body(rx);
+    let models = value["models"].as_array().unwrap();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], id);
+    assert_eq!(models[0]["name"], "llama3");
+    assert_eq!(models[0]["size"], 2 * 1_048_576);
+}
+
+#[tokio::test]
+async fn ollama_ps_is_empty_when_nothing_is_loaded() {
+    let (port, _id) = MockPort::with_ready_model("llama3");
+    let (responder, rx) = GatewayResponder::new();
+    OllamaPsHandler
+        .handle(&get("/api/ps"), &identity(), &port, &responder)
+        .await
+        .unwrap();
+    assert_eq!(body(rx)["models"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
-//! The model-listing handlers: OpenAI `/v1/models`, Ollama `/api/tags`, and the
-//! Ollama `/api/version` and `/api/show` handshakes stock clients probe.
+//! The model-listing handlers: OpenAI `/v1/models`, Ollama `/api/tags` and
+//! `/api/ps`, and the Ollama `/api/version` and `/api/show` handshakes stock
+//! clients probe.
 
 use kernel::records::{Capability, ModelRecord, ModelState};
 use serde_json::json;
@@ -63,6 +64,28 @@ impl GatewayHandling for OllamaTagsHandler {
                 .collect();
             let visible = identity.scopes.filter(&chat_models);
             respond_json(responder, &ollama::tags(&visible));
+            Ok(GatewayOutcome::ok())
+        })
+    }
+}
+
+/// `GET /api/ps`: the models held in memory right now, Ollama-style, limited
+/// to those the token can reach.
+pub struct OllamaPsHandler;
+
+impl GatewayHandling for OllamaPsHandler {
+    fn handle<'a>(
+        &'a self,
+        _request: &'a GatewayRequest,
+        identity: &'a GatewayIdentity,
+        port: &'a dyn GatewayPort,
+        responder: &'a GatewayResponder,
+    ) -> HandlerFuture<'a> {
+        Box::pin(async move {
+            let shelf = port.shelf().await;
+            let visible = identity.scopes.filter(&shelf);
+            let residents = port.resident().await;
+            respond_json(responder, &ollama::ps(&residents, &visible));
             Ok(GatewayOutcome::ok())
         })
     }

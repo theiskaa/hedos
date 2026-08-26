@@ -15,6 +15,7 @@ use regex::Regex;
 use serde_json::{Value, json};
 
 use crate::error::{GatewayError, GatewayErrorKind};
+use crate::port::GatewayResident;
 use crate::wire::{param_decoding, timestamp};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 
@@ -453,6 +454,29 @@ pub fn tags(records: &[ModelRecord]) -> Value {
                 "digest": "",
                 "details": details(record),
             })
+        })
+        .collect();
+    json!({ "models": models })
+}
+
+/// The `/api/ps` body: the residents that are also on the shelf, shaped like
+/// `/api/tags` plus `size_vram` and hedos's record `id` for matching by id.
+pub fn ps(residents: &[GatewayResident], shelf: &[ModelRecord]) -> Value {
+    let models: Vec<Value> = residents
+        .iter()
+        .filter_map(|resident| {
+            let record = shelf.iter().find(|record| record.id == resident.model_id)?;
+            let name = record.wire_id();
+            let size = resident.footprint_mb * BYTES_PER_MIB;
+            Some(json!({
+                "id": record.id,
+                "name": name,
+                "model": name,
+                "size": size,
+                "size_vram": size,
+                "digest": "",
+                "details": details(record),
+            }))
         })
         .collect();
     json!({ "models": models })

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gateway::admission::{GatewayAdmissionState, GatewayWorkKind};
-use gateway::port::{GatewayPort, PortFuture};
+use gateway::port::{GatewayPort, GatewayResident, PortFuture};
 use kernel::capabilities::CapabilityChunk;
 use kernel::jobs::{Job, JobEvent};
 use kernel::records::{
@@ -77,6 +77,8 @@ pub struct MockPort {
     pub job_events: Vec<JobEvent>,
     /// Artifact bytes keyed by id, served by `artifact_data`.
     pub artifacts: HashMap<String, Vec<u8>>,
+    /// Models reported as held in memory by `resident`.
+    pub resident: Vec<GatewayResident>,
 }
 
 impl Default for MockPort {
@@ -89,6 +91,7 @@ impl Default for MockPort {
             voices: Vec::new(),
             job_events: Vec::new(),
             artifacts: HashMap::new(),
+            resident: Vec::new(),
         }
     }
 }
@@ -142,6 +145,11 @@ impl GatewayPort for MockPort {
     fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>> {
         let shelf: Arc<[ModelRecord]> = self.shelf.clone().into();
         Box::pin(async move { shelf })
+    }
+
+    fn resident(&self) -> PortFuture<'_, Vec<GatewayResident>> {
+        let resident = self.resident.clone();
+        Box::pin(async move { resident })
     }
 
     fn invoke<'a>(

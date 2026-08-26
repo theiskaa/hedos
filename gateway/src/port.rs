@@ -20,6 +20,17 @@ use crate::error::{GatewayError, GatewayErrorKind};
 /// its arguments) for the duration.
 pub type PortFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// One model held in memory by the kernel behind the port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayResident {
+    /// The record id of the resident model.
+    pub model_id: String,
+    /// Its display name.
+    pub name: String,
+    /// Its footprint in megabytes.
+    pub footprint_mb: i64,
+}
+
 /// Everything a handler needs from the running kernel: the shelf, streaming and
 /// job dispatch, job control, and the metadata (tool support, honored params,
 /// voices, admission) that shapes a request.
@@ -27,6 +38,9 @@ pub trait GatewayPort: Send + Sync {
     /// The models currently on the shelf, as a shared snapshot: cloning it is a
     /// refcount bump, not a deep copy of every record.
     fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>>;
+
+    /// The models the kernel currently holds in memory.
+    fn resident(&self) -> PortFuture<'_, Vec<GatewayResident>>;
 
     /// Serve a streaming request, yielding capability chunks.
     fn invoke<'a>(
@@ -115,6 +129,9 @@ mod tests {
     impl GatewayPort for StubPort {
         fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>> {
             Box::pin(async { Arc::from(Vec::<ModelRecord>::new()) })
+        }
+        fn resident(&self) -> PortFuture<'_, Vec<GatewayResident>> {
+            Box::pin(async { Vec::new() })
         }
         fn invoke<'a>(
             &'a self,
