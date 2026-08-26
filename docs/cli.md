@@ -140,7 +140,8 @@ Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the ma
 
 - `p` pulls: a catalog grouped by what you'd use a model for, a search over Hugging Face as you type, and a plan (size, destination, fit) before a byte moves. Downloads run in a task strip with progress; `c` cancels. A finished pull lands on the model it added.
 - `w` / `u` warm and unload, through the Ollama daemon when the daemon holds the model. `x` removes, showing exactly what leaves the disk and asking first.
-- `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it, `t` sends it one prompt, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
+- `t` opens a chat pane on the selected model, in place of the shelf: type, `enter` sends, the reply streams in with its token rate under it, and the conversation carries on until `esc` closes the pane (while a reply streams, `esc` stops it first). The model is warm afterwards, like after `hedos run`.
+- `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it in the plain terminal, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
 - `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path, `?` lists every key, `q` quits. The selection is remembered between runs.
 
 A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal.
