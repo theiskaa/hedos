@@ -216,7 +216,7 @@ async fn search_candidates(
 
 /// The lowercased ids, names, and display names of every model on the shelf, for
 /// matching an install reference against what is already present.
-fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
+pub(crate) fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
     shelf
         .iter()
         .flat_map(|record| {
@@ -231,7 +231,7 @@ fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
 
 /// Whether `reference` names a model already on the shelf: a direct match, or a
 /// match on its last path segment (so `org/Model` matches an installed `Model`).
-fn is_installed(reference: &str, installed: &HashSet<String>) -> bool {
+pub(crate) fn is_installed(reference: &str, installed: &HashSet<String>) -> bool {
     let reference = reference.to_lowercase();
     installed.contains(&reference)
         || installed.contains(reference.rsplit('/').next().unwrap_or(&reference))

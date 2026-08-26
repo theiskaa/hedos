@@ -32,14 +32,23 @@ pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
     record.runtime.id.as_ref().map_or(DASH, |id| id.as_str())
 }
 
-/// A short human fit label from the model's footprint and the machine's memory:
-/// `fits` / `tight` / `too big`, or `—` when the footprint is unknown (the same
-/// dash the runtime column uses for an unresolved runtime).
-fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
-    match FitVerdict::assess(record.footprint_mb, total_memory_bytes).map(|fit| fit.verdict) {
+/// The short human form of a verdict: `fits` / `tight` / `too big`, empty
+/// when there is none.
+pub(crate) fn verdict_label(verdict: Option<FitVerdict>) -> &'static str {
+    match verdict {
         Some(FitVerdict::RunsWell) => "fits",
         Some(FitVerdict::TightFit) => "tight",
         Some(FitVerdict::TooLarge) => "too big",
+        None => "",
+    }
+}
+
+/// The fit column from the model's footprint and the machine's memory, or `—`
+/// when the footprint is unknown (the same dash the runtime column uses for an
+/// unresolved runtime).
+fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
+    match FitVerdict::assess(record.footprint_mb, total_memory_bytes) {
+        Some(fit) => verdict_label(Some(fit.verdict)),
         None => DASH,
     }
 }

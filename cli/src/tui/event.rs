@@ -5,6 +5,7 @@
 use std::thread;
 use std::time::Duration;
 
+use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::records::ModelRecord;
 use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc;
@@ -25,6 +26,25 @@ pub enum Event {
     Task(TaskEvent),
     /// The shelf and facts were re-read.
     Refreshed(Refreshed),
+    /// A provider search came back.
+    Searched(Searched),
+    /// An install plan came back.
+    Planned(Planned),
+}
+
+/// The hits for a query, or why there are none.
+#[derive(Debug, Clone)]
+pub struct Searched {
+    pub query: String,
+    pub hits: Vec<InstallSearchHit>,
+    pub note: Option<String>,
+}
+
+/// The plan for a reference, or why it could not be made.
+#[derive(Debug, Clone)]
+pub struct Planned {
+    pub reference: String,
+    pub result: Result<InstallPlan, String>,
 }
 
 /// A fresh shelf and machine facts.
@@ -43,6 +63,9 @@ pub enum Key {
     Down,
     Top,
     Bottom,
+    Enter,
+    Escape,
+    Backspace,
     /// A printable character.
     Char(char),
     /// Ctrl-C.
@@ -91,6 +114,9 @@ fn translate(key: KeyEvent) -> Option<Key> {
         KeyCode::Down => Key::Down,
         KeyCode::Home => Key::Top,
         KeyCode::End => Key::Bottom,
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Esc => Key::Escape,
+        KeyCode::Backspace => Key::Backspace,
         KeyCode::Char(c) if !ctrl => Key::Char(c),
         _ => return None,
     })

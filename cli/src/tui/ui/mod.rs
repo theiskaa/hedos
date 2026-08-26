@@ -4,12 +4,13 @@
 mod detail;
 mod footer;
 mod header;
+mod modal;
 mod shelf;
 mod tasks;
 
 use ratatui::Frame;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 
 use super::app::App;
 use super::layout::Panes;
@@ -29,6 +30,16 @@ fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span
     ]
 }
 
+/// A key line: each key dim, its verb plain.
+fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (key, verb) in pairs {
+        spans.push(Span::styled((*key).to_owned(), DIM));
+        spans.push(Span::raw(format!(" {verb}  ")));
+    }
+    Line::from(spans)
+}
+
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let panes = Panes::compute(frame.area(), app.tasks.len());
@@ -37,4 +48,5 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     detail::draw(frame, panes.detail, app);
     tasks::draw(frame, panes.tasks, app);
     footer::draw(frame, panes.footer, app);
+    modal::draw(frame, frame.area(), app);
 }

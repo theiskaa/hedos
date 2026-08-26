@@ -10,6 +10,7 @@ mod effect;
 mod event;
 pub(crate) mod facts;
 mod layout;
+mod pull;
 mod tasks;
 mod text;
 mod ui;
@@ -23,12 +24,17 @@ use tokio::time::Interval;
 pub use self::app::App;
 use self::effect::Effect;
 use self::event::Event;
+use self::tasks::TaskContext;
 use crate::error::CliError;
 use crate::support::output::Out;
 use crate::support::session::Session;
 
 /// Run `app` over `session` on the terminal until it asks to quit.
 pub async fn run(mut app: App, session: Arc<Session>, out: &Out) -> Result<(), CliError> {
+    let context = Arc::new(TaskContext::new(
+        session,
+        runtime::boot::default_install_service(),
+    ));
     let (tx, mut rx) = mpsc::unbounded_channel();
     // The input thread owns the only strong sender: when it dies the channel
     // closes and the loop ends, instead of ticking on with no way to quit.
@@ -48,7 +54,7 @@ pub async fn run(mut app: App, session: Arc<Session>, out: &Out) -> Result<(), C
     let outcome = drive(
         &mut terminal,
         &mut app,
-        &session,
+        &context,
         &weak,
         &mut rx,
         &mut ticks,
@@ -66,7 +72,7 @@ pub async fn run(mut app: App, session: Arc<Session>, out: &Out) -> Result<(), C
 async fn drive(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    session: &Arc<Session>,
+    context: &Arc<TaskContext>,
     tx: &mpsc::WeakUnboundedSender<Event>,
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
@@ -91,10 +97,15 @@ async fn drive(
             match effect {
                 Effect::Quit => return Ok(()),
                 Effect::Spawn(kind) => {
-                    let id = tasks::spawn(&kind, session, tx);
+                    let id = tasks::spawn(&kind, context, tx);
                     app.started(id, kind);
                 }
-                Effect::Refresh => tasks::spawn_refresh(session, tx),
+                Effect::Refresh => tasks::spawn_refresh(context, tx),
+                Effect::Search(query) => tasks::spawn_search(query, context, tx),
+                Effect::Plan(provider, reference) => {
+                    tasks::spawn_plan(provider, reference, context, tx);
+                }
+                Effect::Cancel(id) => context.cancel(id),
             }
         }
     }

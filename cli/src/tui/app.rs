@@ -8,8 +8,9 @@ use kernel::records::{Capability, ModelRecord};
 use ratatui::widgets::TableState;
 
 use super::effect::Effect;
-use super::event::{Event, Key, Refreshed};
+use super::event::{Event, Key, Planned, Refreshed, Searched};
 use super::facts::{Facts, Holder};
+use super::pull::{PullModal, Stage};
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskState};
 
 /// How often the loop ticks; every cadence below is counted in these.
@@ -37,7 +38,7 @@ pub struct TaskRow {
 impl TaskRow {
     /// Whether the task is still going.
     pub fn running(&self) -> bool {
-        self.state == TaskState::Running
+        self.state.running()
     }
 }
 
@@ -52,6 +53,8 @@ pub struct App {
     pub shelf: TableState,
     /// Background work, oldest first.
     pub tasks: Vec<TaskRow>,
+    /// The pull modal, while it is open.
+    pub pull: Option<PullModal>,
     /// A short message in the footer, until the tick it expires on.
     notice: Option<(String, u64)>,
     /// Ticks since the loop started; every cadence is counted in these.
@@ -71,6 +74,7 @@ impl App {
             facts,
             shelf: TableState::new().with_selected(0),
             tasks: Vec::new(),
+            pull: None,
             notice: None,
             ticks: 0,
             last_refresh: 0,
@@ -150,12 +154,26 @@ impl App {
                 self.refreshed(refreshed);
                 Vec::new()
             }
+            Event::Searched(searched) => {
+                self.searched(searched);
+                Vec::new()
+            }
+            Event::Planned(planned) => {
+                self.planned(planned);
+                Vec::new()
+            }
         }
     }
 
     fn key(&mut self, key: Key) -> Vec<Effect> {
+        if key == Key::Interrupt {
+            return vec![Effect::Quit];
+        }
+        if self.pull.is_some() {
+            return self.pull_key(key);
+        }
         match key {
-            Key::Char('q') | Key::Interrupt => return vec![Effect::Quit],
+            Key::Char('q') => return vec![Effect::Quit],
             Key::Down | Key::Char('j') => self.select(self.selected().saturating_add(1)),
             Key::Up | Key::Char('k') => self.select(self.selected().saturating_sub(1)),
             Key::Top | Key::Char('g') => self.select(0),
@@ -166,9 +184,81 @@ impl App {
             Key::Char('r') => return self.refresh(),
             Key::Char('w') => return self.warm(),
             Key::Char('u') => return self.unload(),
+            Key::Char('p') => {
+                self.pull = Some(PullModal::open(&self.records, self.facts.memory_bytes));
+                self.dirty = true;
+            }
+            Key::Char('c') => return self.cancel_pull(),
             _ => {}
         }
         Vec::new()
+    }
+
+    fn pull_key(&mut self, key: Key) -> Vec<Effect> {
+        let now = self.ticks;
+        let Some(modal) = self.pull.as_mut() else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        match (&modal.stage, key) {
+            (Stage::Listing, Key::Escape) => self.pull = None,
+            (Stage::Listing, Key::Up) => modal.step(-1),
+            (Stage::Listing, Key::Down) => modal.step(1),
+            (Stage::Listing, Key::Backspace) => modal.backspace(now),
+            (Stage::Listing, Key::Char(c)) => modal.type_char(c, now),
+            (Stage::Listing, Key::Enter) => {
+                if let Some((provider, reference)) = modal.choose() {
+                    return vec![Effect::Plan(provider, reference)];
+                }
+            }
+            (Stage::Preview(plan), Key::Enter) => {
+                let kind = TaskKind::Pull(plan.clone());
+                if self.already_running(&kind) {
+                    let reference = kind.subject().to_owned();
+                    return self.notify(format!("{reference} is already downloading"));
+                }
+                self.pull = None;
+                return vec![Effect::Spawn(kind)];
+            }
+            (Stage::Preview(_) | Stage::Note(_), Key::Escape | Key::Backspace) => modal.back(),
+            (Stage::Planning(_), Key::Escape) => modal.back(),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Cancel the newest pull still downloading.
+    fn cancel_pull(&mut self) -> Vec<Effect> {
+        let pull = self
+            .tasks
+            .iter()
+            .rev()
+            .find(|row| row.running() && matches!(row.kind, TaskKind::Pull(_)));
+        match pull {
+            Some(row) => vec![Effect::Cancel(row.id)],
+            None => self.notify("nothing is downloading".to_owned()),
+        }
+    }
+
+    fn searched(&mut self, searched: Searched) {
+        let Some(modal) = self.pull.as_mut() else {
+            return;
+        };
+        let applied = modal.searched(&searched.query, &searched.hits);
+        self.dirty = true;
+        if applied
+            && searched.hits.is_empty()
+            && let Some(note) = searched.note
+        {
+            self.notify(note);
+        }
+    }
+
+    fn planned(&mut self, planned: Planned) {
+        if let Some(modal) = self.pull.as_mut() {
+            modal.planned(&planned.reference, planned.result);
+            self.dirty = true;
+        }
     }
 
     fn warm(&mut self) -> Vec<Effect> {
@@ -240,6 +330,10 @@ impl App {
 
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
+        let now = self.ticks;
+        if let Some(query) = self.pull.as_mut().and_then(|modal| modal.search_due(now)) {
+            return vec![Effect::Search(query)];
+        }
         if let Some((_, until)) = &self.notice
             && self.ticks >= *until
         {
@@ -275,7 +369,7 @@ impl App {
         let Some(row) = self.tasks.iter_mut().find(|row| row.id == event.id) else {
             return Vec::new();
         };
-        let finished = event.state != TaskState::Running;
+        let finished = !event.state.running();
         row.state = event.state;
         if finished {
             row.finished_at = Some(self.ticks);
@@ -558,6 +652,58 @@ mod tests {
             facts: Facts::default(),
         }));
         assert!(app.selected_record().is_none());
+    }
+
+    #[test]
+    fn the_pull_modal_captures_keys_until_it_closes() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('p'));
+        assert!(app.pull.is_some());
+        assert!(press(&mut app, Key::Char('q')).is_empty());
+        assert_eq!(app.pull.as_ref().unwrap().input, "q");
+        press(&mut app, Key::Backspace);
+        let effects = press(&mut app, Key::Enter);
+        assert!(matches!(effects.as_slice(), [Effect::Plan(_, _)]));
+        press(&mut app, Key::Escape);
+        assert_eq!(app.pull.as_ref().unwrap().stage, Stage::Listing);
+        press(&mut app, Key::Escape);
+        assert!(app.pull.is_none());
+        assert_eq!(press(&mut app, Key::Interrupt), vec![Effect::Quit]);
+    }
+
+    #[test]
+    fn a_typed_query_is_searched_after_the_debounce() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('p'));
+        press(&mut app, Key::Char('x'));
+        assert!(ticks(&mut app, 1).is_empty());
+        assert_eq!(ticks(&mut app, 1), vec![Effect::Search("x".to_owned())]);
+    }
+
+    #[test]
+    fn cancel_targets_the_newest_running_pull() {
+        let mut app = app(1);
+        assert!(press(&mut app, Key::Char('c')).is_empty());
+        assert_eq!(app.notice(), Some("nothing is downloading"));
+        let id = TaskId::next();
+        let plan = kernel::install::plan::InstallPlan {
+            provider: kernel::install::provider::InstallProviderId::ollama(),
+            reference: "x".to_owned(),
+            display_name: "x".to_owned(),
+            revision: None,
+            files: Vec::new(),
+            total_bytes: None,
+            remaining_bytes: None,
+            destination: String::new(),
+            requires_auth: false,
+        };
+        app.started(id, TaskKind::Pull(plan.clone()));
+        assert_eq!(press(&mut app, Key::Char('c')), vec![Effect::Cancel(id)]);
+
+        app.pull = Some(PullModal::open(&[], 0));
+        app.pull.as_mut().unwrap().stage = Stage::Preview(plan);
+        assert!(press(&mut app, Key::Enter).is_empty());
+        assert_eq!(app.notice(), Some("x is already downloading"));
     }
 
     #[test]

@@ -6,16 +6,18 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{BOLD, DIM};
+use super::{BOLD, keys};
 use crate::tui::app::App;
 
 /// The keys the footer teaches, in display order.
-const KEYS: [(&str, &str); 7] = [
+const KEYS: [(&str, &str); 9] = [
     ("j/k", "move"),
     ("g/G", "ends"),
+    ("p", "pull"),
     ("s", "scan"),
     ("w", "warm"),
     ("u", "unload"),
+    ("c", "cancel"),
     ("r", "refresh"),
     ("q", "quit"),
 ];
@@ -24,16 +26,7 @@ const KEYS: [(&str, &str); 7] = [
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let line = match app.notice() {
         Some(notice) => Line::from(Span::styled(format!(" {notice}"), BOLD)),
-        None => keys(),
+        None => keys(&KEYS),
     };
     frame.render_widget(Paragraph::new(line), area);
-}
-
-fn keys() -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
-    for (key, verb) in KEYS {
-        spans.push(Span::styled(key, DIM));
-        spans.push(Span::raw(format!(" {verb}  ")));
-    }
-    Line::from(spans)
 }
