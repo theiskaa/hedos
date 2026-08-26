@@ -154,3 +154,76 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
     }
     lines
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::testing::{line_text, record};
+
+    fn pane_with(text: &str, ending: Ending) -> ChatPane {
+        let mut pane = ChatPane::open(record("m"));
+        pane.turns.push(Turn {
+            speaker: Speaker::User,
+            text: "hi there".to_owned(),
+            ending: Ending::Done(None),
+        });
+        pane.turns.push(Turn {
+            speaker: Speaker::Model,
+            text: text.to_owned(),
+            ending,
+        });
+        pane
+    }
+
+    fn texts(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(line_text).collect()
+    }
+
+    #[test]
+    fn an_empty_pane_shows_the_hint() {
+        let lines = transcript(&ChatPane::open(record("m")), 60, 0);
+        assert!(texts(&lines)[1].contains("ask m anything"));
+    }
+
+    #[test]
+    fn a_user_turn_leads_with_the_mark_then_indents() {
+        let pane = pane_with("", Ending::Open);
+        let lines = texts(&transcript(&pane, 8, 0));
+        assert_eq!(lines[1], "› hi");
+        assert_eq!(lines[2], "  there");
+    }
+
+    #[test]
+    fn the_spinner_turns_only_before_the_first_token() {
+        let waiting = texts(&turn_lines(&pane_with("", Ending::Open).turns[1], 40, 1));
+        assert_eq!(waiting, [format!("  {} thinking", SPINNER[1])]);
+        let streaming = texts(&turn_lines(
+            &pane_with("word", Ending::Open).turns[1],
+            40,
+            1,
+        ));
+        assert_eq!(streaming, ["  word"]);
+    }
+
+    #[test]
+    fn how_a_reply_ended_sits_under_it() {
+        let done = texts(&turn_lines(
+            &pane_with("ok", Ending::Done(None)).turns[1],
+            40,
+            0,
+        ));
+        assert_eq!(done, ["  ok"]);
+        let stopped = texts(&turn_lines(
+            &pane_with("ok", Ending::Stopped).turns[1],
+            40,
+            0,
+        ));
+        assert_eq!(stopped, ["  ok", "  stopped"]);
+        let failed = texts(&turn_lines(
+            &pane_with("", Ending::Failed("gone".to_owned())).turns[1],
+            40,
+            0,
+        ));
+        assert_eq!(failed, ["  failed: gone"]);
+    }
+}

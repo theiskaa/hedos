@@ -44,6 +44,7 @@ pub enum Event {
 pub struct Searched {
     pub query: String,
     pub hits: Vec<InstallSearchHit>,
+    /// Why the search came back short, when a provider could not be asked.
     pub note: Option<String>,
 }
 

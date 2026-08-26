@@ -19,6 +19,8 @@ mod pull;
 mod state;
 mod strip;
 mod tasks;
+#[cfg(test)]
+mod testing;
 mod text;
 mod ui;
 mod wrap;

@@ -48,35 +48,45 @@ mod tests {
 
     use super::*;
 
-    fn temp_dir() -> PathBuf {
-        // Tests run in parallel and the clock is not unique enough on its own.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "hedos-ui-state-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&dir).expect("temp dir");
-        dir
+    /// A directory of its own that goes away with the test, passed or not.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            // Tests run in parallel and the clock is not unique enough on
+            // its own.
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "hedos-ui-state-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&dir).expect("temp dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
     fn state_round_trips() {
-        let dir = temp_dir();
+        let dir = TempDir::new();
         let state = UiState {
             selected_id: Some("abc".to_owned()),
         };
-        state.save(&dir);
-        assert_eq!(UiState::load(&dir), state);
-        let _ = fs::remove_dir_all(dir);
+        state.save(&dir.0);
+        assert_eq!(UiState::load(&dir.0), state);
     }
 
     #[test]
     fn missing_or_broken_state_is_the_default() {
-        let dir = temp_dir();
-        assert_eq!(UiState::load(&dir), UiState::default());
-        fs::write(UiState::path(&dir), "not = [toml").expect("write");
-        assert_eq!(UiState::load(&dir), UiState::default());
-        let _ = fs::remove_dir_all(dir);
+        let dir = TempDir::new();
+        assert_eq!(UiState::load(&dir.0), UiState::default());
+        fs::write(UiState::path(&dir.0), "not = [toml").expect("write");
+        assert_eq!(UiState::load(&dir.0), UiState::default());
     }
 }

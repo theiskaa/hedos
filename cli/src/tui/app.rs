@@ -906,17 +906,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::residency::Resident;
     use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
+    use crate::tui::testing::{plan, resident};
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
     fn record(index: usize) -> ModelRecord {
-        ModelRecord::new(
-            &format!("model-{index}"),
-            Modality::text(),
-            vec![Capability::chat()],
-            ModelSource::new(SourceKind::ollama(), &format!("model-{index}")),
-        )
+        crate::tui::testing::record(&format!("model-{index}"))
     }
 
     fn app(count: usize) -> App {
@@ -931,34 +926,10 @@ mod tests {
         app.reduce(Event::Key(key))
     }
 
-    fn resident(id: &str, holder: Holder) -> Resident {
-        Resident {
-            id: id.to_owned(),
-            name: id.to_owned(),
-            bytes: 0,
-            holder,
-            expires_at_millis: None,
-        }
-    }
-
     fn pull(app: &App) -> &PullModal {
         match &app.modal {
             Some(Modal::Pull(modal)) => modal,
             _ => panic!("no pull modal"),
-        }
-    }
-
-    fn plan(reference: &str) -> kernel::install::plan::InstallPlan {
-        kernel::install::plan::InstallPlan {
-            provider: kernel::install::provider::InstallProviderId::ollama(),
-            reference: reference.to_owned(),
-            display_name: reference.to_owned(),
-            revision: None,
-            files: Vec::new(),
-            total_bytes: None,
-            remaining_bytes: None,
-            destination: String::new(),
-            requires_auth: false,
         }
     }
 
@@ -1351,6 +1322,46 @@ mod tests {
         assert!(matches!(app.modal, Some(Modal::Launch(_))));
         press(&mut app, Key::Escape);
         assert!(app.modal.is_none());
+        let record = record(0);
+        app.open(Modal::Launch(Box::new(LaunchModal::open_with(
+            &record,
+            |_| Some(std::path::PathBuf::from("/bin/harness")),
+        ))));
+        let effects = press(&mut app, Key::Enter);
+        assert!(matches!(
+            effects.as_slice(),
+            [Effect::HandOff(hand_off)] if matches!(**hand_off, HandOff::Launch { .. })
+        ));
+        assert!(app.modal.is_none());
+        app.open(Modal::Launch(Box::new(LaunchModal::open_with(
+            &record,
+            |_| None,
+        ))));
+        assert!(press(&mut app, Key::Enter).is_empty());
+        assert!(
+            app.notice()
+                .is_some_and(|notice| notice.contains("not installed"))
+        );
+    }
+
+    #[test]
+    fn the_scroll_keys_reach_the_pane() {
+        let mut app = app(1);
+        let generation = ask(&mut app);
+        reply(&mut app, generation, ReplyStep::Text("a\n".repeat(40)));
+        app.chat_pane_mut().expect("the pane").measured(30);
+        press(&mut app, Key::PageUp);
+        assert_eq!(
+            app.chat_pane().expect("the pane").first_line(),
+            30 - PAGE_LINES
+        );
+        press(&mut app, Key::ScrollDown);
+        assert_eq!(
+            app.chat_pane().expect("the pane").first_line(),
+            30 - PAGE_LINES + WHEEL_LINES
+        );
+        press(&mut app, Key::Bottom);
+        assert_eq!(app.chat_pane().expect("the pane").first_line(), 30);
     }
 
     #[test]

@@ -86,12 +86,7 @@ mod tests {
         ("y", "copy path"),
     ];
 
-    fn text(line: &Line) -> String {
-        line.spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect()
-    }
+    use crate::tui::testing::line_text as text;
 
     #[test]
     fn the_footer_sheds_from_the_right_until_it_fits() {
@@ -103,5 +98,11 @@ mod tests {
         assert!(!narrow.contains('│') && narrow.contains("S serve") && narrow.contains("q quit"));
         let tiny = text(&fitting_line(&ALL, 50));
         assert!(!tiny.contains("S serve") && tiny.contains("q quit"));
+    }
+
+    #[test]
+    fn escape_reads_as_stop_while_a_reply_streams() {
+        assert!(text(&chat_line(true)).contains("esc stop"));
+        assert!(text(&chat_line(false)).contains("esc close"));
     }
 }

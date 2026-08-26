@@ -244,15 +244,10 @@ impl ChatPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+    use crate::tui::testing::record;
 
     fn pane() -> ChatPane {
-        ChatPane::open(ModelRecord::new(
-            "m",
-            Modality::text(),
-            vec![Capability::chat()],
-            ModelSource::new(SourceKind::ollama(), "m"),
-        ))
+        ChatPane::open(record("m"))
     }
 
     fn type_in(pane: &mut ChatPane, text: &str) {

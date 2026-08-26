@@ -28,10 +28,19 @@ pub struct LaunchModal {
 impl LaunchModal {
     /// The modal for `record`, the first launchable harness selected.
     pub fn open(record: &ModelRecord) -> Self {
+        Self::open_with(record, HarnessSpec::locate)
+    }
+
+    /// [`open`](Self::open) finding each harness's binary through `locate`,
+    /// so the rows can be built without looking at `PATH`.
+    pub fn open_with(
+        record: &ModelRecord,
+        locate: impl Fn(&HarnessSpec) -> Option<PathBuf>,
+    ) -> Self {
         let rows: Vec<HarnessRow> = HARNESSES
             .iter()
             .map(|spec| {
-                let program = spec.locate();
+                let program = locate(spec);
                 let blocked = if program.is_none() {
                     Some(format!("not installed · {}", spec.homepage))
                 } else if !record.capabilities.contains(&spec.needed_capability()) {
@@ -76,29 +85,46 @@ impl LaunchModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+    use crate::tui::testing::{record, record_with};
+    use kernel::records::Capability;
 
-    fn record(capabilities: Vec<Capability>) -> ModelRecord {
-        ModelRecord::new(
-            "m",
-            Modality::text(),
-            capabilities,
-            ModelSource::new(SourceKind::ollama(), "m"),
-        )
+    fn installed(_: &HarnessSpec) -> Option<PathBuf> {
+        Some(PathBuf::from("/usr/local/bin/harness"))
     }
 
     #[test]
     fn tool_driven_harnesses_are_blocked_without_tools() {
-        let modal = LaunchModal::open(&record(vec![Capability::chat()]));
+        let modal = LaunchModal::open_with(&record("m"), installed);
         assert_eq!(modal.rows.len(), HARNESSES.len());
-        for row in modal.rows.iter().filter(|row| row.spec.needs_tools) {
-            assert!(row.blocked.is_some());
+        for row in &modal.rows {
+            if row.spec.needs_tools {
+                assert!(
+                    row.blocked
+                        .as_deref()
+                        .is_some_and(|why| why.starts_with("needs tools"))
+                );
+            } else {
+                assert_eq!(row.blocked, None);
+            }
         }
+        let with_tools = record_with("m", vec![Capability::chat(), Capability::tools()]);
+        assert!(
+            LaunchModal::open_with(&with_tools, installed)
+                .rows
+                .iter()
+                .all(|row| row.blocked.is_none())
+        );
+        let none = LaunchModal::open_with(&record("m"), |_| None);
+        assert!(none.rows.iter().all(|row| {
+            row.blocked
+                .as_deref()
+                .is_some_and(|why| why.starts_with("not installed"))
+        }));
     }
 
     #[test]
     fn stepping_clamps() {
-        let mut modal = LaunchModal::open(&record(vec![Capability::chat()]));
+        let mut modal = LaunchModal::open_with(&record("m"), installed);
         modal.step(-5);
         assert_eq!(modal.selected, 0);
         modal.step(50);
