@@ -80,10 +80,9 @@ impl From<RegistryError> for KernelError {
 /// currently holds memory.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResidentEntry {
-    /// The model id, or `None` for a resident held outside the governor's
-    /// accounting (a model loaded directly by the Ollama daemon). Only governor
-    /// residents are reported today; the Ollama-origin source is deferred with
-    /// the adapter's loaded-model tracking, and will fill the `None` case.
+    /// The model id. Only governor residents are reported, so it is always
+    /// set today; models the Ollama daemon loads on its own are found by the
+    /// CLI asking the daemon, not through this list.
     pub model_id: Option<String>,
     /// The model's display name.
     pub name: String,
