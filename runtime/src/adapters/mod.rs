@@ -55,7 +55,7 @@ pub use mflux::MfluxAdapter;
 pub use mlx_audio::MlxAudioAdapter;
 pub use mlx_lm::MlxLmAdapter;
 pub use mlx_vlm::MlxVlmAdapter;
-pub use ollama::OllamaAdapter;
+pub use ollama::{DEFAULT_BASE_URL as OLLAMA_BASE_URL, OllamaAdapter};
 pub use openai::{EndpointConcurrencyGate, EnvSecretStore, OpenAiEndpointAdapter, SecretStore};
 pub use tool_scanner::ToolCallScanner;
 pub use whisper::{

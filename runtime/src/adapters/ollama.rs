@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 
 use super::{ChunkStream, RuntimeAdapter, RuntimeError};
 
-const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
+/// Where a local Ollama daemon listens unless told otherwise.
+pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 const NOT_RUNNING_HINT: &str = "Ollama isn't running. Start it with `ollama serve`.";
 const MAX_EMBED_BYTES: usize = 32 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 64 * 1024;
