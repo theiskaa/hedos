@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use clap::Args;
-use kernel::records::{Capability, JsonValue};
+use kernel::records::{Capability, JsonValue, ModelRecord};
 
 use crate::error::CliError;
 use crate::support::interactive;
+use crate::support::ollama;
 use crate::support::output::Out;
 use crate::support::session::Session;
 
@@ -21,7 +22,7 @@ pub struct WarmArgs {
 pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set_with_gateway().await;
+    let warm = session.warm_set_anywhere(&shelf).await;
     let record =
         interactive::choose_model(out, args.model.as_deref(), &shelf, None, "warm", &warm)?;
 
@@ -36,7 +37,7 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
         result?;
     }
 
-    let resident = is_resident(&session, &record.id);
+    let resident = is_resident(&session, record).await;
     out.line(&format!(
         "{} is {}",
         record.display_name(),
@@ -46,15 +47,10 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Whether the kernel holds `id` after a load: tracked by the governor, or
-/// reported by a daemon that loaded it outside the governor's accounting.
-pub(crate) fn is_resident(session: &Session, id: &str) -> bool {
-    session.kernel.governor().is_resident(id)
-        || session
-            .kernel
-            .resident_models()
-            .iter()
-            .any(|entry| entry.model_id.as_deref() == Some(id))
+/// Whether `record` is loaded after a warm: tracked by this process's
+/// governor, or held by the Ollama daemon, which loads its models itself.
+pub(crate) async fn is_resident(session: &Session, record: &ModelRecord) -> bool {
+    session.kernel.governor().is_resident(&record.id) || ollama::holds_now(record).await
 }
 
 /// The word for a finished load, by whether residency is tracked for it.

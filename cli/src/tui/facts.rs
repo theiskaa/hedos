@@ -11,9 +11,10 @@ use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use gateway::stats::{LatencyPercentiles, percentiles};
 use kernel::records::ModelRecord;
 use kernel::records::byte_format::BYTES_PER_MIB;
-use kernel::time::now_millis;
+use kernel::time::{millis_from_iso8601, now_millis};
 
 use crate::support::machine;
+use crate::support::ollama;
 use crate::support::session::Session;
 
 const HOUR_MILLIS: i64 = 3_600_000;
@@ -140,6 +141,8 @@ pub enum Holder {
     Local,
     /// A `hedos serve` on the configured port.
     Gateway,
+    /// The Ollama daemon, which loads the models it serves itself.
+    Daemon,
 }
 
 /// One model held in memory.
@@ -172,7 +175,7 @@ impl Resident {
 pub struct Facts {
     /// The machine's total memory in bytes.
     pub memory_bytes: u64,
-    /// The models in memory, local first, then the gateway's.
+    /// The models in memory: local, then the gateway's, then the Ollama daemon's.
     pub residents: Vec<Resident>,
     /// The port a running gateway answered on, if any.
     pub gateway_port: Option<u16>,
@@ -232,6 +235,23 @@ impl Facts {
             }
         }
 
+        if let Some(daemon) = ollama::residents().await {
+            for record in records {
+                if residents.iter().any(|known| known.id == record.id) {
+                    continue;
+                }
+                let Some(held) = ollama::held(&daemon, record) else {
+                    continue;
+                };
+                residents.push(Resident {
+                    id: record.id.clone(),
+                    name: record.display_name().to_owned(),
+                    bytes: held.size,
+                    holder: Holder::Daemon,
+                    expires_at_millis: held.expires_at.as_deref().and_then(millis_from_iso8601),
+                });
+            }
+        }
         Self {
             memory_bytes: machine::memory_budget_bytes(),
             residents,

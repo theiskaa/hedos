@@ -19,6 +19,7 @@ use super::facts::{AuditReader, Facts};
 use super::pull::SEARCH_LIMIT;
 use super::text;
 use crate::commands::rm::remove_and_forget;
+use crate::commands::unload::unload_anywhere;
 use crate::commands::warm::{is_resident, residency_outcome, warm_request};
 use crate::support::session::Session;
 
@@ -96,7 +97,7 @@ pub enum TaskKind {
     Warm { id: String, name: String },
     /// Load a model through the gateway on `port`, where it will be served.
     WarmViaGateway { id: String, name: String, port: u16 },
-    /// Evict a model from this process.
+    /// Evict a model from this process, or from the Ollama daemon if it holds it.
     Unload { id: String, name: String },
     /// Download a model along a resolved plan.
     Pull(InstallPlan),
@@ -289,7 +290,7 @@ async fn warm(session: &Session, id: &str) -> Result<String, String> {
     while let Some(result) = stream.recv().await {
         result.map_err(|error| error.to_string())?;
     }
-    Ok(residency_outcome(is_resident(session, id)).to_owned())
+    Ok(residency_outcome(is_resident(session, record).await).to_owned())
 }
 
 /// A one-token chat through the gateway, so the model loads where it serves.
@@ -320,8 +321,15 @@ async fn warm_via_gateway(id: &str, port: u16) -> Result<String, String> {
 }
 
 async fn unload(session: &Session, id: &str) -> Result<String, String> {
-    session.kernel.governor().residency().unload_now(id).await;
-    if session.kernel.governor().is_resident(id) {
+    let shelf = session.shelf().await;
+    let record = shelf
+        .iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| "no longer on the shelf".to_owned())?;
+    let resident = unload_anywhere(session, record)
+        .await
+        .map_err(|error| error.to_string())?;
+    if resident {
         Err("still resident; something is using it".to_owned())
     } else {
         Ok("unloaded".to_owned())

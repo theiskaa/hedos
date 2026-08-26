@@ -6,6 +6,7 @@ pub mod download;
 pub mod harnesses;
 pub mod interactive;
 pub mod machine;
+pub mod ollama;
 pub mod output;
 pub mod paths;
 pub mod payload;

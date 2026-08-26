@@ -132,11 +132,9 @@ impl App {
             .filter_map(|&index| self.records.get(index))
     }
 
-    /// Apply a remembered `state`: its sort and filter, and its selection when
-    /// that model is still on the shelf.
+    /// Apply a remembered `state`: its selection, when that model is still on
+    /// the shelf.
     pub fn restore(&mut self, state: &UiState) {
-        self.sort = state.sort;
-        self.filter = state.filter.clone();
         self.reorder(state.selected_id.clone());
     }
 
@@ -144,8 +142,6 @@ impl App {
     pub fn remembered(&self) -> UiState {
         UiState {
             selected_id: self.selected_record().map(|record| record.id.clone()),
-            sort: self.sort,
-            filter: self.filter.clone(),
         }
     }
 
@@ -548,7 +544,9 @@ impl App {
                     "{name} is held by the gateway on :{port}; it unloads there after its warm window"
                 ))
             }
-            Some(Holder::Local) => vec![Effect::Spawn(TaskKind::Unload { id, name })],
+            Some(Holder::Local | Holder::Daemon) => {
+                vec![Effect::Spawn(TaskKind::Unload { id, name })]
+            }
         }
     }
 
@@ -1086,11 +1084,9 @@ mod tests {
     fn state_round_trips_through_restore() {
         let mut app = app(3);
         press(&mut app, Key::Char('G'));
-        press(&mut app, Key::Char('o'));
         let state = app.remembered();
         let mut fresh = app_from(app.records.clone());
         fresh.restore(&state);
-        assert_eq!(fresh.sort, Sort::Size);
         assert_eq!(
             fresh.selected_record().map(|r| &r.id),
             Some(&app.records[2].id)

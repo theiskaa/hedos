@@ -174,6 +174,7 @@ fn residency_line(record: &ModelRecord, facts: &Facts) -> Line<'static> {
             spans.push(Span::styled("warm", BOLD));
             let holder = match resident.holder {
                 Holder::Local => " · in this process".to_owned(),
+                Holder::Daemon => " · held by the Ollama daemon".to_owned(),
                 Holder::Gateway => match facts.gateway_port {
                     Some(port) => format!(" · held by the gateway on :{port}"),
                     None => " · held by the gateway".to_owned(),

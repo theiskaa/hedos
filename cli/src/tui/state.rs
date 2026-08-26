@@ -1,12 +1,11 @@
-//! What the UI remembers between runs: where the selection was, the sort,
-//! and the filter. State, not settings, so it lives in the data dir.
+//! What the UI remembers between runs: where the selection was, and nothing
+//! else; a remembered filter surprised more than it helped. State, not
+//! settings, so it lives in the data dir.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-
-use super::order::Sort;
 
 const FILE: &str = "ui.toml";
 
@@ -16,10 +15,6 @@ const FILE: &str = "ui.toml";
 pub struct UiState {
     /// The id of the model that was selected.
     pub selected_id: Option<String>,
-    /// The sort in effect.
-    pub sort: Sort,
-    /// The filter in effect.
-    pub filter: String,
 }
 
 impl UiState {
@@ -69,8 +64,6 @@ mod tests {
         let dir = temp_dir();
         let state = UiState {
             selected_id: Some("abc".to_owned()),
-            sort: Sort::LastUsed,
-            filter: "qw".to_owned(),
         };
         state.save(&dir);
         assert_eq!(UiState::load(&dir), state);

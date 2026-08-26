@@ -50,7 +50,7 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let warm = session.warm_set_with_gateway().await;
+    let warm = session.warm_set_anywhere(&shelf).await;
     let records: Vec<&_> = shelf.iter().collect();
     out.line(&shelf_table::table(&records, &warm, budget));
     Ok(())
