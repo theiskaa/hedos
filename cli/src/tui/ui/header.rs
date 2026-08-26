@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 use kernel::profiles::FitVerdict;
 
 use super::machine::{free_of_total, gateway_state};
-use super::{BOLD, DIM, field, field_line, wordmark};
+use super::{BOLD, DIM, field_line, label, wordmark};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::verdict;
 use crate::tui::app::App;
@@ -67,7 +67,7 @@ fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
         Line::default(),
         row("shelf", shelf_line(app)),
         Line::from(
-            field("memory", "", LABEL_WIDTH)
+            vec![label("memory", LABEL_WIDTH)]
                 .into_iter()
                 .chain(free_of_total(&app.facts))
                 .collect::<Vec<_>>(),

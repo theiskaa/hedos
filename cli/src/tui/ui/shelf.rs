@@ -5,11 +5,11 @@ use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 
-use super::{ACCENT, BOLD, CAUTION, CURSOR, DIM, FAILED, WARM};
+use super::{ACCENT, BOLD, CAUTION, DIM, FAILED, SELECTED_ROW, WARM, edited};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
 use crate::tui::app::App;
@@ -49,40 +49,35 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let columns = fitting_columns(&column_widths, area.width);
     let selected = app.selected();
 
-    let body = shown
-        .iter()
-        .zip(&rows)
-        .enumerate()
-        .map(|(index, (record, row))| {
-            let style = match (row.verdict, row.warm) {
-                (Some(FitVerdict::TooLarge), _) => DIM,
-                (_, true) => BOLD,
-                _ => Style::new(),
-            };
-            let size_style = match row.verdict {
-                Some(FitVerdict::TightFit) => CAUTION,
-                Some(FitVerdict::TooLarge) => FAILED,
-                _ => Style::new(),
-            };
-            let marker = |mark: &str| {
-                let text = format!("{mark}{}", row.cells[0]);
-                if row.warm {
-                    Cell::from(Span::styled(text, WARM))
-                } else {
-                    Cell::from(text)
-                }
-            };
-            let cells = columns.iter().map(|&column| match column {
-                0 if index == selected => marker(SELECTED),
-                0 => marker(" "),
-                SIZE => Cell::from(
-                    Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
-                ),
-                _ => Cell::from(row.cells[column].clone()),
-            });
-            let _ = record;
-            Row::new(cells).style(style)
+    let body = rows.iter().enumerate().map(|(index, row)| {
+        let style = match (row.verdict, row.warm) {
+            (Some(FitVerdict::TooLarge), _) => DIM,
+            (_, true) => BOLD,
+            _ => Style::new(),
+        };
+        let size_style = match row.verdict {
+            Some(FitVerdict::TightFit) => CAUTION,
+            Some(FitVerdict::TooLarge) => FAILED,
+            _ => Style::new(),
+        };
+        let marker = |mark: &str| {
+            let text = format!("{mark}{}", row.cells[0]);
+            if row.warm {
+                Cell::from(Span::styled(text, WARM))
+            } else {
+                Cell::from(text)
+            }
+        };
+        let cells = columns.iter().map(|&column| match column {
+            0 if index == selected => marker(SELECTED),
+            0 => marker(" "),
+            SIZE => Cell::from(
+                Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
+            ),
+            _ => Cell::from(row.cells[column].clone()),
         });
+        Row::new(cells).style(style)
+    });
 
     let header = if shown.is_empty() {
         Row::new(vec!["", "nothing matches; esc clears the filter"]).style(DIM)
@@ -96,7 +91,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(body, constraints(&column_widths, columns))
         .header(header)
         .column_spacing(COLUMN_SPACING)
-        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(SELECTED_ROW)
         .block(Block::bordered().title(title(app)).border_style(DIM));
     frame.render_stateful_widget(table, area, &mut app.shelf);
 }
@@ -179,21 +174,19 @@ fn constraints(column_widths: &[usize; 5], columns: &[usize]) -> Vec<Constraint>
         .collect()
 }
 
-/// Cells of the filter shown in the title while it is typed.
-const FILTER_WIDTH: usize = 24;
+/// Cells of the title the filter may take while it is typed, mark and
+/// cursor included.
+const FILTER_WIDTH: usize = 28;
 
 /// ` shelf `, or the filter as it is typed with how many rows it keeps, plus
 /// the sort when it is not the shelf's own order.
 fn title(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
     if app.filtering || !app.filter.is_empty() {
-        spans.push(Span::styled(" / ", ACCENT));
         if app.filtering {
-            let (before, after) = app.filter.view(FILTER_WIDTH);
-            spans.push(Span::raw(before));
-            spans.push(Span::styled(CURSOR, BOLD));
-            spans.push(Span::raw(after));
+            spans.extend(edited(&app.filter, " / ", ACCENT, FILTER_WIDTH));
         } else {
+            spans.push(Span::styled(" / ", ACCENT));
             spans.push(Span::raw(app.filter.as_str().to_owned()));
         }
         spans.push(Span::styled(

@@ -7,11 +7,12 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, field};
+use super::{ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, label};
 use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
 
+/// Width of the labels in the block: `memory` is the longest, with a gap.
 const LABEL_WIDTH: usize = 7;
 /// The steps the memory bar cycles through, one per resident: the accent,
 /// then two brightnesses of the plain foreground.
@@ -45,7 +46,7 @@ fn draw_machine(frame: &mut Frame, area: Rect, facts: &Facts) {
         .saturating_sub(LABEL_WIDTH as u16 + 1 + FIGURE_WIDTH)
         .max(MIN_BAR_WIDTH) as usize;
     let lines = if facts.residents.is_empty() {
-        let mut spans = field("memory", "", LABEL_WIDTH);
+        let mut spans = vec![label("memory", LABEL_WIDTH)];
         spans.push(Span::styled("nothing loaded", DIM));
         spans.push(Span::raw(" · "));
         spans.extend(free_of_total(facts));
@@ -113,7 +114,7 @@ fn served_line(facts: &Facts) -> String {
 
 /// `memory  ████░░░░  14.2 of 64 GiB`.
 fn memory_line(facts: &Facts, bar_width: usize) -> Line<'static> {
-    let mut spans = field("memory", "", LABEL_WIDTH);
+    let mut spans = vec![label("memory", LABEL_WIDTH)];
     spans.extend(memory_bar(facts, bar_width));
     spans.push(Span::raw("  "));
     spans.push(Span::styled(text::gib(facts.resident_bytes()), BOLD));
@@ -169,7 +170,7 @@ fn legend_line(facts: &Facts) -> Line<'static> {
 
 /// `disk    40.3 GB · ollama 27.8 · hf 12.4`.
 fn disk_line(facts: &Facts) -> Line<'static> {
-    let mut spans = field("disk", "", LABEL_WIDTH);
+    let mut spans = vec![label("disk", LABEL_WIDTH)];
     spans.push(Span::styled(text::bytes(facts.disk_bytes()), BOLD));
     let stores: Vec<String> = facts
         .disk_by_store

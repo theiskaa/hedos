@@ -8,17 +8,15 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{ACCENT, BOLD, CAUTION, CURSOR, DIM, FAILED};
+use super::{ACCENT, BOLD, CAUTION, DIM, FAILED, edited};
 use crate::tui::app::App;
 use crate::tui::chat::{ChatPane, Ending, Speaker, Turn, View};
-use crate::tui::edit::LineEdit;
 use crate::tui::markup::{self, Emphasis};
 use crate::tui::text;
 use crate::tui::wrap;
 
-/// The prompt marker, its width in cells, and the indent replies share.
+/// The prompt marker and the indent replies share under it.
 const MARK: &str = "› ";
-const MARK_CELLS: usize = 2;
 const INDENT: &str = "  ";
 /// Rows under the transcript: the rule and the prompt line.
 const PROMPT_ROWS: u16 = 2;
@@ -79,10 +77,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         rule,
     );
     frame.render_widget(
-        Paragraph::new(prompt_line(
-            &pane.input,
-            width.saturating_sub(MARK_CELLS + 1),
-        )),
+        Paragraph::new(Line::from(edited(&pane.input, MARK, DIM, width))),
         prompt,
     );
 }
@@ -158,15 +153,4 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
         }
     }
     lines
-}
-
-/// `› text▏`: what is being typed, with the cursor kept on screen.
-fn prompt_line(input: &LineEdit, width: usize) -> Line<'static> {
-    let (before, after) = input.view(width);
-    Line::from(vec![
-        Span::styled(MARK, DIM),
-        Span::raw(before),
-        Span::styled(CURSOR, BOLD),
-        Span::raw(after),
-    ])
 }

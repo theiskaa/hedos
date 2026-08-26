@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use std::path::PathBuf;
 
-use super::{ACCENT, BOLD, DIM, WARM, field, field_line, key_spans, styled_field};
+use super::{ACCENT, BOLD, DIM, WARM, field_line, key_spans, label, styled_field};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
@@ -41,14 +41,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             title_style,
         ))
         .border_style(border_style);
-    let mut lines = lines(
+    let lines = lines(
         record,
         &app.facts,
         &app.actions(),
         app.expanded,
         area.width.saturating_sub(2) as usize,
     );
-    lines.truncate(area.height.saturating_sub(2) as usize);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -128,7 +127,7 @@ fn lines(
 /// `actions   w warm  l launch …`: the same verbs the footer offers, beside
 /// the model on a wide screen.
 fn actions_line(actions: &[(&str, &str)]) -> Line<'static> {
-    let mut spans = field("actions", "", LABEL_WIDTH);
+    let mut spans = vec![label("actions", LABEL_WIDTH)];
     if actions.is_empty() {
         spans.push(Span::styled("none right now", DIM));
     } else {
@@ -222,7 +221,7 @@ fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
 }
 
 fn residency_line(record: &ModelRecord, facts: &Facts) -> Line<'static> {
-    let mut spans = field("residency", "", LABEL_WIDTH);
+    let mut spans = vec![label("residency", LABEL_WIDTH)];
     match facts.resident(&record.id) {
         Some(resident) => {
             spans.push(Span::styled("warm", WARM));

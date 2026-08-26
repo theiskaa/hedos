@@ -6,37 +6,46 @@ use kernel::profiles::FitVerdict;
 use kernel::removal::ModelDeletionPreview;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::{ACCENT, BOLD, CURSOR, DIM, field_line, keys};
+use super::{ACCENT, BOLD, DIM, SELECTED_ROW, edited, field_line, keys};
 use crate::support::banner::KOALA;
 use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
-use crate::tui::edit::LineEdit;
 use crate::tui::launch::LaunchModal;
 use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
 
 const WIDTH: u16 = 84;
+/// Rows a bordered box spends on its top and bottom edges.
+const BORDER_ROWS: u16 = 2;
+/// Rows of the listing that are not matches: the input, a blank, the keys.
+const LISTING_CHROME_ROWS: usize = 3;
 /// The pull modal: the border, the input and a blank, every match with an
 /// eyebrow per category, and the keys.
-const PULL_HEIGHT: u16 = (MAX_MATCHES + CATEGORIES.len() + LISTING_CHROME_ROWS + 2) as u16;
-const REMOVE_HEIGHT: u16 = 11;
-const HELP_HEIGHT: u16 = 17;
+const PULL_HEIGHT: u16 =
+    (MAX_MATCHES + CATEGORIES.len() + LISTING_CHROME_ROWS) as u16 + BORDER_ROWS;
+/// The remove modal: a blank, three rows, a blank, what happens and what is
+/// left, a blank, the keys, and the border.
+const REMOVE_HEIGHT: u16 = 9 + BORDER_ROWS;
+/// The help modal: a blank, the koala with the keys beside it, a blank, the
+/// note, a blank, the keys, and the border.
+const HELP_HEIGHT: u16 = KOALA.len() as u16 + 5 + BORDER_ROWS;
 /// The launch modal: a blank, one row per harness, a blank, the note, a
 /// blank, the keys, and the border.
-const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 7;
-/// Width of the labels in the preview and remove bodies.
+const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 5 + BORDER_ROWS;
+/// Width of the labels in the preview and remove bodies: `download` is the
+/// longest, with a gap after it.
 const LABEL_WIDTH: usize = 10;
 /// Width of the provider column: `huggingface` is the longest id.
 const PROVIDER_WIDTH: usize = 11;
 /// Width of the trailing fit verdict or popularity note.
 const NOTE_WIDTH: usize = 14;
-/// Rows of the listing that are not matches: the input, a blank, the keys.
-const LISTING_CHROME_ROWS: usize = 3;
+/// The prompt marker of the pull query.
+const MARK: &str = " › ";
 
 /// Draw the open modal over `area`, if there is one.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -87,7 +96,7 @@ fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
             line = line.style(DIM);
         }
         if index == modal.selected {
-            line = line.style(Style::new().add_modifier(Modifier::REVERSED));
+            line = line.style(SELECTED_ROW);
         }
         lines.push(line);
     }
@@ -243,10 +252,7 @@ fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
 
 fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'static>> {
     let mut lines = vec![
-        input_line(
-            &modal.input,
-            (inner.width as usize).saturating_sub(MARK_CELLS + 1),
-        ),
+        Line::from(edited(&modal.input, MARK, BOLD, inner.width as usize)),
         Line::default(),
     ];
     let listing_rows = modal.rows();
@@ -266,7 +272,7 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
                 let candidate = &modal.matches[*index];
                 let mut line = row(candidate, memory_bytes, inner.width);
                 if *index == modal.selected {
-                    line = line.style(Style::new().add_modifier(Modifier::REVERSED));
+                    line = line.style(SELECTED_ROW);
                 }
                 lines.push(line);
             }
@@ -317,21 +323,6 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
         ),
         Span::raw(format!("{reference:<head_width$} ")),
         Span::styled(tail, style),
-    ])
-}
-
-/// The prompt marker of the pull query, and its width in cells.
-const MARK: &str = " › ";
-const MARK_CELLS: usize = 3;
-
-/// ` › text▏`: what is being typed, with the cursor, windowed to `width`.
-fn input_line(input: &LineEdit, width: usize) -> Line<'static> {
-    let (before, after) = input.view(width);
-    Line::from(vec![
-        Span::styled(MARK, BOLD),
-        Span::raw(before),
-        Span::styled(CURSOR, BOLD),
-        Span::raw(after),
     ])
 }
 

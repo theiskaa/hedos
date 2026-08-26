@@ -8,7 +8,7 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{BOLD, DIM, key_spans};
+use super::{BOLD, DIM, key_spans, keys};
 use crate::tui::app::App;
 
 /// The keys that apply whatever is selected.
@@ -35,13 +35,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 /// The keys of the chat pane; escape reads as stop while a reply streams.
 fn chat_line(streaming: bool) -> Line<'static> {
     let escape = if streaming { "stop" } else { "close" };
-    let mut spans = vec![Span::raw(" ")];
-    spans.extend(key_spans(&[
-        ("enter", "send"),
-        ("↑/↓ wheel", "scroll"),
-        ("esc", escape),
-    ]));
-    Line::from(spans)
+    keys(&[("enter", "send"), ("↑/↓ wheel", "scroll"), ("esc", escape)])
 }
 
 /// The fullest footer that fits in `width`: everything, then without the copy

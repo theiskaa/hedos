@@ -18,8 +18,8 @@ const TALL_COLUMNS: u16 = 70;
 pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 2;
 /// The most task rows the strip shows at once.
 const MAX_TASK_ROWS: u16 = 4;
-/// Rows of the machine block's borders; its lines are added per call.
-const MACHINE_CHROME_ROWS: u16 = 2;
+/// Rows a bordered block spends on its top and bottom edges.
+const BORDER_ROWS: u16 = 2;
 /// Rows of the gateway block under the detail: a border, two lines, a border.
 const GATEWAY_ROWS: u16 = 4;
 /// The shelf never shrinks below this many rows, borders included.
@@ -46,6 +46,62 @@ pub struct Panes {
     pub footer: Rect,
 }
 
+/// The body under a narrow terminal: shelf, detail, machine block, top to
+/// bottom. The detail and the machine block each cost rows; they are dropped
+/// from the bottom up rather than squeezing the shelf below its floor.
+fn stacked(body: Rect, machine_block: u16) -> (Rect, Rect, Rect, Rect) {
+    let detail_rows = if body.height >= MIN_SHELF_ROWS + STACKED_DETAIL_ROWS {
+        STACKED_DETAIL_ROWS
+    } else {
+        0
+    };
+    let machine_rows = if body.height >= MIN_SHELF_ROWS + STACKED_DETAIL_ROWS + machine_block {
+        machine_block
+    } else {
+        0
+    };
+    let [shelf, detail, machine] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(detail_rows),
+        Constraint::Length(machine_rows),
+    ])
+    .areas(body);
+    (shelf, detail, machine, Rect::default())
+}
+
+/// The body under a wide terminal: the shelf over the machine block on the
+/// left, the detail over the gateway block on the right. A long shelf
+/// scrolls rather than pushing the machine facts off; only a terminal too
+/// short for both loses the block.
+fn side_by_side(body: Rect, shelf_rows: usize, machine_block: u16) -> (Rect, Rect, Rect, Rect) {
+    let wanted = (shelf_rows as u16)
+        .saturating_add(SHELF_CHROME_ROWS)
+        .max(MIN_SHELF_ROWS);
+    let with_machine = body.height >= MIN_SHELF_ROWS + machine_block;
+    let machine_rows = if with_machine { machine_block } else { 0 };
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(SHELF_PERCENT), Constraint::Min(0)]).areas(body);
+    // The shelf takes the rows it needs, the machine block sits right under
+    // it, and the slack is left at the bottom of the column.
+    let shelf_height = if with_machine {
+        wanted.min(left.height.saturating_sub(machine_rows))
+    } else {
+        left.height
+    };
+    let [shelf, machine, _] = Layout::vertical([
+        Constraint::Length(shelf_height),
+        Constraint::Length(machine_rows),
+        Constraint::Min(0),
+    ])
+    .areas(left);
+    let [detail, gateway] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(if with_machine { GATEWAY_ROWS } else { 0 }),
+    ])
+    .areas(right);
+    (shelf, detail, machine, gateway)
+}
+
 impl Panes {
     /// Split `area` into panes for a shelf of `shelf_rows` models, a machine
     /// block of `machine_lines`, `task_rows` tasks, and the detail alone when
@@ -57,7 +113,7 @@ impl Panes {
         task_rows: usize,
         expanded: bool,
     ) -> Self {
-        let machine_block = machine_lines + MACHINE_CHROME_ROWS;
+        let machine_block = machine_lines + BORDER_ROWS;
         let header_rows = if Self::tall(area) {
             TALL_HEADER_ROWS
         } else {
@@ -65,7 +121,7 @@ impl Panes {
         };
         let strip_rows = match task_rows {
             0 => 0,
-            rows => (rows as u16).min(MAX_TASK_ROWS) + 2,
+            rows => (rows as u16).min(MAX_TASK_ROWS) + BORDER_ROWS,
         };
         let [header, body, tasks, footer] = Layout::vertical([
             Constraint::Length(header_rows),
@@ -74,78 +130,13 @@ impl Panes {
             Constraint::Length(1),
         ])
         .areas(area);
-
-        if expanded {
-            return Self {
-                header,
-                shelf: Rect::default(),
-                detail: body,
-                machine: Rect::default(),
-                gateway: Rect::default(),
-                tasks,
-                footer,
-            };
-        }
-
-        let wanted = (shelf_rows as u16)
-            .saturating_add(SHELF_CHROME_ROWS)
-            .max(MIN_SHELF_ROWS);
-        if area.width < WIDE_COLUMNS {
-            // Stacked, the detail and the machine block each cost rows; drop
-            // them from the bottom up rather than squeeze the shelf below its
-            // floor.
-            let detail_rows = if body.height >= MIN_SHELF_ROWS + STACKED_DETAIL_ROWS {
-                STACKED_DETAIL_ROWS
-            } else {
-                0
-            };
-            let machine_rows =
-                if body.height >= MIN_SHELF_ROWS + STACKED_DETAIL_ROWS + machine_block {
-                    machine_block
-                } else {
-                    0
-                };
-            let [shelf, detail, machine] = Layout::vertical([
-                Constraint::Min(0),
-                Constraint::Length(detail_rows),
-                Constraint::Length(machine_rows),
-            ])
-            .areas(body);
-            return Self {
-                header,
-                shelf,
-                detail,
-                machine,
-                gateway: Rect::default(),
-                tasks,
-                footer,
-            };
-        }
-        // A long shelf scrolls rather than pushing the machine facts off;
-        // only a terminal too short for both loses the block.
-        let with_machine = body.height >= MIN_SHELF_ROWS + machine_block;
-        let machine_rows = if with_machine { machine_block } else { 0 };
-        let [left, right] =
-            Layout::horizontal([Constraint::Percentage(SHELF_PERCENT), Constraint::Min(0)])
-                .areas(body);
-        // The shelf takes the rows it needs, the machine block sits right
-        // under it, and the slack is left at the bottom of the column.
-        let shelf_rows = if with_machine {
-            wanted.min(left.height.saturating_sub(machine_rows))
+        let (shelf, detail, machine, gateway) = if expanded {
+            (Rect::default(), body, Rect::default(), Rect::default())
+        } else if area.width < WIDE_COLUMNS {
+            stacked(body, machine_block)
         } else {
-            left.height
+            side_by_side(body, shelf_rows, machine_block)
         };
-        let [shelf, machine, _] = Layout::vertical([
-            Constraint::Length(shelf_rows),
-            Constraint::Length(machine_rows),
-            Constraint::Min(0),
-        ])
-        .areas(left);
-        let [detail, gateway] = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(if with_machine { GATEWAY_ROWS } else { 0 }),
-        ])
-        .areas(right);
         Self {
             header,
             shelf,
@@ -167,7 +158,7 @@ impl Panes {
 mod tests {
     use super::*;
 
-    const MACHINE: u16 = 3 + MACHINE_CHROME_ROWS;
+    const MACHINE: u16 = 3 + BORDER_ROWS;
 
     fn panes(width: u16, height: u16) -> Panes {
         Panes::compute(Rect::new(0, 0, width, height), 14, 3, 0, false)

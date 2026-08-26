@@ -17,22 +17,27 @@ mod tasks;
 use ratatui::Frame;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
+use super::edit::LineEdit;
 use super::layout::Panes;
 
 /// The quiet register: borders, labels, keys, models that can't run here.
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
-/// The loud register: the wordmark, warm models, the selected title.
+/// The loud register: what the eye should land on first, from the wordmark
+/// and warm models to the user's own words in the chat pane.
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-/// What is in focus or names a mode: titles, eyebrows, the expanded detail.
-/// A fixed orange, since no terminal palette has one and it should not drift
-/// into the warning yellow.
+/// What is in focus, names a mode, or is in motion: titles, eyebrows, the
+/// expanded detail, a running task, the spinner. A fixed orange, since no
+/// terminal palette has one and it should not drift into the warning yellow.
 const ACCENT: Style = Style::new().fg(Color::Rgb(232, 142, 68));
 /// What is loaded.
 const WARM: Style = Style::new().fg(Color::Green);
-/// What only just fits.
+/// A warning: a tight fit, a reply that was stopped.
 const CAUTION: Style = Style::new().fg(Color::Yellow);
+/// The selected row of a list.
+const SELECTED_ROW: Style = Style::new().add_modifier(Modifier::REVERSED);
 /// What failed or won't fit.
 const FAILED: Style = Style::new().fg(Color::Red);
 /// The glyphs of a horizontal bar: filled, then empty.
@@ -41,32 +46,37 @@ const BAR_EMPTY: &str = "░";
 /// The text cursor shown while something is being typed.
 const CURSOR: &str = "▏";
 
-/// A `label   value` pair, the label dim and padded to `width`.
-fn field<'a>(label: &'a str, value: impl Into<String>, width: usize) -> Vec<Span<'a>> {
-    styled_field(label, value, width, Style::new())
+/// A dim `label`, padded to `width`, in front of whatever a row shows.
+fn label(label: &str, width: usize) -> Span<'static> {
+    Span::styled(format!(" {label:<width$}"), DIM)
 }
 
-/// [`field`] with the value in `style`; dim for a value that is an absence.
-fn styled_field<'a>(
-    label: &'a str,
+/// A `label   value` pair, the label dim and padded to `width`, the value
+/// in `style`; dim for a value that is an absence.
+fn styled_field(
+    label: &str,
     value: impl Into<String>,
     width: usize,
     style: Style,
-) -> Vec<Span<'a>> {
-    vec![
-        Span::styled(format!(" {label:<width$}"), DIM),
-        Span::styled(value.into(), style),
-    ]
+) -> Vec<Span<'static>> {
+    vec![self::label(label, width), Span::styled(value.into(), style)]
 }
 
 /// A `label   value` line.
 fn field_line(label: &str, value: impl Into<String>, width: usize) -> Line<'static> {
-    Line::from(
-        styled_field(label, value, width, Style::new())
-            .into_iter()
-            .map(|span| Span::styled(span.content.into_owned(), span.style))
-            .collect::<Vec<_>>(),
-    )
+    Line::from(styled_field(label, value, width, Style::new()))
+}
+
+/// `mark` in `mark_style`, then `input` around its cursor, windowed so that
+/// mark, text and cursor together take at most `width` cells.
+fn edited(input: &LineEdit, mark: &str, mark_style: Style, width: usize) -> Vec<Span<'static>> {
+    let (before, after) = input.view(width.saturating_sub(mark.width() + 1));
+    vec![
+        Span::styled(mark.to_owned(), mark_style),
+        Span::raw(before),
+        Span::styled(CURSOR, BOLD),
+        Span::raw(after),
+    ]
 }
 
 /// The wordmark: `hedos` bold, the version dim.
