@@ -11,7 +11,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::{BOLD, DIM, field, styled_field};
-use crate::support::shelf_table::{DASH, runtime_label};
+use std::path::PathBuf;
+
+use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
 use crate::tui::facts::{Facts, HOURS, Holder, ModelActivity};
 use crate::tui::text;
@@ -31,31 +33,42 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered()
         .title(Span::styled(format!(" {} ", record.display_name()), BOLD))
         .border_style(DIM);
-    let mut lines = lines(record, &app.facts, app.expanded);
+    let mut lines = lines(
+        record,
+        &app.facts,
+        app.expanded,
+        area.width.saturating_sub(2) as usize,
+    );
     lines.truncate(area.height.saturating_sub(2) as usize);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn lines(record: &ModelRecord, facts: &Facts, expanded: bool) -> Vec<Line<'static>> {
+fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> Vec<Line<'static>> {
     let row = |label, value: String| Line::from(field(label, value, LABEL_WIDTH));
-    let or_dash = |value: Option<String>| value.unwrap_or_else(|| DASH.to_owned());
+    let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), DIM));
+    let size = match (record.footprint_mb, record.context_length) {
+        (Some(mb), Some(context)) if mb > 0 => {
+            format!(
+                "{} · ctx {}",
+                text::bytes(mb * BYTES_PER_MIB),
+                text::tokens(context)
+            )
+        }
+        (Some(mb), None) if mb > 0 => text::bytes(mb * BYTES_PER_MIB),
+        (_, Some(context)) => format!("ctx {}", text::tokens(context)),
+        _ => DASH.to_owned(),
+    };
     let mut lines = vec![
-        row("runtime", runtime_label(record).to_owned()),
-        row("store", record.source.kind.as_str().to_owned()),
-        row("path", or_dash(record.primary_weight_path.clone())),
+        eyebrow("MODEL"),
         row(
-            "on disk",
-            or_dash(
-                record
-                    .footprint_mb
-                    .map(|mb| text::bytes(mb * BYTES_PER_MIB)),
-            ),
+            "runtime",
+            text::short_runtime(runtime_label(record)).to_owned(),
         ),
         row(
-            "context",
-            or_dash(record.context_length.map(|tokens| tokens.to_string())),
+            "store",
+            text::short_store(record.source.kind.as_str()).to_owned(),
         ),
-        row("fit", fit_line(record, facts)),
+        row("size", size),
         row(
             "caps",
             record
@@ -65,23 +78,33 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool) -> Vec<Line<'stati
                 .collect::<Vec<_>>()
                 .join(", "),
         ),
-        row("modality", record.modality.as_str().to_owned()),
         Line::default(),
+        eyebrow("MEMORY"),
+        row("fit", fit_line(record, facts)),
         residency_line(record, facts),
         Line::default(),
+        eyebrow("GATEWAY"),
     ];
     lines.extend(activity_lines(facts.activity.for_record(record), expanded));
+    lines.push(Line::default());
+    if let Some(path) = &record.primary_weight_path {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let shown = text::home_relative(path, home.as_deref());
+        lines.push(row(
+            "path",
+            text::elide_middle(&shown, width.saturating_sub(LABEL_WIDTH + 2)),
+        ));
+    }
     if expanded {
-        lines.push(Line::default());
         lines.push(row("id", record.id.clone()));
+        lines.push(row("runtime id", runtime_label(record).to_owned()));
+        lines.push(row("store id", record.source.kind.as_str().to_owned()));
         if let Some(alias) = &record.alias {
             lines.push(row("alias", alias.clone()));
         }
-        lines.push(row(
-            "execution",
-            format!("{:?}", record.execution).to_lowercase(),
-        ));
-        lines.push(row("state", format!("{:?}", record.state).to_lowercase()));
+        lines.push(row("modality", record.modality.as_str().to_owned()));
+        lines.push(row("execution", record.execution.as_str().to_owned()));
+        lines.push(row("state", record.state.as_str().to_owned()));
     }
     lines
 }
@@ -141,11 +164,10 @@ fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
     else {
         return "unknown footprint".to_owned();
     };
-    let verdict_label = match verdict {
-        FitVerdict::RunsWell => "fits",
-        FitVerdict::TightFit => "tight",
-        FitVerdict::TooLarge => return "too big for this machine".to_owned(),
-    };
+    if verdict == FitVerdict::TooLarge {
+        return "too big for this machine".to_owned();
+    }
+    let verdict_label = verdict_label(Some(verdict));
     let others: i64 = facts
         .residents
         .iter()
@@ -173,11 +195,11 @@ fn residency_line(record: &ModelRecord, facts: &Facts) -> Line<'static> {
         Some(resident) => {
             spans.push(Span::styled("warm", BOLD));
             let holder = match resident.holder {
-                Holder::Local => " · in this process".to_owned(),
-                Holder::Daemon => " · held by the Ollama daemon".to_owned(),
+                Holder::Local => " · this process".to_owned(),
+                Holder::Daemon => " · Ollama daemon".to_owned(),
                 Holder::Gateway => match facts.gateway_port {
-                    Some(port) => format!(" · held by the gateway on :{port}"),
-                    None => " · held by the gateway".to_owned(),
+                    Some(port) => format!(" · gateway :{port}"),
+                    None => " · gateway".to_owned(),
                 },
             };
             spans.push(Span::styled(holder, DIM));

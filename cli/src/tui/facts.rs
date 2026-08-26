@@ -86,6 +86,10 @@ pub struct Activity {
     pub models: HashMap<String, ModelActivity>,
     /// Requests in the last minute, all models.
     pub requests_last_minute: u64,
+    /// Every request the log holds.
+    pub total_requests: u64,
+    /// When the newest request of any kind came in, in Unix milliseconds.
+    pub last_request_millis: i64,
 }
 
 impl Activity {
@@ -121,6 +125,12 @@ impl Activity {
                 .iter()
                 .filter(|entry| entry.ts_millis >= now - MINUTE_MILLIS)
                 .count() as u64,
+            total_requests: entries.len() as u64,
+            last_request_millis: entries
+                .iter()
+                .map(|entry| entry.ts_millis)
+                .max()
+                .unwrap_or(0),
         }
     }
 

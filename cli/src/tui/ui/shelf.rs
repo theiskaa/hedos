@@ -1,34 +1,39 @@
-//! The shelf table, in the same columns `hedos ls` prints.
+//! The shelf table: the `hedos ls` columns with a size instead of a fit
+//! verdict, since the verdict only matters when it is not `fits`.
 
+use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
+use kernel::records::byte_format::BYTES_PER_MIB;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 
 use super::{BOLD, DIM};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
-use crate::support::shelf_table::{HEADERS, cells, widths};
-use crate::tui::app::{App, too_big};
+use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
+use crate::tui::app::App;
 use crate::tui::order::Sort;
 use crate::tui::text;
 
-/// Space between columns, matching `hedos ls`.
+/// The column headers, in order: gutter, name, runtime, store, size.
+const HEADERS: [&str; 5] = ["", "NAME", "RUNTIME", "STORE", "SIZE"];
+/// The column index of the model name, the one that flexes.
+const NAME: usize = 1;
+/// The column index of the size, the one that is right-aligned.
+const SIZE: usize = 4;
+/// Space between columns.
 const COLUMN_SPACING: u16 = 2;
 /// The border on each side of the table.
 const CHROME_WIDTH: u16 = 2;
-/// The column index of the model name.
-const NAME: usize = 1;
-/// Column sets from fullest to sparsest: capabilities go first, then the
-/// store, then the runtime, so a narrow pane keeps the name whole and the fit
-/// verdict visible.
-const COLUMN_SETS: [&[usize]; 4] = [
-    &[0, 1, 2, 3, 4, 5],
-    &[0, 1, 2, 3, 4],
-    &[0, 1, 2, 4],
-    &[0, 1, 4],
-];
+/// Column sets from fullest to sparsest: the store goes first, then the
+/// runtime, so a narrow pane keeps the name whole and the size visible.
+const COLUMN_SETS: [&[usize]; 3] = [&[0, 1, 2, 3, 4], &[0, 1, 2, 4], &[0, 1, 4]];
+/// The gutter mark on the selected row.
+const SELECTED: &str = "▎";
+/// The text cursor shown while the filter is being typed.
+const CURSOR: &str = "▏";
 
 /// Draw the shelf into `area`, scrolled so the selection stays in view, or
 /// the first-run invitation when there is nothing on it.
@@ -39,28 +44,43 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     let budget = app.memory_budget_bytes();
     let shown: Vec<&ModelRecord> = app.shown().collect();
-    let rows: Vec<[String; 6]> = shown
+    let rows: Vec<ShelfRow> = shown
         .iter()
-        .map(|record| cells(record, app.facts.is_warm(&record.id), budget))
+        .map(|record| ShelfRow::new(record, app.facts.is_warm(&record.id), budget))
         .collect();
-    let column_widths = widths(&rows, Some(&HEADERS));
+    let column_widths = widths(&rows);
     let columns = fitting_columns(&column_widths, area.width);
+    let selected = app.selected();
 
-    let body = shown.iter().zip(&rows).map(|(record, row)| {
-        let style = if too_big(record, budget) {
-            DIM
-        } else if app.facts.is_warm(&record.id) {
-            BOLD
-        } else {
-            Style::new()
-        };
-        Row::new(columns.iter().map(|&column| row[column].as_str())).style(style)
-    });
+    let body = shown
+        .iter()
+        .zip(&rows)
+        .enumerate()
+        .map(|(index, (record, row))| {
+            let style = if row.verdict == Some(FitVerdict::TooLarge) {
+                DIM
+            } else if app.facts.is_warm(&record.id) {
+                BOLD
+            } else {
+                Style::new()
+            };
+            let cells = columns.iter().map(|&column| match column {
+                0 if index == selected => Cell::from(format!("{SELECTED}{}", row.cells[0])),
+                0 => Cell::from(format!(" {}", row.cells[0])),
+                SIZE => Cell::from(Line::from(row.cells[SIZE].clone()).right_aligned()),
+                _ => Cell::from(row.cells[column].clone()),
+            });
+            Row::new(cells).style(style)
+        });
 
     let header = if shown.is_empty() {
         Row::new(vec!["", "nothing matches; esc clears the filter"]).style(DIM)
     } else {
-        Row::new(columns.iter().map(|&column| HEADERS[column])).style(DIM)
+        Row::new(columns.iter().map(|&column| match column {
+            SIZE => Cell::from(Line::from(HEADERS[SIZE]).right_aligned()),
+            _ => Cell::from(HEADERS[column]),
+        }))
+        .style(DIM)
     };
     let table = Table::new(body, constraints(&column_widths, columns))
         .header(header)
@@ -70,8 +90,82 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_stateful_widget(table, area, &mut app.shelf);
 }
 
-/// The text cursor shown while the filter is being typed.
-const CURSOR: &str = "▏";
+/// One row of the shelf: its cells and the fit verdict they were built from.
+struct ShelfRow {
+    /// The warm marker, the name, the runtime and store as short labels, and
+    /// the size with the verdict when it is not `fits`.
+    cells: [String; 5],
+    verdict: Option<FitVerdict>,
+}
+
+impl ShelfRow {
+    fn new(record: &ModelRecord, warm: bool, budget: u64) -> Self {
+        let verdict = FitVerdict::assess(record.footprint_mb, budget).map(|fit| fit.verdict);
+        let mut size = match record.footprint_mb {
+            Some(mb) if mb > 0 => text::bytes(mb * BYTES_PER_MIB),
+            _ => DASH.to_owned(),
+        };
+        if matches!(verdict, Some(FitVerdict::TightFit | FitVerdict::TooLarge)) {
+            size = format!("{size} {}", verdict_label(verdict));
+        }
+        Self {
+            cells: [
+                if warm { "●" } else { "○" }.to_owned(),
+                record.display_name().to_owned(),
+                text::short_runtime(runtime_label(record)).to_owned(),
+                text::short_store(record.source.kind.as_str()).to_owned(),
+                size,
+            ],
+            verdict,
+        }
+    }
+}
+
+/// Column widths wide enough for every row and the header; the gutter also
+/// holds the selection mark.
+fn widths(rows: &[ShelfRow]) -> [usize; 5] {
+    let mut widths = HEADERS.map(str::len);
+    widths[0] = 2;
+    for row in rows {
+        for (column, cell) in row.cells.iter().enumerate().skip(1) {
+            widths[column] = widths[column].max(cell.chars().count());
+        }
+    }
+    widths
+}
+
+/// The fullest column set whose natural widths fit in `width`, or the
+/// sparsest when none does.
+fn fitting_columns(column_widths: &[usize; 5], width: u16) -> &'static [usize] {
+    COLUMN_SETS
+        .iter()
+        .copied()
+        .find(|columns| natural_width(column_widths, columns) <= width as usize)
+        .unwrap_or(COLUMN_SETS[COLUMN_SETS.len() - 1])
+}
+
+fn natural_width(column_widths: &[usize; 5], columns: &[usize]) -> usize {
+    columns
+        .iter()
+        .map(|&column| column_widths[column])
+        .sum::<usize>()
+        + COLUMN_SPACING as usize * columns.len().saturating_sub(1)
+        + CHROME_WIDTH as usize
+}
+
+/// Fixed widths for every column except the name, which takes the rest.
+fn constraints(column_widths: &[usize; 5], columns: &[usize]) -> Vec<Constraint> {
+    columns
+        .iter()
+        .map(|&column| {
+            if column == NAME {
+                Constraint::Fill(1)
+            } else {
+                Constraint::Length(column_widths[column] as u16)
+            }
+        })
+        .collect()
+}
 
 /// ` shelf `, or the filter as it is typed with how many rows it keeps, plus
 /// the sort when it is not the shelf's own order.
@@ -154,50 +248,61 @@ fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), centered);
 }
 
-/// The fullest column set whose natural widths fit in `width`, or the
-/// sparsest when none does.
-fn fitting_columns(column_widths: &[usize; 6], width: u16) -> &'static [usize] {
-    COLUMN_SETS
-        .iter()
-        .copied()
-        .find(|columns| natural_width(column_widths, columns) <= width as usize)
-        .unwrap_or(COLUMN_SETS[COLUMN_SETS.len() - 1])
-}
-
-fn natural_width(column_widths: &[usize; 6], columns: &[usize]) -> usize {
-    columns
-        .iter()
-        .map(|&column| column_widths[column])
-        .sum::<usize>()
-        + COLUMN_SPACING as usize * columns.len().saturating_sub(1)
-        + CHROME_WIDTH as usize
-}
-
-/// Fixed widths for every column except the name, which takes the rest.
-fn constraints(column_widths: &[usize; 6], columns: &[usize]) -> Vec<Constraint> {
-    columns
-        .iter()
-        .map(|&column| {
-            if column == NAME {
-                Constraint::Fill(1)
-            } else {
-                Constraint::Length(column_widths[column] as u16)
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const WIDTHS: [usize; 6] = [1, 20, 10, 10, 7, 12];
+    use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+
+    const WIDTHS: [usize; 5] = [2, 20, 10, 8, 7];
+    const GIB: u64 = 1 << 30;
+
+    fn record(footprint_mb: Option<i64>) -> ModelRecord {
+        let mut record = ModelRecord::new(
+            "m",
+            Modality::text(),
+            vec![Capability::chat()],
+            ModelSource::new(SourceKind::huggingface_cache(), "m"),
+        );
+        record.footprint_mb = footprint_mb;
+        record
+    }
+
+    #[test]
+    fn the_size_cell_carries_the_verdict_only_when_it_matters() {
+        assert_eq!(
+            ShelfRow::new(&record(Some(1024)), false, 16 * GIB).cells[4],
+            "1 GB"
+        );
+        assert_eq!(
+            ShelfRow::new(&record(Some(12 * 1024)), false, 16 * GIB).cells[4],
+            "12 GB tight"
+        );
+        assert_eq!(
+            ShelfRow::new(&record(Some(16 * 1024)), false, 16 * GIB).cells[4],
+            "16 GB too big"
+        );
+        assert_eq!(ShelfRow::new(&record(None), false, 16 * GIB).cells[4], DASH);
+        assert_eq!(
+            ShelfRow::new(&record(Some(1)), true, 16 * GIB).cells[0],
+            "●"
+        );
+        assert_eq!(
+            ShelfRow::new(&record(Some(1)), false, 16 * GIB).cells[3],
+            "hf"
+        );
+    }
+
+    #[test]
+    fn the_gutter_stays_two_wide() {
+        let rows = [ShelfRow::new(&record(Some(1)), true, 16 * GIB)];
+        assert_eq!(widths(&rows)[0], 2);
+    }
 
     #[test]
     fn columns_drop_from_the_tail_as_the_pane_narrows() {
-        assert_eq!(fitting_columns(&WIDTHS, 200).len(), 6);
-        assert_eq!(fitting_columns(&WIDTHS, 60), &[0, 1, 2, 3, 4]);
-        assert_eq!(fitting_columns(&WIDTHS, 48), &[0, 1, 2, 4]);
+        assert_eq!(fitting_columns(&WIDTHS, 200).len(), 5);
+        assert_eq!(fitting_columns(&WIDTHS, 50), &[0, 1, 2, 4]);
         assert_eq!(fitting_columns(&WIDTHS, 10), &[0, 1, 4]);
     }
 

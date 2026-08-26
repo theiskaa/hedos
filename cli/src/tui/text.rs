@@ -1,5 +1,7 @@
 //! Short human forms for the numbers the screen shows.
 
+use std::path::Path;
+
 use kernel::records::byte_format::{format_bytes, one_decimal};
 
 const GIB: f64 = (1u64 << 30) as f64;
@@ -46,6 +48,61 @@ pub fn sparkline(buckets: &[u32]) -> String {
         .collect()
 }
 
+/// A runtime id as the shelf shows it: the sidecar prefix and long vendor
+/// names carry nothing at a glance.
+pub fn short_runtime(id: &str) -> &str {
+    match id {
+        "apple-foundation" => "apple",
+        other => other.strip_prefix("python:").unwrap_or(other),
+    }
+}
+
+/// A store kind as the shelf shows it.
+pub fn short_store(kind: &str) -> &str {
+    match kind {
+        "huggingface-cache" => "hf",
+        "lm-studio" => "lm studio",
+        other => other,
+    }
+}
+
+/// `path` with the home directory written as `~`, matched on whole path
+/// components so `/Users/ab` never turns into `~b`.
+pub fn home_relative(path: &str, home: Option<&Path>) -> String {
+    match home.and_then(|home| Path::new(path).strip_prefix(home).ok()) {
+        Some(rest) if home.is_some_and(|home| home.as_os_str().len() > 1) => {
+            format!("~/{}", rest.display())
+        }
+        _ => path.to_owned(),
+    }
+}
+
+/// `text` cut to `width` cells by dropping its middle, so a path keeps both
+/// its root and its file name.
+pub fn elide_middle(text: &str, width: usize) -> String {
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_owned();
+    }
+    if width < 5 {
+        return text.chars().take(width).collect();
+    }
+    let head = (width - 1) / 2;
+    let tail = width - 1 - head;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(count - tail).collect();
+    format!("{start}…{end}")
+}
+
+/// A context length as `4k`, `32k`, `128k`, or the plain count under 1000.
+pub fn tokens(count: i64) -> String {
+    if count >= 1000 {
+        format!("{}k", count / 1000)
+    } else {
+        count.to_string()
+    }
+}
+
 /// A count with a noun that takes a plain `s` plural: `1 model`, `12 models`.
 pub fn count(count: usize, noun: &str) -> String {
     if count == 1 {
@@ -81,6 +138,47 @@ mod tests {
         assert_eq!(sparkline(&[0, 0, 0]), "▁▁▁");
         assert_eq!(sparkline(&[1, 4, 8]), "▂▅█");
         assert_eq!(sparkline(&[]), "");
+    }
+
+    #[test]
+    fn labels_shorten_what_carries_nothing() {
+        assert_eq!(short_runtime("python:mlx-lm"), "mlx-lm");
+        assert_eq!(short_runtime("apple-foundation"), "apple");
+        assert_eq!(short_runtime("llama-cpp"), "llama-cpp");
+        assert_eq!(short_store("huggingface-cache"), "hf");
+        assert_eq!(short_store("ollama"), "ollama");
+    }
+
+    #[test]
+    fn home_is_contracted_by_component() {
+        let home = Path::new("/Users/theis");
+        assert_eq!(
+            home_relative("/Users/theis/.ollama/x", Some(home)),
+            "~/.ollama/x"
+        );
+        assert_eq!(
+            home_relative("/Users/theiskaa/.ollama/x", Some(home)),
+            "/Users/theiskaa/.ollama/x"
+        );
+        assert_eq!(home_relative("/etc/x", None), "/etc/x");
+        assert_eq!(home_relative("/x", Some(Path::new("/"))), "/x");
+    }
+
+    #[test]
+    fn eliding_keeps_both_ends() {
+        assert_eq!(elide_middle("short", 10), "short");
+        assert_eq!(
+            elide_middle("/a/very/long/path/file.gguf", 15),
+            "/a/very…le.gguf"
+        );
+        assert_eq!(elide_middle("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn tokens_read_in_thousands() {
+        assert_eq!(tokens(4096), "4k");
+        assert_eq!(tokens(131_072), "131k");
+        assert_eq!(tokens(512), "512");
     }
 
     #[test]

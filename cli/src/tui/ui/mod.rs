@@ -4,6 +4,7 @@
 mod detail;
 mod footer;
 mod header;
+mod machine;
 mod modal;
 mod shelf;
 mod tasks;
@@ -52,10 +53,11 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let panes = Panes::compute(frame.area(), app.tasks.len(), app.expanded);
+    let panes = Panes::compute(frame.area(), app.order.len(), app.tasks.len(), app.expanded);
     header::draw(frame, panes.header, app);
     if !app.expanded {
         shelf::draw(frame, panes.shelf, app);
+        machine::draw(frame, panes.machine, panes.gateway, app);
     }
     detail::draw(frame, panes.detail, app);
     tasks::draw(frame, panes.tasks, app);
