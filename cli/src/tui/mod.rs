@@ -13,12 +13,14 @@ mod event;
 mod facts;
 mod launch;
 mod layout;
+mod markup;
 mod order;
 mod pull;
 mod state;
 mod tasks;
 mod text;
 mod ui;
+mod wrap;
 
 use std::io::{self, Write};
 use std::process::ExitStatus;

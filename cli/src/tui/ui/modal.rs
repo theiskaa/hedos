@@ -1,4 +1,5 @@
-//! The modals (pull, remove, help, launch), drawn over a dimmed screen.
+//! The modals (pull, remove, help, launch), drawn over a dimmed screen; the
+//! chat pane, though it sits in the same slot, is drawn by `chat` instead.
 
 use kernel::install::plan::InstallPlan;
 use kernel::profiles::FitVerdict;
@@ -42,13 +43,16 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let Some(modal) = &app.modal else {
         return;
     };
+    // The chat pane is a body of its own, not something over the shelf.
+    if matches!(modal, Modal::Chat(_)) {
+        return;
+    }
     frame.buffer_mut().set_style(area, DIM);
     let height = match modal {
         Modal::Pull(_) => PULL_HEIGHT,
         Modal::Remove(_) => REMOVE_HEIGHT,
         Modal::Help => HELP_HEIGHT,
         Modal::Launch(_) => LAUNCH_HEIGHT,
-        // The chat pane is drawn as a body of its own, not over the shelf.
         Modal::Chat(_) => return,
     };
     let rect = centered(area, height);

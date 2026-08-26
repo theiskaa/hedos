@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
-use unicode_width::UnicodeWidthChar;
+use kernel::capabilities::GenerationStats;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
 const MINUTE: i64 = 60;
@@ -80,92 +82,51 @@ pub fn home_relative(path: &str, home: Option<&Path>) -> String {
 /// `text` cut to `width` cells by dropping its middle, so a path keeps both
 /// its root and its file name.
 pub fn elide_middle(text: &str, width: usize) -> String {
-    let count = text.chars().count();
-    if count <= width {
+    if text.width() <= width {
         return text.to_owned();
     }
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
     if width < 5 {
-        return text.chars().take(width).collect();
+        return take_cells(graphemes.iter().copied(), width);
     }
-    let head = (width - 1) / 2;
-    let tail = width - 1 - head;
-    let start: String = text.chars().take(head).collect();
-    let end: String = text.chars().skip(count - tail).collect();
-    format!("{start}…{end}")
+    let head = take_cells(graphemes.iter().copied(), (width - 1) / 2);
+    let tail = take_cells(graphemes.iter().rev().copied(), width - 1 - head.width());
+    let tail: String = tail.graphemes(true).rev().collect();
+    format!("{head}…{tail}")
 }
 
-/// `text` broken into lines no wider than `width` cells: on its own newlines
-/// first, then between words, then inside a word longer than a line. Runs of
-/// spaces are kept, since a reply's code keeps its shape through them; only
-/// the spaces a break lands on are dropped.
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        let mut line = String::new();
-        let mut used = 0;
-        for token in runs(paragraph) {
-            let mut cells: Vec<(char, usize)> =
-                token.chars().map(|c| (c, c.width().unwrap_or(0))).collect();
-            let blank = token.starts_with(' ');
-            while !cells.is_empty() {
-                let wanted: usize = cells.iter().map(|(_, w)| w).sum();
-                if used + wanted <= width {
-                    line.extend(cells.iter().map(|(c, _)| c));
-                    used += wanted;
-                    break;
-                }
-                if used > 0 {
-                    lines.push(std::mem::take(&mut line).trim_end().to_owned());
-                    used = 0;
-                    if blank {
-                        break;
-                    }
-                    continue;
-                }
-                let mut cut = 0;
-                let mut taken = 0;
-                for (index, (_, w)) in cells.iter().enumerate() {
-                    if taken + w > width {
-                        break;
-                    }
-                    taken += w;
-                    cut = index + 1;
-                }
-                // A glyph wider than the line still goes somewhere.
-                let cut = cut.max(1);
-                let rest = cells.split_off(cut);
-                line.extend(cells.iter().map(|(c, _)| c));
-                if rest.is_empty() {
-                    used = cells.iter().map(|(_, w)| w).sum();
-                    break;
-                }
-                lines.push(std::mem::take(&mut line));
-                cells = rest;
+/// The leading graphemes of `graphemes` that fit in `width` cells.
+fn take_cells<'a>(graphemes: impl Iterator<Item = &'a str>, width: usize) -> String {
+    let mut used = 0;
+    graphemes
+        .take_while(|grapheme| {
+            let fits = used + grapheme.width() <= width;
+            if fits {
+                used += grapheme.width();
             }
-        }
-        lines.push(line);
-    }
-    lines
+            fits
+        })
+        .collect()
 }
 
-/// `text` as alternating runs of spaces and of anything else.
-fn runs(text: &str) -> Vec<&str> {
-    let mut tokens = Vec::new();
-    let mut start = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((index, c)) = chars.next() {
-        let blank = c == ' ';
-        if let Some((_, next)) = chars.peek()
-            && (*next == ' ') == blank
-        {
-            continue;
+/// `~120 tokens · 40 tok/s · first in 0.4s`, from whatever a reply reported.
+pub fn stats(stats: &GenerationStats) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(tokens) = stats.completion_tokens {
+        let estimated = if stats.token_counts_estimated {
+            "~"
+        } else {
+            ""
+        };
+        parts.push(format!("{estimated}{tokens} tokens"));
+        if let Some(ms) = stats.duration_ms.filter(|ms| *ms > 0) {
+            parts.push(format!("{:.0} tok/s", tokens as f64 * 1000.0 / ms as f64));
         }
-        let end = index + c.len_utf8();
-        tokens.push(&text[start..end]);
-        start = end;
     }
-    tokens
+    if let Some(ms) = stats.ttft_ms {
+        parts.push(format!("first in {:.1}s", ms as f64 / 1000.0));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// A context length as `4k`, `32k`, `128k`, or the plain count under 1000.
@@ -191,21 +152,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrap_breaks_between_words_and_inside_long_ones() {
-        assert_eq!(wrap("the quick brown fox", 9), ["the quick", "brown fox"]);
-        assert_eq!(wrap("a\n\nb", 5), ["a", "", "b"]);
-        assert_eq!(wrap("abcdefgh ij", 3), ["abc", "def", "gh", "ij"]);
-        assert_eq!(wrap("", 4), [""]);
-        assert_eq!(wrap("xy z", 0), ["x", "y", "z"]);
+    fn elide_middle_budgets_cells_not_characters() {
+        assert_eq!(elide_middle("abcdefghij", 7), "abc…hij");
+        assert_eq!(
+            elide_middle("日本語のモデル/ファイル名.gguf", 10),
+            "日本….gguf"
+        );
+        assert!(elide_middle("日本語のモデル/ファイル名.gguf", 10).width() <= 10);
+        assert_eq!(elide_middle("short", 10), "short");
+        assert_eq!(elide_middle("abcdef", 3), "abc");
     }
 
     #[test]
-    fn wrap_keeps_indentation_and_counts_cells() {
-        assert_eq!(wrap("    fn main()", 20), ["    fn main()"]);
-        assert_eq!(wrap("a  b", 10), ["a  b"]);
-        assert_eq!(wrap("aa bb", 2), ["aa", "bb"]);
-        assert_eq!(wrap("日本語 text", 6), ["日本語", "text"]);
-        assert_eq!(wrap("日本", 1), ["日", "本"]);
+    fn stats_read_as_one_dim_line() {
+        let reported = GenerationStats {
+            completion_tokens: Some(120),
+            duration_ms: Some(3000),
+            ttft_ms: Some(420),
+            ..GenerationStats::default()
+        };
+        assert_eq!(
+            stats(&reported).as_deref(),
+            Some("120 tokens · 40 tok/s · first in 0.4s")
+        );
+        let estimated = GenerationStats {
+            completion_tokens: Some(7),
+            duration_ms: Some(0),
+            token_counts_estimated: true,
+            ..GenerationStats::default()
+        };
+        assert_eq!(stats(&estimated).as_deref(), Some("~7 tokens"));
+        let first_only = GenerationStats {
+            ttft_ms: Some(1500),
+            ..GenerationStats::default()
+        };
+        assert_eq!(stats(&first_only).as_deref(), Some("first in 1.5s"));
+        assert_eq!(stats(&GenerationStats::default()), None);
     }
 
     #[test]

@@ -631,7 +631,7 @@ impl App {
             return Vec::new();
         };
         let applied = match reply.step {
-            ReplyStep::Text(text) => pane.text(reply.generation, &text),
+            ReplyStep::Text(text) => pane.append(reply.generation, &text),
             ReplyStep::Done(stats) => pane.done(reply.generation, stats),
             ReplyStep::Failed(reason) => pane.failed(reply.generation, reason),
         };

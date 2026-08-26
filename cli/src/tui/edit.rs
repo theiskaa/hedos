@@ -2,11 +2,13 @@
 //! terminal's own keys (Ctrl-A/E, Ctrl-U/W, Option+Delete, the arrows) work
 //! on every field of the UI.
 
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use super::event::{Edit, Key};
 
-/// A line being typed, with the cursor as a byte offset on a char boundary.
+/// A line being typed, with the cursor as a byte offset on a grapheme
+/// boundary, so an accent or a joined emoji is never stepped into.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LineEdit {
     text: String,
@@ -95,22 +97,22 @@ impl LineEdit {
         false
     }
 
-    /// The offset of the character before the cursor, or the cursor at the
+    /// The offset of the grapheme before the cursor, or the cursor at the
     /// start.
     fn previous(&self) -> usize {
         self.text[..self.cursor]
-            .chars()
+            .grapheme_indices(true)
             .next_back()
-            .map_or(self.cursor, |c| self.cursor - c.len_utf8())
+            .map_or(self.cursor, |(index, _)| index)
     }
 
-    /// The offset after the character under the cursor, or the cursor at
-    /// the end.
+    /// The offset after the grapheme under the cursor, or the cursor at the
+    /// end.
     fn next(&self) -> usize {
         self.text[self.cursor..]
-            .chars()
+            .graphemes(true)
             .next()
-            .map_or(self.cursor, |c| self.cursor + c.len_utf8())
+            .map_or(self.cursor, |grapheme| self.cursor + grapheme.len())
     }
 
     /// Where the word before the cursor starts: back over any whitespace,
@@ -140,28 +142,27 @@ impl LineEdit {
     /// cursor is always on screen: the window fills backwards from the cursor
     /// first, then forwards with what room is left.
     pub fn view(&self, width: usize) -> (String, String) {
-        let cells = |c: char| c.width().unwrap_or(0);
         let mut used = 0;
         let before: String = self.text[..self.cursor]
-            .chars()
+            .graphemes(true)
             .rev()
-            .take_while(|&c| {
-                let fits = used + cells(c) <= width;
+            .take_while(|grapheme| {
+                let fits = used + grapheme.width() <= width;
                 if fits {
-                    used += cells(c);
+                    used += grapheme.width();
                 }
                 fits
             })
-            .collect::<Vec<char>>()
+            .collect::<Vec<&str>>()
             .into_iter()
             .rev()
             .collect();
         let after: String = self.text[self.cursor..]
-            .chars()
-            .take_while(|&c| {
-                let fits = used + cells(c) < width;
+            .graphemes(true)
+            .take_while(|grapheme| {
+                let fits = used + grapheme.width() < width;
                 if fits {
-                    used += cells(c);
+                    used += grapheme.width();
                 }
                 fits
             })
@@ -198,6 +199,23 @@ mod tests {
         assert_eq!(line.as_str(), "elo");
         line.apply(Key::Edit(Edit::End));
         assert!(!line.apply(Key::Edit(Edit::Delete)));
+    }
+
+    #[test]
+    fn graphemes_move_and_delete_whole() {
+        let mut line = line("ae\u{301}x");
+        line.apply(Key::Edit(Edit::Left));
+        line.apply(Key::Edit(Edit::Left));
+        assert_eq!(line.view(10), ("a".to_owned(), "e\u{301}x".to_owned()));
+        assert!(line.apply(Key::Edit(Edit::Delete)));
+        assert_eq!(line.as_str(), "ax");
+        let mut family = super::tests::line("👨\u{200d}👩\u{200d}👧!");
+        family.apply(Key::Edit(Edit::Left));
+        assert!(family.apply(Key::Backspace));
+        assert_eq!(family.as_str(), "!");
+        let wide = super::tests::line("日本語");
+        assert_eq!(wide.view(4), ("本語".to_owned(), String::new()));
+        assert_eq!(wide.view(3), ("語".to_owned(), String::new()));
     }
 
     #[test]

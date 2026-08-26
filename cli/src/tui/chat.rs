@@ -24,8 +24,8 @@ pub enum Speaker {
 pub enum Ending {
     /// Still streaming.
     Open,
-    /// Finished; the stats line when the runtime reported any.
-    Done(Option<String>),
+    /// Finished, with the runtime's stats when it reported any.
+    Done(Option<GenerationStats>),
     /// Cut short by the user.
     Stopped,
     /// The runtime gave up, with the reason.
@@ -152,7 +152,7 @@ impl ChatPane {
     }
 
     /// Streamed text for `generation`; ignored once that ask is over.
-    pub fn text(&mut self, generation: u64, chunk: &str) -> bool {
+    pub fn append(&mut self, generation: u64, chunk: &str) -> bool {
         let Some(turn) = self.open_turn(generation) else {
             return false;
         };
@@ -165,7 +165,7 @@ impl ChatPane {
         let Some(turn) = self.open_turn(generation) else {
             return false;
         };
-        turn.ending = Ending::Done(stats.as_ref().and_then(stats_line));
+        turn.ending = Ending::Done(stats);
         true
     }
 
@@ -241,26 +241,6 @@ impl ChatPane {
     }
 }
 
-/// `142 tokens · 38 tok/s · first in 0.4s`, from whatever was reported.
-fn stats_line(stats: &GenerationStats) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(tokens) = stats.completion_tokens {
-        let estimated = if stats.token_counts_estimated {
-            "~"
-        } else {
-            ""
-        };
-        parts.push(format!("{estimated}{tokens} tokens"));
-        if let Some(ms) = stats.duration_ms.filter(|ms| *ms > 0) {
-            parts.push(format!("{:.0} tok/s", tokens as f64 * 1000.0 / ms as f64));
-        }
-    }
-    if let Some(ms) = stats.ttft_ms {
-        parts.push(format!("first in {:.1}s", ms as f64 / 1000.0));
-    }
-    (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,8 +293,8 @@ mod tests {
         type_in(&mut pane, "one");
         let (payload, generation) = pane.submit().expect("sent");
         assert_eq!(contents(&payload).len(), 1);
-        assert!(pane.text(generation, "an"));
-        assert!(pane.text(generation, "swer"));
+        assert!(pane.append(generation, "an"));
+        assert!(pane.append(generation, "swer"));
         assert!(pane.done(generation, None));
         assert!(!pane.streaming());
         type_in(&mut pane, "two");
@@ -329,7 +309,7 @@ mod tests {
         let (_, first) = pane.submit().expect("sent");
         pane.stop();
         assert!(!pane.streaming());
-        assert!(!pane.text(first, "late"));
+        assert!(!pane.append(first, "late"));
         assert!(!pane.done(first, None));
         assert_eq!(
             pane.turns.last().map(|turn| &turn.ending),
@@ -339,7 +319,29 @@ mod tests {
         let (payload, second) = pane.submit().expect("sent");
         assert!(second > first);
         assert_eq!(contents(&payload).len(), 2);
-        assert!(!pane.text(first, "later still"));
+        assert!(!pane.append(first, "later still"));
+    }
+
+    #[test]
+    fn waiting_ends_with_the_first_token() {
+        let mut pane = pane();
+        type_in(&mut pane, "hi");
+        let (_, generation) = pane.submit().expect("sent");
+        assert!(pane.waiting());
+        pane.append(generation, "a");
+        assert!(!pane.waiting() && pane.streaming());
+    }
+
+    #[test]
+    fn a_stopped_reply_with_text_stays_in_history() {
+        let mut pane = pane();
+        type_in(&mut pane, "hi");
+        let (_, generation) = pane.submit().expect("sent");
+        pane.append(generation, "part");
+        pane.stop();
+        type_in(&mut pane, "more");
+        let (payload, _) = pane.submit().expect("sent");
+        assert_eq!(contents(&payload), ["hi", "part", "more"]);
     }
 
     #[test]
@@ -347,7 +349,7 @@ mod tests {
         let mut pane = pane();
         type_in(&mut pane, "hi");
         let (_, generation) = pane.submit().expect("sent");
-        pane.text(generation, "par");
+        pane.append(generation, "par");
         pane.failed(generation, "sidecar died".to_owned());
         let turn = pane.turns.last().expect("a turn");
         assert_eq!(turn.text, "par");
@@ -363,7 +365,7 @@ mod tests {
         assert_eq!(pane.first_line(), 40);
         pane.scroll_up(5);
         assert_eq!(pane.view, View::Held(35));
-        pane.text(generation, "more");
+        pane.append(generation, "more");
         pane.measured(60);
         assert_eq!(pane.first_line(), 35);
         pane.scroll_down(30);
@@ -382,20 +384,5 @@ mod tests {
         pane.done(generation, None);
         pane.submit();
         assert_eq!(pane.view, View::Follow);
-    }
-
-    #[test]
-    fn stats_read_as_one_dim_line() {
-        let stats = GenerationStats {
-            completion_tokens: Some(120),
-            duration_ms: Some(3000),
-            ttft_ms: Some(420),
-            ..GenerationStats::default()
-        };
-        assert_eq!(
-            stats_line(&stats).as_deref(),
-            Some("120 tokens · 40 tok/s · first in 0.4s")
-        );
-        assert_eq!(stats_line(&GenerationStats::default()), None);
     }
 }
