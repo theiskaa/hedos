@@ -15,15 +15,9 @@
   <a href="https://crates.io/crates/hedos"><img alt="Downloads" src="https://img.shields.io/crates/d/hedos"></a>
 </p>
 
-hedos is a headless engine for the local models already on your machine. It finds them wherever they live, installs new ones, and serves each through the runtime that actually fits, all from one binary and a local HTTP gateway. There is no app and no browser wrapper. Everything runs on your hardware, offline.
+hedos is a headless engine for the local models already on your machine. It finds them wherever they live, installs new ones, and serves each through the runtime that actually fits, all from one binary and a local HTTP gateway. No app, no browser wrapper: everything runs on your hardware, offline.
 
-<p align="center">
-  <img alt="hedos shelf: the shelf of models, the selected model's detail, the machine's memory, the gateway, and the running tasks, in one terminal screen" src="assets/ui-shelf.png" width="920">
-</p>
-
-It scans the places models really sit (the Ollama store, the Hugging Face cache, LM Studio's library, and loose GGUF or safetensors files in your folders) and puts them on a single shelf: text, image, and speech together, each tagged by where it came from. Weights are never moved, copied, or re-downloaded. The records simply point at the files where they already are, so every other tool on the machine still sees the same models.
-
-For each model it detects the format, works out what it is and what it can do, and resolves it to a runtime: local GGUF through a `llama-server` process, an OpenAI-compatible endpoint, the Ollama daemon, or a managed Python sidecar (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, whisper). It reads each model's real context length, chat template, senses, and tool-calling dialect and serves that, so a conversation behaves the same across engines. Where a model genuinely cannot do something, the shelf says so up front instead of failing quietly.
+It scans where models really sit (the Ollama store, the Hugging Face cache, LM Studio's library, loose GGUF and safetensors files) and puts them on one shelf without moving a byte. Each is resolved to the runtime that serves it (llama-server, Ollama, an OpenAI-compatible endpoint, or a managed Python sidecar) with its real context length, chat template, and tool-calling dialect, so a conversation behaves the same across engines. Where a model cannot do something, the shelf says so up front.
 
 ## Install
 ```sh
@@ -75,13 +69,13 @@ hedos stats                         # per-model usage from the gateway audit log
 Every command takes `--json` when you want machine-readable output instead of formatted text. `hedos ls` shows a fit verdict — whether each model will actually run in this machine's memory — next to its capabilities.
 
 ## The shelf in the terminal
+![hedos shelf: the shelf of models, the selected model's detail, the machine's memory, the gateway, and the running tasks, in one terminal screen](assets/ui-shelf.png)
+
 `hedos shelf` is the same shelf as a screen you keep open: every model with its runtime, store, and size; the selected one's fit, residency, and capabilities; what is loaded and by whom, with a memory bar per model; disk per store; and what the gateway served in the last day. The footer shows only the keys that apply to the model under the cursor, and every key is a subcommand: `p` pulls, `w` and `u` warm and unload, `x` removes with a preview, `S` serves.
 
 Press `t` and the shelf gives way to a conversation with the selected model. The reply streams in, keeps its markdown, scrolls with the wheel or the arrows and holds still while more text arrives, and the model stays warm for whatever comes next. `T` opens `hedos chat` in the plain terminal instead, `l` launches a coding harness on the model: the UI steps aside for anything that needs the terminal and is back the moment it ends, with a row in the task strip saying how it went.
 
-<p align="center">
-  <img alt="The chat pane inside hedos shelf: the prompt in bold, the reply streaming in with its markdown, a download running in the task strip underneath" src="assets/ui-chat.png" width="920">
-</p>
+![The chat pane inside hedos shelf: the prompt in bold, the reply streaming in with its markdown, a download running in the task strip underneath](assets/ui-chat.png)
 
 Pulls download in the task strip while you keep working, with `c` to cancel. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
 
