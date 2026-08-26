@@ -12,14 +12,14 @@ use crate::tui::app::App;
 /// The keys the footer teaches, in display order.
 const KEYS: [(&str, &str); 10] = [
     ("j/k", "move"),
+    ("/", "filter"),
+    ("o", "sort"),
     ("p", "pull"),
     ("s", "scan"),
     ("w", "warm"),
     ("u", "unload"),
     ("x", "remove"),
-    ("c", "cancel"),
-    ("r", "refresh"),
-    ("enter", "detail"),
+    ("?", "help"),
     ("q", "quit"),
 ];
 

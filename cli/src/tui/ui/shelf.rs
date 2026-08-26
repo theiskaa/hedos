@@ -1,5 +1,6 @@
 //! The shelf table, in the same columns `hedos ls` prints.
 
+use kernel::records::ModelRecord;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -10,6 +11,7 @@ use super::{BOLD, DIM};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{HEADERS, cells, widths};
 use crate::tui::app::{App, too_big};
+use crate::tui::order::Sort;
 use crate::tui::text;
 
 /// Space between columns, matching `hedos ls`.
@@ -36,15 +38,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     let budget = app.memory_budget_bytes();
-    let rows: Vec<[String; 6]> = app
-        .records
+    let shown: Vec<&ModelRecord> = app.shown().collect();
+    let rows: Vec<[String; 6]> = shown
         .iter()
         .map(|record| cells(record, app.facts.is_warm(&record.id), budget))
         .collect();
     let column_widths = widths(&rows, Some(&HEADERS));
     let columns = fitting_columns(&column_widths, area.width);
 
-    let body = app.records.iter().zip(&rows).map(|(record, row)| {
+    let body = shown.iter().zip(&rows).map(|(record, row)| {
         let style = if too_big(record, budget) {
             DIM
         } else if app.facts.is_warm(&record.id) {
@@ -55,12 +57,43 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Row::new(columns.iter().map(|&column| row[column].as_str())).style(style)
     });
 
+    let header = if shown.is_empty() {
+        Row::new(vec!["", "nothing matches; esc clears the filter"]).style(DIM)
+    } else {
+        Row::new(columns.iter().map(|&column| HEADERS[column])).style(DIM)
+    };
     let table = Table::new(body, constraints(&column_widths, columns))
-        .header(Row::new(columns.iter().map(|&column| HEADERS[column])).style(DIM))
+        .header(header)
         .column_spacing(COLUMN_SPACING)
         .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED))
-        .block(Block::bordered().title(" shelf ").border_style(DIM));
+        .block(Block::bordered().title(title(app)).border_style(DIM));
     frame.render_stateful_widget(table, area, &mut app.shelf);
+}
+
+/// The text cursor shown while the filter is being typed.
+const CURSOR: &str = "▏";
+
+/// ` shelf `, or the filter as it is typed with how many rows it keeps, plus
+/// the sort when it is not the shelf's own order.
+fn title(app: &App) -> Line<'static> {
+    let mut spans = Vec::new();
+    if app.filtering || !app.filter.is_empty() {
+        spans.push(Span::styled(" / ", BOLD));
+        spans.push(Span::raw(app.filter.clone()));
+        if app.filtering {
+            spans.push(Span::styled(CURSOR, BOLD));
+        }
+        spans.push(Span::styled(
+            format!(" {} of {} ", app.order.len(), app.records.len()),
+            DIM,
+        ));
+    } else {
+        spans.push(Span::raw(" shelf "));
+    }
+    if app.sort != Sort::Name {
+        spans.push(Span::styled(format!("· by {} ", app.sort.label()), DIM));
+    }
+    Line::from(spans)
 }
 
 /// The koala and where to start, for a shelf with nothing on it yet.

@@ -20,4 +20,6 @@ pub enum Effect {
     Plan(InstallProviderId, String),
     /// Cancel a running pull.
     Cancel(TaskId),
+    /// Put text on the clipboard.
+    Copy(String),
 }

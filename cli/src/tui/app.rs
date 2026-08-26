@@ -10,7 +10,9 @@ use ratatui::widgets::TableState;
 use super::effect::Effect;
 use super::event::{Event, Key, Planned, Refreshed, Searched};
 use super::facts::{Facts, Holder};
+use super::order::{Sort, order};
 use super::pull::{PullModal, Stage};
+use super::state::UiState;
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskState};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 
@@ -33,6 +35,8 @@ pub enum Modal {
     Pull(Box<PullModal>),
     /// Confirming a removal, with what it would delete.
     Remove(ModelDeletionPreview),
+    /// The key table.
+    Help,
 }
 
 /// A task as the strip shows it.
@@ -58,9 +62,17 @@ pub struct App {
     pub records: Vec<ModelRecord>,
     /// The machine facts from the last refresh.
     pub facts: Facts,
-    /// The shelf's selection and scroll position; ratatui keeps the selected
-    /// row in view through it.
+    /// The shelf's selection and scroll position, as rows of [`Self::order`];
+    /// ratatui keeps the selected row in view through it.
     pub shelf: TableState,
+    /// The indices into `records` the shelf shows, filtered and sorted.
+    pub order: Vec<usize>,
+    /// The fuzzy filter over the shelf.
+    pub filter: String,
+    /// Whether keys are typing into the filter.
+    pub filtering: bool,
+    /// The sort in effect.
+    pub sort: Sort,
     /// Background work, oldest first.
     pub tasks: Vec<TaskRow>,
     /// The modal in front of the shelf, while one is open.
@@ -81,10 +93,15 @@ pub struct App {
 impl App {
     /// A UI over `records`, selecting the first.
     pub fn new(records: Vec<ModelRecord>, facts: Facts) -> Self {
+        let order = (0..records.len()).collect();
         Self {
             records,
             facts,
             shelf: TableState::new().with_selected(0),
+            order,
+            filter: String::new(),
+            filtering: false,
+            sort: Sort::default(),
             tasks: Vec::new(),
             modal: None,
             expanded: false,
@@ -101,9 +118,57 @@ impl App {
         self.shelf.selected().unwrap_or(0)
     }
 
-    /// The selected record, if the shelf has any.
+    /// The selected record, if the shelf shows any.
     pub fn selected_record(&self) -> Option<&ModelRecord> {
-        self.records.get(self.selected())
+        self.order
+            .get(self.selected())
+            .and_then(|&index| self.records.get(index))
+    }
+
+    /// The records the shelf shows, in order.
+    pub fn shown(&self) -> impl Iterator<Item = &ModelRecord> {
+        self.order
+            .iter()
+            .filter_map(|&index| self.records.get(index))
+    }
+
+    /// Apply a remembered `state`: its sort and filter, and its selection when
+    /// that model is still on the shelf.
+    pub fn restore(&mut self, state: &UiState) {
+        self.sort = state.sort;
+        self.filter = state.filter.clone();
+        self.reorder(state.selected_id.clone());
+    }
+
+    /// What to remember for the next run.
+    pub fn remembered(&self) -> UiState {
+        UiState {
+            selected_id: self.selected_record().map(|record| record.id.clone()),
+            sort: self.sort,
+            filter: self.filter.clone(),
+        }
+    }
+
+    /// Recompute the shown rows around the current selection.
+    fn reorder_in_place(&mut self) {
+        let keep = self.selected_record().map(|record| record.id.clone());
+        self.reorder(keep);
+    }
+
+    /// Recompute the shown rows, keeping `keep` selected when it is still
+    /// shown.
+    fn reorder(&mut self, keep: Option<String>) {
+        self.order = order(&self.records, &self.facts, &self.filter, self.sort);
+        let index = keep
+            .and_then(|id| {
+                self.order
+                    .iter()
+                    .position(|&index| self.records[index].id == id)
+            })
+            .unwrap_or(self.selected());
+        self.shelf
+            .select(Some(index.min(self.order.len().saturating_sub(1))));
+        self.dirty = true;
     }
 
     /// The machine's memory, for fit labels.
@@ -185,7 +250,15 @@ impl App {
         match self.modal {
             Some(Modal::Pull(_)) => return self.pull_key(key),
             Some(Modal::Remove(_)) => return self.remove_key(key),
+            Some(Modal::Help) => {
+                self.modal = None;
+                self.dirty = true;
+                return Vec::new();
+            }
             None => {}
+        }
+        if self.filtering && !matches!(key, Key::Up | Key::Down) {
+            return self.filter_key(key);
         }
         match key {
             Key::Char('q') => return vec![Effect::Quit],
@@ -207,12 +280,32 @@ impl App {
                 self.dirty = true;
             }
             Key::Char('x') => return self.remove(),
-            Key::Enter if self.selected_record().is_some() => {
-                self.expanded = !self.expanded;
+            Key::Char('/') => {
+                self.filtering = true;
+                self.expanded = false;
                 self.dirty = true;
             }
             Key::Escape if self.expanded => {
                 self.expanded = false;
+                self.dirty = true;
+            }
+            Key::Escape if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.reorder_in_place();
+            }
+            Key::Char('o') => {
+                self.sort = self.sort.next();
+                self.reorder_in_place();
+            }
+            Key::Char('y') => return self.copy_path(),
+            Key::Char('Y') => return self.copy_id(),
+            Key::Char('d') => return self.dismiss(),
+            Key::Char('?') => {
+                self.modal = Some(Modal::Help);
+                self.dirty = true;
+            }
+            Key::Enter if self.selected_record().is_some() => {
+                self.expanded = !self.expanded;
                 self.dirty = true;
             }
             Key::Char('c') => return self.cancel_pull(),
@@ -252,6 +345,73 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    fn filter_key(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Char(c) => {
+                self.filter.push(c);
+                self.reorder_in_place();
+            }
+            Key::Backspace => {
+                self.filter.pop();
+                self.reorder_in_place();
+            }
+            Key::Escape => {
+                self.filter.clear();
+                self.filtering = false;
+                self.reorder_in_place();
+            }
+            Key::Enter => {
+                self.filtering = false;
+                self.dirty = true;
+            }
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Copy the selected model's weights path, or say it has none.
+    fn copy_path(&mut self) -> Vec<Effect> {
+        let Some(record) = self.selected_record() else {
+            return Vec::new();
+        };
+        match record.primary_weight_path.clone() {
+            Some(path) => self.copy(path),
+            None => self.notify(format!("{} has no path", record.display_name())),
+        }
+    }
+
+    /// Copy the selected model's id.
+    fn copy_id(&mut self) -> Vec<Effect> {
+        match self.selected_record() {
+            Some(record) => {
+                let id = record.id.clone();
+                self.copy(id)
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn copy(&mut self, text: String) -> Vec<Effect> {
+        self.notify("copied".to_owned());
+        vec![Effect::Copy(text)]
+    }
+
+    /// Drop the newest failed task from the strip.
+    fn dismiss(&mut self) -> Vec<Effect> {
+        let failed = self
+            .tasks
+            .iter()
+            .rposition(|row| matches!(row.state, TaskState::Failed(_)));
+        match failed {
+            Some(index) => {
+                self.tasks.remove(index);
+                self.dirty = true;
+                Vec::new()
+            }
+            None => self.notify("nothing to dismiss".to_owned()),
+        }
     }
 
     /// Open the removal confirmation for the selected model, or say why not.
@@ -480,16 +640,11 @@ impl App {
         if self.records.is_empty() {
             self.expanded = false;
         }
-        let index = selected_id
-            .and_then(|id| self.records.iter().position(|record| record.id == id))
-            .unwrap_or(self.selected());
-        self.shelf
-            .select(Some(index.min(self.records.len().saturating_sub(1))));
-        self.dirty = true;
+        self.reorder(selected_id);
     }
 
     fn select(&mut self, index: usize) {
-        let last = self.records.len().saturating_sub(1);
+        let last = self.order.len().saturating_sub(1);
         let clamped = index.min(last);
         if clamped != self.selected() {
             self.shelf.select(Some(clamped));
@@ -520,7 +675,11 @@ mod tests {
     }
 
     fn app(count: usize) -> App {
-        App::new((0..count).map(record).collect(), Facts::default())
+        app_from((0..count).map(record).collect())
+    }
+
+    fn app_from(records: Vec<ModelRecord>) -> App {
+        App::new(records, Facts::default())
     }
 
     fn press(app: &mut App, key: Key) -> Vec<Effect> {
@@ -856,6 +1015,96 @@ mod tests {
             facts: Facts::default(),
         }));
         assert!(!one.expanded);
+    }
+
+    #[test]
+    fn the_filter_narrows_the_shelf_and_escape_clears_it() {
+        let mut app = app(3);
+        press(&mut app, Key::Char('/'));
+        assert!(app.filtering);
+        press(&mut app, Key::Char('2'));
+        assert_eq!(app.order, vec![2]);
+        assert_eq!(
+            app.selected_record().map(|r| r.name.as_str()),
+            Some("model-2")
+        );
+        press(&mut app, Key::Enter);
+        assert!(!app.filtering);
+        assert_eq!(app.order.len(), 1);
+        press(&mut app, Key::Escape);
+        assert_eq!(app.order.len(), 3);
+        assert_eq!(
+            app.selected_record().map(|r| r.name.as_str()),
+            Some("model-2")
+        );
+    }
+
+    #[test]
+    fn sort_cycles_and_keeps_the_selection() {
+        let mut app = app(3);
+        app.records[0].footprint_mb = Some(1);
+        app.records[2].footprint_mb = Some(9);
+        press(&mut app, Key::Char('o'));
+        assert_eq!(app.sort, Sort::Size);
+        assert_eq!(app.order[0], 2);
+        assert_eq!(
+            app.selected_record().map(|r| r.name.as_str()),
+            Some("model-0")
+        );
+    }
+
+    #[test]
+    fn copy_yields_the_path_or_a_notice() {
+        let mut app = app(1);
+        assert!(press(&mut app, Key::Char('y')).is_empty());
+        assert_eq!(app.notice(), Some("model-0 has no path"));
+        app.records[0].primary_weight_path = Some("/w".to_owned());
+        assert_eq!(
+            press(&mut app, Key::Char('y')),
+            vec![Effect::Copy("/w".to_owned())]
+        );
+        let id = app.records[0].id.clone();
+        assert_eq!(press(&mut app, Key::Char('Y')), vec![Effect::Copy(id)]);
+    }
+
+    #[test]
+    fn dismiss_drops_the_newest_failure() {
+        let mut app = app(1);
+        let id = TaskId::next();
+        app.started(id, TaskKind::Scan);
+        app.reduce(Event::Task(TaskEvent {
+            id,
+            state: TaskState::Failed("no".to_owned()),
+        }));
+        press(&mut app, Key::Char('d'));
+        assert!(app.tasks.is_empty());
+        press(&mut app, Key::Char('d'));
+        assert_eq!(app.notice(), Some("nothing to dismiss"));
+    }
+
+    #[test]
+    fn state_round_trips_through_restore() {
+        let mut app = app(3);
+        press(&mut app, Key::Char('G'));
+        press(&mut app, Key::Char('o'));
+        let state = app.remembered();
+        let mut fresh = app_from(app.records.clone());
+        fresh.restore(&state);
+        assert_eq!(fresh.sort, Sort::Size);
+        assert_eq!(
+            fresh.selected_record().map(|r| &r.id),
+            Some(&app.records[2].id)
+        );
+    }
+
+    #[test]
+    fn help_opens_on_question_mark_and_any_key_closes_it() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('?'));
+        assert_eq!(app.modal, Some(Modal::Help));
+        press(&mut app, Key::Char('j'));
+        assert!(app.modal.is_none());
+        assert_eq!(app.selected(), 0);
     }
 
     #[test]

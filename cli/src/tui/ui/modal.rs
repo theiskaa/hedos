@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::{BOLD, DIM, field, keys};
+use crate::support::banner::KOALA;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
 use crate::tui::pull::{PullMatch, PullModal, Stage, fit};
@@ -18,6 +19,7 @@ use crate::tui::text;
 const WIDTH: u16 = 84;
 const HEIGHT: u16 = 18;
 const REMOVE_HEIGHT: u16 = 11;
+const HELP_HEIGHT: u16 = 17;
 /// Width of the labels in the preview and remove bodies.
 const LABEL_WIDTH: usize = 10;
 /// Width of the provider column: `huggingface` is the longest id.
@@ -36,6 +38,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let height = match modal {
         Modal::Pull(_) => HEIGHT,
         Modal::Remove(_) => REMOVE_HEIGHT,
+        Modal::Help => HELP_HEIGHT,
     };
     let rect = centered(area, height);
     let block = Block::bordered().border_style(DIM);
@@ -43,10 +46,46 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let (title, lines) = match modal {
         Modal::Pull(modal) => (" pull ".to_owned(), pull(modal, app, inner)),
         Modal::Remove(preview) => (format!(" remove {} ", preview.name), remove(preview, app)),
+        Modal::Help => (" help ".to_owned(), help()),
     };
     frame.render_widget(Clear, rect);
     frame.render_widget(block.title(title), rect);
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The key table beside the koala, and the one idea behind it.
+fn help() -> Vec<Line<'static>> {
+    const ROWS: [(&str, &str, &str, &str); 7] = [
+        ("j k ↑ ↓", "move", "g G", "top / bottom"),
+        ("/", "filter", "enter", "expand detail"),
+        ("p", "pull", "s", "scan"),
+        ("w u", "warm / unload", "x", "remove"),
+        ("o", "sort", "r", "refresh"),
+        ("y Y", "copy path / id", "c", "cancel pull"),
+        ("d", "dismiss failure", "q", "quit"),
+    ];
+    const BLANK: (&str, &str, &str, &str) = ("", "", "", "");
+    let mut lines = vec![Line::default()];
+    for (koala, (key, verb, key2, verb2)) in KOALA
+        .iter()
+        .zip(ROWS.iter().chain(std::iter::repeat(&BLANK)))
+    {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {koala}   "), BOLD),
+            Span::styled(format!("{key:<8}"), DIM),
+            Span::raw(format!("{verb:<16}")),
+            Span::styled(format!("{key2:<8}"), DIM),
+            Span::raw(format!("{verb2:<16}")),
+        ]));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        "  every key is a hedos subcommand: p is pull, x is rm, w is warm.",
+        DIM,
+    )));
+    lines.push(Line::default());
+    lines.push(keys(&[("any key", "close")]));
+    lines
 }
 
 /// What removing the model does, in the store's own terms.
