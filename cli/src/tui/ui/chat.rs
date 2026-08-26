@@ -1,13 +1,14 @@
 //! The chat pane: the conversation with one model in the body, the prompt
-//! line under it. The user's turns speak in their own hue, replies are plain,
-//! a spinner turns until the first token, and how a reply ended sits under it.
+//! line under it. The user's turns are bright, replies are plain with their
+//! `**bold**` honoured, a spinner turns until the first token, and how a
+//! reply ended sits under it. No hue in the body: the accent is brightness.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{ACCENT, BOLD, CAUTION, CURSOR, DIM, FAILED, VOICE};
+use super::{ACCENT, BOLD, CAUTION, CURSOR, DIM, FAILED};
 use crate::tui::app::App;
 use crate::tui::chat::{ChatPane, Ending, Speaker, Turn, View};
 use crate::tui::edit::LineEdit;
@@ -116,7 +117,10 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
         Speaker::User => {
             for (index, line) in text::wrap(&turn.text, body).into_iter().enumerate() {
                 let lead = if index == 0 { MARK } else { INDENT };
-                lines.push(Line::from(Span::styled(format!("{lead}{line}"), VOICE)));
+                lines.push(Line::from(vec![
+                    Span::styled(lead, DIM),
+                    Span::styled(line, BOLD),
+                ]));
             }
         }
         Speaker::Model => {
@@ -127,8 +131,11 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
                     Span::styled(" thinking", DIM),
                 ]));
             } else if !turn.text.is_empty() {
+                let mut bold = false;
                 for line in text::wrap(&turn.text, body) {
-                    lines.push(Line::from(format!("{INDENT}{line}")));
+                    let mut spans = vec![Span::raw(INDENT)];
+                    spans.extend(emphasis(&line, &mut bold));
+                    lines.push(Line::from(spans));
                 }
             }
             let ending = match &turn.ending {
@@ -147,13 +154,55 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
     lines
 }
 
+/// `line` with its `**` markers dropped and the text between them bold;
+/// `bold` carries an emphasis that a wrap split across lines.
+fn emphasis(line: &str, bold: &mut bool) -> Vec<Span<'static>> {
+    line.split("**")
+        .enumerate()
+        .map(|(index, part)| {
+            if index > 0 {
+                *bold = !*bold;
+            }
+            if *bold {
+                Span::styled(part.to_owned(), BOLD)
+            } else {
+                Span::raw(part.to_owned())
+            }
+        })
+        .filter(|span| !span.content.is_empty())
+        .collect()
+}
+
 /// `› text▏`: what is being typed, with the cursor kept on screen.
 fn prompt_line(input: &LineEdit, width: usize) -> Line<'static> {
     let (before, after) = input.view(width);
     Line::from(vec![
-        Span::styled(MARK, VOICE),
+        Span::styled(MARK, DIM),
         Span::raw(before),
         Span::styled(CURSOR, BOLD),
         Span::raw(after),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(spans: &[Span]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn emphasis_drops_the_markers_and_carries_across_lines() {
+        let mut bold = false;
+        let spans = emphasis("1. **Talk:** say it", &mut bold);
+        assert_eq!(text(&spans), "1. Talk: say it");
+        assert!(spans[1].style == BOLD && spans[0].style != BOLD);
+        assert!(!bold);
+        let spans = emphasis("open **and never", &mut bold);
+        assert!(bold && spans[1].style == BOLD);
+        let spans = emphasis("closed** here", &mut bold);
+        assert!(!bold && spans[0].style == BOLD && spans[1].style != BOLD);
+        assert!(emphasis("", &mut bold).is_empty());
+    }
 }

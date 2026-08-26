@@ -1,8 +1,7 @@
 //! Drawing the app state. Panes read the app and write to the frame; the only
 //! mutable state they touch is the shelf's scroll position and the chat
 //! pane's measure of how far its transcript scrolls. Colour is used
-//! sparingly: an orange accent for what is in focus or names a mode, a
-//! lavender for the user's own voice in the chat pane, and the
+//! sparingly: an orange accent for what is in focus or names a mode, and the
 //! terminal's own green for what is loaded, yellow for a tight fit, red for
 //! what failed or won't fit.
 
@@ -30,9 +29,6 @@ const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 /// A fixed orange, since no terminal palette has one and it should not drift
 /// into the warning yellow.
 const ACCENT: Style = Style::new().fg(Color::Rgb(232, 142, 68));
-/// The user's own words in the chat pane, a cool hue against the accent so
-/// the two voices never share a colour.
-const VOICE: Style = Style::new().fg(Color::Rgb(178, 152, 228));
 /// What is loaded.
 const WARM: Style = Style::new().fg(Color::Green);
 /// What only just fits.
