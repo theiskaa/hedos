@@ -11,10 +11,14 @@ use runtime::adapters::OLLAMA_BASE_URL;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::support::http::probe_json;
+use crate::support::http::{probe_json, probe_json_answered};
 
 /// How long a probe waits for the daemon before deciding it is not running.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(300);
+/// How long a decision (unload, remove) waits for the daemon to say what it
+/// holds; longer than a probe, since a daemon busy loading is the very case
+/// where guessing "not held" would be wrong.
+const DECISION_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an unload request may take; the daemon answers before it evicts.
 const UNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -56,11 +60,14 @@ pub(crate) fn held<'a>(
     residents.iter().find(|resident| resident.name == tag)
 }
 
-/// Whether the daemon holds `record` right now: one probe, one lookup.
-pub(crate) async fn holds_now(record: &ModelRecord) -> bool {
-    residents()
-        .await
-        .is_some_and(|residents| held(&residents, record).is_some())
+/// Whether the daemon holds `record` right now: no daemon means no; a daemon
+/// that does not answer is an error, never a no.
+pub(crate) async fn holds_now(record: &ModelRecord) -> Result<bool, String> {
+    let body: Option<PsBody> =
+        probe_json_answered(&format!("{OLLAMA_BASE_URL}/api/ps"), DECISION_TIMEOUT)
+            .await
+            .map_err(|reason| format!("Ollama did not say what it holds: {reason}"))?;
+    Ok(body.is_some_and(|body| held(&body.models, record).is_some()))
 }
 
 /// The daemon's tag for `record`, when the daemon serves it.

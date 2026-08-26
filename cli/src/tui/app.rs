@@ -440,7 +440,9 @@ impl App {
                 modal.edit(key, now);
             }
             (Stage::Listing, Key::Enter) => match modal.choose() {
-                Ok((provider, reference)) => return vec![Effect::Plan(provider, reference)],
+                Ok((provider, reference, ask)) => {
+                    return vec![Effect::Plan(provider, reference, ask)];
+                }
                 Err(reason) => return self.notify(reason),
             },
             (Stage::Preview(plan), Key::Enter) => {
@@ -772,7 +774,7 @@ impl App {
 
     fn planned(&mut self, planned: Planned) {
         if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
-            modal.planned(&planned.reference, planned.result);
+            modal.planned(planned.ask, planned.result);
             self.dirty = true;
         }
     }
@@ -1222,7 +1224,7 @@ mod tests {
         assert_eq!(pull(&app).input.as_str(), "q");
         press(&mut app, Key::Backspace);
         let effects = press(&mut app, Key::Enter);
-        assert!(matches!(effects.as_slice(), [Effect::Plan(_, _)]));
+        assert!(matches!(effects.as_slice(), [Effect::Plan(_, _, _)]));
         press(&mut app, Key::Escape);
         assert_eq!(pull(&app).stage, Stage::Listing);
         press(&mut app, Key::Escape);

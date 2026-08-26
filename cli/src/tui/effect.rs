@@ -58,8 +58,9 @@ pub enum Effect {
     Refresh,
     /// Search the providers for a query.
     Search(String),
-    /// Resolve an install plan.
-    Plan(InstallProviderId, String),
+    /// Resolve an install plan; the number tells its answer from a stale
+    /// one's.
+    Plan(InstallProviderId, String, u64),
     /// Cancel a running pull.
     Cancel(TaskId),
     /// Put text on the clipboard.

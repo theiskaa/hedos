@@ -127,6 +127,9 @@ pub struct PullModal {
     pub matches: Vec<PullMatch>,
     pub selected: usize,
     pub stage: Stage,
+    /// How many plans have been asked for; the newest is the only one whose
+    /// answer counts.
+    ask: u64,
     /// The tick a search of `input` falls due, if one is pending.
     search_due: Option<u64>,
     /// Hits from the last search; dropped on the next edit.
@@ -151,6 +154,7 @@ impl PullModal {
     pub fn open(shelf: &[ModelRecord], memory_bytes: u64, pulling: &[String]) -> Self {
         let mut modal = Self {
             input: LineEdit::default(),
+            ask: 0,
             matches: Vec::new(),
             selected: 0,
             stage: Stage::Listing,
@@ -232,9 +236,9 @@ impl PullModal {
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
     }
 
-    /// Ask for the plan of the highlighted match; the reference to plan, or
-    /// why not.
-    pub fn choose(&mut self) -> Result<(InstallProviderId, String), String> {
+    /// Ask for the plan of the highlighted match: the reference to plan and
+    /// the ask's number, or why not.
+    pub fn choose(&mut self) -> Result<(InstallProviderId, String, u64), String> {
         let chosen = self
             .selected_match()
             .ok_or_else(|| "nothing to pull".to_owned())?
@@ -243,12 +247,14 @@ impl PullModal {
             return Err(already_downloading(&chosen.reference));
         }
         self.stage = Stage::Planning(chosen.reference.clone());
-        Ok((chosen.provider, chosen.reference))
+        self.ask += 1;
+        Ok((chosen.provider, chosen.reference, self.ask))
     }
 
-    /// The plan for `reference` came back.
-    pub fn planned(&mut self, reference: &str, result: Result<InstallPlan, String>) {
-        if !matches!(&self.stage, Stage::Planning(current) if current == reference) {
+    /// The plan for ask number `ask` came back; only the newest ask, still
+    /// being waited on, is answered.
+    pub fn planned(&mut self, ask: u64, result: Result<InstallPlan, String>) {
+        if ask != self.ask || !matches!(self.stage, Stage::Planning(_)) {
             return;
         }
         self.stage = match result {
@@ -403,11 +409,15 @@ mod tests {
     #[test]
     fn choosing_plans_and_the_plan_moves_to_a_preview() {
         let mut modal = PullModal::open(&[], MEMORY, &[]);
-        let (_, reference) = modal.choose().expect("a match");
+        let (_, reference, ask) = modal.choose().expect("a match");
         assert_eq!(modal.stage, Stage::Planning(reference.clone()));
-        modal.planned("other", Err("ignored".to_owned()));
+        modal.planned(ask - 1, Err("ignored".to_owned()));
         assert_eq!(modal.stage, Stage::Planning(reference.clone()));
-        modal.planned(&reference, Ok(plan(&reference, false)));
+        modal.back();
+        let (_, _, again) = modal.choose().expect("a match");
+        modal.planned(ask, Err("stale".to_owned()));
+        assert_eq!(modal.stage, Stage::Planning(reference.clone()));
+        modal.planned(again, Ok(plan(&reference, false)));
         assert_eq!(modal.stage, Stage::Preview(plan(&reference, false)));
         modal.back();
         assert_eq!(modal.stage, Stage::Listing);
@@ -416,8 +426,8 @@ mod tests {
     #[test]
     fn a_gated_plan_becomes_a_note() {
         let mut modal = PullModal::open(&[], MEMORY, &[]);
-        let (_, reference) = modal.choose().expect("a match");
-        modal.planned(&reference, Ok(plan(&reference, true)));
+        let (_, reference, ask) = modal.choose().expect("a match");
+        modal.planned(ask, Ok(plan(&reference, true)));
         assert!(matches!(modal.stage, Stage::Note(ref note) if note.contains("gated")));
     }
 

@@ -32,12 +32,11 @@ use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 
 use self::app::App;
 use self::effect::{Effect, HandOff};
-use self::event::{Event, Input, Refreshed};
+use self::event::{Event, Input};
 use self::state::UiState;
 use self::tasks::{TaskContext, TaskLabel, TaskState};
 use crate::commands;
@@ -99,16 +98,8 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
             Ok(Outcome::HandOff(hand_off)) => {
                 let (label, state) = run_hand_off(*hand_off, &context, out).await;
                 let sequence = tasks::next_refresh_sequence();
-                let tasks::Snapshot { records, facts } = context.snapshot().await;
-                app.came_back(
-                    Refreshed {
-                        sequence,
-                        records,
-                        facts,
-                    },
-                    label,
-                    state,
-                );
+                let snapshot = context.snapshot().await.stamped(sequence);
+                app.came_back(snapshot, label, state);
                 ticks.reset();
             }
             Ok(Outcome::Quit) => break Ok(()),
@@ -267,9 +258,6 @@ async fn drive(
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
 ) -> Result<Outcome, CliError> {
-    // The reply streaming into the chat pane; aborting it is how a reply
-    // stops, and one is enough since the pane sends one ask at a time.
-    let mut ask: Option<JoinHandle<()>> = None;
     loop {
         if app.take_dirty() {
             terminal
@@ -287,10 +275,7 @@ async fn drive(
         };
         for effect in app.reduce(event) {
             match effect {
-                Effect::Quit => {
-                    abort(ask.take());
-                    return Ok(Outcome::Quit);
-                }
+                Effect::Quit => return Ok(Outcome::Quit),
                 Effect::HandOff(hand_off) => return Ok(Outcome::HandOff(hand_off)),
                 Effect::Spawn(kind) => {
                     let id = tasks::spawn(&kind, context, tx);
@@ -298,8 +283,8 @@ async fn drive(
                 }
                 Effect::Refresh => tasks::spawn_refresh(context, tx),
                 Effect::Search(query) => tasks::spawn_search(query, context, tx),
-                Effect::Plan(provider, reference) => {
-                    tasks::spawn_plan(provider, reference, context, tx);
+                Effect::Plan(provider, reference, ask) => {
+                    tasks::spawn_plan(provider, reference, ask, context, tx);
                 }
                 Effect::Cancel(id) => context.cancel(id),
                 Effect::Copy(text) => copy_to_clipboard(&text),
@@ -307,21 +292,10 @@ async fn drive(
                     record_id,
                     payload,
                     generation,
-                } => {
-                    abort(ask.take());
-                    ask = Some(tasks::spawn_ask(
-                        record_id, payload, generation, context, tx,
-                    ));
-                }
-                Effect::StopAsk => abort(ask.take()),
+                } => tasks::spawn_ask(record_id, payload, generation, context, tx),
+                Effect::StopAsk => context.stop_ask(),
             }
         }
-    }
-}
-
-fn abort(handle: Option<JoinHandle<()>>) {
-    if let Some(handle) = handle {
-        handle.abort();
     }
 }
 

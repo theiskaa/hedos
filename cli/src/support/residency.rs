@@ -141,8 +141,11 @@ pub(crate) async fn loaded(session: &Session, records: &[ModelRecord]) -> Loaded
 
 /// Whether `record` is loaded after a warm: tracked by this process's
 /// governor, or held by the Ollama daemon, which loads its models itself.
-pub(crate) async fn is_resident(session: &Session, record: &ModelRecord) -> bool {
-    session.kernel.governor().is_resident(&record.id) || ollama::holds_now(record).await
+pub(crate) async fn is_resident(session: &Session, record: &ModelRecord) -> Result<bool, String> {
+    if session.kernel.governor().is_resident(&record.id) {
+        return Ok(true);
+    }
+    ollama::holds_now(record).await
 }
 
 /// The word for a finished load, by whether residency is tracked for it.
@@ -196,12 +199,12 @@ pub(crate) async fn unload_anywhere(
     let Some(tag) = ollama::tag_of(record) else {
         return Ok(governor_holds);
     };
-    if !ollama::holds_now(record).await {
+    if !ollama::holds_now(record).await.map_err(CliError::new)? {
         return Ok(governor_holds);
     }
     ollama::unload(tag).await.map_err(CliError::new)?;
     let deadline = Instant::now() + DAEMON_UNLOAD_GRACE;
-    while ollama::holds_now(record).await {
+    while ollama::holds_now(record).await.map_err(CliError::new)? {
         if Instant::now() >= deadline {
             return Ok(true);
         }

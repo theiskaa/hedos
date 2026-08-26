@@ -50,7 +50,9 @@ pub struct Searched {
 /// The plan for a reference, or why it could not be made.
 #[derive(Debug, Clone)]
 pub struct Planned {
-    pub reference: String,
+    /// Which `choose` asked, so a plan abandoned by Escape and asked for
+    /// again never answers with its first, possibly failed, result.
+    pub ask: u64,
     pub result: Result<InstallPlan, String>,
 }
 

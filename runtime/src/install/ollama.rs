@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use kernel::fs::expand_tilde;
 use kernel::install::ollama_pull::{Aggregator, Outcome};
-use kernel::install::reference::ollama_install_tag;
+use kernel::install::reference::{normalized_tag, ollama_install_tag};
 use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProviderId, InstallSearchHit,
     InstallStreamEvent,
@@ -127,7 +127,10 @@ impl InstallProvider for OllamaInstallProvider {
     fn plan(&self, reference: &str) -> InstallFuture<'_, Result<InstallPlan, InstallError>> {
         let reference = reference.to_owned();
         Box::pin(async move {
+            // The scanner names the record `name:latest`; a plan without the
+            // tag would never match what it installs.
             let tag = ollama_install_tag(&reference)
+                .map(|tag| normalized_tag(&tag))
                 .ok_or_else(|| InstallError::ReferenceInvalid(reference.clone()))?;
             Ok(InstallPlan::new(
                 InstallProviderId::ollama(),

@@ -33,7 +33,13 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
         result?;
     }
 
-    let resident = is_resident(&session, record).await;
+    let resident = match is_resident(&session, record).await {
+        Ok(resident) => resident,
+        Err(reason) => {
+            out.err(&reason);
+            false
+        }
+    };
     out.line(&format!(
         "{} is {}",
         record.display_name(),
