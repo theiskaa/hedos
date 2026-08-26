@@ -20,6 +20,11 @@ use super::transport::{InstallRequest, InstallTransport};
 
 /// Read the resume hash in 1 MiB slices.
 const HASH_CHUNK_BYTES: usize = 1 << 20;
+/// How many times a download whose stream broke is reopened from the bytes
+/// already on disk before the pull fails.
+const STREAM_RESUMES: usize = 5;
+/// The wait before the first reopen; each further one waits a step longer.
+const RESUME_BACKOFF: Duration = Duration::from_secs(2);
 /// Stray `.incomplete` blobs younger than this are left alone (another install
 /// may still be writing them); older ones are reaped.
 const STALE_INCOMPLETE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -189,62 +194,86 @@ impl HFCacheWriter {
             fs::File::create(&incomplete).map_err(io_err)?;
         }
 
-        let base_request = request.clone();
-        let request = if written > 0 {
-            request.header("Range", format!("bytes={written}-"))
-        } else {
-            request
-        };
-        let mut start = self.transport.stream(request).await?;
+        let base_request = request;
+        let mut resumes = 0;
+        loop {
+            let request = if written > 0 {
+                base_request
+                    .clone()
+                    .header("Range", format!("bytes={written}-"))
+            } else {
+                base_request.clone()
+            };
+            let mut start = self.transport.stream(request).await?;
 
-        // The saved partial is past the end — start over from scratch.
-        if start.status == 416 && written > 0 {
-            fs::write(&incomplete, b"").map_err(io_err)?;
-            hasher = Sha256::new();
-            on_bytes(-written);
-            written = 0;
-            start = self.transport.stream(base_request).await?;
-        }
+            // The saved partial is past the end — start over from scratch.
+            if start.status == 416 && written > 0 {
+                fs::write(&incomplete, b"").map_err(io_err)?;
+                hasher = Sha256::new();
+                on_bytes(-written);
+                written = 0;
+                start = self.transport.stream(base_request.clone()).await?;
+            }
 
-        match start.status {
-            200 => {
-                // A full response despite our range — discard the partial.
-                if written > 0 {
-                    fs::write(&incomplete, b"").map_err(io_err)?;
-                    hasher = Sha256::new();
-                    on_bytes(-written);
-                    written = 0;
+            match start.status {
+                200 => {
+                    // A full response despite our range — discard the partial.
+                    if written > 0 {
+                        fs::write(&incomplete, b"").map_err(io_err)?;
+                        hasher = Sha256::new();
+                        on_bytes(-written);
+                        written = 0;
+                    }
+                }
+                206 => {}
+                401 | 403 => return Err(InstallError::AuthRequired(self.layout.repo.clone())),
+                404 => {
+                    return Err(InstallError::TransferFailed(format!(
+                        "{} is missing from {}",
+                        sibling.rfilename, self.layout.repo
+                    )));
+                }
+                other => {
+                    return Err(InstallError::TransferFailed(format!(
+                        "hugging face returned HTTP {other} for {}",
+                        sibling.rfilename
+                    )));
                 }
             }
-            206 => {}
-            401 | 403 => return Err(InstallError::AuthRequired(self.layout.repo.clone())),
-            404 => {
-                return Err(InstallError::TransferFailed(format!(
-                    "{} is missing from {}",
-                    sibling.rfilename, self.layout.repo
-                )));
-            }
-            other => {
-                return Err(InstallError::TransferFailed(format!(
-                    "hugging face returned HTTP {other} for {}",
-                    sibling.rfilename
-                )));
-            }
-        }
 
-        let mut handle = fs::OpenOptions::new()
-            .append(true)
-            .open(&incomplete)
-            .map_err(io_err)?;
-        while let Some(chunk) = start.chunks.recv().await {
-            let chunk = chunk?;
-            handle.write_all(&chunk).map_err(io_err)?;
-            hasher.update(&chunk);
-            written += chunk.len() as i64;
-            on_bytes(chunk.len() as i64);
+            let mut handle = fs::OpenOptions::new()
+                .append(true)
+                .open(&incomplete)
+                .map_err(io_err)?;
+            let mut broke = None;
+            while let Some(chunk) = start.chunks.recv().await {
+                let chunk = match chunk {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        broke = Some(error);
+                        break;
+                    }
+                };
+                handle.write_all(&chunk).map_err(io_err)?;
+                hasher.update(&chunk);
+                written += chunk.len() as i64;
+                on_bytes(chunk.len() as i64);
+            }
+            handle.flush().map_err(io_err)?;
+            drop(handle);
+
+            // A multi-gigabyte transfer loses its connection now and then; the
+            // bytes on disk are good, so the stream is reopened from there
+            // rather than the whole pull failed.
+            match broke {
+                None => break,
+                Some(InstallError::TransferFailed(_)) if resumes < STREAM_RESUMES => {
+                    resumes += 1;
+                    tokio::time::sleep(RESUME_BACKOFF * resumes as u32).await;
+                }
+                Some(error) => return Err(error),
+            }
         }
-        handle.flush().map_err(io_err)?;
-        drop(handle);
 
         if let Some(expected) = sibling.bytes
             && written != expected
@@ -476,6 +505,103 @@ mod tests {
         assert!(blobs.join("keepme.incomplete").exists(), "kept name spared");
         assert!(!blobs.join("stale.incomplete").exists(), "stale reaped");
         assert!(blobs.join("realblob").exists(), "non-incomplete untouched");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// Serves `body`, breaking the stream after `break_after` bytes on the
+    /// first request and honouring the `Range` of the second.
+    struct BreakingTransport {
+        body: Vec<u8>,
+        break_after: usize,
+        requests: std::sync::Mutex<Vec<InstallRequest>>,
+    }
+
+    impl InstallTransport for BreakingTransport {
+        fn fetch(&self, _request: InstallRequest) -> super::super::transport::TransportFuture {
+            Box::pin(async { Err(InstallError::TransferFailed("unused".to_owned())) })
+        }
+
+        fn stream(&self, request: InstallRequest) -> super::super::transport::StreamFuture {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request.clone());
+            let first = requests.len() == 1;
+            let from = request
+                .headers
+                .iter()
+                .find(|(name, _)| name == "Range")
+                .and_then(|(_, value)| {
+                    value
+                        .trim_start_matches("bytes=")
+                        .trim_end_matches('-')
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            let body = self.body.clone();
+            let break_after = self.break_after;
+            Box::pin(async move {
+                let (tx, chunks) = tokio::sync::mpsc::channel(4);
+                tokio::spawn(async move {
+                    if first {
+                        let _ = tx.send(Ok(body[..break_after].to_vec())).await;
+                        let _ = tx
+                            .send(Err(InstallError::TransferFailed(
+                                "reading stream: reset".to_owned(),
+                            )))
+                            .await;
+                    } else {
+                        let _ = tx.send(Ok(body[from..].to_vec())).await;
+                    }
+                });
+                Ok(super::super::transport::StreamStart {
+                    status: if from > 0 { 206 } else { 200 },
+                    chunks,
+                })
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_broken_stream_is_reopened_from_the_bytes_on_disk() {
+        let body = b"0123456789abcdef".to_vec();
+        let digest = hex::encode(Sha256::digest(&body));
+        let transport = Arc::new(BreakingTransport {
+            body: body.clone(),
+            break_after: 6,
+            requests: std::sync::Mutex::new(Vec::new()),
+        });
+        let root = std::env::temp_dir().join(format!(
+            "hedos-hfcache-resume-{}-{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let writer = HFCacheWriter::new(
+            HFCacheLayout::new(&root, "org/Model"),
+            Arc::clone(&transport) as Arc<dyn InstallTransport>,
+        );
+        writer.prepare_skeleton("rev", None).expect("skeleton");
+        let sibling =
+            HFSibling::new("w.bin", Some(body.len() as i64)).with_sha256(Some(digest.clone()));
+        let mut seen = 0;
+        writer
+            .download(
+                &sibling,
+                "rev",
+                InstallRequest::get("https://x/w.bin"),
+                &mut |delta| seen += delta,
+            )
+            .await
+            .expect("resumed");
+        assert_eq!(seen, body.len() as i64);
+        assert!(writer.layout.blob_url(&digest).exists());
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1]
+                .headers
+                .iter()
+                .any(|(name, value)| name == "Range" && value == "bytes=6-")
+        );
         fs::remove_dir_all(&root).ok();
     }
 
