@@ -91,12 +91,9 @@ impl PullMatch {
     /// A row for a reference typed in full: `owner/repo` or `name:tag`. A bare
     /// word is a search, not a tag.
     fn direct(query: &str) -> Option<Self> {
-        let (provider, reference) = if let Some(repo) = hugging_face_repo(query) {
-            (InstallProviderId::huggingface(), repo)
-        } else if let Some(tag) = ollama_direct_tag(query) {
-            (InstallProviderId::ollama(), tag)
-        } else {
-            return None;
+        let (provider, reference) = match hugging_face_repo(query) {
+            Some(repo) => (InstallProviderId::huggingface(), repo),
+            None => (InstallProviderId::ollama(), ollama_direct_tag(query)?),
         };
         Some(Self::new(provider, reference, "as typed".to_owned()))
     }
