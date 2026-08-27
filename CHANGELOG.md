@@ -2,6 +2,19 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.3.0 - 2026-08-27
+
+The shelf as a screen. `hedos shelf` opens a TUI over everything the command line already does, and keeps on screen what a command line cannot: what is loaded and by whom, how much memory is left, what the gateway served today. The rest of the release hardens what the screen exposed.
+
+- `hedos shelf`: every model with its runtime, store, and size; the selected one's fit, residency, capabilities, and gateway activity; the machine's memory with a bar per loaded model, disk per store, and the gateway's state. Every key is a subcommand (`p` pulls, `w` and `u` warm and unload, `x` removes with a preview, `S` serves) and the footer shows only the keys that apply to the model under the cursor. Pulls download in a task strip while you keep working, with `c` to cancel. It works over ssh and inside tmux, and it remembers the selection between runs.
+- A chat pane inside the shelf. `t` turns the shelf into a conversation with the selected model: the reply streams in, keeps its markdown (bold, headings, code blocks left alone), scrolls with the wheel, the arrows, and the page keys, and holds still while more text arrives. `esc` stops a reply, then closes the pane; the model stays warm for whatever comes next.
+- Hand-offs. `l` launches a coding harness on the selected model, `T` opens `hedos chat`, `S` runs `hedos serve`: the screen steps aside for anything that needs the terminal and is back the moment it ends, with a row in the task strip saying how it went.
+- Line editing everywhere. Every text field in the shelf (the chat prompt, the pull search, the filter) edits like a shell line: Ctrl-A and Ctrl-E, Ctrl-U, Ctrl-W and Option+Delete, the arrows by character and by word, with the cursor kept on screen. Text is measured the way the terminal draws it, so emoji, wide scripts, and combining marks neither overflow nor split.
+- Models the Ollama daemon holds now show as warm and unload from hedos. `hedos warm`, `hedos unload`, and `hedos ls` see what the daemon has loaded, and unloading through hedos evicts it there; a daemon too busy to answer is reported instead of being read as "not loaded", so an unload never claims success it cannot see and a removal never deletes a model the daemon still holds.
+- Downloads survive a dropped connection. A Hugging Face stream that breaks mid-file is reopened from the bytes already on disk, up to five times with a growing pause, before a pull is failed; the checksum still covers the whole file. Ollama plans carry their `:latest` tag, so a pulled model is recognised as installed.
+- Ctrl-C reaches what you meant. A Ctrl-C typed at hedos, or at `hedos chat` and `hedos serve`, no longer reaches the llama-server pool, the Python sidecars, or an `ollama serve` hedos started; they run in their own process groups. The shelf quits on Ctrl-C from every modal and hands the terminal back the way it found it, even after a harness that died in raw mode.
+- A running gateway reports the models it holds on `/api/ps`, with when each expires, and the gateway stats record when a model was last seen.
+
 ## v1.2.1 - 2026-08-02
 
 A fix for model removal. `hedos rm` reported a model deleted but `hedos ls` kept showing it.
