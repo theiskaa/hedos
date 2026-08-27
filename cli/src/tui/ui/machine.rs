@@ -67,7 +67,7 @@ fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
     let inner = block.inner(area);
     let state = match facts.gateway_port {
         Some(_) => Span::styled(format!(" {}", gateway_state(facts)), WARM),
-        None => Span::styled(" off · S to serve", DIM),
+        None => Span::styled(" off", DIM),
     };
     let lines = vec![
         Line::from(state),
@@ -89,7 +89,7 @@ pub(super) fn gateway_state(facts: &Facts) -> String {
 }
 
 /// `54.7` bold, then ` GiB free of 64` dim.
-pub(super) fn free_of_total(facts: &Facts) -> [Span<'static>; 2] {
+fn free_of_total(facts: &Facts) -> [Span<'static>; 2] {
     [
         Span::styled(text::gib(facts.free_bytes()), BOLD),
         Span::styled(

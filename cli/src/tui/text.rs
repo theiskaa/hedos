@@ -95,6 +95,38 @@ pub fn elide_middle(text: &str, width: usize) -> String {
     format!("{head}…{tail}")
 }
 
+/// `text` cut to `width` cells from the tail, with `…` where it was cut, for
+/// a value whose start carries the meaning.
+pub fn clip(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    if width < 2 {
+        return take_cells(text.graphemes(true), width);
+    }
+    format!("{}…", take_cells(text.graphemes(true), width - 1))
+}
+
+/// A count in its shortest readable form: `987`, `1.5k`, `45k`, `1.2M`.
+pub fn compact(count: i64) -> String {
+    const THOUSAND: f64 = 1000.0;
+    let count = count.max(0);
+    let scaled = |value: f64, unit: &str| {
+        if value >= 10.0 {
+            format!("{}{unit}", value.round() as i64)
+        } else {
+            format!("{}{unit}", one_decimal(value))
+        }
+    };
+    if count >= 999_500 {
+        scaled(count as f64 / (THOUSAND * THOUSAND), "M")
+    } else if count >= 1000 {
+        scaled(count as f64 / THOUSAND, "k")
+    } else {
+        count.to_string()
+    }
+}
+
 /// The leading graphemes of `graphemes` that fit in `width` cells.
 fn take_cells<'a>(graphemes: impl Iterator<Item = &'a str>, width: usize) -> String {
     let mut used = 0;
@@ -246,6 +278,24 @@ mod tests {
             "/a/very…le.gguf"
         );
         assert_eq!(elide_middle("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn compact_reads_in_thousands() {
+        assert_eq!(compact(987), "987");
+        assert_eq!(compact(1_500), "1.5k");
+        assert_eq!(compact(45_312), "45k");
+        assert_eq!(compact(1_234_567), "1.2M");
+        assert_eq!(compact(999_950), "1M");
+        assert_eq!(compact(-3), "0");
+    }
+
+    #[test]
+    fn clipping_keeps_the_head() {
+        assert_eq!(clip("short", 10), "short");
+        assert_eq!(clip("chat, complete, embed", 12), "chat, compl…");
+        assert_eq!(clip("日本語のモデル", 5), "日本…");
+        assert_eq!(clip("abc", 1), "a");
     }
 
     #[test]

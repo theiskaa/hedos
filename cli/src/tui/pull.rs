@@ -14,6 +14,7 @@ use kernel::records::byte_format::{BYTES_PER_GIB, BYTES_PER_MIB};
 
 use super::edit::LineEdit;
 use super::event::Key;
+use super::text;
 use crate::support::install::{installed_names, is_installed};
 use crate::support::shelf_table::verdict;
 
@@ -80,10 +81,10 @@ impl PullMatch {
     fn from_hit(hit: &InstallSearchHit) -> Self {
         let mut note = Vec::new();
         if let Some(downloads) = hit.downloads {
-            note.push(format!("↓{downloads}"));
+            note.push(format!("↓{}", text::compact(downloads)));
         }
         if let Some(likes) = hit.likes {
-            note.push(format!("♥{likes}"));
+            note.push(format!("♥{}", text::compact(likes)));
         }
         Self::new(hit.provider.clone(), hit.reference.clone(), note.join("  "))
     }

@@ -8,16 +8,13 @@ use ratatui::widgets::Paragraph;
 
 use kernel::profiles::FitVerdict;
 
-use super::machine::{free_of_total, gateway_state};
-use super::{BOLD, DIM, field_line, label, wordmark};
+use super::machine::gateway_state;
+use super::{BOLD, DIM, wordmark};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::verdict;
 use crate::tui::app::App;
 use crate::tui::layout::TALL_HEADER_ROWS;
 use crate::tui::text;
-
-/// Width of the labels in the koala panel.
-const LABEL_WIDTH: usize = 8;
 
 /// Draw the header into `area`, tall or one-line by its height.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -44,8 +41,9 @@ fn summary_line(app: &App) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The koala beside the wordmark and what the machine block does not already
-/// say: the shelf in numbers.
+/// The koala beside the wordmark, what hedos is for, and what the machine
+/// block does not already say: the shelf in numbers. The panel sits centered
+/// on the koala's rows.
 fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
     let [koala, panel] =
         Layout::horizontal([Constraint::Length(KOALA_WIDTH + 5), Constraint::Min(0)]).areas(area);
@@ -59,21 +57,16 @@ fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     frame.render_widget(Paragraph::new(koala_lines), koala);
 
-    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
-    let mut lines = vec![
-        Line::default(),
-        Line::default(),
+    let panel_lines = [
         Line::from(wordmark().to_vec()),
+        Line::from(Span::styled(" Run and serve local models headlessly", DIM)),
         Line::default(),
-        row("shelf", shelf_line(app)),
-        Line::from(
-            vec![label("memory", LABEL_WIDTH)]
-                .into_iter()
-                .chain(free_of_total(&app.facts))
-                .collect::<Vec<_>>(),
-        ),
-        row("gateway", gateway_state(&app.facts)),
+        Line::from(Span::styled(format!(" {}", shelf_line(app)), DIM)),
     ];
+    let above = 1 + (KOALA.len() - panel_lines.len()) / 2;
+    let mut lines: Vec<Line> = std::iter::repeat_n(Line::default(), above)
+        .chain(panel_lines)
+        .collect();
     lines.truncate(area.height as usize);
     frame.render_widget(Paragraph::new(lines), panel);
 }

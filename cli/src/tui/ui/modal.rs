@@ -5,16 +5,22 @@ use kernel::install::plan::InstallPlan;
 use kernel::profiles::FitVerdict;
 use kernel::removal::ModelDeletionPreview;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::{ACCENT, BOLD, DIM, SELECTED_ROW, edited, field_line, keys};
+use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
+
+use super::{
+    ACCENT, BACKDROP, BOLD, DIM, SELECTED_ROW, centered, edited, field_line, keys, styled_field,
+};
 use crate::support::banner::KOALA;
 use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
+use crate::tui::facts::Facts;
 use crate::tui::launch::LaunchModal;
 use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
@@ -56,7 +62,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     if matches!(modal, Modal::Chat(_)) {
         return;
     }
-    frame.buffer_mut().set_style(area, DIM);
+    frame.buffer_mut().set_style(area, BACKDROP);
     let height = match modal {
         Modal::Pull(_) => PULL_HEIGHT,
         Modal::Remove(_) => REMOVE_HEIGHT,
@@ -64,12 +70,15 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Launch(_) => LAUNCH_HEIGHT,
         Modal::Chat(_) => return,
     };
-    let rect = centered(area, height);
+    let rect = centered(area, WIDTH, height);
     let block = Block::bordered().border_style(ACCENT);
     let inner = block.inner(rect);
     let (title, lines) = match modal {
         Modal::Pull(modal) => (" pull ".to_owned(), pull(modal, app, inner)),
-        Modal::Remove(preview) => (format!(" remove {} ", preview.name), remove(preview, app)),
+        Modal::Remove(preview) => (
+            format!(" remove {} ", preview.name),
+            remove(preview, &app.facts, inner),
+        ),
         Modal::Help => (" help ".to_owned(), help()),
         Modal::Launch(modal) => (
             format!(" launch on {} ", modal.record.display_name()),
@@ -117,17 +126,25 @@ fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
 /// The key table beside the koala, and the one idea behind it.
 fn help() -> Vec<Line<'static>> {
     const ROWS: [(&str, &str, &str, &str); 9] = [
-        ("j k ↑ ↓", "move", "g G", "top / bottom"),
+        ("j/k ↑/↓", "move", "g/G", "top / bottom"),
         ("/", "filter", "enter", "expand detail"),
         ("p", "pull", "s", "scan"),
-        ("w u", "warm / unload", "x", "remove"),
+        ("w/u", "warm / unload", "x", "remove"),
         ("l", "launch a harness", "T", "chat"),
         ("t", "try in a chat pane", "S", "serve"),
         ("o", "sort", "r", "refresh"),
-        ("y Y", "copy path / id", "c", "cancel pull"),
+        ("y/Y", "copy path / id", "c", "cancel pull"),
         ("d", "dismiss failure", "q", "quit"),
     ];
     const BLANK: (&str, &str, &str, &str) = ("", "", "", "");
+    const _: () = assert!(ROWS.len() <= KOALA.len());
+    const GUTTER: usize = 2;
+    let column = |cells: [&str; ROWS.len()]| {
+        cells.iter().map(|cell| cell.width()).max().unwrap_or(0) + GUTTER
+    };
+    let key_width = column(ROWS.map(|row| row.0));
+    let verb_width = column(ROWS.map(|row| row.1));
+    let key2_width = column(ROWS.map(|row| row.2));
     let mut lines = vec![Line::default()];
     for (koala, (key, verb, key2, verb2)) in KOALA
         .iter()
@@ -135,10 +152,10 @@ fn help() -> Vec<Line<'static>> {
     {
         lines.push(Line::from(vec![
             Span::styled(format!("  {koala}   "), BOLD),
-            Span::styled(format!("{key:<8}"), DIM),
-            Span::raw(format!("{verb:<16}")),
-            Span::styled(format!("{key2:<8}"), DIM),
-            Span::raw(format!("{verb2:<16}")),
+            Span::styled(format!("{key:<key_width$}"), DIM),
+            Span::raw(format!("{verb:<verb_width$}")),
+            Span::styled(format!("{key2:<key2_width$}"), DIM),
+            Span::raw(*verb2),
         ]));
     }
     lines.push(Line::default());
@@ -152,8 +169,9 @@ fn help() -> Vec<Line<'static>> {
 }
 
 /// What removing the model does, in the store's own terms.
-fn remove(preview: &ModelDeletionPreview, app: &App) -> Vec<Line<'static>> {
+fn remove(preview: &ModelDeletionPreview, facts: &Facts, inner: Rect) -> Vec<Line<'static>> {
     let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
+    let value_width = (inner.width as usize).saturating_sub(LABEL_WIDTH + 2);
     let what = if preview.via_daemon {
         "removes the tag through the Ollama daemon (ollama rm)".to_owned()
     } else if preview.paths.is_empty() {
@@ -170,15 +188,19 @@ fn remove(preview: &ModelDeletionPreview, app: &App) -> Vec<Line<'static>> {
         row("on disk", text::bytes(preview.bytes_estimate)),
     ];
     if let Some(path) = preview.paths.first() {
-        lines.push(row("path", path.clone()));
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let shown = text::home_relative(path, home.as_deref());
+        lines.push(row("path", text::elide_middle(&shown, value_width)));
     }
     lines.push(Line::default());
     lines.push(Line::from(format!(" {what}")));
-    lines.push(Line::from(Span::styled(
+    lines.push(Line::from(styled_field(
+        "after",
         format!(
-            " after: {} on disk",
-            text::bytes((app.facts.disk_bytes() - preview.bytes_estimate).max(0))
+            "{} on disk",
+            text::bytes((facts.disk_bytes() - preview.bytes_estimate).max(0))
         ),
+        LABEL_WIDTH,
         DIM,
     )));
     lines.push(Line::default());
@@ -252,7 +274,7 @@ fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
 
 fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'static>> {
     let mut lines = vec![
-        Line::from(edited(&modal.input, MARK, BOLD, inner.width as usize)),
+        Line::from(edited(&modal.input, MARK, inner.width as usize)),
         Line::default(),
     ];
     let listing_rows = modal.rows();
@@ -296,7 +318,7 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
 }
 
 /// `provider  reference  size  fit`, the reference trimmed and the note
-/// clipped so the columns hold.
+/// elided so the columns hold.
 fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
     let verdict = candidate.fit(memory_bytes);
     let (size, note) = match (candidate.pulling, candidate.bytes) {
@@ -307,10 +329,10 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
         (false, Some(bytes)) => (text::bytes(bytes), verdict_label(verdict).to_owned()),
         (false, None) => (String::new(), candidate.note.clone()),
     };
-    let note: String = note.chars().take(NOTE_WIDTH).collect();
+    let note = text::clip(&note, NOTE_WIDTH);
     let tail = format!("{size:>8}  {note:<NOTE_WIDTH$}");
     let head_width = (width as usize).saturating_sub(tail.chars().count() + PROVIDER_WIDTH + 3);
-    let reference: String = candidate.reference.chars().take(head_width).collect();
+    let reference = text::clip(&candidate.reference, head_width);
     let style = if candidate.pulling || verdict == Some(FitVerdict::TooLarge) {
         DIM
     } else {
@@ -326,18 +348,45 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
     ])
 }
 
-fn centered(area: Rect, height: u16) -> Rect {
-    let [_, middle, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(height.min(area.height)),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-    let [_, rect, _] = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(WIDTH.min(area.width)),
-        Constraint::Fill(1),
-    ])
-    .areas(middle);
-    rect
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use kernel::records::SourceKind;
+
+    use crate::tui::testing::line_text as text;
+
+    #[test]
+    fn the_remove_path_is_elided_to_the_modal() {
+        let root = "/var/lib/ollama/models/blobs/";
+        let path = format!("{root}{}", "a".repeat(120 - root.len()));
+        assert_eq!(path.len(), 120);
+        let preview = ModelDeletionPreview {
+            model_id: "m".to_owned(),
+            name: "m".to_owned(),
+            kind: SourceKind::ollama(),
+            paths: vec![path],
+            bytes_estimate: 0,
+            via_daemon: false,
+            missing: false,
+        };
+        let inner = Rect::new(0, 0, 80, 9);
+        let lines = remove(&preview, &Facts::default(), inner);
+        let path_line = lines
+            .iter()
+            .find(|line| text(line).contains("path"))
+            .map(text)
+            .unwrap_or_default();
+        assert!(path_line.contains('…'));
+        assert!(path_line.starts_with(" path"));
+        assert!(path_line.ends_with("aaaa"));
+        assert!(Line::from(path_line.as_str()).width() <= 80);
+        let after = lines
+            .iter()
+            .find(|line| text(line).contains("after"))
+            .map(text)
+            .unwrap_or_default();
+        assert!(after.starts_with(" after") && after.ends_with("on disk"));
+        assert!(!after.contains(':'));
+    }
 }

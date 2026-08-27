@@ -434,7 +434,10 @@ async fn scan(session: &Session) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
     let mut line = summary.headline();
     if !summary.issues.is_empty() {
-        line.push_str(&format!(" · {} issue(s)", summary.issues.len()));
+        line.push_str(&format!(
+            " · {}",
+            text::count(summary.issues.len(), "issue")
+        ));
     }
     Ok(line)
 }

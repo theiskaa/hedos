@@ -9,8 +9,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use std::path::PathBuf;
+use unicode_width::UnicodeWidthStr;
 
-use super::{ACCENT, BOLD, DIM, WARM, field_line, key_spans, label, styled_field};
+use super::{ACCENT, BOLD, DIM, WARM, field_line, label, styled_field};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
@@ -44,21 +45,18 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let lines = lines(
         record,
         &app.facts,
-        &app.actions(),
         app.expanded,
         area.width.saturating_sub(2) as usize,
     );
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn lines(
-    record: &ModelRecord,
-    facts: &Facts,
-    actions: &[(&str, &str)],
-    expanded: bool,
-    width: usize,
-) -> Vec<Line<'static>> {
-    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
+/// The pane's rows at `width` cells: a value that would run past the edge is
+/// clipped, a path elided in the middle.
+fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> Vec<Line<'static>> {
+    let value_width = width.saturating_sub(LABEL_WIDTH + 2);
+    let row =
+        |label, value: String| field_line(label, text::clip(&value, value_width), LABEL_WIDTH);
     let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), ACCENT));
     let size = match (record.footprint_bytes(), record.context_length) {
         (Some(bytes), Some(context)) => {
@@ -69,7 +67,6 @@ fn lines(
         (None, None) => DASH.to_owned(),
     };
     let mut lines = vec![
-        eyebrow("MODEL"),
         row(
             "runtime",
             text::short_runtime(runtime_label(record)).to_owned(),
@@ -91,8 +88,7 @@ fn lines(
         Line::default(),
         eyebrow("MEMORY"),
         row("fit", fit_line(record, facts)),
-        residency_line(record, facts),
-        actions_line(actions),
+        residency_line(record, facts, value_width),
         Line::default(),
         eyebrow("GATEWAY"),
     ];
@@ -100,17 +96,21 @@ fn lines(
         facts.activity.for_record(record),
         facts.collected_at_millis,
         expanded,
+        value_width,
     ));
     lines.push(Line::default());
     if let Some(path) = &record.primary_weight_path {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let shown = text::home_relative(path, home.as_deref());
-        lines.push(row(
+        lines.push(field_line(
             "path",
-            text::elide_middle(&shown, width.saturating_sub(LABEL_WIDTH + 2)),
+            text::elide_middle(&shown, value_width),
+            LABEL_WIDTH,
         ));
     }
     if expanded {
+        lines.push(Line::default());
+        lines.push(eyebrow("RECORD"));
         lines.push(row("id", record.id.clone()));
         lines.push(row("runtime id", runtime_label(record).to_owned()));
         lines.push(row("store id", record.source.kind.as_str().to_owned()));
@@ -124,27 +124,24 @@ fn lines(
     lines
 }
 
-/// `actions   w warm  l launch …`: the same verbs the footer offers, beside
-/// the model on a wide screen.
-fn actions_line(actions: &[(&str, &str)]) -> Line<'static> {
-    let mut spans = vec![label("actions", LABEL_WIDTH)];
-    if actions.is_empty() {
-        spans.push(Span::styled("none right now", DIM));
-    } else {
-        spans.extend(key_spans(actions));
-    }
-    Line::from(spans)
-}
-
 /// The last day of gateway traffic for the model: served requests, their
 /// latency, and a sparkline per hour; when expanded, the hours are labelled.
 fn activity_lines(
     activity: Option<&ModelActivity>,
     now: i64,
     expanded: bool,
+    value_width: usize,
 ) -> Vec<Line<'static>> {
-    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
-    let absent = |label, value: String| Line::from(styled_field(label, value, LABEL_WIDTH, DIM));
+    let row =
+        |label, value: String| field_line(label, text::clip(&value, value_width), LABEL_WIDTH);
+    let absent = |label, value: String| {
+        Line::from(styled_field(
+            label,
+            text::clip(&value, value_width),
+            LABEL_WIDTH,
+            DIM,
+        ))
+    };
     let Some(activity) = activity else {
         return vec![absent(
             "last 24h",
@@ -220,12 +217,15 @@ fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
     )
 }
 
-fn residency_line(record: &ModelRecord, facts: &Facts) -> Line<'static> {
+/// `residency   warm · gateway :11434 · unloads in 4m`, the holder clipped to
+/// `value_width` cells with the state.
+fn residency_line(record: &ModelRecord, facts: &Facts, value_width: usize) -> Line<'static> {
+    const WARM_LABEL: &str = "warm";
     let mut spans = vec![label("residency", LABEL_WIDTH)];
     match facts.resident(&record.id) {
         Some(resident) => {
-            spans.push(Span::styled("warm", WARM));
-            let holder = match resident.holder {
+            spans.push(Span::styled(WARM_LABEL, WARM));
+            let mut holder = match resident.holder {
                 Holder::Local => " · this process".to_owned(),
                 Holder::Daemon => " · Ollama daemon".to_owned(),
                 Holder::Gateway => match facts.gateway_port {
@@ -233,15 +233,78 @@ fn residency_line(record: &ModelRecord, facts: &Facts) -> Line<'static> {
                     None => " · gateway".to_owned(),
                 },
             };
-            spans.push(Span::styled(holder, DIM));
             if let Some(seconds) = resident.expires_in_seconds() {
-                spans.push(Span::styled(
-                    format!(" · unloads in {}", text::duration(seconds)),
-                    DIM,
-                ));
+                holder.push_str(&format!(" · unloads in {}", text::duration(seconds)));
             }
+            spans.push(Span::styled(
+                text::clip(&holder, value_width.saturating_sub(WARM_LABEL.width())),
+                DIM,
+            ));
         }
         None => spans.push(Span::styled("cold", DIM)),
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::support::residency::Resident;
+    use crate::tui::testing::{line_text as text, record_with};
+
+    #[test]
+    fn long_values_are_clipped_to_the_pane() {
+        let caps = [
+            "chat",
+            "complete",
+            "embed",
+            "see",
+            "image",
+            "speak",
+            "transcribe",
+            "tools",
+        ];
+        let mut record = record_with("m", caps.into_iter().map(Capability::from).collect());
+        record.footprint_mb = Some(4 * 1024);
+        record.primary_weight_path = Some(format!("/models/{}.gguf", "x".repeat(80)));
+        let facts = Facts {
+            memory_bytes: 64 << 30,
+            gateway_port: Some(11434),
+            residents: vec![
+                Resident {
+                    id: record.id.clone(),
+                    name: "m".to_owned(),
+                    bytes: 4 << 30,
+                    holder: Holder::Gateway,
+                    expires_at_millis: Some(i64::MAX / 2),
+                },
+                Resident {
+                    id: "other".to_owned(),
+                    name: "other".to_owned(),
+                    bytes: 30 << 30,
+                    holder: Holder::Local,
+                    expires_at_millis: None,
+                },
+            ],
+            ..Facts::default()
+        };
+        let lines = lines(&record, &facts, true, 40);
+        for line in &lines {
+            assert!(line.width() <= 40, "{:?} runs past the pane", text(line));
+        }
+        let find = |label: &str| {
+            lines
+                .iter()
+                .map(text)
+                .find(|line| line.starts_with(&format!(" {label}")))
+                .unwrap_or_default()
+        };
+        assert!(find("caps").ends_with('…'));
+        assert!(find("fit").ends_with('…'));
+        assert!(find("residency").contains("warm") && find("residency").ends_with('…'));
+        assert!(find("path").contains('…') && find("path").ends_with(".gguf"));
+        assert!(lines.iter().map(text).any(|line| line == " RECORD"));
+        assert!(!lines.iter().map(text).any(|line| line.contains("actions")));
+    }
 }

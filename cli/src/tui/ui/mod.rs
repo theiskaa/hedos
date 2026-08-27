@@ -15,6 +15,7 @@ mod shelf;
 mod tasks;
 
 use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -40,6 +41,12 @@ const CAUTION: Style = Style::new().fg(Color::Yellow);
 const SELECTED_ROW: Style = Style::new().add_modifier(Modifier::REVERSED);
 /// What failed or won't fit.
 const FAILED: Style = Style::new().fg(Color::Red);
+/// The screen behind a modal: every colour and emphasis flattened to one dark
+/// grey so the card is the only thing lit.
+const BACKDROP: Style = Style::new()
+    .fg(Color::DarkGray)
+    .add_modifier(Modifier::DIM)
+    .remove_modifier(Modifier::BOLD.union(Modifier::REVERSED));
 /// The glyphs of a horizontal bar: filled, then empty.
 const BAR_FILLED: &str = "█";
 const BAR_EMPTY: &str = "░";
@@ -67,12 +74,12 @@ fn field_line(label: &str, value: impl Into<String>, width: usize) -> Line<'stat
     Line::from(styled_field(label, value, width, Style::new()))
 }
 
-/// `mark` in `mark_style`, then `input` around its cursor, windowed so that
+/// `mark` in the accent, then `input` around its cursor, windowed so that
 /// mark, text and cursor together take at most `width` cells.
-fn edited(input: &LineEdit, mark: &str, mark_style: Style, width: usize) -> Vec<Span<'static>> {
+fn edited(input: &LineEdit, mark: &str, width: usize) -> Vec<Span<'static>> {
     let (before, after) = input.view(width.saturating_sub(mark.width() + 1));
     vec![
-        Span::styled(mark.to_owned(), mark_style),
+        Span::styled(mark.to_owned(), ACCENT),
         Span::raw(before),
         Span::styled(CURSOR, BOLD),
         Span::raw(after),
@@ -138,4 +145,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     tasks::draw(frame, panes.tasks, app);
     footer::draw(frame, panes.footer, app);
     modal::draw(frame, frame.area(), app);
+}
+
+/// A rect of `width` by `height` in the middle of `area`, no larger than
+/// `area` itself.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let [_, middle, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(height.min(area.height)),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    let [_, rect, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(width.min(area.width)),
+        Constraint::Fill(1),
+    ])
+    .areas(middle);
+    rect
 }

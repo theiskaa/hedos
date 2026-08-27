@@ -77,7 +77,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         rule,
     );
     frame.render_widget(
-        Paragraph::new(Line::from(edited(&pane.input, MARK, DIM, width))),
+        Paragraph::new(Line::from(edited(&pane.input, MARK, width))),
         prompt,
     );
 }

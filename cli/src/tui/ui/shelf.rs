@@ -4,12 +4,12 @@
 use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 
-use super::{ACCENT, BOLD, CAUTION, DIM, FAILED, SELECTED_ROW, WARM, edited};
+use super::{ACCENT, BOLD, CAUTION, DIM, SELECTED_ROW, WARM, centered, edited, keys};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
 use crate::tui::app::App;
@@ -45,6 +45,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         .iter()
         .map(|record| ShelfRow::new(record, app.facts.is_warm(&record.id), budget))
         .collect();
+    let no_match = shown.is_empty();
     let column_widths = widths(&rows);
     let columns = fitting_columns(&column_widths, area.width);
     let selected = app.selected();
@@ -55,9 +56,9 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
             (_, true) => BOLD,
             _ => Style::new(),
         };
+        // A row that won't fit is already dim; red is kept for what failed.
         let size_style = match row.verdict {
             Some(FitVerdict::TightFit) => CAUTION,
-            Some(FitVerdict::TooLarge) => FAILED,
             _ => Style::new(),
         };
         let marker = |mark: &str| {
@@ -79,21 +80,34 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Row::new(cells).style(style)
     });
 
-    let header = if shown.is_empty() {
-        Row::new(vec!["", "nothing matches; esc clears the filter"]).style(DIM)
-    } else {
-        Row::new(columns.iter().map(|&column| match column {
-            SIZE => Cell::from(Line::from(HEADERS[SIZE]).right_aligned()),
-            _ => Cell::from(HEADERS[column]),
-        }))
-        .style(DIM)
-    };
+    let header = Row::new(columns.iter().map(|&column| match column {
+        SIZE => Cell::from(Line::from(HEADERS[SIZE]).right_aligned()),
+        _ => Cell::from(HEADERS[column]),
+    }))
+    .style(DIM);
+    let block = Block::bordered().title(title(app)).border_style(DIM);
+    let body_area = block.inner(area);
     let table = Table::new(body, constraints(&column_widths, columns))
         .header(header)
         .column_spacing(COLUMN_SPACING)
         .row_highlight_style(SELECTED_ROW)
-        .block(Block::bordered().title(title(app)).border_style(DIM));
+        .block(block);
     frame.render_stateful_widget(table, area, &mut app.shelf);
+    if no_match {
+        draw_no_match(frame, body_area);
+    }
+}
+
+/// The header stays; the body says why it has no rows.
+fn draw_no_match(frame: &mut Frame, body: Rect) {
+    let note = Line::from(Span::styled("nothing matches · esc clears the filter", DIM));
+    let below_header = Rect {
+        y: body.y + 1,
+        height: body.height.saturating_sub(1),
+        ..body
+    };
+    let rect = centered(below_header, note.width() as u16, 1);
+    frame.render_widget(Paragraph::new(note).centered(), rect);
 }
 
 /// One row of the shelf: its cells and the fit verdict they were built from.
@@ -184,7 +198,7 @@ fn title(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
     if app.filtering || !app.filter.is_empty() {
         if app.filtering {
-            spans.extend(edited(&app.filter, " / ", ACCENT, FILTER_WIDTH));
+            spans.extend(edited(&app.filter, " / ", FILTER_WIDTH));
         } else {
             spans.push(Span::styled(" / ", ACCENT));
             spans.push(Span::raw(app.filter.as_str().to_owned()));
@@ -208,56 +222,43 @@ fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let memory = match app.facts.memory_bytes {
-        0 => String::new(),
-        bytes => format!("      {} GiB on this machine", text::gib(bytes as i64)),
-    };
-    let plain = Style::new();
-    let copy: [(String, Style); 10] = [
-        (String::new(), plain),
-        ("nothing on the shelf yet".to_owned(), BOLD),
-        (String::new(), plain),
-        (
-            "hedos looks in the Ollama store, the Hugging".to_owned(),
-            plain,
-        ),
-        ("Face cache, LM Studio, and loose GGUF or".to_owned(), plain),
-        ("safetensors files in your folders.".to_owned(), plain),
-        (String::new(), plain),
-        (format!("p pull a model{memory}"), plain),
-        ("s scan again".to_owned(), plain),
-        (String::new(), plain),
-    ];
-    let width = KOALA_WIDTH
-        + 3
-        + copy
-            .iter()
-            .map(|(line, _)| line.chars().count())
-            .max()
-            .unwrap_or(0) as u16;
+    let copy = empty_copy(app.facts.memory_bytes);
+    let width = KOALA_WIDTH + 2 + copy.iter().map(Line::width).max().unwrap_or(0) as u16;
     let lines: Vec<Line> = KOALA
         .iter()
         .zip(copy)
-        .map(|(koala, (line, style))| {
-            Line::from(vec![
-                Span::styled(format!("{koala}   "), BOLD),
-                Span::styled(line, style),
-            ])
+        .map(|(koala, line)| {
+            let mut spans = vec![Span::styled(format!("{koala}  "), BOLD)];
+            spans.extend(line.spans);
+            Line::from(spans)
         })
         .collect();
-    let [_, centered, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(KOALA.len() as u16),
-        Constraint::Fill(1),
-    ])
-    .areas(inner);
-    let [_, centered, _] = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(width),
-        Constraint::Fill(1),
-    ])
-    .areas(centered);
+    let centered = centered(inner, width, KOALA.len() as u16);
     frame.render_widget(Paragraph::new(lines), centered);
+}
+
+/// The copy beside the koala, one line per koala row: what the shelf is,
+/// where to start, and the machine's memory as a quiet note.
+fn empty_copy(memory_bytes: u64) -> [Line<'static>; 10] {
+    let memory = match memory_bytes {
+        0 => Line::default(),
+        bytes => Line::from(Span::styled(
+            format!(" {} GiB on this machine", text::gib(bytes as i64)),
+            DIM,
+        )),
+    };
+    [
+        Line::default(),
+        Line::from(Span::styled(" nothing on the shelf yet", BOLD)),
+        Line::default(),
+        Line::from(" hedos looks in the Ollama store, the Hugging"),
+        Line::from(" Face cache, LM Studio, and loose GGUF or"),
+        Line::from(" safetensors files in your folders."),
+        Line::default(),
+        keys(&[("p", "pull a model"), ("s", "scan again")]),
+        memory,
+        Line::default(),
+    ]
 }
 
 #[cfg(test)]
@@ -265,6 +266,8 @@ mod tests {
     use super::*;
 
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+
+    use crate::tui::testing::line_text as text;
 
     const WIDTHS: [usize; 5] = [2, 20, 10, 8, 7];
     const GIB: u64 = kernel::records::byte_format::BYTES_PER_GIB as u64;
@@ -303,6 +306,16 @@ mod tests {
             ShelfRow::new(&record(Some(1)), false, 16 * GIB).cells[3],
             "hf"
         );
+    }
+
+    #[test]
+    fn the_empty_shelf_hints_in_the_key_verb_grammar() {
+        let copy = empty_copy(64 * GIB);
+        let texts: Vec<String> = copy.iter().map(text).collect();
+        assert_eq!(texts[7].trim(), "p pull a model  s scan again");
+        assert_eq!(texts[8], " 64 GiB on this machine");
+        assert_eq!(copy[8].spans[0].style, DIM);
+        assert_eq!(text(&empty_copy(0)[8]), "");
     }
 
     #[test]

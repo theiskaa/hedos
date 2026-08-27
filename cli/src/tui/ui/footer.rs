@@ -1,7 +1,8 @@
-//! The key line: the keys that always apply on the left, what the selected
-//! model can do on the right, each key dim and its verb plain. A notice takes
-//! the line over while it lasts. Designed for 100 columns and up; narrower,
-//! the actions go first, then the serve key, so help and quit always show.
+//! The key line: the keys that always apply on the left, then what the
+//! selected model can do, each key dim and its verb plain; help and quit sit
+//! against the right edge. A notice takes the line over while it lasts.
+//! Designed for 100 columns and up; narrower, the actions go first, then the
+//! serve key, so help and quit always show.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -35,7 +36,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 /// The keys of the chat pane; escape reads as stop while a reply streams.
 fn chat_line(streaming: bool) -> Line<'static> {
     let escape = if streaming { "stop" } else { "close" };
-    keys(&[("enter", "send"), ("↑/↓ wheel", "scroll"), ("esc", escape)])
+    keys(&[("enter", "send"), ("↑/↓", "scroll"), ("esc", escape)])
 }
 
 /// The fullest footer that fits in `width`: everything, then without the copy
@@ -47,10 +48,10 @@ fn fitting_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
         .filter(|(key, _)| *key != "y")
         .collect();
     let candidates = [
-        footer_line(&FIXED, actions),
-        footer_line(&FIXED, &without_copy),
-        footer_line(&FIXED, &[]),
-        footer_line(&FIXED[..FIXED.len() - 1], &[]),
+        footer_line(&FIXED, actions, width),
+        footer_line(&FIXED, &without_copy, width),
+        footer_line(&FIXED, &[], width),
+        footer_line(&FIXED[..FIXED.len() - 1], &[], width),
     ];
     let last = candidates.len() - 1;
     candidates
@@ -61,15 +62,25 @@ fn fitting_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
         .unwrap_or_default()
 }
 
-/// `fixed`, a divider, `actions`, and the closing keys.
-fn footer_line(fixed: &[(&str, &str)], actions: &[(&str, &str)]) -> Line<'static> {
+/// `fixed`, a divider, `actions`, then the closing keys pushed one cell in
+/// from the right edge of `width`, mirroring the leading space; wider than
+/// that, the line simply runs on.
+fn footer_line(fixed: &[(&str, &str)], actions: &[(&str, &str)], width: usize) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     spans.extend(key_spans(fixed));
     if !actions.is_empty() {
         spans.push(Span::styled("│ ", DIM));
         spans.extend(key_spans(actions));
     }
-    spans.extend(key_spans(&ALWAYS));
+    let mut closing = key_spans(&ALWAYS);
+    if let Some(last) = closing.last_mut() {
+        last.content = last.content.trim_end().to_owned().into();
+    }
+    let left: usize = spans.iter().map(Span::width).sum();
+    let right = closing.iter().map(Span::width).sum::<usize>() + 1;
+    let pad = width.saturating_sub(left + right);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.extend(closing);
     Line::from(spans)
 }
 
@@ -91,7 +102,8 @@ mod tests {
     #[test]
     fn the_footer_sheds_from_the_right_until_it_fits() {
         let wide = text(&fitting_line(&ALL, 200));
-        assert!(wide.contains("y copy path") && wide.ends_with("q quit  "));
+        assert!(wide.contains("y copy path") && wide.ends_with("q quit"));
+        assert_eq!(wide.chars().count(), 199);
         let medium = text(&fitting_line(&ALL, 110));
         assert!(!medium.contains("copy path") && medium.contains("x remove"));
         let narrow = text(&fitting_line(&ALL, 80));
