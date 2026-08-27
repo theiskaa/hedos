@@ -144,6 +144,9 @@ impl SidecarSupervisor {
         command.stdin(std::process::Stdio::piped());
         command.stdout(std::process::Stdio::piped());
         command.stderr(std::process::Stdio::piped());
+        // Its own group: a Ctrl-C typed at hedos stops a reply, not the
+        // sidecar serving it.
+        command.process_group(0);
 
         let mut child = command.spawn().map_err(|err| SidecarError::SidecarDied {
             runtime_id: id.clone(),

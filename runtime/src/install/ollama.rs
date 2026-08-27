@@ -4,12 +4,13 @@
 //! [`Aggregator`](kernel::install::ollama_pull::Aggregator).
 
 use std::collections::HashMap;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use kernel::fs::expand_tilde;
 use kernel::install::ollama_pull::{Aggregator, Outcome};
-use kernel::install::reference::ollama_install_tag;
+use kernel::install::reference::{normalized_tag, ollama_install_tag};
 use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProviderId, InstallSearchHit,
     InstallStreamEvent,
@@ -126,7 +127,10 @@ impl InstallProvider for OllamaInstallProvider {
     fn plan(&self, reference: &str) -> InstallFuture<'_, Result<InstallPlan, InstallError>> {
         let reference = reference.to_owned();
         Box::pin(async move {
+            // The scanner names the record `name:latest`; a plan without the
+            // tag would never match what it installs.
             let tag = ollama_install_tag(&reference)
+                .map(|tag| normalized_tag(&tag))
                 .ok_or_else(|| InstallError::ReferenceInvalid(reference.clone()))?;
             Ok(InstallPlan::new(
                 InstallProviderId::ollama(),
@@ -334,6 +338,9 @@ pub(crate) async fn start_daemon(
         .arg("serve")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        // The daemon outlives this call and must not die with a Ctrl-C
+        // typed at hedos, so it gets a process group of its own.
+        .process_group(0)
         .spawn()
         .map_err(|error| {
             InstallError::ProviderUnavailable(format!("couldn't start Ollama: {error}"))

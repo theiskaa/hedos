@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::admission::{GatewayAdmissionState, GatewayWorkKind};
 use crate::defaults;
-use crate::port::{GatewayPort, PortFuture};
+use crate::port::{GatewayPort, GatewayResident, PortFuture};
 
 /// A [`GatewayPort`] backed by a shared [`Kernel`].
 #[derive(Clone)]
@@ -32,6 +32,24 @@ impl KernelGateway {
 impl GatewayPort for KernelGateway {
     fn shelf(&self) -> PortFuture<'_, Arc<[ModelRecord]>> {
         Box::pin(self.kernel.shelf())
+    }
+
+    fn resident(&self) -> PortFuture<'_, Vec<GatewayResident>> {
+        Box::pin(async move {
+            // A resident without a record id can't be matched to the shelf.
+            self.kernel
+                .resident_models()
+                .into_iter()
+                .filter_map(|entry| {
+                    Some(GatewayResident {
+                        model_id: entry.model_id?,
+                        name: entry.name,
+                        footprint_mb: entry.footprint_mb,
+                        expires_at_millis: entry.expires_at_millis,
+                    })
+                })
+                .collect()
+        })
     }
 
     fn invoke<'a>(

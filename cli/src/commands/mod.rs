@@ -9,6 +9,7 @@ pub mod rm;
 pub mod run;
 pub mod scan;
 pub mod serve;
+pub mod shelf;
 pub mod speak;
 pub mod stats;
 pub mod transcribe;

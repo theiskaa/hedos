@@ -158,16 +158,20 @@ impl TranscriptionAudio {
 /// Little-endian 32-bit float samples from a byte buffer (trailing partial sample
 /// dropped).
 fn float_samples(data: &[u8]) -> Vec<f32> {
-    data.chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect()
 }
 
 fn decode_samples(payload: &[u8], format: &WavFormat) -> Result<Vec<f32>, TranscriptionError> {
     match (format.audio_format, format.bits_per_sample) {
         (1, 16) => Ok(payload
-            .chunks_exact(2)
-            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]) as f32 / i16::MAX as f32)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| i16::from_le_bytes(*bytes) as f32 / i16::MAX as f32)
             .collect()),
         (3, 32) => Ok(float_samples(payload)),
         _ => Err(TranscriptionError::PayloadInvalid(format!(

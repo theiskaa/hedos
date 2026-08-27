@@ -12,11 +12,13 @@ use runtime::facade::Kernel;
 use runtime::settings::{Settings, SettingsStore};
 
 use crate::error::CliError;
+use crate::support::residency;
+use crate::support::serving::{self, GatewayLive};
 
 /// An open kernel plus the settings and directories it was built from.
 pub struct Session {
-    /// The production kernel.
-    pub kernel: Kernel,
+    /// The production kernel, shared with whatever serves it for a while.
+    pub kernel: Arc<Kernel>,
     /// The loaded settings.
     pub settings: Settings,
     /// The data directories.
@@ -28,7 +30,7 @@ impl Session {
     pub fn open() -> Result<Self, CliError> {
         let dirs = HedosDirs::detect();
         let settings = SettingsStore::discover().load();
-        let kernel = boot::build_kernel(&dirs, &settings)?;
+        let kernel = Arc::new(boot::build_kernel(&dirs, &settings)?);
         Ok(Self {
             kernel,
             settings,
@@ -53,13 +55,15 @@ impl Session {
         Ok(self.kernel.shelf().await)
     }
 
-    /// The ids of the models currently held resident, for the warm marker.
-    pub fn warm_set(&self) -> HashSet<String> {
-        self.kernel
-            .resident_models()
-            .into_iter()
-            .filter_map(|entry| entry.model_id)
-            .collect()
+    /// The gateway on the configured port, if one is running.
+    pub async fn live_gateway(&self) -> Option<GatewayLive> {
+        serving::probe(self.settings.gateway.port).await
+    }
+
+    /// The ids of everything loaded of `shelf`, wherever it is loaded, for
+    /// the warm marker.
+    pub async fn warm_set_anywhere(&self, shelf: &[ModelRecord]) -> HashSet<String> {
+        residency::loaded(self, shelf).await.ids()
     }
 
     /// Scan the machine's model stores, reconcile the registry, and resolve

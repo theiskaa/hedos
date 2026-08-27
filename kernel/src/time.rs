@@ -27,14 +27,31 @@ pub fn iso8601(millis: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
-/// Parse an ISO 8601 UTC timestamp back to epoch milliseconds. Accepts both the
-/// fixed-width `YYYY-MM-DDTHH:MM:SSZ` form [`iso8601`] emits and a fractional
-/// `…:SS.fffZ` form (only the leading three fraction digits are kept). Returns
-/// `None` unless the shape is a `date T time` split with in-range fields; the
-/// fraction is scanned with `chars()` so untrusted multibyte input never panics.
+/// Parse an ISO 8601 timestamp back to epoch milliseconds. Accepts the
+/// fixed-width `YYYY-MM-DDTHH:MM:SSZ` form [`iso8601`] emits, a fractional
+/// `…:SS.fffZ` form (only the leading three fraction digits are kept), and a
+/// `±HH:MM` zone offset in place of the `Z`. Returns `None` unless the shape is
+/// a `date T time` split with in-range fields; the fraction is scanned with
+/// `chars()` so untrusted multibyte input never panics.
 pub fn millis_from_iso8601(text: &str) -> Option<i64> {
     let text = text.trim().trim_end_matches('Z');
     let (date, time) = text.split_once('T')?;
+    let (time, offset_seconds) = match time.rfind(['+', '-']) {
+        Some(at) => {
+            let (time, offset) = time.split_at(at);
+            let (hours, minutes) = offset[1..].split_once(':')?;
+            let seconds = hours.parse::<i64>().ok()? * 3_600 + minutes.parse::<i64>().ok()? * 60;
+            (
+                time,
+                if offset.starts_with('-') {
+                    -seconds
+                } else {
+                    seconds
+                },
+            )
+        }
+        None => (time, 0),
+    };
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
     let month: u32 = date_parts.next()?.parse().ok()?;
@@ -61,7 +78,9 @@ pub fn millis_from_iso8601(text: &str) -> Option<i64> {
         })
         .unwrap_or(0);
     let days = days_from_civil(year, month, day);
-    Some((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000 + sub_millis)
+    Some(
+        (days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds) * 1_000 + sub_millis,
+    )
 }
 
 /// Convert a `(year, month, day)` civil date to days since the Unix epoch, via
@@ -183,8 +202,25 @@ mod tests {
     fn a_malformed_timestamp_does_not_parse() {
         assert_eq!(millis_from_iso8601("not-a-time"), None);
         assert_eq!(millis_from_iso8601("2020/09/13 12:26:40"), None);
-        assert_eq!(millis_from_iso8601("2024-01-15T10:30:00+02:00"), None);
+        assert_eq!(millis_from_iso8601("2024-01-15T10:30:00+02"), None);
         assert_eq!(millis_from_iso8601("2024-13-01T00:00:00Z"), None);
         assert_eq!(millis_from_iso8601(""), None);
+    }
+
+    #[test]
+    fn offsets_shift_to_utc() {
+        assert_eq!(
+            millis_from_iso8601("2023-11-14T22:13:20Z"),
+            Some(1_700_000_000_000)
+        );
+        assert_eq!(
+            millis_from_iso8601("2023-11-15T01:13:20.123456+03:00"),
+            Some(1_700_000_000_123)
+        );
+        assert_eq!(
+            millis_from_iso8601("2023-11-14T17:13:20.5-05:00"),
+            Some(1_700_000_000_500)
+        );
+        assert_eq!(millis_from_iso8601("2023-11-14T22:13:20+0300"), None);
     }
 }

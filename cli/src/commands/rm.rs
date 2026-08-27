@@ -2,11 +2,11 @@
 //! asks for confirmation; non-interactively it only previews unless `-y` is given.
 
 use clap::Args;
-use runtime::removal::{ModelRemover, OllamaModelRemover, permanent_delete_trasher};
 
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
+use crate::support::removal::remove_and_forget;
 use crate::support::session::Session;
 
 /// Arguments for `rm`.
@@ -23,7 +23,7 @@ pub struct RmArgs {
 pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf().await;
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
     let record =
         interactive::choose_model(out, args.model.as_deref(), &shelf, None, "remove", &warm)?;
 
@@ -60,11 +60,7 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
         }
     }
 
-    let remover = ModelRemover::new(permanent_delete_trasher(), OllamaModelRemover::new());
-    let report = remover.remove(record).await?;
-    // The weights (or the Ollama tag) are gone; forget the record too, or it
-    // lingers in the registry and `hedos ls` keeps showing the deleted model.
-    session.kernel.forget(&report.model_id).await?;
+    let report = remove_and_forget(&session, record).await?;
     out.line(&format!(
         "Deleted {} — {} item(s), ~{} MB freed{}",
         report.name,

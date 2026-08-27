@@ -1,6 +1,5 @@
-//! Shared rendering of shelf rows: the aligned columns `hedos ls` prints and the
-//! interactive model picker offers. Both draw from one column layout so a model
-//! looks identical whether it is listed or selected.
+//! The aligned shelf table `hedos ls` prints and the interactive picker offers,
+//! plus the label helpers the UI's own table shares with it.
 
 use std::collections::HashSet;
 
@@ -8,16 +7,11 @@ use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord};
 
 /// The six columns shown for a model: warm marker, name, runtime, store, fit, caps.
-fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
+pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
     [
         if warm { "●" } else { "○" }.to_owned(),
         record.display_name().to_owned(),
-        record
-            .runtime
-            .id
-            .as_ref()
-            .map_or("—", |id| id.as_str())
-            .to_owned(),
+        runtime_label(record).to_owned(),
         record.source.kind.as_str().to_owned(),
         fit_label(record, total_memory_bytes).to_owned(),
         record
@@ -29,20 +23,43 @@ fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 
     ]
 }
 
-/// A short human fit label from the model's footprint and the machine's memory:
-/// `fits` / `tight` / `too big`, or `—` when the footprint is unknown (the same
-/// dash the runtime column uses for an unresolved runtime).
-fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
-    match FitVerdict::assess(record.footprint_mb, total_memory_bytes).map(|fit| fit.verdict) {
+/// The placeholder for a value the record does not have.
+pub(crate) const DASH: &str = "—";
+
+/// The runtime id, or [`DASH`] for an unresolved runtime.
+pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
+    record.runtime.id.as_ref().map_or(DASH, |id| id.as_str())
+}
+
+/// How a model of `footprint_mb` fits in `memory_bytes`, when the footprint
+/// is known.
+pub(crate) fn verdict(footprint_mb: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
+    FitVerdict::assess(footprint_mb, memory_bytes).map(|fit| fit.verdict)
+}
+
+/// The short human form of a verdict: `fits` / `tight` / `too big`, empty
+/// when there is none.
+pub(crate) fn verdict_label(verdict: Option<FitVerdict>) -> &'static str {
+    match verdict {
         Some(FitVerdict::RunsWell) => "fits",
         Some(FitVerdict::TightFit) => "tight",
         Some(FitVerdict::TooLarge) => "too big",
-        None => "—",
+        None => "",
+    }
+}
+
+/// The fit column from the model's footprint and the machine's memory, or `—`
+/// when the footprint is unknown (the same dash the runtime column uses for an
+/// unresolved runtime).
+fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
+    match verdict(record.footprint_mb, total_memory_bytes) {
+        Some(fit) => verdict_label(Some(fit)),
+        None => DASH,
     }
 }
 
 /// Column widths wide enough for every row and the optional header.
-fn widths(rows: &[[String; 6]], headers: Option<&[&str; 6]>) -> [usize; 6] {
+pub(crate) fn widths(rows: &[[String; 6]], headers: Option<&[&str; 6]>) -> [usize; 6] {
     let mut widths = headers.map_or([0; 6], |headers| headers.map(str::len));
     for row in rows {
         for (column, cell) in row.iter().enumerate() {
@@ -67,6 +84,9 @@ fn format_row(cells: &[String; 6], widths: &[usize; 6]) -> String {
         .to_owned()
 }
 
+/// The `hedos ls` header row, one label per column.
+pub(crate) const HEADERS: [&str; 6] = ["", "NAME", "RUNTIME", "STORE", "FIT", "CAPABILITIES"];
+
 /// The full `hedos ls` table: a header row followed by one aligned row per model,
 /// with fit judged against `total_memory_bytes`.
 pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_bytes: u64) -> String {
@@ -74,11 +94,10 @@ pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_byte
         .iter()
         .map(|record| cells(record, warm.contains(&record.id), total_memory_bytes))
         .collect();
-    let headers = ["", "NAME", "RUNTIME", "STORE", "FIT", "CAPABILITIES"];
-    let widths = widths(&rows, Some(&headers));
+    let widths = widths(&rows, Some(&HEADERS));
 
     let mut lines = Vec::with_capacity(rows.len() + 1);
-    lines.push(format_row(&headers.map(String::from), &widths));
+    lines.push(format_row(&HEADERS.map(String::from), &widths));
     for row in &rows {
         lines.push(format_row(row, &widths));
     }

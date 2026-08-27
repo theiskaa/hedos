@@ -1,5 +1,6 @@
 //! `hedos ls` — list the models on the shelf, with their runtime, store,
-//! capabilities, and whether each is currently warm.
+//! capabilities, and whether each is currently warm (in this process or in a
+//! running gateway).
 
 use clap::Args;
 use kernel::profiles::FitVerdict;
@@ -49,7 +50,7 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
         return Ok(());
     }
 
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
     let records: Vec<&_> = shelf.iter().collect();
     out.line(&shelf_table::table(&records, &warm, budget));
     Ok(())

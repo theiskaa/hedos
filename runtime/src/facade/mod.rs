@@ -80,15 +80,16 @@ impl From<RegistryError> for KernelError {
 /// currently holds memory.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResidentEntry {
-    /// The model id, or `None` for a resident held outside the governor's
-    /// accounting (a model loaded directly by the Ollama daemon). Only governor
-    /// residents are reported today; the Ollama-origin source is deferred with
-    /// the adapter's loaded-model tracking, and will fill the `None` case.
+    /// The model id. Only governor residents are reported, so it is always
+    /// set today; models the Ollama daemon loads on its own are found by the
+    /// CLI asking the daemon, not through this list.
     pub model_id: Option<String>,
     /// The model's display name.
     pub name: String,
     /// The footprint in megabytes.
     pub footprint_mb: i64,
+    /// When the idle unload fires, in Unix milliseconds, if a timer is armed.
+    pub expires_at_millis: Option<i64>,
 }
 
 /// An adapter registered with the kernel, plus its job-running handle when the
@@ -435,6 +436,7 @@ impl Kernel {
             .resident()
             .into_iter()
             .map(|resident| ResidentEntry {
+                expires_at_millis: self.governor.idle_deadline_millis(&resident.model_id),
                 model_id: Some(resident.model_id),
                 name: resident.name,
                 footprint_mb: resident.footprint_mb,

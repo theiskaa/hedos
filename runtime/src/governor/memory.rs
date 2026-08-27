@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use kernel::time::now_millis;
 
 use crate::governor::gate::GpuGate;
 use crate::governor::lease::ModelLease;
@@ -274,6 +276,21 @@ impl MemoryGovernor {
         self.inner
             .residency
             .set_default_warm_window(policy.keep_warm.warm_window());
+    }
+
+    /// When `model_id`'s idle unload fires, if a timer is armed.
+    pub fn idle_deadline(&self, model_id: &str) -> Option<Instant> {
+        self.inner.residency.idle_deadline(model_id)
+    }
+
+    /// [`Self::idle_deadline`] as Unix milliseconds, for the wire and the UI.
+    pub fn idle_deadline_millis(&self, model_id: &str) -> Option<i64> {
+        self.idle_deadline(model_id).map(|deadline| {
+            now_millis()
+                + deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis() as i64
+        })
     }
 
     /// Set a per-model keep-warm window.

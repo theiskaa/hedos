@@ -55,6 +55,7 @@ Base path `/api`.
 | `POST /api/embed` | Embed text. |
 | `POST /api/embeddings` | Embed text (legacy endpoint). |
 | `GET /api/tags` | List models, Ollama-style. |
+| `GET /api/ps` | List the models held in memory. Each entry also carries hedos's record `id`. |
 | `GET /api/version` | Version handshake for stock clients. |
 | `POST /api/show` | Model details handshake. |
 

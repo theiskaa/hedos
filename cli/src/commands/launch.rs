@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use clap::Args;
 use gateway::server;
@@ -43,21 +44,16 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
 
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
 
     // Tool calling is what every harness but aider drives the model through, so
     // the picker offers only tool-capable models for those. An explicit `-m`
     // still resolves against the whole shelf, so a named model that can't do
     // tools gets the precise pre-flight reason rather than "no such model".
-    let needed = if spec.needs_tools {
-        Capability::tools()
-    } else {
-        Capability::chat()
-    };
     let pick_capability = if args.model.is_some() {
         Capability::chat()
     } else {
-        needed.clone()
+        spec.needed_capability()
     };
     let record = interactive::choose_model(
         out,
@@ -67,6 +63,24 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
         &format!("model for {}", spec.display),
         &warm,
     )?;
+    let status = launch(&session, spec, &program, record, &args.passthrough, out).await?;
+    exit_result(status, spec)
+}
+
+/// Serve `record` to `spec` (the binary at `program`) on an ephemeral gateway
+/// until the harness exits, and return how it exited. Shared by the command
+/// and `hedos shelf`. The picker list comes from the live shelf, so a caller's
+/// older snapshot never reaches the harness.
+pub(crate) async fn launch(
+    session: &Session,
+    spec: &HarnessSpec,
+    program: &Path,
+    record: &ModelRecord,
+    passthrough: &[String],
+    out: &Out,
+) -> Result<std::process::ExitStatus, CliError> {
+    let shelf = session.shelf().await;
+    let needed = spec.needed_capability();
     // The ids the harness sends back must be the ones `/v1/models` advertises,
     // or the gateway cannot resolve them.
     let wire_id = |record: &ModelRecord| record.wire_id().to_owned();
@@ -79,7 +93,7 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
         .map(wire_id)
         .collect();
 
-    preflight(&session, record, spec, out).await?;
+    preflight(session, record, spec, out).await?;
 
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;
     let audit_dir = session.dirs.sub("gateway");
@@ -90,7 +104,12 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
     let plan = spec.plan(port, &model, &available, &config_dir);
 
     materialize(&plan, &config_dir)?;
-    let (server_task, stop) = serve_for_launch(session.kernel, &audit_dir, max_inference, listener);
+    let (server_task, stop) = serve_for_launch(
+        Arc::clone(&session.kernel),
+        &audit_dir,
+        max_inference,
+        listener,
+    );
 
     out.line(&format!(
         "{} · {model} · gateway on 127.0.0.1:{port}",
@@ -107,7 +126,7 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
     // reaches it directly. Holding a handler here keeps the default disposition
     // from killing this process — and the gateway with it — out from under a
     // child that meant to handle the interrupt itself.
-    tokio::spawn(async {
+    let interrupt_guard = tokio::spawn(async {
         loop {
             if tokio::signal::ctrl_c().await.is_err() {
                 std::future::pending::<()>().await;
@@ -115,13 +134,14 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
         }
     });
 
-    let status = spawn_harness(&program, spec, &plan, &args.passthrough).await?;
+    let status = spawn_harness(program, spec, &plan, passthrough).await;
+    interrupt_guard.abort();
+    let status = status?;
     let _ = stop.send(());
     if let Ok(Err(error)) = server_task.await {
         out.err(&format!("gateway stopped with an error: {error}"));
     }
-
-    exit_result(status, spec)
+    Ok(status)
 }
 
 /// Write the plan's generated config files under `config_dir`.
@@ -170,7 +190,7 @@ fn create_config_dir(config_dir: &Path) -> Result<(), CliError> {
 
 /// Serve the gateway on `listener` until the returned sender fires (or drops).
 fn serve_for_launch(
-    kernel: runtime::facade::Kernel,
+    kernel: Arc<runtime::facade::Kernel>,
     audit_dir: &Path,
     max_inference: usize,
     listener: tokio::net::TcpListener,
@@ -438,7 +458,7 @@ fn choose_harness(out: &Out, arg: Option<&str>) -> Result<&'static HarnessSpec, 
 
 /// The harness's executable, or a user-facing error pointing at its homepage.
 fn locate(spec: &HarnessSpec) -> Result<PathBuf, CliError> {
-    kernel::fs::find_on_path(spec.binary).ok_or_else(|| {
+    spec.locate().ok_or_else(|| {
         CliError::new(format!(
             "{} is not installed — `{}` is not on your PATH. See {}",
             spec.display, spec.binary, spec.homepage

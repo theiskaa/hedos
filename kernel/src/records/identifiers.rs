@@ -139,6 +139,17 @@ pub enum ExecutionMode {
     Sync,
 }
 
+impl ExecutionMode {
+    /// The stable string form, the same one serde writes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExecutionMode::Stream => "stream",
+            ExecutionMode::Job => "job",
+            ExecutionMode::Sync => "sync",
+        }
+    }
+}
+
 /// How much support a model needs before it can run.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
@@ -169,6 +180,17 @@ pub enum ModelState {
     Unresolved,
     /// Known but its weights are no longer on disk.
     Missing,
+}
+
+impl ModelState {
+    /// The stable string form, the same one serde writes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ModelState::Ready => "ready",
+            ModelState::Unresolved => "unresolved",
+            ModelState::Missing => "missing",
+        }
+    }
 }
 
 /// The bid preference numbers runtime adapters use to compete for a model. Lower

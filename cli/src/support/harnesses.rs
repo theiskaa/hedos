@@ -6,6 +6,8 @@
 //! that writes the files and runs the process.
 
 use std::collections::BTreeMap;
+
+use kernel::records::Capability;
 use std::path::PathBuf;
 
 use serde_json::json;
@@ -42,6 +44,7 @@ enum HarnessKind {
 }
 
 /// One launchable harness.
+#[derive(Debug, PartialEq)]
 pub struct HarnessSpec {
     /// The wiring recipe used by `plan`.
     kind: HarnessKind,
@@ -59,6 +62,22 @@ pub struct HarnessSpec {
     /// except aider, whose edit formats are plain text in the assistant message,
     /// so it is the one that still works on a model without tool support.
     pub needs_tools: bool,
+}
+
+impl HarnessSpec {
+    /// The capability the harness drives the model through.
+    pub fn needed_capability(&self) -> Capability {
+        if self.needs_tools {
+            Capability::tools()
+        } else {
+            Capability::chat()
+        }
+    }
+
+    /// Where the harness's binary is on `PATH`, if it is installed.
+    pub fn locate(&self) -> Option<PathBuf> {
+        kernel::fs::find_on_path(self.binary)
+    }
 }
 
 /// Everything needed to spawn one harness.

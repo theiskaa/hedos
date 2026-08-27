@@ -1,4 +1,5 @@
-//! `hedos unload <model>` — evict a model from in-process residency.
+//! `hedos unload <model>` — evict a model from in-process residency, or from
+//! the Ollama daemon when the daemon holds it.
 
 use std::collections::HashSet;
 
@@ -8,6 +9,7 @@ use kernel::records::ModelRecord;
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
+use crate::support::residency::unload_anywhere;
 use crate::support::session::{self, Session};
 
 /// Arguments for `unload`.
@@ -21,19 +23,13 @@ pub struct UnloadArgs {
 pub async fn run(args: UnloadArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf().await;
-    let warm = session.warm_set();
+    let warm = session.warm_set_anywhere(&shelf).await;
     let record = match args.model.as_deref() {
         Some(query) => session::resolve(query, &shelf, None)?,
         None => pick_resident(out, &shelf, &warm)?,
     };
 
-    session
-        .kernel
-        .governor()
-        .residency()
-        .unload_now(&record.id)
-        .await;
-    let resident = session.kernel.governor().is_resident(&record.id);
+    let resident = unload_anywhere(&session, record).await?;
 
     out.line(&format!(
         "{} {}",

@@ -1,6 +1,8 @@
 //! `hedos serve` — run the OpenAI/Ollama-compatible gateway on loopback until
 //! interrupted.
 
+use std::sync::Arc;
+
 use clap::Args;
 use gateway::server;
 
@@ -21,11 +23,17 @@ pub struct ServeArgs {
 /// Run the `serve` command; blocks until Ctrl-C.
 pub async fn run(args: ServeArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
-    let port = args.port.unwrap_or(session.settings.gateway.port);
+    serve(&session, args.port, out).await
+}
+
+/// Serve the gateway on `port` (the configured one when `None`) until
+/// Ctrl-C. Shared by the command and `hedos shelf`.
+pub(crate) async fn serve(session: &Session, port: Option<u16>, out: &Out) -> Result<(), CliError> {
+    let port = port.unwrap_or(session.settings.gateway.port);
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;
     let audit_dir = session.dirs.sub("gateway");
 
-    let router = serving::router(session.kernel, &audit_dir, max_inference);
+    let router = serving::router(Arc::clone(&session.kernel), &audit_dir, max_inference);
     let listener = serving::bind(port).await?;
     let address = listener.local_addr()?;
     let base_url = format!("http://{address}/v1");

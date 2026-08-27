@@ -134,6 +134,19 @@ Generate an image and write a PNG file. This runs as a job, with progress on std
 - `--seed <n>` sets the random seed.
 - `-o, --output <path>` sets the output file. The default is a name slugged from the prompt with a `.png` extension in the current directory.
 
+### `hedos shelf`
+
+Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the machine's memory, what is loaded and by whom, disk per store, and the gateway's state kept on screen. Every key is a subcommand, and the footer shows only the ones that apply to the selected model.
+
+- `p` pulls: a catalog grouped by what you'd use a model for, a search over Hugging Face as you type, and a plan (size, destination, fit) before a byte moves. Downloads run in a task strip with progress; `c` cancels. A finished pull lands on the model it added.
+- `w` / `u` warm and unload, through the Ollama daemon when the daemon holds the model. `x` removes, showing exactly what leaves the disk and asking first.
+- `t` opens a chat pane on the selected model, in place of the shelf: type, `enter` sends, the reply streams in with its token rate under it, and the conversation carries on until `esc` closes the pane (while a reply streams, `esc` and Ctrl-C stop it first; idle, Ctrl-C closes the pane too). The transcript scrolls with the wheel, `↑`/`↓`, `PageUp`/`PageDown` and `Home`/`End`; a scrolled view holds still while more text streams in, with its position in the title, and `End` follows the newest text again. The wheel also moves the shelf and the pull list. The model is warm afterwards, like after `hedos run`.
+- `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it in the plain terminal, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
+- Every text field (the chat prompt, the pull search, the filter) edits like a shell line: Ctrl-A / Ctrl-E jump to the ends, Ctrl-U clears back to the start, Ctrl-W or Option+Delete cuts the word before the cursor, the arrows and Option+arrows move by character and word. Cmd+Delete is a macOS binding the terminal keeps to itself; in iTerm, map it to send Ctrl-U (hex `0x15`) if you want it here.
+- `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path and `Y` the id, `r` refreshes, `d` dismisses a failed row, `?` lists every key, `q` or Ctrl-C quits. The selection is remembered between runs.
+
+A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal.
+
 ### `hedos warm [model]`
 
 Load a model into residency with a tiny request, so the next real request starts warm. Reports whether the model is resident.

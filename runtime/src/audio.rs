@@ -163,14 +163,18 @@ fn mix(
 }
 
 fn float_samples(pcm: &[u8]) -> Vec<f32> {
-    pcm.chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    pcm.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 
 fn int16_samples(pcm: &[u8]) -> Vec<i16> {
-    pcm.chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    pcm.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
         .collect()
 }
