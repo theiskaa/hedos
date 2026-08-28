@@ -7,13 +7,13 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, label};
+use super::{ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, label, label_width};
 use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
 
-/// Width of the labels in the block: `memory` is the longest, with a gap.
-const LABEL_WIDTH: usize = 7;
+/// The labels the block uses; the column is as wide as the widest, plus a gap.
+const LABELS: [&str; 2] = ["memory", "disk"];
 /// The steps the memory bar cycles through, one per resident: the accent,
 /// then two brightnesses of the plain foreground.
 const SEGMENT_STYLES: [Style; 3] = [ACCENT, Style::new(), DIM];
@@ -43,14 +43,10 @@ fn draw_machine(frame: &mut Frame, area: Rect, facts: &Facts) {
     let inner = block.inner(area);
     let bar_width = inner
         .width
-        .saturating_sub(LABEL_WIDTH as u16 + 1 + FIGURE_WIDTH)
+        .saturating_sub(label_column() as u16 + 1 + FIGURE_WIDTH)
         .max(MIN_BAR_WIDTH) as usize;
     let lines = if facts.residents.is_empty() {
-        let mut spans = vec![label("memory", LABEL_WIDTH)];
-        spans.push(Span::styled("nothing loaded", DIM));
-        spans.push(Span::raw(" · "));
-        spans.extend(free_of_total(facts));
-        vec![Line::from(spans), disk_line(facts)]
+        vec![idle_memory_line(facts), disk_line(facts)]
     } else {
         vec![
             memory_line(facts, bar_width),
@@ -75,6 +71,20 @@ fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
     ];
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The width of the label column.
+fn label_column() -> usize {
+    label_width(&LABELS, 1)
+}
+
+/// `memory  nothing loaded · 54.7 GiB free of 64`.
+fn idle_memory_line(facts: &Facts) -> Line<'static> {
+    let mut spans = vec![label("memory", label_column())];
+    spans.push(Span::styled("nothing loaded", DIM));
+    spans.push(Span::raw(" · "));
+    spans.extend(free_of_total(facts));
+    Line::from(spans)
 }
 
 /// `on :11434 · 3 req/min`, or `off`.
@@ -114,7 +124,7 @@ fn served_line(facts: &Facts) -> String {
 
 /// `memory  ████░░░░  14.2 of 64 GiB`.
 fn memory_line(facts: &Facts, bar_width: usize) -> Line<'static> {
-    let mut spans = vec![label("memory", LABEL_WIDTH)];
+    let mut spans = vec![label("memory", label_column())];
     spans.extend(memory_bar(facts, bar_width));
     spans.push(Span::raw("  "));
     spans.push(Span::styled(text::gib(facts.resident_bytes()), BOLD));
@@ -150,7 +160,7 @@ fn memory_bar(facts: &Facts, bar_width: usize) -> Vec<Span<'static>> {
 
 /// `■ qwen3.5 6.1  ■ llava 4.7  · 49.8 free`.
 fn legend_line(facts: &Facts) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ".repeat(LABEL_WIDTH + 1))];
+    let mut spans = vec![Span::raw(" ".repeat(label_column() + 1))];
     for (index, resident) in facts.residents.iter().enumerate() {
         spans.push(Span::styled(
             "■ ",
@@ -170,7 +180,7 @@ fn legend_line(facts: &Facts) -> Line<'static> {
 
 /// `disk    40.3 GB · ollama 27.8 · hf 12.4`.
 fn disk_line(facts: &Facts) -> Line<'static> {
-    let mut spans = vec![label("disk", LABEL_WIDTH)];
+    let mut spans = vec![label("disk", label_column())];
     spans.push(Span::styled(text::bytes(facts.disk_bytes()), BOLD));
     let stores: Vec<String> = facts
         .disk_by_store
@@ -182,4 +192,37 @@ fn disk_line(facts: &Facts) -> Line<'static> {
         spans.push(Span::styled(format!(" · {}", stores.join(" · ")), DIM));
     }
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::support::residency::{Holder, Resident};
+    use crate::tui::ui::leading_label;
+
+    #[test]
+    fn every_label_is_listed() {
+        let facts = Facts {
+            memory_bytes: 64 << 30,
+            residents: vec![Resident {
+                id: "m".to_owned(),
+                name: "m".to_owned(),
+                bytes: 4 << 30,
+                holder: Holder::Local,
+                expires_at_millis: None,
+            }],
+            disk_by_store: vec![("ollama".to_owned(), 1 << 30)],
+            ..Facts::default()
+        };
+        for line in [
+            idle_memory_line(&facts),
+            memory_line(&facts, 10),
+            disk_line(&facts),
+        ] {
+            let label = leading_label(&line, label_column());
+            assert!(LABELS.contains(&label.as_str()), "{label} is not listed");
+        }
+        assert_eq!(leading_label(&legend_line(&facts), label_column()), "");
+    }
 }

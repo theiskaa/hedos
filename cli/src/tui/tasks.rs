@@ -193,6 +193,12 @@ pub struct TaskLabel {
 }
 
 impl TaskKind {
+    /// Every verb a strip row can start with, the hand-offs' included; the
+    /// strip's verb column is as wide as the widest.
+    pub const VERBS: [&'static str; 8] = [
+        "scan", "warm", "unload", "pull", "remove", "launch", "chat", "serve",
+    ];
+
     /// The label the strip shows for this kind.
     pub fn label(&self) -> TaskLabel {
         TaskLabel {

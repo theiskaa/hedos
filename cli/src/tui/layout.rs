@@ -5,8 +5,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 
 /// Below this many columns the detail pane stacks under the shelf.
 const WIDE_COLUMNS: u16 = 100;
-/// Height of the detail pane when stacked.
-const STACKED_DETAIL_ROWS: u16 = 6;
+/// Height of the detail pane when stacked; at or under it the detail shows
+/// only what the shelf row does not.
+pub(crate) const STACKED_DETAIL_ROWS: u16 = 6;
 /// Share of the width the shelf takes when side by side.
 const SHELF_PERCENT: u16 = 55;
 /// From this many rows the koala header earns its place; below it the header

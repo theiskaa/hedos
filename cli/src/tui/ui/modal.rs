@@ -14,18 +14,34 @@ use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    ACCENT, BACKDROP, BOLD, DIM, SELECTED_ROW, centered, edited, field_line, keys, styled_field,
+    ACCENT, BACKDROP, BOLD, DIM, SELECTED_ROW, centered, edited, field_line, keys, label_width,
+    padded, right_aligned, styled_field,
 };
 use crate::support::banner::KOALA;
 use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::{App, Modal};
 use crate::tui::facts::Facts;
+use crate::tui::keymap;
 use crate::tui::launch::LaunchModal;
 use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, fit};
 use crate::tui::text;
 
-const WIDTH: u16 = 84;
+/// The pull modal's width: the listing needs it for its reference column.
+const PULL_WIDTH: u16 = 84;
+/// The remove modal's width: three label rows and one sentence, the path
+/// elided to fit.
+const REMOVE_WIDTH: u16 = 72;
+/// The launch modal's width: a harness, its binary, and the reason it is
+/// blocked, clipped to fit.
+const LAUNCH_WIDTH: u16 = 72;
+/// The help modal's width: 84 rather than the 72 the plan asks for, since 70
+/// inner cells are too few for the koala beside the four columns; P3.1 drops
+/// the koala and takes it to 72.
+const HELP_WIDTH: u16 = 84;
+/// Cells kept clear on either side of a modal when the terminal is narrower
+/// than it wants.
+const MARGIN: u16 = 2;
 /// Rows a bordered box spends on its top and bottom edges.
 const BORDER_ROWS: u16 = 2;
 /// Rows of the listing that are not matches: the input, a blank, the keys.
@@ -43,12 +59,14 @@ const HELP_HEIGHT: u16 = KOALA.len() as u16 + 5 + BORDER_ROWS;
 /// The launch modal: a blank, one row per harness, a blank, the note, a
 /// blank, the keys, and the border.
 const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 5 + BORDER_ROWS;
-/// Width of the labels in the preview and remove bodies: `download` is the
-/// longest, with a gap after it.
-const LABEL_WIDTH: usize = 10;
-/// Width of the provider column: `huggingface` is the longest id.
-const PROVIDER_WIDTH: usize = 11;
-/// Width of the trailing fit verdict or popularity note.
+/// The labels of the preview and remove bodies; the column is as wide as
+/// the widest, plus a gap.
+const LABELS: [&str; 8] = [
+    "store", "on disk", "path", "after", "from", "to", "size", "download",
+];
+/// Cells the size column of a pull row holds: `999.9 GB` at the widest.
+const SIZE_WIDTH: usize = 8;
+/// Cells the trailing fit verdict or popularity note is held to.
 const NOTE_WIDTH: usize = 14;
 /// The prompt marker of the pull query.
 const MARK: &str = " › ";
@@ -63,14 +81,14 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
     frame.buffer_mut().set_style(area, BACKDROP);
-    let height = match modal {
-        Modal::Pull(_) => PULL_HEIGHT,
-        Modal::Remove(_) => REMOVE_HEIGHT,
-        Modal::Help => HELP_HEIGHT,
-        Modal::Launch(_) => LAUNCH_HEIGHT,
+    let (width, height) = match modal {
+        Modal::Pull(_) => (PULL_WIDTH, PULL_HEIGHT),
+        Modal::Remove(_) => (REMOVE_WIDTH, REMOVE_HEIGHT),
+        Modal::Help => (HELP_WIDTH, HELP_HEIGHT),
+        Modal::Launch(_) => (LAUNCH_WIDTH, LAUNCH_HEIGHT),
         Modal::Chat(_) => return,
     };
-    let rect = centered(area, WIDTH, height);
+    let rect = centered(area, modal_width(width, area.width), height);
     let block = Block::bordered().border_style(ACCENT);
     let inner = block.inner(rect);
     let (title, lines) = match modal {
@@ -82,7 +100,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         Modal::Help => (" help ".to_owned(), help()),
         Modal::Launch(modal) => (
             format!(" launch on {} ", modal.record.display_name()),
-            launch(modal),
+            launch(modal, inner),
         ),
         Modal::Chat(_) => return,
     };
@@ -91,15 +109,27 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// `wanted` cells, or what `available` leaves once a margin is kept on both
+/// sides.
+fn modal_width(wanted: u16, available: u16) -> u16 {
+    wanted.min(available.saturating_sub(2 * MARGIN))
+}
+
 /// Every harness, the ones this model can seat selectable, the rest dim with
-/// the reason.
-fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
+/// the reason, clipped to what `inner` leaves after the two columns.
+fn launch(modal: &LaunchModal, inner: Rect) -> Vec<Line<'static>> {
+    let displays: Vec<&str> = HARNESSES.iter().map(|spec| spec.display).collect();
+    let binaries: Vec<&str> = HARNESSES.iter().map(|spec| spec.binary).collect();
+    let display_width = label_width(&displays, 1);
+    let binary_width = label_width(&binaries, 2);
+    let reason_width = (inner.width as usize).saturating_sub(1 + display_width + binary_width);
     let mut lines = vec![Line::default()];
     for (index, row) in modal.rows.iter().enumerate() {
+        let reason = row.blocked.as_deref().unwrap_or_default();
         let mut line = Line::from(vec![
-            Span::raw(format!(" {:<12}", row.spec.display)),
-            Span::styled(format!("{:<10}", row.spec.binary), DIM),
-            Span::styled(row.blocked.clone().unwrap_or_default(), DIM),
+            Span::raw(format!(" {}", padded(row.spec.display, display_width))),
+            Span::styled(padded(row.spec.binary, binary_width), DIM),
+            Span::styled(text::clip(reason, reason_width), DIM),
         ]);
         if row.blocked.is_some() {
             line = line.style(DIM);
@@ -111,7 +141,7 @@ fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        " the ui steps aside while the harness runs, and comes back when it exits",
+        " the ui steps aside while the harness runs and returns when it exits",
         DIM,
     )));
     lines.push(Line::default());
@@ -123,39 +153,66 @@ fn launch(modal: &LaunchModal) -> Vec<Line<'static>> {
     lines
 }
 
+/// The help's rows: two cells per koala line, each cell the bindings it
+/// shows together.
+const HELP_ROWS: [(&[&str], &[&str]); 9] = [
+    (&["j/k", "↑/↓"], &["g/G"]),
+    (&["/"], &["enter"]),
+    (&["p"], &["s"]),
+    (&["w", "u"], &["x"]),
+    (&["l"], &["T"]),
+    (&["t"], &["S"]),
+    (&["o"], &["r"]),
+    (&["y", "Y"], &["c"]),
+    (&["d"], &["q"]),
+];
+
+/// A help cell as `(keys, gloss)`: bindings that share a gloss are listed
+/// side by side under it, the rest are joined with `/` and their glosses
+/// with ` / `.
+fn help_cell(keys: &[&str]) -> (String, String) {
+    let bindings: Vec<&keymap::Binding> =
+        keys.iter().filter_map(|key| keymap::binding(key)).collect();
+    let mut glosses: Vec<&str> = Vec::new();
+    for binding in &bindings {
+        if !glosses.contains(&binding.gloss()) {
+            glosses.push(binding.gloss());
+        }
+    }
+    let keys: Vec<&str> = bindings.iter().map(|binding| binding.key).collect();
+    let separator = if glosses.len() == 1 { " " } else { "/" };
+    (keys.join(separator), glosses.join(" / "))
+}
+
 /// The key table beside the koala, and the one idea behind it.
 fn help() -> Vec<Line<'static>> {
-    const ROWS: [(&str, &str, &str, &str); 9] = [
-        ("j/k ↑/↓", "move", "g/G", "top / bottom"),
-        ("/", "filter", "enter", "expand detail"),
-        ("p", "pull", "s", "scan"),
-        ("w/u", "warm / unload", "x", "remove"),
-        ("l", "launch a harness", "T", "chat"),
-        ("t", "try in a chat pane", "S", "serve"),
-        ("o", "sort", "r", "refresh"),
-        ("y/Y", "copy path / id", "c", "cancel pull"),
-        ("d", "dismiss failure", "q", "quit"),
-    ];
-    const BLANK: (&str, &str, &str, &str) = ("", "", "", "");
-    const _: () = assert!(ROWS.len() <= KOALA.len());
+    const _: () = assert!(HELP_ROWS.len() <= KOALA.len());
     const GUTTER: usize = 2;
-    let column = |cells: [&str; ROWS.len()]| {
-        cells.iter().map(|cell| cell.width()).max().unwrap_or(0) + GUTTER
-    };
-    let key_width = column(ROWS.map(|row| row.0));
-    let verb_width = column(ROWS.map(|row| row.1));
-    let key2_width = column(ROWS.map(|row| row.2));
-    let mut lines = vec![Line::default()];
-    for (koala, (key, verb, key2, verb2)) in KOALA
+    let rows: Vec<[(String, String); 2]> = HELP_ROWS
         .iter()
-        .zip(ROWS.iter().chain(std::iter::repeat(&BLANK)))
+        .map(|(left, right)| [help_cell(left), help_cell(right)])
+        .collect();
+    let column = |cell: fn(&[(String, String); 2]) -> &str| {
+        rows.iter().map(|row| cell(row).width()).max().unwrap_or(0) + GUTTER
+    };
+    let key_width = column(|row| &row[0].0);
+    let verb_width = column(|row| &row[0].1);
+    let key2_width = column(|row| &row[1].0);
+    let blank = [
+        (String::new(), String::new()),
+        (String::new(), String::new()),
+    ];
+    let mut lines = vec![Line::default()];
+    for (koala, [(key, verb), (key2, verb2)]) in KOALA
+        .iter()
+        .zip(rows.iter().chain(std::iter::repeat(&blank)))
     {
         lines.push(Line::from(vec![
             Span::styled(format!("  {koala}   "), BOLD),
-            Span::styled(format!("{key:<key_width$}"), DIM),
-            Span::raw(format!("{verb:<verb_width$}")),
-            Span::styled(format!("{key2:<key2_width$}"), DIM),
-            Span::raw(*verb2),
+            Span::styled(padded(key, key_width), DIM),
+            Span::raw(padded(verb, verb_width)),
+            Span::styled(padded(key2, key2_width), DIM),
+            Span::raw(verb2.clone()),
         ]));
     }
     lines.push(Line::default());
@@ -168,10 +225,25 @@ fn help() -> Vec<Line<'static>> {
     lines
 }
 
+/// The width of the label column.
+fn label_column() -> usize {
+    label_width(&LABELS, 2)
+}
+
+/// The width of a pull row's provider column: the widest provider id among
+/// `matches`.
+fn provider_width(matches: &[PullMatch]) -> usize {
+    let ids: Vec<&str> = matches
+        .iter()
+        .map(|candidate| candidate.provider.as_str())
+        .collect();
+    label_width(&ids, 0)
+}
+
 /// What removing the model does, in the store's own terms.
 fn remove(preview: &ModelDeletionPreview, facts: &Facts, inner: Rect) -> Vec<Line<'static>> {
-    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
-    let value_width = (inner.width as usize).saturating_sub(LABEL_WIDTH + 2);
+    let row = |label, value: String| field_line(label, value, label_column());
+    let value_width = (inner.width as usize).saturating_sub(label_column() + 2);
     let what = if preview.via_daemon {
         "removes the tag through the Ollama daemon (ollama rm)".to_owned()
     } else if preview.paths.is_empty() {
@@ -200,7 +272,7 @@ fn remove(preview: &ModelDeletionPreview, facts: &Facts, inner: Rect) -> Vec<Lin
             "{} on disk",
             text::bytes((facts.disk_bytes() - preview.bytes_estimate).max(0))
         ),
-        LABEL_WIDTH,
+        label_column(),
         DIM,
     )));
     lines.push(Line::default());
@@ -233,7 +305,7 @@ fn pull(modal: &PullModal, app: &App, inner: Rect) -> Vec<Line<'static>> {
 
 fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
     let memory = app.facts.memory_bytes;
-    let row = |label, value: String| field_line(label, value, LABEL_WIDTH);
+    let row = |label, value: String| field_line(label, value, label_column());
     let size = match plan.total_bytes {
         Some(total) => format!(
             "{} · {} when warm",
@@ -278,6 +350,7 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
         Line::default(),
     ];
     let listing_rows = modal.rows();
+    let provider_width = provider_width(&modal.matches);
     let visible = (inner.height as usize).saturating_sub(LISTING_CHROME_ROWS);
     let selected_at = listing_rows
         .iter()
@@ -292,7 +365,7 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
             ))),
             ListingRow::Match(index) => {
                 let candidate = &modal.matches[*index];
-                let mut line = row(candidate, memory_bytes, inner.width);
+                let mut line = row(candidate, memory_bytes, provider_width, inner.width);
                 if *index == modal.selected {
                     line = line.style(SELECTED_ROW);
                 }
@@ -319,7 +392,12 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
 
 /// `provider  reference  size  fit`, the reference trimmed and the note
 /// elided so the columns hold.
-fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
+fn row(
+    candidate: &PullMatch,
+    memory_bytes: u64,
+    provider_width: usize,
+    width: u16,
+) -> Line<'static> {
     let verdict = candidate.fit(memory_bytes);
     let (size, note) = match (candidate.pulling, candidate.bytes) {
         (true, bytes) => (
@@ -329,9 +407,12 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
         (false, Some(bytes)) => (text::bytes(bytes), verdict_label(verdict).to_owned()),
         (false, None) => (String::new(), candidate.note.clone()),
     };
-    let note = text::clip(&note, NOTE_WIDTH);
-    let tail = format!("{size:>8}  {note:<NOTE_WIDTH$}");
-    let head_width = (width as usize).saturating_sub(tail.chars().count() + PROVIDER_WIDTH + 3);
+    let tail = format!(
+        "{}  {}",
+        right_aligned(&size, SIZE_WIDTH),
+        padded(&text::clip(&note, NOTE_WIDTH), NOTE_WIDTH)
+    );
+    let head_width = (width as usize).saturating_sub(tail.width() + provider_width + 3);
     let reference = text::clip(&candidate.reference, head_width);
     let style = if candidate.pulling || verdict == Some(FitVerdict::TooLarge) {
         DIM
@@ -340,10 +421,10 @@ fn row(candidate: &PullMatch, memory_bytes: u64, width: u16) -> Line<'static> {
     };
     Line::from(vec![
         Span::styled(
-            format!(" {:<PROVIDER_WIDTH$} ", candidate.provider.as_str()),
+            format!(" {} ", padded(candidate.provider.as_str(), provider_width)),
             DIM,
         ),
-        Span::raw(format!("{reference:<head_width$} ")),
+        Span::raw(format!("{} ", padded(&reference, head_width))),
         Span::styled(tail, style),
     ])
 }
@@ -354,7 +435,152 @@ mod tests {
 
     use kernel::records::SourceKind;
 
+    use crate::tui::facts::Facts;
+    use crate::tui::testing::{plan, record_with};
+    use crate::tui::ui::leading_label;
+
+    #[test]
+    fn every_label_is_listed() {
+        let preview = ModelDeletionPreview {
+            model_id: "m".to_owned(),
+            name: "m".to_owned(),
+            kind: SourceKind::ollama(),
+            paths: vec!["/p".to_owned()],
+            bytes_estimate: 0,
+            via_daemon: false,
+            missing: false,
+        };
+        let app = App::new(Vec::new(), Facts::default());
+        let inner = Rect::new(0, 0, 80, 9);
+        let mut seen = Vec::new();
+        for line in remove(&preview, &Facts::default(), inner)
+            .iter()
+            .chain(&super::preview(&plan("gemma3"), &app))
+        {
+            let is_label = line.spans.first().is_some_and(|span| {
+                span.style == DIM && span.content.width() == label_column() + 1
+            });
+            if !is_label {
+                continue;
+            }
+            let label = leading_label(line, label_column());
+            assert!(LABELS.contains(&label.as_str()), "{label} is not listed");
+            seen.push(label);
+        }
+        for label in LABELS {
+            assert!(
+                seen.iter().any(|seen| seen == label),
+                "{label} never appears"
+            );
+        }
+    }
+
     use crate::tui::testing::line_text as text;
+
+    #[test]
+    fn every_binding_is_in_the_help() {
+        let shown: Vec<&str> = HELP_ROWS
+            .iter()
+            .flat_map(|(left, right)| left.iter().chain(right.iter()).copied())
+            .collect();
+        // The help key itself is the one thing the help need not teach.
+        for binding in keymap::BINDINGS.iter().filter(|binding| binding.key != "?") {
+            assert!(
+                shown.contains(&binding.key),
+                "{} is not in the help",
+                binding.key
+            );
+        }
+        for key in &shown {
+            assert!(
+                keymap::binding(key).is_some(),
+                "{key} is in the help but not bound"
+            );
+        }
+        assert_eq!(
+            help_cell(&["j/k", "↑/↓"]),
+            ("j/k ↑/↓".to_owned(), "move".to_owned())
+        );
+        assert_eq!(
+            help_cell(&["w", "u"]),
+            ("w/u".to_owned(), "warm / unload".to_owned())
+        );
+        let lines = help();
+        let rendered: Vec<String> = lines.iter().map(text).collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("l  ") && line.contains("launch a harness"))
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("y/Y") && line.contains("copy path / id"))
+        );
+    }
+
+    /// Columns a bordered box spends on its left and right edges.
+    const BORDER_COLUMNS: u16 = 2;
+
+    #[test]
+    fn every_modal_fits_its_width() {
+        let inner = |width: u16| width.saturating_sub(BORDER_COLUMNS) as usize;
+        let fits = |lines: &[Line], width: usize, modal: &str| {
+            for line in lines {
+                assert!(
+                    line.width() <= width,
+                    "{:?} is {} cells, wider than the {modal}",
+                    text(line),
+                    line.width()
+                );
+            }
+        };
+        let help = help();
+        fits(&help, inner(HELP_WIDTH), "help");
+        assert_eq!(help.iter().map(Line::width).max(), Some(72));
+        let app = App::new(Vec::new(), Facts::default());
+        fits(
+            &super::preview(&plan("gemma3"), &app),
+            inner(PULL_WIDTH),
+            "pull",
+        );
+
+        let launch_inner = Rect::new(0, 0, inner(LAUNCH_WIDTH) as u16, LAUNCH_HEIGHT);
+        let launch = LaunchModal::open_with(&record_with("m", Vec::new()), |_| None);
+        assert!(launch.rows.iter().all(|row| row.blocked.is_some()));
+        let launch = super::launch(&launch, launch_inner);
+        fits(&launch, inner(LAUNCH_WIDTH), "launch");
+        assert!(
+            launch
+                .iter()
+                .map(text)
+                .any(|line| line.contains("not installed"))
+        );
+        assert!(
+            launch
+                .iter()
+                .map(text)
+                .any(|line| line.contains("harness runs"))
+        );
+
+        let remove_inner = Rect::new(0, 0, inner(REMOVE_WIDTH) as u16, REMOVE_HEIGHT);
+        let preview = ModelDeletionPreview {
+            model_id: "m".to_owned(),
+            name: "m".to_owned(),
+            kind: SourceKind::ollama(),
+            paths: vec![format!("/var/lib/ollama/models/blobs/{}", "a".repeat(120))],
+            bytes_estimate: 0,
+            via_daemon: false,
+            missing: false,
+        };
+        let remove = remove(&preview, &Facts::default(), remove_inner);
+        fits(&remove, inner(REMOVE_WIDTH), "remove");
+        assert!(remove.iter().map(text).any(|line| line.contains('…')));
+
+        assert_eq!(modal_width(84, 120), 84);
+        assert_eq!(modal_width(84, 80), 80 - 2 * MARGIN);
+        assert_eq!(modal_width(72, 3), 0);
+    }
 
     #[test]
     fn the_remove_path_is_elided_to_the_modal() {

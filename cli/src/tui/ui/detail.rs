@@ -11,15 +11,55 @@ use ratatui::widgets::{Block, Paragraph};
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
-use super::{ACCENT, BOLD, DIM, WARM, field_line, label, styled_field};
+use super::{ACCENT, BOLD, DIM, WARM, field_line, label, label_width, styled_field};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
 use crate::tui::facts::{Facts, HOURS, ModelActivity};
+use crate::tui::layout::STACKED_DETAIL_ROWS;
 use crate::tui::text;
 
-/// Width of the labels in the pane: the longest, `runtime id`, plus a gap.
-const LABEL_WIDTH: usize = 11;
+/// The labels the pane uses; the column is as wide as the widest, plus a gap.
+const LABELS: [&str; 17] = [
+    "runtime",
+    "store",
+    "size",
+    "caps",
+    "fit",
+    "residency",
+    "last used",
+    "last 24h",
+    "latency",
+    "path",
+    "id",
+    "runtime id",
+    "store id",
+    "alias",
+    "modality",
+    "execution",
+    "state",
+];
+
+/// What the pane says the gateway has seen of a model that never came
+/// through it.
+const NO_GATEWAY_REQUESTS: &str = "no requests through the gateway";
+
+/// How much of the pane there is: the stacked pane's height decides first,
+/// then whether the user has expanded it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Detail {
+    /// The stacked pane, four rows: what the shelf row does not already show.
+    Compact,
+    /// The facts, memory, gateway, and path.
+    Full,
+    /// `Full`, the sparkline's hours labelled, and the record's identifiers.
+    Expanded,
+}
+
+/// The width of the label column.
+fn label_column() -> usize {
+    label_width(&LABELS, 1)
+}
 
 /// Draw the detail pane into `area` for the selected model.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -42,22 +82,37 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
             title_style,
         ))
         .border_style(border_style);
+    let detail = if area.height <= STACKED_DETAIL_ROWS {
+        Detail::Compact
+    } else if app.expanded {
+        Detail::Expanded
+    } else {
+        Detail::Full
+    };
     let lines = lines(
         record,
         &app.facts,
-        app.expanded,
+        detail,
         area.width.saturating_sub(2) as usize,
     );
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// The pane's rows at `width` cells: a value that would run past the edge is
-/// clipped, a path elided in the middle.
-fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> Vec<Line<'static>> {
-    let value_width = width.saturating_sub(LABEL_WIDTH + 2);
-    let row =
-        |label, value: String| field_line(label, text::clip(&value, value_width), LABEL_WIDTH);
+/// clipped, a path elided in the middle. Compact is always four rows, the
+/// size standing in for a path the record does not have.
+fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> Vec<Line<'static>> {
+    let labels = label_column();
+    let value_width = width.saturating_sub(labels + 2);
+    let row = |label, value: String| field_line(label, text::clip(&value, value_width), labels);
     let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), ACCENT));
+    let path_line = || {
+        record.primary_weight_path.as_ref().map(|path| {
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let shown = text::home_relative(path, home.as_deref());
+            field_line("path", text::elide_middle(&shown, value_width), labels)
+        })
+    };
     let size = match (record.footprint_bytes(), record.context_length) {
         (Some(bytes), Some(context)) => {
             format!("{} · ctx {}", text::bytes(bytes), text::tokens(context))
@@ -66,6 +121,19 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
         (None, Some(context)) => format!("ctx {}", text::tokens(context)),
         (None, None) => DASH.to_owned(),
     };
+    if detail == Detail::Compact {
+        let mut lines = vec![
+            row("fit", fit_line(record, facts)),
+            residency_line(record, facts, value_width),
+            activity_line(
+                facts.activity.for_record(record),
+                facts.collected_at_millis,
+                value_width,
+            ),
+        ];
+        lines.push(path_line().unwrap_or_else(|| row("size", size)));
+        return lines;
+    }
     let mut lines = vec![
         row(
             "runtime",
@@ -95,20 +163,12 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
     lines.extend(activity_lines(
         facts.activity.for_record(record),
         facts.collected_at_millis,
-        expanded,
+        detail,
         value_width,
     ));
     lines.push(Line::default());
-    if let Some(path) = &record.primary_weight_path {
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        let shown = text::home_relative(path, home.as_deref());
-        lines.push(field_line(
-            "path",
-            text::elide_middle(&shown, value_width),
-            LABEL_WIDTH,
-        ));
-    }
-    if expanded {
+    lines.extend(path_line());
+    if detail == Detail::Expanded {
         lines.push(Line::default());
         lines.push(eyebrow("RECORD"));
         lines.push(row("id", record.id.clone()));
@@ -129,40 +189,28 @@ fn lines(record: &ModelRecord, facts: &Facts, expanded: bool, width: usize) -> V
 fn activity_lines(
     activity: Option<&ModelActivity>,
     now: i64,
-    expanded: bool,
+    detail: Detail,
     value_width: usize,
 ) -> Vec<Line<'static>> {
-    let row =
-        |label, value: String| field_line(label, text::clip(&value, value_width), LABEL_WIDTH);
+    let labels = label_column();
+    let row = |label, value: String| field_line(label, text::clip(&value, value_width), labels);
     let absent = |label, value: String| {
         Line::from(styled_field(
             label,
             text::clip(&value, value_width),
-            LABEL_WIDTH,
+            labels,
             DIM,
         ))
     };
     let Some(activity) = activity else {
-        return vec![absent(
-            "last 24h",
-            "no requests through the gateway".to_owned(),
-        )];
+        return vec![absent("last 24h", NO_GATEWAY_REQUESTS.to_owned())];
     };
-    let mut lines = vec![row(
-        "last used",
-        text::duration((now - activity.last_seen_millis) / 1000) + " ago",
-    )];
+    let mut lines = vec![row("last used", last_used(activity, now))];
     if activity.requests == 0 {
         lines.push(absent("last 24h", "no requests".to_owned()));
         return lines;
     }
-    lines.push(row(
-        "last 24h",
-        format!(
-            "{} served",
-            text::count(activity.requests as usize, "request")
-        ),
-    ));
+    lines.push(row("last 24h", served(activity)));
     if let Some(latency) = &activity.latency {
         lines.push(row(
             "latency",
@@ -173,13 +221,50 @@ fn activity_lines(
         ));
     }
     lines.push(absent("", text::sparkline(&activity.hourly)));
-    if expanded {
+    if detail == Detail::Expanded {
         lines.push(absent(
             "",
             format!("{:<width$}now", "24h ago", width = HOURS - 3),
         ));
     }
     lines
+}
+
+/// The one line of gateway traffic the compact pane has room for: the last
+/// day's requests, or when the model was last used if there were none.
+fn activity_line(activity: Option<&ModelActivity>, now: i64, value_width: usize) -> Line<'static> {
+    let labels = label_column();
+    match activity {
+        Some(activity) if activity.requests > 0 => field_line(
+            "last 24h",
+            text::clip(&served(activity), value_width),
+            labels,
+        ),
+        Some(activity) => field_line(
+            "last used",
+            text::clip(&last_used(activity, now), value_width),
+            labels,
+        ),
+        None => Line::from(styled_field(
+            "last 24h",
+            text::clip(NO_GATEWAY_REQUESTS, value_width),
+            labels,
+            DIM,
+        )),
+    }
+}
+
+/// `12 requests served`.
+fn served(activity: &ModelActivity) -> String {
+    format!(
+        "{} served",
+        text::count(activity.requests as usize, "request")
+    )
+}
+
+/// `4m ago`, measured from `now`.
+fn last_used(activity: &ModelActivity, now: i64) -> String {
+    text::duration((now - activity.last_seen_millis) / 1000) + " ago"
 }
 
 /// `fits · 4.7 of 64 GiB`, then how much would be free with the rest of what
@@ -221,7 +306,7 @@ fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
 /// `value_width` cells with the state.
 fn residency_line(record: &ModelRecord, facts: &Facts, value_width: usize) -> Line<'static> {
     const WARM_LABEL: &str = "warm";
-    let mut spans = vec![label("residency", LABEL_WIDTH)];
+    let mut spans = vec![label("residency", label_column())];
     match facts.resident(&record.id) {
         Some(resident) => {
             spans.push(Span::styled(WARM_LABEL, WARM));
@@ -251,7 +336,45 @@ mod tests {
     use super::*;
 
     use crate::support::residency::Resident;
+    use crate::tui::facts::ModelActivity;
     use crate::tui::testing::{line_text as text, record_with};
+    use crate::tui::ui::leading_label;
+    use gateway::stats::LatencyPercentiles;
+
+    #[test]
+    fn every_label_is_listed() {
+        let mut record = record_with("m", vec![Capability::chat()]);
+        record.alias = Some("alias".to_owned());
+        record.primary_weight_path = Some("/models/m.gguf".to_owned());
+        let mut facts = Facts {
+            memory_bytes: 64 << 30,
+            collected_at_millis: 1_000_000,
+            ..Facts::default()
+        };
+        facts.activity.models.insert(
+            record.id.clone(),
+            ModelActivity {
+                requests: 3,
+                latency: Some(LatencyPercentiles {
+                    p50: 1,
+                    p90: 2,
+                    p99: 3,
+                }),
+                hourly: [0; HOURS],
+                last_seen_millis: 500_000,
+            },
+        );
+        let mut seen = 0;
+        for line in lines(&record, &facts, Detail::Expanded, 80) {
+            let label = leading_label(&line, label_column());
+            if label.is_empty() || label.chars().all(|c| c.is_uppercase()) {
+                continue;
+            }
+            assert!(LABELS.contains(&label.as_str()), "{label} is not listed");
+            seen += 1;
+        }
+        assert_eq!(seen, LABELS.len());
+    }
 
     #[test]
     fn long_values_are_clipped_to_the_pane() {
@@ -289,7 +412,7 @@ mod tests {
             ],
             ..Facts::default()
         };
-        let lines = lines(&record, &facts, true, 40);
+        let lines = lines(&record, &facts, Detail::Expanded, 40);
         for line in &lines {
             assert!(line.width() <= 40, "{:?} runs past the pane", text(line));
         }
@@ -306,5 +429,57 @@ mod tests {
         assert!(find("path").contains('…') && find("path").ends_with(".gguf"));
         assert!(lines.iter().map(text).any(|line| line == " RECORD"));
         assert!(!lines.iter().map(text).any(|line| line.contains("actions")));
+    }
+
+    #[test]
+    fn the_compact_detail_skips_what_the_row_shows() {
+        let mut record = record_with("m", vec![Capability::chat()]);
+        record.footprint_mb = Some(4 * 1024);
+        record.primary_weight_path = Some("/models/m.gguf".to_owned());
+        let mut facts = Facts {
+            memory_bytes: 64 << 30,
+            collected_at_millis: 1_000_000,
+            ..Facts::default()
+        };
+        let labels_of = |lines: &[Line]| -> Vec<String> {
+            lines
+                .iter()
+                .map(|line| leading_label(line, label_column()))
+                .collect()
+        };
+        let quiet = lines(&record, &facts, Detail::Compact, 80);
+        assert_eq!(labels_of(&quiet), ["fit", "residency", "last 24h", "path"]);
+        assert!(text(&quiet[2]).contains("no requests through the gateway"));
+
+        facts.activity.models.insert(
+            record.id.clone(),
+            ModelActivity {
+                requests: 0,
+                latency: None,
+                hourly: [0; HOURS],
+                last_seen_millis: 500_000,
+            },
+        );
+        let idle = lines(&record, &facts, Detail::Compact, 80);
+        assert_eq!(labels_of(&idle), ["fit", "residency", "last used", "path"]);
+        assert!(text(&idle[2]).ends_with("ago"));
+
+        facts.activity.models.get_mut(&record.id).unwrap().requests = 12;
+        let busy = lines(&record, &facts, Detail::Compact, 80);
+        assert_eq!(labels_of(&busy)[2], "last 24h");
+        assert!(text(&busy[2]).contains("12 requests served"));
+
+        record.primary_weight_path = None;
+        let pathless = lines(&record, &facts, Detail::Compact, 80);
+        assert_eq!(
+            labels_of(&pathless),
+            ["fit", "residency", "last 24h", "size"]
+        );
+        assert!(text(&pathless[3]).contains("4 GB"));
+
+        let full = lines(&record, &facts, Detail::Full, 80);
+        assert!(labels_of(&full).contains(&"runtime".to_owned()));
+        assert!(full.len() > STACKED_DETAIL_ROWS as usize);
+        assert!(!full.iter().map(text).any(|line| line == " RECORD"));
     }
 }

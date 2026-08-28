@@ -53,9 +53,43 @@ const BAR_EMPTY: &str = "░";
 /// The text cursor shown while something is being typed.
 const CURSOR: &str = "▏";
 
+/// `text` padded with spaces to `width` terminal cells; a wide glyph counts
+/// for two, where `{:<width$}` would count it once and leave the column
+/// ragged.
+fn padded(text: &str, width: usize) -> String {
+    let pad = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(pad))
+}
+
+/// `text` right-aligned in `width` cells, counted the same way.
+fn right_aligned(text: &str, width: usize) -> String {
+    let pad = width.saturating_sub(text.width());
+    format!("{}{text}", " ".repeat(pad))
+}
+
+/// The width of a label column: the widest of `labels`, then `gap` cells
+/// before the value.
+fn label_width(labels: &[&str], gap: usize) -> usize {
+    labels.iter().map(|label| label.width()).max().unwrap_or(0) + gap
+}
+
 /// A dim `label`, padded to `width`, in front of whatever a row shows.
 fn label(label: &str, width: usize) -> Span<'static> {
-    Span::styled(format!(" {label:<width$}"), DIM)
+    Span::styled(format!(" {}", padded(label, width)), DIM)
+}
+
+/// The label a row starts with, for the tests that hold each pane to its
+/// label list: the cells after the leading space up to the label column's
+/// width, trimmed.
+#[cfg(test)]
+fn leading_label(line: &Line, width: usize) -> String {
+    super::testing::line_text(line)
+        .chars()
+        .skip(1)
+        .take(width)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
 }
 
 /// A `label   value` pair, the label dim and padded to `width`, the value
@@ -163,4 +197,20 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     ])
     .areas(middle);
     rect
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn padded_counts_cells_not_chars() {
+        assert_eq!(padded("日本", 6), "日本  ");
+        assert_eq!(padded("abc", 5), "abc  ");
+        assert_eq!(padded("abcdef", 3), "abcdef");
+        assert_eq!(right_aligned("日本", 6), "  日本");
+        assert_eq!(right_aligned("abcdef", 3), "abcdef");
+        assert_eq!(label_width(&["memory", "disk"], 1), 7);
+        assert_eq!(label_width(&[], 2), 2);
+    }
 }

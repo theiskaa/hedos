@@ -191,28 +191,28 @@ impl App {
         }
     }
 
-    /// What can be done with the selected model right now, as `(key, verb)`
-    /// pairs in footer order: exactly the keys whose guards would let them
-    /// through.
-    pub fn actions(&self) -> Vec<(&'static str, &'static str)> {
+    /// What can be done with the selected model right now, as keys in footer
+    /// order: exactly the keys whose guards would let them through. The
+    /// keymap names their verbs.
+    pub fn actions(&self) -> Vec<&'static str> {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
         let mut actions = Vec::new();
         if self.warmable(record).is_ok() {
-            actions.push(("w", "warm"));
+            actions.push("w");
         }
         if self.unloadable(record).is_ok() {
-            actions.push(("u", "unload"));
+            actions.push("u");
         }
         if Self::chat_capable(record).is_ok() {
-            actions.extend([("l", "launch"), ("t", "try"), ("T", "chat")]);
+            actions.extend(["l", "t", "T"]);
         }
         if self.removable(record).is_ok() {
-            actions.push(("x", "remove"));
+            actions.push("x");
         }
         if record.primary_weight_path.is_some() {
-            actions.push(("y", "copy path"));
+            actions.push("y");
         }
         actions
     }
@@ -701,10 +701,6 @@ impl App {
             Err(Refusal::Busy)
         } else if self.facts.is_warm(&record.id) {
             Err(Refusal::Because(format!("{name} is warm; unload it first")))
-        } else if record.downloading {
-            Err(Refusal::Because(format!(
-                "{name} is still downloading; cancel it first"
-            )))
         } else if !is_deletable(record) {
             Err(Refusal::Because(format!(
                 "{name} can't be removed from here"
@@ -906,6 +902,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::keymap;
     use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
     use crate::tui::testing::{plan, resident};
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
@@ -1156,6 +1153,19 @@ mod tests {
         press(&mut app, Key::Char('x'));
         assert!(ticks(&mut app, 1).is_empty());
         assert_eq!(ticks(&mut app, 1), vec![Effect::Search("x".to_owned())]);
+    }
+
+    #[test]
+    fn an_abandoned_partial_download_can_be_removed() {
+        // `downloading` is discovery's reading of incomplete blobs on disk, not
+        // a live pull; with no task running there is nothing to cancel, so
+        // removal is the only way out.
+        let mut partial = record(0);
+        partial.downloading = true;
+        let mut app = app_from(vec![partial]);
+        assert!(press(&mut app, Key::Char('x')).is_empty());
+        assert!(app.notice().is_none());
+        assert!(matches!(app.modal, Some(Modal::Remove(_))));
     }
 
     #[test]
@@ -1549,41 +1559,73 @@ mod tests {
     fn actions_follow_the_selected_model() {
         let mut one = app(1);
         let id = one.records[0].id.clone();
-        assert_eq!(
-            one.actions(),
-            vec![
-                ("w", "warm"),
-                ("l", "launch"),
-                ("t", "try"),
-                ("T", "chat"),
-                ("x", "remove")
-            ]
-        );
+        assert_eq!(one.actions(), vec!["w", "l", "t", "T", "x"]);
         one.facts.residents.push(resident(&id, Holder::Daemon));
-        assert_eq!(
-            one.actions(),
-            vec![
-                ("u", "unload"),
-                ("l", "launch"),
-                ("t", "try"),
-                ("T", "chat")
-            ]
-        );
+        assert_eq!(one.actions(), vec!["u", "l", "t", "T"]);
         one.facts.residents[0].holder = Holder::Gateway;
-        assert_eq!(
-            one.actions(),
-            vec![("l", "launch"), ("t", "try"), ("T", "chat")]
-        );
+        assert_eq!(one.actions(), vec!["l", "t", "T"]);
         one.facts.residents.clear();
         one.records[0].capabilities = vec![Capability::speak()];
         one.records[0].primary_weight_path = Some("/w".to_owned());
         one.reorder_in_place();
-        assert_eq!(
-            one.actions(),
-            vec![("w", "warm"), ("x", "remove"), ("y", "copy path")]
-        );
+        assert_eq!(one.actions(), vec!["w", "x", "y"]);
+        for key in one.actions() {
+            assert!(keymap::binding(key).is_some(), "{key} is not bound");
+        }
         let empty = app(0);
         assert!(empty.actions().is_empty());
+    }
+
+    /// The keys a binding names, as the reducer receives them.
+    fn keys_of(binding: &keymap::Binding) -> Vec<Key> {
+        match binding.key {
+            "enter" => vec![Key::Enter],
+            "esc" => vec![Key::Escape],
+            "↑/↓" => vec![Key::Up, Key::Down],
+            key => keymap::chars(key).into_iter().map(Key::Char).collect(),
+        }
+    }
+
+    #[test]
+    fn every_binding_does_something() {
+        for binding in keymap::BINDINGS
+            .iter()
+            .filter(|binding| binding.group != keymap::Group::Screen)
+        {
+            for key in keys_of(binding) {
+                // Selected in the middle of three, so each move key has
+                // somewhere to go.
+                let mut app = app(3);
+                press(&mut app, Key::Down);
+                app.take_dirty();
+                let effects = press(&mut app, key);
+                assert!(
+                    !effects.is_empty() || app.take_dirty() || app.notice().is_some(),
+                    "{} ({key:?}) does nothing",
+                    binding.key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_unbound_char_does_nothing() {
+        let bound: Vec<char> = keymap::BINDINGS
+            .iter()
+            .flat_map(|binding| keymap::chars(binding.key))
+            .collect();
+        for c in (0x20u8..=0x7e)
+            .map(char::from)
+            .filter(|c| !bound.contains(c))
+        {
+            let mut app = app(3);
+            press(&mut app, Key::Down);
+            app.take_dirty();
+            let effects = press(&mut app, Key::Char(c));
+            assert!(effects.is_empty(), "{c:?} has effects but is not bound");
+            assert!(!app.take_dirty(), "{c:?} redraws but is not bound");
+            assert!(app.notice().is_none(), "{c:?} notifies but is not bound");
+        }
     }
 
     #[test]

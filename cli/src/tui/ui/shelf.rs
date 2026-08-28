@@ -8,11 +8,13 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
+use unicode_width::UnicodeWidthStr;
 
 use super::{ACCENT, BOLD, CAUTION, DIM, SELECTED_ROW, WARM, centered, edited, keys};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
 use crate::tui::app::App;
+use crate::tui::keymap;
 use crate::tui::order::Sort;
 use crate::tui::text;
 
@@ -145,11 +147,11 @@ impl ShelfRow {
 /// Column widths wide enough for every row and the header; the gutter also
 /// holds the selection mark.
 fn widths(rows: &[ShelfRow]) -> [usize; 5] {
-    let mut widths = HEADERS.map(str::len);
+    let mut widths = HEADERS.map(UnicodeWidthStr::width);
     widths[0] = 2;
     for row in rows {
         for (column, cell) in row.cells.iter().enumerate().skip(1) {
-            widths[column] = widths[column].max(cell.chars().count());
+            widths[column] = widths[column].max(cell.width());
         }
     }
     widths
@@ -255,7 +257,10 @@ fn empty_copy(memory_bytes: u64) -> [Line<'static>; 10] {
         Line::from(" Face cache, LM Studio, and loose GGUF or"),
         Line::from(" safetensors files in your folders."),
         Line::default(),
-        keys(&[("p", "pull a model"), ("s", "scan again")]),
+        keys(&[
+            ("p", &format!("{} a model", keymap::verb("p"))),
+            ("s", &format!("{} again", keymap::verb("s"))),
+        ]),
         memory,
         Line::default(),
     ]
