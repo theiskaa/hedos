@@ -1,9 +1,9 @@
 //! Drawing the app state. Panes read the app and write to the frame; the only
 //! mutable state they touch is the shelf's scroll position and the chat
 //! pane's measure of how far its transcript scrolls. Colour is used
-//! sparingly: an orange accent for what is in focus or names a mode, and the
-//! terminal's own green for what is loaded, yellow for a tight fit, red for
-//! what failed or won't fit.
+//! sparingly: an orange accent for what is in focus, names a mode, or is in
+//! motion, and the terminal's own green for what is loaded, yellow for a
+//! tight fit, red for what failed or won't fit.
 
 mod chat;
 mod detail;
@@ -29,10 +29,16 @@ const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 /// The loud register: what the eye should land on first, from the wordmark
 /// and warm models to the user's own words in the chat pane.
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-/// What is in focus, names a mode, or is in motion: titles, eyebrows, the
-/// expanded detail, a running task, the spinner. A fixed orange, since no
-/// terminal palette has one and it should not drift into the warning yellow.
+/// What is in focus, names a mode, or is in motion, and nothing that merely
+/// sits still: the expanded detail's frame, an input mark, a running task's
+/// verb, the spinner, the download bar, the chat's and the modals' titles.
+/// A fixed orange, since no terminal palette has one and it should not
+/// drift into the warning yellow.
 const ACCENT: Style = Style::new().fg(Color::Rgb(232, 142, 68));
+/// A heading over a run of rows: the detail's MEMORY, the pull listing's
+/// categories, the help's groups. Uppercase carries it; no colour, so the
+/// accent keeps to what moves or has focus.
+const EYEBROW: Style = Style::new();
 /// What is loaded.
 const WARM: Style = Style::new().fg(Color::Green);
 /// A warning: a tight fit, a reply that was stopped.

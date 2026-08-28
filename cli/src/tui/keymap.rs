@@ -3,7 +3,7 @@
 //! the reducer's tests check that every binding does something.
 
 /// What a binding is about. The footer and the empty shelf pick bindings by
-/// group; the help lays them out by hand, so a group is not a help section.
+/// group; the help lays each group out under its own heading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     /// Moving the selection and opening it up.
@@ -14,6 +14,18 @@ pub enum Group {
     Shelf,
     /// Verbs on the screen itself.
     Screen,
+}
+
+impl Group {
+    /// The heading the help puts over the group.
+    pub fn label(self) -> &'static str {
+        match self {
+            Group::Move => "MOVE",
+            Group::Model => "MODEL",
+            Group::Shelf => "SHELF",
+            Group::Screen => "SCREEN",
+        }
+    }
 }
 
 /// One key and what it does.
@@ -63,12 +75,13 @@ pub const BINDINGS: &[Binding] = &[
     bind("j/k", "move", Group::Move),
     bind("↑/↓", "move", Group::Move),
     bind("g/G", "top / bottom", Group::Move),
-    glossed("enter", "expand", "expand detail", Group::Move),
+    bind("enter", "expand", Group::Move),
+    bind("esc", "collapse", Group::Move),
     bind("w", "warm", Group::Model),
     bind("u", "unload", Group::Model),
     glossed("l", "launch", "launch a harness", Group::Model),
-    glossed("t", "try", "try in a chat pane", Group::Model),
-    bind("T", "chat", Group::Model),
+    glossed("t", "try", "try here", Group::Model),
+    glossed("T", "chat", "chat in terminal", Group::Model),
     bind("x", "remove", Group::Model),
     bind("y", "copy path", Group::Model),
     glossed("Y", "copy id", "id", Group::Model),
@@ -78,7 +91,7 @@ pub const BINDINGS: &[Binding] = &[
     bind("o", "sort", Group::Shelf),
     bind("r", "refresh", Group::Shelf),
     glossed("c", "cancel", "cancel pull", Group::Shelf),
-    glossed("d", "dismiss", "dismiss failure", Group::Shelf),
+    bind("d", "dismiss", Group::Shelf),
     bind("S", "serve", Group::Screen),
     bind("?", "help", Group::Screen),
     bind("q", "quit", Group::Screen),

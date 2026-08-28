@@ -370,11 +370,10 @@ impl App {
             Some(Modal::Chat(_)) => return self.chat_key(key),
             Some(Modal::Pull(_)) => return self.pull_key(key),
             Some(Modal::Remove(_)) => return self.remove_key(key),
-            Some(Modal::Help) if matches!(key, Key::ScrollUp | Key::ScrollDown) => {
-                return Vec::new();
-            }
             Some(Modal::Help) => {
-                self.close_modal();
+                if matches!(key, Key::Escape | Key::Char('?') | Key::Char('q')) {
+                    self.close_modal();
+                }
                 return Vec::new();
             }
             Some(Modal::Launch(_)) => return self.launch_key(key),
@@ -1316,13 +1315,19 @@ mod tests {
     }
 
     #[test]
-    fn help_opens_on_question_mark_and_any_key_closes_it() {
-        let mut app = app(1);
-        press(&mut app, Key::Char('?'));
-        assert_eq!(app.modal, Some(Modal::Help));
-        press(&mut app, Key::Char('j'));
-        assert!(app.modal.is_none());
-        assert_eq!(app.selected(), 0);
+    fn help_closes_on_escape_question_mark_or_q_only() {
+        for closer in [Key::Escape, Key::Char('?'), Key::Char('q')] {
+            let mut app = app(3);
+            press(&mut app, Key::Down);
+            assert_eq!(app.selected(), 1);
+            press(&mut app, Key::Char('?'));
+            assert_eq!(app.modal, Some(Modal::Help));
+            assert!(press(&mut app, Key::Char('j')).is_empty());
+            assert_eq!(app.modal, Some(Modal::Help));
+            assert_eq!(app.selected(), 1);
+            assert!(press(&mut app, closer).is_empty());
+            assert!(app.modal.is_none());
+        }
     }
 
     #[test]
@@ -1594,9 +1599,13 @@ mod tests {
         {
             for key in keys_of(binding) {
                 // Selected in the middle of three, so each move key has
-                // somewhere to go.
+                // somewhere to go; expanded, so escape has something to
+                // collapse.
                 let mut app = app(3);
                 press(&mut app, Key::Down);
+                if binding.key == "esc" {
+                    press(&mut app, Key::Enter);
+                }
                 app.take_dirty();
                 let effects = press(&mut app, key);
                 assert!(

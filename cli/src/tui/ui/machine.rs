@@ -7,16 +7,16 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, label, label_width};
+use super::{BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, label, label_width};
 use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
 
 /// The labels the block uses; the column is as wide as the widest, plus a gap.
 const LABELS: [&str; 2] = ["memory", "disk"];
-/// The steps the memory bar cycles through, one per resident: the accent,
-/// then two brightnesses of the plain foreground.
-const SEGMENT_STYLES: [Style; 3] = [ACCENT, Style::new(), DIM];
+/// The steps the memory bar cycles through, one per resident: three
+/// brightnesses of the plain foreground.
+const SEGMENT_STYLES: [Style; 3] = [BOLD, Style::new(), DIM];
 /// Cells the memory figure to the right of the bar needs: `  14.2 of 64 GiB`.
 const FIGURE_WIDTH: u16 = 18;
 const MIN_BAR_WIDTH: u16 = 10;

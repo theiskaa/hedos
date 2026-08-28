@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Paragraph};
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
-use super::{ACCENT, BOLD, DIM, WARM, field_line, label, label_width, styled_field};
+use super::{ACCENT, BOLD, DIM, EYEBROW, WARM, field_line, label, label_width, styled_field};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
@@ -105,7 +105,7 @@ fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> V
     let labels = label_column();
     let value_width = width.saturating_sub(labels + 2);
     let row = |label, value: String| field_line(label, text::clip(&value, value_width), labels);
-    let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), ACCENT));
+    let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), EYEBROW));
     let path_line = || {
         record.primary_weight_path.as_ref().map(|path| {
             let home = std::env::var_os("HOME").map(PathBuf::from);

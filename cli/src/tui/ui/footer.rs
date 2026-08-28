@@ -2,8 +2,8 @@
 //! selected model can do, each key dim and its verb plain; help and quit sit
 //! against the right edge. A notice takes the line over while it lasts.
 //! Designed for 100 columns and up; narrower, the actions go one at a time
-//! from the right, then the serve key, then the scan key, so help and quit
-//! always show.
+//! from the right, then the fixed keys the same way down to the move key,
+//! so help and quit always show.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -15,7 +15,7 @@ use crate::tui::app::App;
 use crate::tui::keymap;
 
 /// The keys that apply whatever is selected.
-const FIXED: [&str; 5] = ["j/k", "/", "p", "s", "S"];
+const FIXED: [&str; 7] = ["j/k", "enter", "/", "o", "p", "s", "S"];
 /// The keys that close the line.
 const ALWAYS: [&str; 2] = ["?", "q"];
 
@@ -37,16 +37,19 @@ fn chat_line(streaming: bool) -> Line<'static> {
 
 /// The fullest footer that fits in `width` with its right margin: the
 /// actions shed one at a time from the right, in the reverse of the order
-/// the app lists them, then the serve key goes, then the scan key.
+/// the app lists them, then the fixed keys the same way, the move key the
+/// floor.
 fn fitting_line(actions: &[&str], width: usize) -> Line<'static> {
     let shed_actions = (0..=actions.len())
         .rev()
         .map(|kept| footer_line(&FIXED, &actions[..kept], width));
-    let shed_serve = std::iter::once_with(|| footer_line(&FIXED[..FIXED.len() - 1], &[], width));
+    let shed_fixed = (1..FIXED.len())
+        .rev()
+        .map(|kept| footer_line(&FIXED[..kept], &[], width));
     shed_actions
-        .chain(shed_serve)
+        .chain(shed_fixed)
         .find(|line| line.width() < width)
-        .unwrap_or_else(|| footer_line(&FIXED[..FIXED.len() - 2], &[], width))
+        .unwrap_or_else(|| footer_line(&FIXED[..1], &[], width))
 }
 
 /// `fixed`, a divider, `actions`, then the closing keys pushed one cell in
@@ -86,6 +89,13 @@ mod tests {
         }
     }
 
+    /// The full line fits down to 141 columns; each action shed takes its
+    /// `key verb  ` cells off (five fit down to 128, four to 118, three to
+    /// 110, two to 103, one to 93), then the divider goes with the last one
+    /// and the fixed keys alone fit down to 83, then `S serve  ` goes (74),
+    /// `s scan  ` (66), `p pull  ` (58), `o sort  ` (50), `/ filter  ` (40)
+    /// and `enter expand  ` (26); `j/k move` is the floor and runs on below
+    /// that.
     #[test]
     fn the_footer_sheds_from_the_right_until_it_fits() {
         let at = |width: usize| {
@@ -95,23 +105,53 @@ mod tests {
             assert!(shown.ends_with("? help  q quit"), "{shown:?}");
             shown
         };
+        const FIXED_LINE: &str =
+            " j/k move  enter expand  / filter  o sort  p pull  s scan  S serve";
         let wide = at(200);
-        assert!(wide.starts_with(
-            " j/k move  / filter  p pull  s scan  S serve  │ w warm  l launch  t try  T chat  x remove  y copy path"
-        ));
+        assert!(wide.starts_with(&format!(
+            "{FIXED_LINE}  │ w warm  l launch  t try  T chat  x remove  y copy path"
+        )));
         assert_eq!(wide.chars().count(), 199);
-        let medium = at(110);
-        assert!(!medium.contains("copy path") && medium.contains("x remove"));
-        let ninety = at(90);
-        assert!(ninety.contains("l launch  t try") && !ninety.contains("T chat"));
-        let one_action = at(80);
-        assert!(one_action.contains("│ w warm") && !one_action.contains("l launch"));
-        let seventy = at(70);
-        assert!(!seventy.contains('│') && seventy.contains("S serve"));
-        let sixty = at(60);
-        assert!(!sixty.contains("S serve") && sixty.contains("s scan"));
-        let tiny = at(50);
-        assert!(!tiny.contains("s scan") && tiny.contains("p pull"));
+        assert!(at(141).contains("y copy path"));
+        let five = at(140);
+        assert!(!five.contains("copy path") && five.contains("x remove"));
+        assert!(at(128).contains("x remove"));
+        let four = at(127);
+        assert!(!four.contains("x remove") && four.contains("T chat"));
+        assert!(at(118).contains("T chat"));
+        let three = at(117);
+        assert!(!three.contains("T chat") && three.contains("t try"));
+        assert!(at(110).contains("t try"));
+        let two = at(109);
+        assert!(!two.contains("t try") && two.contains("l launch"));
+        assert!(at(103).contains("l launch"));
+        let one = at(102);
+        assert!(!one.contains("l launch") && one.contains("│ w warm"));
+        assert!(at(93).contains("│ w warm"));
+        let fixed_only = at(92);
+        assert!(fixed_only.starts_with(FIXED_LINE) && !fixed_only.contains('│'));
+        assert!(at(83).starts_with(FIXED_LINE));
+        let no_serve = at(82);
+        assert!(!no_serve.contains("S serve") && no_serve.contains("s scan"));
+        assert!(at(74).contains("s scan"));
+        let no_scan = at(73);
+        assert!(!no_scan.contains("s scan") && no_scan.contains("p pull"));
+        assert!(at(66).contains("p pull"));
+        let no_pull = at(65);
+        assert!(!no_pull.contains("p pull") && no_pull.contains("o sort"));
+        assert!(at(58).contains("o sort"));
+        let no_sort = at(57);
+        assert!(!no_sort.contains("o sort") && no_sort.contains("/ filter"));
+        assert!(at(50).contains("/ filter"));
+        let no_filter = at(49);
+        assert!(!no_filter.contains("/ filter") && no_filter.contains("enter expand"));
+        assert!(at(40).contains("enter expand"));
+        let move_only = at(39);
+        assert!(!move_only.contains("enter expand") && move_only.starts_with(" j/k move"));
+        assert_eq!(at(26), " j/k move  ? help  q quit");
+        let floor = fitting_line(&ALL, 20);
+        assert_eq!(text(&floor), " j/k move  ? help  q quit");
+        assert!(floor.width() >= 20);
     }
 
     #[test]
