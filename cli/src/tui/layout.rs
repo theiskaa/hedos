@@ -3,8 +3,10 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
+use super::ui::BORDER_ROWS;
+
 /// Below this many columns the detail pane stacks under the shelf.
-const WIDE_COLUMNS: u16 = 100;
+const WIDE_WIDTH: u16 = 100;
 /// Height of the detail pane when stacked; at or under it the detail shows
 /// only what the shelf row does not.
 pub(super) const STACKED_DETAIL_ROWS: u16 = 6;
@@ -13,14 +15,12 @@ const SHELF_PERCENT: u16 = 55;
 /// From this many rows the koala header earns its place; below it the header
 /// is one line.
 const TALL_ROWS: u16 = 44;
-/// The koala header needs room for the koala and a panel beside it.
-const TALL_COLUMNS: u16 = 70;
+/// The koala header needs room for the koala and the copy beside it.
+const TALL_WIDTH: u16 = 70;
 /// Rows of the koala header: the koala with a blank line above and below.
 pub(super) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 2;
 /// The most task rows the strip shows at once.
 pub(super) const MAX_TASK_ROWS: u16 = 4;
-/// Rows a bordered block spends on its top and bottom edges.
-const BORDER_ROWS: u16 = 2;
 /// Rows of the gateway block under the detail: a border, two lines, a border.
 const GATEWAY_ROWS: u16 = 4;
 /// The shelf never shrinks below this many rows, borders included.
@@ -30,7 +30,7 @@ const SHELF_CHROME_ROWS: u16 = 3;
 
 /// Whether `area` is narrow enough that the panes stack.
 pub(crate) fn stacks(area: Rect) -> bool {
-    area.width < WIDE_COLUMNS
+    area.width < WIDE_WIDTH
 }
 
 /// The panes of the screen.
@@ -80,7 +80,8 @@ fn stacked(body: Rect, machine_block: u16) -> (Rect, Rect, Rect, Rect) {
 /// scrolls rather than pushing the machine facts off; only a terminal too
 /// short for both loses the block.
 fn side_by_side(body: Rect, shelf_rows: usize, machine_block: u16) -> (Rect, Rect, Rect, Rect) {
-    let wanted = (shelf_rows as u16)
+    let wanted = u16::try_from(shelf_rows)
+        .unwrap_or(u16::MAX)
         .saturating_add(SHELF_CHROME_ROWS)
         .max(MIN_SHELF_ROWS);
     let with_machine = body.height >= MIN_SHELF_ROWS + machine_block;
@@ -127,7 +128,7 @@ impl Panes {
         };
         let strip_rows = match task_rows {
             0 => 0,
-            rows => (rows as u16).min(MAX_TASK_ROWS) + BORDER_ROWS,
+            rows => u16::try_from(rows).unwrap_or(u16::MAX).min(MAX_TASK_ROWS) + BORDER_ROWS,
         };
         let [header, body, tasks, footer] = Layout::vertical([
             Constraint::Length(header_rows),
@@ -156,7 +157,7 @@ impl Panes {
 
     /// Whether `area` gets the koala header.
     fn tall(area: Rect) -> bool {
-        area.height >= TALL_ROWS && area.width >= TALL_COLUMNS
+        area.height >= TALL_ROWS && area.width >= TALL_WIDTH
     }
 }
 

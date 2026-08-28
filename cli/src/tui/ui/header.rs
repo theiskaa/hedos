@@ -9,7 +9,6 @@ use ratatui::widgets::Paragraph;
 use kernel::profiles::FitVerdict;
 use kernel::records::{ModelRecord, ModelState};
 
-use super::machine::gateway_state;
 use super::{BOLD, DIM, wordmark};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::verdict;
@@ -45,7 +44,7 @@ fn summary_line(app: &App, machine_shown: bool, width: usize) -> Line<'static> {
         format!(
             " · {} GiB free · gateway {}",
             text::gib(app.facts.free_bytes()),
-            gateway_state(&app.facts),
+            app.facts.gateway_state(),
         )
     };
     let mut summary = format!("{}{machine}", shelf_line(app, true));
@@ -59,10 +58,10 @@ fn summary_line(app: &App, machine_shown: bool, width: usize) -> Line<'static> {
 }
 
 /// The koala beside the wordmark, what hedos is for, and what the machine
-/// block does not already say: the shelf in numbers. The panel sits centered
+/// block does not already say: the shelf in numbers. The copy sits centered
 /// on the koala's rows.
 fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
-    let [koala, panel] =
+    let [koala, copy] =
         Layout::horizontal([Constraint::Length(KOALA_WIDTH + 5), Constraint::Min(0)]).areas(area);
     // A blank row above the koala keeps it off the terminal's top edge.
     let koala_lines: Vec<Line> = std::iter::once(Line::default())
@@ -74,18 +73,18 @@ fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
         .collect();
     frame.render_widget(Paragraph::new(koala_lines), koala);
 
-    let panel_lines = [
+    let copy_lines = [
         Line::from(wordmark().to_vec()),
         Line::from(Span::styled(" run and serve local models headlessly", DIM)),
         Line::default(),
         Line::from(Span::styled(format!(" {}", shelf_line(app, true)), DIM)),
     ];
-    let above = 1 + (KOALA.len() - panel_lines.len()) / 2;
+    let above = 1 + (KOALA.len() - copy_lines.len()) / 2;
     let mut lines: Vec<Line> = std::iter::repeat_n(Line::default(), above)
-        .chain(panel_lines)
+        .chain(copy_lines)
         .collect();
     lines.truncate(area.height as usize);
-    frame.render_widget(Paragraph::new(lines), panel);
+    frame.render_widget(Paragraph::new(lines), copy);
 }
 
 /// `12 models · 3 warm · 1 too big · 2 gone`, the last two only when they

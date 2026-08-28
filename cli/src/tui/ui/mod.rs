@@ -1,9 +1,26 @@
 //! Drawing the app state. Panes read the app and write to the frame; the only
 //! mutable state they touch is the shelf's scroll position and the chat
-//! pane's measure of how far its transcript scrolls. Colour is used
-//! sparingly: an orange accent for what is in focus, names a mode, or is in
-//! motion, and the terminal's own green for what is loaded, yellow for a
-//! tight fit, red for what failed.
+//! pane's measure of how far its transcript scrolls.
+//!
+//! The style vocabulary, one meaning per style: `DIM` is the quiet register,
+//! `BOLD` the loud one, `ACCENT` what is in focus, names a mode, or is in
+//! motion, `EYEBROW` a heading over a run of rows, and the three hues are
+//! `WARM` for what is loaded or up, `CAUTION` for a warning, `FAILED` for
+//! what failed. `BACKDROP` flattens the screen behind a card and
+//! `SELECTED_ROW` marks the selected row of a list. The fixed `Rgb` accent
+//! and backdrop assume a dark truecolor terminal.
+//!
+//! The shared helpers, in groups: measuring (`padded`, `right_aligned`,
+//! `widest`); the label column (`label_width`, `value_width`, `label`,
+//! `styled_field`, `field_line`); the one input (`edited`); the one key
+//! grammar (`key_spans`, `keys`); `bar`; `centered`; `spinner`. Every pane
+//! and card imports only these and the state modules under `tui`, never
+//! another pane.
+//!
+//! The wording register: lowercase, no sentence-final periods, `·` between
+//! facts, keys as `key verb` with the verb from the keymap, a card's own
+//! keys named where the card is drawn, and `;` joining two clauses in a
+//! notice.
 
 mod chat;
 mod detail;
@@ -32,7 +49,7 @@ const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 /// What is in focus, names a mode, or is in motion, and nothing that merely
 /// sits still: the expanded detail's frame, an input mark, a running task's
-/// verb, the spinner, the download bar, the chat's and the modals' titles.
+/// verb, the spinner, the download bar, the chat's and the cards' titles.
 /// A fixed orange, since no terminal palette has one and it should not
 /// drift into the warning yellow.
 const ACCENT: Style = Style::new().fg(Color::Rgb(232, 142, 68));
@@ -40,7 +57,7 @@ const ACCENT: Style = Style::new().fg(Color::Rgb(232, 142, 68));
 /// categories, the help's groups. Uppercase carries it; no colour, so the
 /// accent keeps to what moves or has focus.
 const EYEBROW: Style = Style::new();
-/// What is loaded.
+/// What is loaded or up: a warm model, a gateway that is on.
 const WARM: Style = Style::new().fg(Color::Green);
 /// A warning: a tight fit, a reply that was stopped.
 const CAUTION: Style = Style::new().fg(Color::Yellow);
@@ -48,12 +65,19 @@ const CAUTION: Style = Style::new().fg(Color::Yellow);
 const SELECTED_ROW: Style = Style::new().add_modifier(Modifier::REVERSED);
 /// What failed, and nothing else.
 const FAILED: Style = Style::new().fg(Color::Red);
-/// The screen behind a modal: every colour and emphasis flattened to one dark
-/// grey so the card is the only thing lit.
-const BACKDROP: Style = Style::new()
-    .fg(Color::DarkGray)
-    .add_modifier(Modifier::DIM)
-    .remove_modifier(Modifier::BOLD.union(Modifier::REVERSED));
+/// The screen behind a card: every colour and emphasis flattened to one
+/// near-black grey so the card is the only thing lit. A fixed value, since
+/// palette greys and the DIM modifier both land too bright on many terminals
+/// to read as a backdrop.
+const BACKDROP: Style = Style::new().fg(Color::Rgb(44, 44, 44)).remove_modifier(
+    Modifier::BOLD
+        .union(Modifier::REVERSED)
+        .union(Modifier::DIM),
+);
+/// Rows a bordered block spends on its top and bottom edges.
+pub(super) const BORDER_ROWS: u16 = 2;
+/// Columns a bordered block spends on its left and right edges.
+pub(super) const BORDER_COLUMNS: u16 = 2;
 /// The glyphs of a horizontal bar: filled, then empty.
 const BAR_FILLED: &str = "█";
 const BAR_EMPTY: &str = "░";
@@ -103,20 +127,6 @@ fn value_width(width: usize, labels: usize) -> usize {
 /// A dim `label`, padded to `width`, in front of whatever a row shows.
 fn label(label: &str, width: usize) -> Span<'static> {
     Span::styled(format!(" {}", padded(label, width)), DIM)
-}
-
-/// The label a row starts with, for the tests that hold each pane to its
-/// label list: the cells after the leading space up to the label column's
-/// width, trimmed.
-#[cfg(test)]
-fn leading_label(line: &Line, width: usize) -> String {
-    super::testing::text(line)
-        .chars()
-        .skip(1)
-        .take(width)
-        .collect::<String>()
-        .trim_end()
-        .to_owned()
 }
 
 /// A `label   value` pair, the label dim and padded to `width`, the value
@@ -172,7 +182,9 @@ fn bar(filled: usize, width: usize, style: Style) -> [Span<'static>; 2] {
     ]
 }
 
-/// `pairs` as spans: each key dim, its verb plain, two spaces after.
+/// `pairs` as spans: each key dim, its verb plain, two spaces after. Takes
+/// the keymap's [`Pair`](super::keymap::Pair)s and the pairs a pane
+/// phrases on the spot alike.
 fn key_spans(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
     pairs
         .iter()
@@ -214,7 +226,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     tasks::draw(frame, panes.tasks, app);
     footer::draw(frame, panes.footer, app);
-    modal::draw(frame, frame.area(), app);
+    if modal::draw(frame, frame.area(), app) && app.notice().is_some() {
+        // The backdrop flattens the footer with the rest of the screen, and
+        // a notice raised from inside a card has to read, so its row is
+        // painted again over the backdrop.
+        frame.buffer_mut().set_style(panes.footer, Style::reset());
+        footer::draw(frame, panes.footer, app);
+    }
 }
 
 /// A rect of `width` by `height` in the middle of `area`, no larger than
@@ -238,6 +256,13 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::tui::event::{Event, Key};
+    use crate::tui::facts::Facts;
+    use crate::tui::testing::{record, text};
 
     #[test]
     fn padded_counts_cells_not_chars() {
@@ -265,14 +290,13 @@ mod tests {
 
     #[test]
     fn an_empty_field_shows_its_placeholder_in_place_of_the_cursor() {
-        use super::super::testing::text;
         let mut input = LineEdit::default();
         let blank = Line::from(edited(&input, " › ", 20, "name, owner/repo or name:tag"));
         assert_eq!(text(&blank), " › name, owner/rep…");
         assert!(blank.width() <= 20);
         assert!(!text(&blank).contains(CURSOR));
         assert_eq!(blank.spans[1].style, DIM);
-        input.apply(super::super::event::Key::Char('q'));
+        input.apply(Key::Char('q'));
         let typed = text(&Line::from(edited(&input, " › ", 20, "unused")));
         assert_eq!(typed, format!(" › q{CURSOR}"));
     }
@@ -281,5 +305,29 @@ mod tests {
     fn the_spinner_cycles_by_tick() {
         assert_eq!(spinner(0), SPINNER[0]);
         assert_eq!(spinner(7), SPINNER[1]);
+    }
+
+    #[test]
+    fn a_notice_reads_over_the_backdrop() {
+        let mut app = App::new(vec![record("m")], Facts::default());
+        app.reduce(Event::Key(Key::Char('y')));
+        assert_eq!(app.notice(), Some("m has no path"));
+        app.reduce(Event::Key(Key::Char('p')));
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("a test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("a frame");
+        let buffer = terminal.backend().buffer();
+        let footer = 39;
+        let notice: String = (0..buffer.area.width)
+            .map(|x| buffer[(x, footer)].symbol())
+            .collect();
+        assert!(notice.starts_with(" m has no path"), "{notice:?}");
+        assert_ne!(
+            buffer[(1, footer)].fg,
+            BACKDROP.fg.expect("the backdrop's grey")
+        );
+        assert!(buffer[(1, footer)].modifier.contains(Modifier::BOLD));
+        assert_eq!(buffer[(1, 0)].fg, BACKDROP.fg.expect("the backdrop's grey"));
     }
 }

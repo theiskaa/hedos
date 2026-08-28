@@ -5,9 +5,9 @@
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::{BORDER_COLUMNS, BORDER_ROWS, MARGIN, modal_width};
+use super::{MARGIN, card_width};
 use crate::tui::keymap;
-use crate::tui::ui::{DIM, EYEBROW, keys, padded};
+use crate::tui::ui::{BORDER_COLUMNS, BORDER_ROWS, DIM, EYEBROW, keys, padded};
 
 /// Bindings the help shows in one cell: side by side under a verb they
 /// share, or with `/` between the keys and ` / ` between the verbs. `Y`'s
@@ -25,7 +25,7 @@ const HELP_NOTE: &str = "  every key is a hedos subcommand: p is pull, x is rm, 
 enum HelpCell {
     Header(&'static str),
     Blank,
-    Row { key: String, verb: String },
+    Row { key: String, gloss: String },
 }
 
 /// The help as it lays out at one terminal width: its columns, the card's
@@ -40,16 +40,16 @@ pub(super) struct HelpLayout {
 }
 
 impl HelpLayout {
-    /// The layout at a terminal `width` cells wide: three columns from
-    /// [`three_columns_from`], two under it.
+    /// The layout at a terminal `width` cells wide: three columns from the
+    /// [`breakpoint`](Self::breakpoint), two under it.
     pub(super) fn at(width: u16) -> Self {
-        let columns = if width >= three_columns_from() {
+        let columns = if width >= Self::breakpoint() {
             three_columns()
         } else {
             two_columns()
         };
-        let card = card_width(&columns);
-        let inner = modal_width(card, width).saturating_sub(BORDER_COLUMNS) as usize;
+        let card = table_card_width(&columns);
+        let inner = card_width(card, width).saturating_sub(BORDER_COLUMNS) as usize;
         Self {
             columns,
             width: card,
@@ -64,7 +64,7 @@ impl HelpLayout {
         let mut lines = vec![Line::default()];
         lines.extend(table_lines(&self.columns));
         lines.push(Line::default());
-        lines.push(keys(&[("esc", "close")]));
+        lines.push(keys(&[("esc/q", "close")]));
         if self.inner >= HELP_NOTE.width() {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(HELP_NOTE, DIM)));
@@ -77,10 +77,11 @@ impl HelpLayout {
         self.lines().len() as u16 + BORDER_ROWS
     }
 
-    /// Whether the help has folded to two columns.
-    #[cfg(test)]
-    pub(super) fn folded(&self) -> bool {
-        self.columns.len() == 2
+    /// Terminal columns from which the help lays its groups out in three
+    /// columns: the three-column table, the border, and a margin either
+    /// side. Narrower, it folds to two.
+    pub(super) fn breakpoint() -> u16 {
+        table_width(&three_columns()) as u16 + BORDER_COLUMNS + 2 * MARGIN
     }
 }
 
@@ -119,8 +120,8 @@ fn group_cells(group: keymap::Group) -> Vec<HelpCell> {
             .copied()
             .unwrap_or(std::slice::from_ref(&binding.key));
         joined_already.extend(&keys[1..]);
-        let (key, verb) = help_cell(keys);
-        cells.push(HelpCell::Row { key, verb });
+        let (key, gloss) = help_cell(keys);
+        cells.push(HelpCell::Row { key, gloss });
     }
     cells
 }
@@ -152,27 +153,20 @@ fn two_columns() -> Vec<Vec<HelpCell>> {
     ]
 }
 
-/// Terminal columns from which the help lays its groups out in three
-/// columns: the three-column table, the border, and a margin either side.
-/// Narrower, it folds to two.
-pub(super) fn three_columns_from() -> u16 {
-    table_width(&three_columns()) as u16 + BORDER_COLUMNS + 2 * MARGIN
-}
-
 /// The card's width for `columns`: the table with a cell of air on its
 /// right, and the border.
-fn card_width(columns: &[Vec<HelpCell>]) -> u16 {
+fn table_card_width(columns: &[Vec<HelpCell>]) -> u16 {
     table_width(columns) as u16 + BORDER_COLUMNS + 2
 }
 
-/// A column's key and verb widths with their gaps: the widest key plus
-/// `KEY_GAP`, the widest verb plus `VERB_GAP`.
+/// A column's key and gloss widths with their gaps: the widest key plus
+/// `KEY_GAP`, the widest gloss plus `VERB_GAP`.
 fn column_widths(column: &[HelpCell]) -> (usize, usize) {
     let widest = |pick: fn(&String, &String) -> usize| {
         column
             .iter()
             .filter_map(|cell| match cell {
-                HelpCell::Row { key, verb } => Some(pick(key, verb)),
+                HelpCell::Row { key, gloss } => Some(pick(key, gloss)),
                 _ => None,
             })
             .max()
@@ -180,21 +174,21 @@ fn column_widths(column: &[HelpCell]) -> (usize, usize) {
     };
     (
         widest(|key, _| key.width()) + KEY_GAP,
-        widest(|_, verb| verb.width()) + VERB_GAP,
+        widest(|_, gloss| gloss.width()) + VERB_GAP,
     )
 }
 
 /// The key table: `columns` side by side, each as wide as its widest key
-/// and verb, the last one unpadded and every row trimmed on the right.
+/// and gloss, the last one unpadded and every row trimmed on the right.
 fn table_lines(columns: &[Vec<HelpCell>]) -> Vec<Line<'static>> {
     let widths: Vec<(usize, usize)> = columns.iter().map(|column| column_widths(column)).collect();
     let rows = columns.iter().map(Vec::len).max().unwrap_or(0);
     let mut lines = Vec::with_capacity(rows);
     for row in 0..rows {
         let mut spans = vec![Span::raw("  ")];
-        for (index, (column, (key_width, verb_width))) in columns.iter().zip(&widths).enumerate() {
+        for (index, (column, (key_width, gloss_width))) in columns.iter().zip(&widths).enumerate() {
             let last = index + 1 == columns.len();
-            let cell_width = key_width + verb_width;
+            let cell_width = key_width + gloss_width;
             let fill = |text: &str, width: usize| {
                 if last {
                     text.to_owned()
@@ -206,9 +200,9 @@ fn table_lines(columns: &[Vec<HelpCell>]) -> Vec<Line<'static>> {
                 Some(HelpCell::Header(name)) => {
                     spans.push(Span::styled(fill(name, cell_width), EYEBROW));
                 }
-                Some(HelpCell::Row { key, verb }) => {
+                Some(HelpCell::Row { key, gloss }) => {
                     spans.push(Span::styled(padded(key, *key_width), DIM));
-                    spans.push(Span::raw(fill(verb, *verb_width)));
+                    spans.push(Span::raw(fill(gloss, *gloss_width)));
                 }
                 Some(HelpCell::Blank) | None => spans.push(Span::raw(fill("", cell_width))),
             }
@@ -295,7 +289,7 @@ mod tests {
                 assert!(keymap::binding(key).is_some(), "{key} is not bound");
             }
         }
-        let wide = three_columns_from();
+        let wide = HelpLayout::breakpoint();
         for width in [wide, wide - 1] {
             let layout = HelpLayout::at(width);
             let shown = shown_keys(&layout.columns);
@@ -324,7 +318,7 @@ mod tests {
             help_cell(&["y", "Y"]),
             ("y/Y".to_owned(), "copy path / id".to_owned())
         );
-        let layout = HelpLayout::at(three_columns_from());
+        let layout = HelpLayout::at(HelpLayout::breakpoint());
         let rows = table_rows(&layout);
         assert!(
             rows.iter().any(|line| line.contains("MOVE")
@@ -345,7 +339,7 @@ mod tests {
         let rendered = texts(&layout.lines());
         let closer = rendered
             .iter()
-            .position(|line| line.trim_end() == " esc close");
+            .position(|line| line.trim_end() == " esc/q close");
         assert_eq!(
             closer,
             Some(rows.len() + 2),
@@ -358,14 +352,14 @@ mod tests {
 
     #[test]
     fn help_columns_never_run_together() {
-        let wide = three_columns_from();
+        let wide = HelpLayout::breakpoint();
         for width in [wide, wide - 1] {
             let layout = HelpLayout::at(width);
             for (row, shown) in table_rows(&layout).iter().enumerate() {
                 let mut offset = 2;
                 for column in &layout.columns {
-                    let (key_width, verb_width) = column_widths(column);
-                    if let Some(HelpCell::Row { key, verb }) = column.get(row) {
+                    let (key_width, gloss_width) = column_widths(column);
+                    if let Some(HelpCell::Row { key, gloss }) = column.get(row) {
                         let before: String = shown.chars().take(offset).collect();
                         let cell: String = shown.chars().skip(offset).collect();
                         assert!(
@@ -379,10 +373,10 @@ mod tests {
                         let after_key: String = shown.chars().skip(offset + key.width()).collect();
                         assert!(
                             after_key.starts_with("  "),
-                            "{key} runs into {verb} in {shown:?}"
+                            "{key} runs into {gloss} in {shown:?}"
                         );
                     }
-                    offset += key_width + verb_width;
+                    offset += key_width + gloss_width;
                 }
             }
         }
@@ -390,16 +384,18 @@ mod tests {
 
     #[test]
     fn the_help_folds_to_two_columns_on_a_narrow_terminal() {
-        let wide = three_columns_from();
+        let wide = HelpLayout::breakpoint();
         // The one literal pin: the layout tripwire, tripped by any change to the keys.
         assert_eq!(wide, 75);
         let three = HelpLayout::at(wide);
         let two = HelpLayout::at(wide - 1);
         assert_eq!(three.columns.len(), 3);
         assert_eq!(two.columns.len(), 2);
-        assert_eq!(three.width, card_width(&three.columns));
-        assert_eq!(two.width, card_width(&two.columns));
+        assert_eq!(three.width, table_card_width(&three.columns));
+        assert_eq!(two.width, table_card_width(&two.columns));
         assert!(two.width < three.width);
+        // The folded card still fits whole, margins included, under the breakpoint.
+        assert!(two.width + 2 * MARGIN < wide);
         let narrow = two.lines();
         assert!(narrow.iter().all(|line| line.width() <= inner(two.width)));
         let rendered = texts(&narrow);
@@ -425,7 +421,7 @@ mod tests {
         );
         assert_eq!(
             rendered.last().map(|line| line.trim_end()),
-            Some(" esc close")
+            Some(" esc/q close")
         );
         assert!(two.height() > three.height());
         assert_eq!(three.height(), expected_help_height(&three, true));

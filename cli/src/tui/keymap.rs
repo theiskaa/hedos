@@ -1,9 +1,14 @@
 //! The shelf's keys, each spelled once: the footer, the help, the task
 //! strip and the empty shelf all read their `key verb` pairs from here, and
-//! the reducer's tests check that every binding does something. A modal's
-//! own keys (`enter choose`, `esc back`, `y remove`, `n keep`, `esc close`,
-//! the chat pane's footer) are named where they are drawn: they answer only
-//! inside their card and never share the shelf's grammar.
+//! the reducer's tests check that every binding does something. Dispatch
+//! happens in `App::key`; `App::actions` lists the keys the selected model
+//! answers to, in footer order. A modal's own keys (`enter choose`, `esc
+//! back`, `y remove`, `n keep`, `esc close`, the chat pane's footer) are
+//! named where they are drawn: they answer only inside their card and never
+//! share the shelf's grammar.
+
+/// A key and its verb, as every key line draws them.
+pub type Pair = (&'static str, &'static str);
 
 /// What a binding is about; the help lays each group out under its own
 /// heading.
@@ -114,7 +119,7 @@ pub fn verb(key: &str) -> &'static str {
 
 /// `(key, verb)` pairs for `keys`, in that order, skipping any that is not
 /// bound.
-pub fn pairs(keys: &[&str]) -> Vec<(&'static str, &'static str)> {
+pub fn pairs(keys: &[&str]) -> Vec<Pair> {
     keys.iter()
         .filter_map(|key| binding(key))
         .map(|binding| (binding.key, binding.verb))

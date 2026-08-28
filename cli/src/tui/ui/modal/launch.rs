@@ -4,17 +4,16 @@
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use super::BORDER_ROWS;
 use crate::support::harnesses::HARNESSES;
 use crate::tui::launch::LaunchModal;
 use crate::tui::text;
-use crate::tui::ui::{DIM, SELECTED_ROW, keys, label_width, padded};
+use crate::tui::ui::{BORDER_ROWS, DIM, SELECTED_ROW, keys, label_width, padded};
 
-/// The launch modal's width: a harness, its binary, and the reason it is
+/// The launch card's width: a harness, its binary, and the reason it is
 /// blocked, clipped to fit.
 pub(super) const LAUNCH_WIDTH: u16 = 72;
-/// The launch modal: a blank, one row per harness, a blank, the note, a
-/// blank, the keys, and the border.
+/// The launch card's height: a blank, one row per harness, a blank, the
+/// note, a blank, the keys, and the border.
 pub(super) const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 5 + BORDER_ROWS;
 
 /// Every harness, the ones this model can seat selectable, the rest dim with

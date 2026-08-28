@@ -1,6 +1,11 @@
 //! The builders every test module under `tui` needs: a record, a resident,
-//! a plan, a deletion preview, the machine's facts, and a way to read a
+//! a plan, a deletion preview, the machine's facts, and ways to read a
 //! rendered line back as text.
+//!
+//! The tripwire policy: a test derives its expectations from the constants
+//! the code is built from, so a layout change moves the test with it. At
+//! most one literal pin per layout is kept, marked as such, to trip when
+//! the constants themselves drift.
 
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -91,4 +96,17 @@ pub fn text(line: &Line) -> String {
 /// The text of every line in `lines`.
 pub fn texts(lines: &[Line]) -> Vec<String> {
     lines.iter().map(text).collect()
+}
+
+/// The label a row starts with, for the tests that hold each pane to its
+/// label list: the cells after the leading space up to the label column's
+/// `width`, trimmed.
+pub fn leading_label(line: &Line, width: usize) -> String {
+    text(line)
+        .chars()
+        .skip(1)
+        .take(width)
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
 }

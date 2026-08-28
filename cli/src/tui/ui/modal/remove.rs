@@ -4,16 +4,16 @@ use kernel::removal::ModelDeletionPreview;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 
-use super::{BORDER_ROWS, label_column};
+use super::label_column;
 use crate::tui::facts::Facts;
 use crate::tui::text;
-use crate::tui::ui::{DIM, field_line, keys, styled_field, value_width};
+use crate::tui::ui::{BORDER_ROWS, DIM, field_line, keys, styled_field, value_width};
 
-/// The remove modal's width: three label rows and one sentence, the path
+/// The remove card's width: three label rows and one sentence, the path
 /// elided to fit.
 pub(super) const REMOVE_WIDTH: u16 = 72;
-/// The remove modal: a blank, three rows, a blank, what happens and what is
-/// left, a blank, the keys, and the border.
+/// The remove card's height: a blank, three rows, a blank, what happens and
+/// what is left, a blank, the keys, and the border.
 pub(super) const REMOVE_HEIGHT: u16 = 9 + BORDER_ROWS;
 
 /// What removing the model does, in the store's own terms.
@@ -66,13 +66,14 @@ mod tests {
     use crate::tui::testing::{deletion_preview, text, texts};
 
     #[test]
-    fn the_remove_path_is_elided_to_the_modal() {
+    fn the_remove_path_is_elided_to_the_card() {
         let root = "/var/lib/ollama/models/blobs/";
         let path = format!("{root}{}", "a".repeat(120 - root.len()));
         assert_eq!(path.len(), 120);
         let preview = deletion_preview(vec![path]);
         let inner = Rect::new(0, 0, 80, 9);
         let lines = remove(&preview, &Facts::default(), inner);
+        assert_eq!(lines.len() as u16, REMOVE_HEIGHT - BORDER_ROWS);
         let path_line = lines
             .iter()
             .find(|line| text(line).contains("path"))

@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use kernel::records::byte_format::BYTES_PER_MIB;
 use kernel::records::{Capability, JsonValue, ModelRecord};
-use kernel::time::now_millis;
 
 use crate::error::CliError;
 use crate::support::ollama;
@@ -46,11 +45,12 @@ pub(crate) struct Resident {
 }
 
 impl Resident {
-    /// Seconds until the idle unload fires, if one is armed and still ahead.
-    /// A deadline the clock has passed is a snapshot gone stale, not a countdown.
-    pub fn expires_in_seconds(&self) -> Option<i64> {
+    /// Seconds until the idle unload fires, measured from `now` in Unix
+    /// milliseconds, if one is armed and still ahead. A deadline `now` has
+    /// passed is a snapshot gone stale, not a countdown.
+    pub fn expires_in_seconds_at(&self, now: i64) -> Option<i64> {
         self.expires_at_millis
-            .map(|deadline| (deadline - now_millis()) / 1000)
+            .map(|deadline| (deadline - now) / 1000)
             .filter(|seconds| *seconds > 0)
     }
 }

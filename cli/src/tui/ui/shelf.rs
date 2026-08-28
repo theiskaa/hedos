@@ -11,7 +11,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use unicode_width::UnicodeWidthStr;
 
-use super::{ACCENT, BOLD, CAUTION, DIM, SELECTED_ROW, WARM, centered, edited, keys};
+use super::{
+    ACCENT, BOLD, BORDER_COLUMNS, CAUTION, DIM, SELECTED_ROW, WARM, centered, edited, keys,
+};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
 use crate::tui::app::App;
@@ -27,8 +29,6 @@ const NAME: usize = 1;
 const SIZE: usize = 4;
 /// Space between columns.
 const COLUMN_SPACING: u16 = 2;
-/// The border on each side of the table.
-const CHROME_WIDTH: u16 = 2;
 /// Column sets from fullest to sparsest: the store goes first, then the
 /// runtime, so a narrow pane keeps the name whole and the size visible.
 const COLUMN_SETS: [&[usize]; 3] = [&[0, 1, 2, 3, 4], &[0, 1, 2, 4], &[0, 1, 4]];
@@ -53,37 +53,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let columns = fitting_columns(&column_widths, area.width);
     let selected = app.selected();
 
-    let body = rows.iter().enumerate().map(|(index, row)| {
-        let style = if row.dim() {
-            DIM
-        } else if row.warm {
-            BOLD
-        } else {
-            Style::new()
-        };
-        // A row that won't fit is already dim; red is kept for what failed.
-        let size_style = match row.verdict {
-            Some(FitVerdict::TightFit) => CAUTION,
-            _ => Style::new(),
-        };
-        let marker = |mark: &str| {
-            let text = format!("{mark}{}", row.cells[0]);
-            if row.warm {
-                Cell::from(Span::styled(text, WARM))
-            } else {
-                Cell::from(text)
-            }
-        };
-        let cells = columns.iter().map(|&column| match column {
-            0 if index == selected => marker(SELECTED),
-            0 => marker(" "),
-            SIZE => Cell::from(
-                Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
-            ),
-            _ => Cell::from(row.cells[column].clone()),
-        });
-        Row::new(cells).style(style)
-    });
+    let body = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| body_row(row, index == selected, columns));
 
     let header = Row::new(columns.iter().map(|&column| match column {
         SIZE => Cell::from(Line::from(HEADERS[SIZE]).right_aligned()),
@@ -101,6 +74,41 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     if no_match {
         draw_no_match(frame, body_area);
     }
+}
+
+/// One shelf row over `columns`: dim when it can't run here, bold when warm,
+/// the gutter marked when `selected`, and the size in the caution hue on a
+/// tight fit.
+fn body_row(row: &ShelfRow, selected: bool, columns: &[usize]) -> Row<'static> {
+    let style = if row.dim() {
+        DIM
+    } else if row.warm {
+        BOLD
+    } else {
+        Style::new()
+    };
+    // A row that won't fit is already dim; red is kept for what failed.
+    let size_style = match row.verdict {
+        Some(FitVerdict::TightFit) => CAUTION,
+        _ => Style::new(),
+    };
+    let marker = |mark: &str| {
+        let text = format!("{mark}{}", row.cells[0]);
+        if row.warm {
+            Cell::from(Span::styled(text, WARM))
+        } else {
+            Cell::from(text)
+        }
+    };
+    let cells = columns.iter().map(|&column| match column {
+        0 if selected => marker(SELECTED),
+        0 => marker(" "),
+        SIZE => Cell::from(
+            Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
+        ),
+        _ => Cell::from(row.cells[column].clone()),
+    });
+    Row::new(cells).style(style)
 }
 
 /// The header stays; the body says why it has no rows.
@@ -195,7 +203,7 @@ fn natural_width(column_widths: &[usize; 5], columns: &[usize]) -> usize {
         .map(|&column| column_widths[column])
         .sum::<usize>()
         + COLUMN_SPACING as usize * columns.len().saturating_sub(1)
-        + CHROME_WIDTH as usize
+        + BORDER_COLUMNS as usize
 }
 
 /// Fixed widths for every column except the name, which takes the rest.
@@ -301,7 +309,8 @@ mod tests {
     const WIDTHS: [usize; 5] = [2, 20, 10, 8, 7];
     const GIB: u64 = kernel::records::byte_format::BYTES_PER_GIB as u64;
 
-    fn record(footprint_mb: Option<i64>) -> ModelRecord {
+    /// A Hugging Face chat model `footprint_mb` large.
+    fn sized_record(footprint_mb: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(
             "m",
             Modality::text(),
@@ -315,38 +324,41 @@ mod tests {
     #[test]
     fn the_size_cell_carries_the_verdict_only_when_it_matters() {
         assert_eq!(
-            ShelfRow::new(&record(Some(1024)), false, 16 * GIB).cells[4],
+            ShelfRow::new(&sized_record(Some(1024)), false, 16 * GIB).cells[4],
             "1 GB"
         );
         assert_eq!(
-            ShelfRow::new(&record(Some(12 * 1024)), false, 16 * GIB).cells[4],
+            ShelfRow::new(&sized_record(Some(12 * 1024)), false, 16 * GIB).cells[4],
             "12 GB tight"
         );
         assert_eq!(
-            ShelfRow::new(&record(Some(16 * 1024)), false, 16 * GIB).cells[4],
+            ShelfRow::new(&sized_record(Some(16 * 1024)), false, 16 * GIB).cells[4],
             "16 GB too big"
         );
-        assert_eq!(ShelfRow::new(&record(None), false, 16 * GIB).cells[4], DASH);
         assert_eq!(
-            ShelfRow::new(&record(Some(1)), true, 16 * GIB).cells[0],
+            ShelfRow::new(&sized_record(None), false, 16 * GIB).cells[4],
+            DASH
+        );
+        assert_eq!(
+            ShelfRow::new(&sized_record(Some(1)), true, 16 * GIB).cells[0],
             "●"
         );
         assert_eq!(
-            ShelfRow::new(&record(Some(1)), false, 16 * GIB).cells[3],
+            ShelfRow::new(&sized_record(Some(1)), false, 16 * GIB).cells[3],
             "hf"
         );
     }
 
     #[test]
     fn a_gone_row_is_dim_and_says_gone() {
-        let mut gone = record(Some(16 * 1024));
+        let mut gone = sized_record(Some(16 * 1024));
         gone.state = ModelState::Missing;
         let row = ShelfRow::new(&gone, false, 16 * GIB);
         assert!(row.dim());
         assert_eq!(row.cells[SIZE], "gone");
         assert_eq!(row.verdict, None);
-        assert!(!ShelfRow::new(&record(Some(1024)), false, 16 * GIB).dim());
-        assert!(ShelfRow::new(&record(Some(16 * 1024)), false, 16 * GIB).dim());
+        assert!(!ShelfRow::new(&sized_record(Some(1024)), false, 16 * GIB).dim());
+        assert!(ShelfRow::new(&sized_record(Some(16 * 1024)), false, 16 * GIB).dim());
     }
 
     #[test]
@@ -361,7 +373,7 @@ mod tests {
 
     #[test]
     fn the_gutter_stays_two_wide() {
-        let rows = [ShelfRow::new(&record(Some(1)), true, 16 * GIB)];
+        let rows = [ShelfRow::new(&sized_record(Some(1)), true, 16 * GIB)];
         assert_eq!(widths(&rows)[0], 2);
     }
 

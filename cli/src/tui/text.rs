@@ -1,12 +1,16 @@
 //! The labels and numbers the screen shows, in their short human forms.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use kernel::capabilities::GenerationStats;
+use kernel::profiles::{FitAssessment, FitVerdict};
+use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
+use crate::support::shelf_table::verdict_label;
+
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -79,10 +83,40 @@ pub fn home_relative(path: &str, home: Option<&Path>) -> String {
     }
 }
 
-/// `path` with this user's home written as `~`, read from `HOME`.
+/// `path` with this user's home written as `~`, read from `HOME` once.
 pub fn at_home(path: &str) -> String {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let home = HOME.get_or_init(|| std::env::var_os("HOME").map(PathBuf::from));
     home_relative(path, home.as_deref())
+}
+
+/// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
+/// footprint is unknown: the shape the detail and the pull preview share.
+pub fn fit_summary(footprint_mb: Option<i64>, memory_bytes: u64) -> String {
+    fit_parts(footprint_mb, memory_bytes).0
+}
+
+/// [`fit_summary`] and, when the model fits at all, the bytes it needs.
+pub fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
+    match FitVerdict::assess(footprint_mb, memory_bytes) {
+        None => ("unknown footprint".to_owned(), None),
+        Some(FitAssessment {
+            verdict: FitVerdict::TooLarge,
+            ..
+        }) => ("too big for this machine".to_owned(), None),
+        Some(FitAssessment {
+            verdict,
+            required_bytes,
+        }) => (
+            format!(
+                "{} · needs {} of {} GiB",
+                verdict_label(Some(verdict)),
+                gib(required_bytes),
+                gib(memory_bytes as i64)
+            ),
+            Some(required_bytes),
+        ),
+    }
 }
 
 /// `text` cut to `width` cells by dropping its middle, so a path keeps both

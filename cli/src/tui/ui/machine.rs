@@ -57,7 +57,7 @@ fn draw_machine(frame: &mut Frame, area: Rect, facts: &Facts, stacked: bool) {
         vec![idle_memory_line(facts, labels), disk_line(facts, labels)]
     } else {
         vec![
-            memory_line(facts, bar_width, labels),
+            memory_line(facts, bar_width, inner.width as usize, labels),
             legend_line(facts, inner.width as usize, labels),
             disk_line(facts, labels),
         ]
@@ -73,7 +73,7 @@ fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
     let block = Block::bordered().title(" gateway ").border_style(DIM);
     let inner = block.inner(area);
     let state = match facts.gateway_port {
-        Some(_) => Span::styled(format!(" {}", gateway_state(facts)), WARM),
+        Some(_) => Span::styled(format!(" {}", facts.gateway_state()), WARM),
         None => Span::styled(" off", DIM),
     };
     let lines = vec![
@@ -110,17 +110,6 @@ fn idle_memory_line(facts: &Facts, labels: usize) -> Line<'static> {
     ])
 }
 
-/// `on :11434 · 3 req/min`, or `off`.
-pub(super) fn gateway_state(facts: &Facts) -> String {
-    match facts.gateway_port {
-        Some(port) => format!(
-            "on :{port} · {} req/min",
-            facts.activity.requests_last_minute
-        ),
-        None => "off".to_owned(),
-    }
-}
-
 /// `gateway  on :11434 · 3 req/min`, the state warm and the figures dim,
 /// or a dim `off`: the gateway block's first line, folded into the machine
 /// block when there is no room beside it.
@@ -152,8 +141,9 @@ fn served_line(facts: &Facts) -> String {
     )
 }
 
-/// `memory  ████░░░░  14.2 of 64 GiB`.
-fn memory_line(facts: &Facts, bar_width: usize, labels: usize) -> Line<'static> {
+/// `memory  ████░░░░  14.2 of 64 GiB`, held to `width` cells: the bar has
+/// a floor, so a block too narrow for it and the figure clips the figure.
+fn memory_line(facts: &Facts, bar_width: usize, width: usize, labels: usize) -> Line<'static> {
     let mut spans = vec![label("memory", labels)];
     spans.extend(memory_bar(facts, bar_width));
     spans.push(Span::raw("  "));
@@ -162,7 +152,7 @@ fn memory_line(facts: &Facts, bar_width: usize, labels: usize) -> Line<'static> 
         format!(" of {} GiB", text::gib(facts.memory_bytes as i64)),
         DIM,
     ));
-    Line::from(spans)
+    clipped(spans, width)
 }
 
 /// One `█` run per resident, sized by its share of the machine, then `░`s.
@@ -253,8 +243,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use crate::support::residency::Holder;
-    use crate::tui::testing::{facts_with_memory, resident_with_bytes, text};
-    use crate::tui::ui::leading_label;
+    use crate::tui::testing::{facts_with_memory, leading_label, resident_with_bytes, text};
 
     #[test]
     fn every_label_is_listed() {
@@ -268,7 +257,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for line in [
             idle_memory_line(&facts, labels),
-            memory_line(&facts, 10, labels),
+            memory_line(&facts, 10, 80, labels),
             disk_line(&facts, labels),
             gateway_line(&facts, labels),
         ] {
@@ -314,6 +303,28 @@ mod tests {
         assert!(text(&line).ends_with("gateway on :11434 · 0 req/min"));
         assert_eq!(line.spans[1].style, WARM);
         assert_eq!(line.spans[2].style, DIM);
+    }
+
+    #[test]
+    fn the_memory_line_clips_to_the_block_under_the_bar_floor() {
+        let facts = Facts {
+            residents: vec![resident_with_bytes("m", Holder::Local, 4 << 30)],
+            ..facts_with_memory(64)
+        };
+        let labels = label_column(false);
+        let full = memory_line(&facts, MIN_BAR_WIDTH as usize, 80, labels);
+        assert!(text(&full).ends_with("4 of 64 GiB"), "{:?}", text(&full));
+        let narrow = full.width() - 3;
+        let cut = memory_line(&facts, MIN_BAR_WIDTH as usize, narrow, labels);
+        assert!(cut.width() <= narrow, "{:?}", text(&cut));
+        assert!(text(&cut).ends_with('…'), "{:?}", text(&cut));
+        assert_eq!(
+            text(&cut)
+                .chars()
+                .filter(|c| *c == '█' || *c == '░')
+                .count(),
+            MIN_BAR_WIDTH as usize
+        );
     }
 
     #[test]

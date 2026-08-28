@@ -58,8 +58,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     // A cell is kept free on the right so a full line never touches the border.
     let width = inner.width.saturating_sub(1) as usize;
     let lines = transcript(pane, width, ticks);
-    let visible = transcript_area.height as usize;
-    pane.measured(lines.len().saturating_sub(visible));
+    let room = transcript_area.height as usize;
+    pane.measured(lines.len().saturating_sub(room));
     let first = pane.first_line();
     let mut spans = vec![Span::styled(title, ACCENT)];
     if pane.view != View::Follow {
@@ -69,7 +69,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         ));
     }
     frame.render_widget(block.title(Line::from(spans)), area);
-    let shown: Vec<Line> = lines.into_iter().skip(first).take(visible).collect();
+    let shown: Vec<Line> = lines.into_iter().skip(first).take(room).collect();
     frame.render_widget(Paragraph::new(shown), transcript_area);
     frame.render_widget(
         Paragraph::new(Span::styled("─".repeat(inner.width as usize), DIM)),

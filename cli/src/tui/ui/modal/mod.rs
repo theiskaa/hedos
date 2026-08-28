@@ -1,7 +1,8 @@
-//! The modals (pull, remove, help, launch), drawn over a dimmed screen; the
+//! The cards (pull, remove, help, launch), drawn over a dimmed screen; the
 //! chat pane, though it sits in the same slot, is drawn by `chat` instead.
-//! This module owns the card: its width, its border, its title; each card's
-//! body lives in a module of its own.
+//! This module owns the frame around a card: the backdrop, the margin that
+//! clamps a card to a narrow terminal, the border, and the title. Each card
+//! owns its width, its height, and its body, in a module of its own.
 
 mod help;
 mod launch;
@@ -13,30 +14,27 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use super::{ACCENT, BACKDROP, DIM, centered, label_width};
+use super::{ACCENT, BACKDROP, centered, label_width};
 use crate::tui::app::{App, Modal};
 
-/// Cells kept clear on either side of a modal when the terminal is narrower
+/// Cells kept clear on either side of a card when the terminal is narrower
 /// than it wants.
 const MARGIN: u16 = 2;
-/// Rows a bordered box spends on its top and bottom edges.
-const BORDER_ROWS: u16 = 2;
-/// Columns a bordered box spends on its left and right edges.
-const BORDER_COLUMNS: u16 = 2;
 /// The labels of the preview and remove bodies; the column is as wide as
 /// the widest, plus a gap.
 const LABELS: [&str; 9] = [
     "store", "on disk", "path", "after", "from", "to", "size", "fit", "download",
 ];
 
-/// Draw the open modal over `area`, if there is one.
-pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
+/// Draw the open card over `area`, if there is one; whether the screen
+/// under it was dimmed.
+pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) -> bool {
     let Some(modal) = &app.modal else {
-        return;
+        return false;
     };
     let (width, height, title, body): (u16, u16, String, Body) = match modal {
         // The chat pane is a body of its own, not something over the shelf.
-        Modal::Chat(_) => return,
+        Modal::Chat(_) => return false,
         Modal::Pull(modal) => (
             pull::PULL_WIDTH,
             pull::PULL_HEIGHT,
@@ -66,12 +64,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         ),
     };
     frame.buffer_mut().set_style(area, BACKDROP);
-    let rect = centered(area, modal_width(width, area.width), height);
-    let block = Block::bordered().border_style(DIM);
+    let rect = centered(area, card_width(width, area.width), height);
+    let block = Block::bordered();
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
     frame.render_widget(block.title(Span::styled(title, ACCENT)), rect);
     frame.render_widget(Paragraph::new(body(inner)), inner);
+    true
 }
 
 /// A card's lines, given the rect inside its border.
@@ -79,7 +78,7 @@ type Body<'a> = Box<dyn FnOnce(Rect) -> Vec<Line<'static>> + 'a>;
 
 /// `wanted` cells, or what `available` leaves once a margin is kept on both
 /// sides.
-fn modal_width(wanted: u16, available: u16) -> u16 {
+fn card_width(wanted: u16, available: u16) -> u16 {
     wanted.min(available.saturating_sub(2 * MARGIN))
 }
 
@@ -97,8 +96,8 @@ mod tests {
     use crate::tui::facts::Facts;
     use crate::tui::launch::LaunchModal;
     use crate::tui::pull::{PullModal, Stage};
-    use crate::tui::testing::{deletion_preview, plan, record_with, text, texts};
-    use crate::tui::ui::leading_label;
+    use crate::tui::testing::{deletion_preview, leading_label, plan, record_with, text, texts};
+    use crate::tui::ui::{BORDER_COLUMNS, BORDER_ROWS, DIM};
 
     #[test]
     fn every_label_is_listed() {
@@ -129,10 +128,10 @@ mod tests {
     }
 
     #[test]
-    fn a_modal_keeps_a_margin_on_a_narrow_terminal() {
-        assert_eq!(modal_width(84, 120), 84);
-        assert_eq!(modal_width(84, 80), 80 - 2 * MARGIN);
-        assert_eq!(modal_width(72, 3), 0);
+    fn a_card_keeps_a_margin_on_a_narrow_terminal() {
+        assert_eq!(card_width(84, 120), 84);
+        assert_eq!(card_width(84, 80), 80 - 2 * MARGIN);
+        assert_eq!(card_width(72, 3), 0);
     }
 
     /// The card's inner width: what its border leaves of `width`.
@@ -140,19 +139,22 @@ mod tests {
         width.saturating_sub(BORDER_COLUMNS) as usize
     }
 
+    /// Every line of `lines` fits in `width` cells, or the failure names
+    /// the `card`.
+    fn fits(lines: &[Line], width: usize, card: &str) {
+        for line in lines {
+            assert!(
+                line.width() <= width,
+                "{:?} is {} cells, wider than the {card}",
+                text(line),
+                line.width()
+            );
+        }
+    }
+
     #[test]
-    fn every_modal_fits_its_width() {
-        let fits = |lines: &[Line], width: usize, modal: &str| {
-            for line in lines {
-                assert!(
-                    line.width() <= width,
-                    "{:?} is {} cells, wider than the {modal}",
-                    text(line),
-                    line.width()
-                );
-            }
-        };
-        let wide = help::three_columns_from();
+    fn the_help_fits_its_width() {
+        let wide = help::HelpLayout::breakpoint();
         for width in [wide, wide + 1, 120] {
             let help = help::HelpLayout::at(width);
             fits(&help.lines(), help.inner, "help");
@@ -160,7 +162,7 @@ mod tests {
         // The narrow card fits whole down to its own width plus the margins.
         let narrow = help::HelpLayout::at(wide - 1);
         let snug = narrow.width + 2 * MARGIN;
-        assert!(narrow.folded() && snug < wide);
+        assert!(snug < wide);
         for width in [wide - 1, snug] {
             let help = help::HelpLayout::at(width);
             fits(&help.lines(), help.inner, "narrow help");
@@ -168,7 +170,10 @@ mod tests {
         }
         let squeezed = help::HelpLayout::at(snug - 1);
         assert!(squeezed.inner < inner(squeezed.width));
+    }
 
+    #[test]
+    fn the_pull_card_fits_its_width() {
         let app = App::new(Vec::new(), Facts::default());
         let pull_inner = Rect::new(
             0,
@@ -197,7 +202,10 @@ mod tests {
                 > 1
         );
         assert_eq!(text(&note[note.len() - 1]).trim_end(), " esc back");
+    }
 
+    #[test]
+    fn the_launch_card_fits_its_width() {
         let launch_inner = Rect::new(
             0,
             0,
@@ -218,7 +226,10 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("harness runs"))
         );
+    }
 
+    #[test]
+    fn the_remove_card_fits_its_width() {
         let remove_inner = Rect::new(
             0,
             0,

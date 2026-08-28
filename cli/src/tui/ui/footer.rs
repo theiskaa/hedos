@@ -13,7 +13,7 @@ use ratatui::widgets::Paragraph;
 
 use super::{BOLD, DIM, key_spans, keys};
 use crate::tui::app::App;
-use crate::tui::keymap;
+use crate::tui::keymap::{self, Pair};
 
 /// The keys that apply whatever is selected and are worth the room before
 /// any action; the first is the floor.
@@ -24,8 +24,6 @@ const EXTRAS: [&str; 2] = ["enter", "o"];
 /// The keys that close the line.
 const ALWAYS: [&str; 2] = ["?", "q"];
 
-/// A key and its verb.
-type Pair = (&'static str, &'static str);
 /// One footer worth trying.
 struct Candidate {
     /// The keys that apply whatever is selected.
@@ -198,7 +196,9 @@ mod tests {
         assert!(!signatures[1].contains("o sort") && signatures[1].contains("enter expand"));
         assert!(!signatures[2].contains("enter expand") && signatures[2].contains("y copy path"));
         assert!(!signatures[3].contains("y copy path") && signatures[3].contains("x remove"));
-        let fixed_only = &signatures[2 + ALL.len()];
+        // Past the extras shed one by one and every action shed the same
+        // way, the core stands alone.
+        let fixed_only = &signatures[EXTRAS.len() + ALL.len()];
         assert_eq!(
             fixed_only,
             " j/k move  / filter  p pull  s scan  S serve  ? help  q quit"
