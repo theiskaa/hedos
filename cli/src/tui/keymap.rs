@@ -1,9 +1,12 @@
 //! The shelf's keys, each spelled once: the footer, the help, the task
 //! strip and the empty shelf all read their `key verb` pairs from here, and
-//! the reducer's tests check that every binding does something.
+//! the reducer's tests check that every binding does something. A modal's
+//! own keys (`enter choose`, `esc back`, `y remove`, `n keep`, `esc close`,
+//! the chat pane's footer) are named where they are drawn: they answer only
+//! inside their card and never share the shelf's grammar.
 
-/// What a binding is about. The footer and the empty shelf pick bindings by
-/// group; the help lays each group out under its own heading.
+/// What a binding is about; the help lays each group out under its own
+/// heading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     /// Moving the selection and opening it up.
@@ -37,6 +40,7 @@ pub struct Binding {
     pub verb: &'static str,
     /// A fuller phrasing for the help, where there is room for one.
     pub gloss: Option<&'static str>,
+    /// Where the help files it.
     pub group: Group,
 }
 

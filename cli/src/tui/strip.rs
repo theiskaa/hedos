@@ -170,6 +170,15 @@ impl TaskStrip {
             .map(|row| row.id)
     }
 
+    /// The newest failed row when a strip `height` rows tall shows it: the
+    /// one `d` acts on, and the one that carries the hint. A failure under
+    /// more rows than fit shows no hint and does not go.
+    pub fn visible_failure(&self, height: usize) -> Option<TaskId> {
+        let shown = self.shown(height);
+        self.newest_failure()
+            .filter(|id| shown.iter().any(|row| row.id == *id))
+    }
+
     /// The newest pull still running, resolving or downloading.
     pub fn newest_running_pull(&self) -> Option<TaskId> {
         self.rows

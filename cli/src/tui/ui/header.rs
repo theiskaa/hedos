@@ -76,7 +76,7 @@ fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
 
     let panel_lines = [
         Line::from(wordmark().to_vec()),
-        Line::from(Span::styled(" Run and serve local models headlessly", DIM)),
+        Line::from(Span::styled(" run and serve local models headlessly", DIM)),
         Line::default(),
         Line::from(Span::styled(format!(" {}", shelf_line(app, true)), DIM)),
     ];
@@ -130,25 +130,22 @@ mod tests {
     use super::*;
 
     use crate::tui::facts::Facts;
-    use crate::tui::testing::{line_text, record};
+    use crate::tui::testing::{facts_with_memory, record, text};
 
     fn facts() -> Facts {
-        Facts {
-            memory_bytes: 64 << 30,
-            ..Facts::default()
-        }
+        facts_with_memory(64)
     }
 
     #[test]
     fn the_short_header_carries_the_machine_only_when_the_block_is_gone() {
         let app = App::new(vec![record("a"), record("b")], facts());
-        let with_block = line_text(&summary_line(&app, true, 200));
+        let with_block = text(&summary_line(&app, true, 200));
         assert!(
             with_block.ends_with("  2 models · 0 warm"),
             "{with_block:?}"
         );
         assert!(!with_block.contains("GiB") && !with_block.contains("gateway"));
-        let alone = line_text(&summary_line(&app, false, 200));
+        let alone = text(&summary_line(&app, false, 200));
         assert!(
             alone.ends_with("  2 models · 0 warm · 64 GiB free · gateway off"),
             "{alone:?}"
@@ -168,7 +165,7 @@ mod tests {
             "3 models · 0 warm · 1 too big · 1 gone"
         );
         assert_eq!(shelf_line(&app, false), "3 models · 0 warm");
-        let summary = line_text(&summary_line(&app, true, 200));
+        let summary = text(&summary_line(&app, true, 200));
         assert!(
             summary.ends_with("3 models · 0 warm · 1 too big · 1 gone"),
             "{summary:?}"
@@ -184,26 +181,25 @@ mod tests {
         let mut records = vec![gone, too_big];
         records.extend((0..10).map(|index| record(&format!("model-{index}"))));
         let facts = Facts {
-            memory_bytes: 64 << 30,
             gateway_port: Some(11434),
-            ..Facts::default()
+            ..facts()
         };
         let app = App::new(records, facts);
-        let wide = line_text(&summary_line(&app, false, 200));
+        let wide = text(&summary_line(&app, false, 200));
         assert!(
             wide.ends_with("12 models · 0 warm · 1 too big · 1 gone · 64 GiB free · gateway on :11434 · 0 req/min"),
             "{wide:?}"
         );
         assert!(wide.width() > 80, "{wide:?}");
         let narrow = summary_line(&app, false, 80);
-        assert!(narrow.width() <= 80, "{:?}", line_text(&narrow));
-        let narrow = line_text(&narrow);
+        assert!(narrow.width() <= 80, "{:?}", text(&narrow));
+        let narrow = text(&narrow);
         assert!(
             narrow.ends_with("12 models · 0 warm · 64 GiB free · gateway on :11434 · 0 req/min"),
             "{narrow:?}"
         );
         let tiny = summary_line(&app, false, 40);
         assert!(tiny.width() <= 40);
-        assert!(line_text(&tiny).ends_with('…'));
+        assert!(text(&tiny).ends_with('…'));
     }
 }

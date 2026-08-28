@@ -539,11 +539,10 @@ impl App {
     /// screen: the strip is as tall as its rows up to the layout's cap, so a
     /// failure under older rows than that shows no hint and does not go.
     fn dismiss(&mut self) -> Vec<Effect> {
-        let shown = self.tasks.shown(layout::MAX_TASK_ROWS as usize);
         let visible = self
             .tasks
-            .newest_failure()
-            .is_some_and(|id| shown.iter().any(|row| row.id == id));
+            .visible_failure(layout::MAX_TASK_ROWS as usize)
+            .is_some();
         if visible && self.tasks.dismiss_newest_failure() {
             self.dirty = true;
             Vec::new()

@@ -1,6 +1,6 @@
 //! The labels and numbers the screen shows, in their short human forms.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kernel::capabilities::GenerationStats;
 use unicode_segmentation::UnicodeSegmentation;
@@ -77,6 +77,12 @@ pub fn home_relative(path: &str, home: Option<&Path>) -> String {
         }
         _ => path.to_owned(),
     }
+}
+
+/// `path` with this user's home written as `~`, read from `HOME`.
+pub fn at_home(path: &str) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    home_relative(path, home.as_deref())
 }
 
 /// `text` cut to `width` cells by dropping its middle, so a path keeps both

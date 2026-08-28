@@ -443,7 +443,8 @@ async fn scan(session: &Session) -> Result<String, String> {
 }
 
 /// `found 12 models · 9 hf · 3 ollama · 2 issues` in the strip's own
-/// register, the stores in their kinds' order, or `found nothing`.
+/// register, the stores in the order `per_kind` keeps them, sorted by
+/// kind, or `found nothing`.
 fn scan_summary(summary: &DiscoverySummary) -> String {
     if summary.total_count == 0 {
         return "found nothing".to_owned();

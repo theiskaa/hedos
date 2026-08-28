@@ -82,10 +82,22 @@ fn right_aligned(text: &str, width: usize) -> String {
     format!("{}{text}", " ".repeat(pad))
 }
 
+/// Cells the widest of `texts` takes; none, nothing.
+fn widest(texts: &[&str]) -> usize {
+    texts.iter().map(|text| text.width()).max().unwrap_or(0)
+}
+
 /// The width of a label column: the widest of `labels`, then `gap` cells
 /// before the value.
 fn label_width(labels: &[&str], gap: usize) -> usize {
-    labels.iter().map(|label| label.width()).max().unwrap_or(0) + gap
+    widest(labels) + gap
+}
+
+/// Cells a labelled value may take in a pane `width` cells wide: what the
+/// leading space, a label column `labels` wide, and a cell of air on the
+/// right leave.
+fn value_width(width: usize, labels: usize) -> usize {
+    width.saturating_sub(labels + 2)
 }
 
 /// A dim `label`, padded to `width`, in front of whatever a row shows.
@@ -98,7 +110,7 @@ fn label(label: &str, width: usize) -> Span<'static> {
 /// width, trimmed.
 #[cfg(test)]
 fn leading_label(line: &Line, width: usize) -> String {
-    super::testing::line_text(line)
+    super::testing::text(line)
         .chars()
         .skip(1)
         .take(width)
@@ -232,23 +244,36 @@ mod tests {
         assert_eq!(padded("日本", 6), "日本  ");
         assert_eq!(padded("abc", 5), "abc  ");
         assert_eq!(padded("abcdef", 3), "abcdef");
+    }
+
+    #[test]
+    fn right_aligned_counts_cells_not_chars() {
         assert_eq!(right_aligned("日本", 6), "  日本");
         assert_eq!(right_aligned("abcdef", 3), "abcdef");
+    }
+
+    #[test]
+    fn a_label_column_is_the_widest_label_and_the_gap() {
+        assert_eq!(widest(&["memory", "disk"]), 6);
+        assert_eq!(widest(&["日本", "ab"]), 4);
+        assert_eq!(widest(&[]), 0);
         assert_eq!(label_width(&["memory", "disk"], 1), 7);
         assert_eq!(label_width(&[], 2), 2);
+        assert_eq!(value_width(80, 7), 71);
+        assert_eq!(value_width(5, 7), 0);
     }
 
     #[test]
     fn an_empty_field_shows_its_placeholder_in_place_of_the_cursor() {
-        use super::super::testing::line_text;
+        use super::super::testing::text;
         let mut input = LineEdit::default();
         let blank = Line::from(edited(&input, " › ", 20, "name, owner/repo or name:tag"));
-        assert_eq!(line_text(&blank), " › name, owner/rep…");
+        assert_eq!(text(&blank), " › name, owner/rep…");
         assert!(blank.width() <= 20);
-        assert!(!line_text(&blank).contains(CURSOR));
+        assert!(!text(&blank).contains(CURSOR));
         assert_eq!(blank.spans[1].style, DIM);
         input.apply(super::super::event::Key::Char('q'));
-        let typed = line_text(&Line::from(edited(&input, " › ", 20, "unused")));
+        let typed = text(&Line::from(edited(&input, " › ", 20, "unused")));
         assert_eq!(typed, format!(" › q{CURSOR}"));
     }
 

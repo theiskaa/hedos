@@ -19,19 +19,19 @@ use crate::support::install::{installed_names, is_installed};
 use crate::support::shelf_table::verdict;
 
 /// How many quiet ticks after a keystroke before the typed query is searched.
-pub const SEARCH_DEBOUNCE_TICKS: u64 = 2;
+pub(crate) const SEARCH_DEBOUNCE_TICKS: u64 = 2;
 /// The most matches the list keeps; search hits always keep their places.
 /// The grouped catalog can fill it: up to three per category.
 pub(crate) const MAX_MATCHES: usize = 12;
 /// Hugging Face hits requested per search.
-pub const SEARCH_LIMIT: usize = 8;
+pub(crate) const SEARCH_LIMIT: usize = 8;
 /// How a model of `bytes` fits in `memory_bytes`, when its size is known.
-pub fn fit(bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
+pub(crate) fn fit(bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
     verdict(bytes.map(footprint_mb), memory_bytes)
 }
 
 /// `bytes` as the whole MiB a footprint is measured in.
-pub fn footprint_mb(bytes: i64) -> i64 {
+pub(crate) fn footprint_mb(bytes: i64) -> i64 {
     bytes / BYTES_PER_MIB
 }
 

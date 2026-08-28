@@ -26,8 +26,13 @@ const ALWAYS: [&str; 2] = ["?", "q"];
 
 /// A key and its verb.
 type Pair = (&'static str, &'static str);
-/// One footer worth trying: the fixed keys, then the actions.
-type Candidate = (Vec<Pair>, Vec<Pair>);
+/// One footer worth trying.
+struct Candidate {
+    /// The keys that apply whatever is selected.
+    fixed: Vec<Pair>,
+    /// What the selected model can do.
+    actions: Vec<Pair>,
+}
 
 /// Draw the key line, or the current notice, into `area`.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -73,13 +78,22 @@ fn candidates(actions: &[&str], expanded: bool) -> Vec<Candidate> {
     for kept in (0..=extras.len()).rev() {
         let mut fixed = core.clone();
         fixed.extend(&extras[..kept]);
-        candidates.push((fixed, actions.clone()));
+        candidates.push(Candidate {
+            fixed,
+            actions: actions.clone(),
+        });
     }
     for kept in (0..actions.len()).rev() {
-        candidates.push((core.clone(), actions[..kept].to_vec()));
+        candidates.push(Candidate {
+            fixed: core.clone(),
+            actions: actions[..kept].to_vec(),
+        });
     }
     for kept in (1..core.len()).rev() {
-        candidates.push((core[..kept].to_vec(), Vec::new()));
+        candidates.push(Candidate {
+            fixed: core[..kept].to_vec(),
+            actions: Vec::new(),
+        });
     }
     candidates
 }
@@ -90,10 +104,10 @@ fn fitting_line(actions: &[&str], width: usize, expanded: bool) -> Line<'static>
     let candidates = candidates(actions, expanded);
     let (fixed, actions) = candidates
         .iter()
-        .find(|(fixed, actions)| footer_line(fixed, actions, width).width() < width)
+        .find(|candidate| footer_line(&candidate.fixed, &candidate.actions, width).width() < width)
         .or(candidates.last())
-        .map_or((&[][..], &[][..]), |(fixed, actions)| {
-            (fixed.as_slice(), actions.as_slice())
+        .map_or((&[][..], &[][..]), |candidate| {
+            (candidate.fixed.as_slice(), candidate.actions.as_slice())
         });
     footer_line(fixed, actions, width)
 }
@@ -126,7 +140,7 @@ mod tests {
 
     const ALL: [&str; 6] = ["w", "l", "t", "T", "x", "y"];
 
-    use crate::tui::testing::line_text as text;
+    use crate::tui::testing::text;
 
     #[test]
     fn every_footer_key_is_bound() {
@@ -137,7 +151,7 @@ mod tests {
 
     /// What a candidate is made of, for reading a failure.
     fn signature(candidate: &Candidate) -> String {
-        text(&footer_line(&candidate.0, &candidate.1, 0))
+        text(&footer_line(&candidate.fixed, &candidate.actions, 0))
     }
 
     /// Each candidate takes over exactly where the one before it stops
@@ -149,28 +163,28 @@ mod tests {
         assert_eq!(steps.len(), 1 + EXTRAS.len() + ALL.len() + CORE.len() - 1);
         let widths: Vec<usize> = steps
             .iter()
-            .map(|(fixed, actions)| footer_line(fixed, actions, 0).width())
+            .map(|candidate| footer_line(&candidate.fixed, &candidate.actions, 0).width())
             .collect();
         assert!(
             widths.windows(2).all(|pair| pair[0] > pair[1]),
             "{widths:?}"
         );
-        for (index, (fixed, actions)) in steps.iter().enumerate() {
+        for (index, candidate) in steps.iter().enumerate() {
             let edge = widths[index];
             let shown = fitting_line(&ALL, edge + 1, false);
             assert!(shown.width() < edge + 1);
             assert_eq!(
                 text(&shown),
-                text(&footer_line(fixed, actions, edge + 1)),
+                text(&footer_line(&candidate.fixed, &candidate.actions, edge + 1)),
                 "at {} the footer is not {:?}",
                 edge + 1,
                 signature(&steps[index])
             );
             assert!(text(&shown).ends_with("? help  q quit"));
-            if let Some((next_fixed, next_actions)) = steps.get(index + 1) {
+            if let Some(next) = steps.get(index + 1) {
                 assert_eq!(
                     text(&fitting_line(&ALL, edge, false)),
-                    text(&footer_line(next_fixed, next_actions, edge)),
+                    text(&footer_line(&next.fixed, &next.actions, edge)),
                     "at {edge} the footer is not {:?}",
                     signature(&steps[index + 1])
                 );

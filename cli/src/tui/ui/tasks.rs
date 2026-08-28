@@ -31,8 +31,9 @@ const PERCENT_WIDTH: usize = 4;
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().title(" tasks ").border_style(DIM);
     let inner = block.inner(area);
-    let shown = app.tasks.shown(inner.height as usize);
-    let targets = HintTargets::of(&app.tasks, &shown, |reference| app.selected_is(reference));
+    let height = inner.height as usize;
+    let shown = app.tasks.shown(height);
+    let targets = HintTargets::of(&app.tasks, height, |reference| app.selected_is(reference));
     let lines: Vec<Line> = shown
         .iter()
         .map(|row| line(row, inner.width as usize, targets.for_row(row)))
@@ -59,10 +60,11 @@ struct RowHints {
 }
 
 impl HintTargets {
-    /// The targets among `shown`, the rows the strip draws; a target off
-    /// screen gets no hint, and the key does not act on it either.
+    /// The targets among the rows a strip `height` tall draws; a target
+    /// off screen gets no hint, and the key does not act on it either.
     /// `is_selected` says whether a pull reference names the selected record.
-    fn of(strip: &TaskStrip, shown: &[&TaskRow], is_selected: impl Fn(&str) -> bool) -> Self {
+    fn of(strip: &TaskStrip, height: usize, is_selected: impl Fn(&str) -> bool) -> Self {
+        let shown = strip.shown(height);
         let visible = |id: TaskId| shown.iter().any(|row| row.id == id);
         let done_on_selected = shown
             .iter()
@@ -73,7 +75,7 @@ impl HintTargets {
             .map(|row| row.id)
             .collect();
         Self {
-            failure: strip.newest_failure().filter(|id| visible(*id)),
+            failure: strip.visible_failure(height),
             pull: strip.newest_running_pull().filter(|id| visible(*id)),
             done_on_selected,
         }
@@ -99,7 +101,7 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
     let subject = format!("{}  ", row.label.subject);
     let head = verb.width() + subject.width();
     let activity = row.kind.as_ref().map_or("", TaskKind::activity);
-    let cancel = if hinted.cancellable && matches!(row.kind, Some(TaskKind::Pull(_))) {
+    let cancel = if hinted.cancellable {
         hints(&["c"])
     } else {
         Vec::new()
@@ -117,7 +119,7 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
         }
         TaskState::Downloading(progress) => (
             ACCENT,
-            download(progress, width.saturating_sub(head), hinted.cancellable),
+            download(progress, width.saturating_sub(head), cancel),
         ),
         TaskState::Done(summary) => {
             let mut spans = vec![Span::styled(summary.clone(), DIM)];
@@ -140,17 +142,16 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
 }
 
 /// A bar and figures when the total is firm, bytes so far when it is not.
-/// The bar takes what `room` leaves after the figures and the cancel key,
-/// within its bounds; when that is under the floor the figures stand alone,
-/// and the cancel key goes too if it would not fit. Only the download `c`
-/// acts on is `cancellable`.
-fn download(progress: &InstallProgress, room: usize, cancellable: bool) -> Vec<Span<'static>> {
+/// The bar takes what `room` leaves after the figures and `cancel`, the
+/// hint of the one download `c` acts on and nothing on the rest, within its
+/// bounds; when that is under the floor the figures stand alone, and the
+/// hint goes too if it would not fit.
+fn download(
+    progress: &InstallProgress,
+    room: usize,
+    cancel: Vec<Span<'static>>,
+) -> Vec<Span<'static>> {
     let done = text::bytes(progress.bytes_downloaded);
-    let cancel = if cancellable {
-        hints(&["c"])
-    } else {
-        Vec::new()
-    };
     let cancel_width: usize = cancel.iter().map(Span::width).sum();
     let mut spans = match (progress.fraction(), progress.total_bytes) {
         (Some(fraction), Some(total)) => {
@@ -201,7 +202,7 @@ mod tests {
     use crate::tui::strip::TaskStrip;
     use crate::tui::tasks::TaskLabel;
     use crate::tui::tasks::{TaskEvent, TaskId};
-    use crate::tui::testing::{line_text as text, plan};
+    use crate::tui::testing::{plan, text};
 
     fn recorded(state: TaskState) -> TaskRow {
         let mut strip = TaskStrip::default();
@@ -306,10 +307,14 @@ mod tests {
             total_bytes: Some(4 << 30),
             ..InstallProgress::default()
         };
-        let line = Line::from(download(&progress, 120, true));
-        assert!(text(&line).ends_with("  c cancel  "));
-        let quiet = Line::from(download(&progress, 120, false));
-        assert!(!text(&quiet).contains("cancel"));
+        let line = Line::from(download(&progress, 120, hints(&["c"])));
+        assert!(
+            text(&line).ends_with(&format!("  c {}  ", keymap::verb("c"))),
+            "{:?}",
+            text(&line)
+        );
+        let quiet = Line::from(download(&progress, 120, Vec::new()));
+        assert!(!text(&quiet).contains(keymap::verb("c")));
     }
 
     #[test]
@@ -344,43 +349,25 @@ mod tests {
                 .filter(|c| *c == '█' || *c == '░')
                 .count()
         };
+        // The row's fixed cells: the verb column, the subject, the percent,
+        // the figures, the cancel hint, and the gaps between them.
+        let head = 1 + label_width(&TaskKind::VERBS, 0) + 1 + row.label.subject.width() + 2;
+        let figures = "2 GB of 4 GB";
+        let cancel: usize = hints(&["c"]).iter().map(Span::width).sum();
+        let fixed = PERCENT_WIDTH + 2 + figures.len() + 2 + cancel;
+        let floor = head + fixed + MIN_BAR_WIDTH as usize;
         assert_eq!(bar_cells(120), MAX_BAR_WIDTH as usize);
-        assert!(text(&line(&row, 120, cancellable)).contains("  50%  2 GB of 4 GB"));
-        let medium = bar_cells(60);
+        assert!(text(&line(&row, 120, cancellable)).contains(&format!("  50%  {figures}")));
+        let medium = bar_cells(floor + 4);
         let bounds = MIN_BAR_WIDTH as usize..MAX_BAR_WIDTH as usize;
         assert!(bounds.contains(&medium), "{medium}");
-        assert_eq!(bar_cells(50), 0);
-        let compact = text(&line(&row, 50, cancellable));
-        assert!(compact.contains("50% · 2 GB of 4 GB  c cancel"));
-        assert_eq!(bar_cells(40), 0);
-        let shed = text(&line(&row, 40, cancellable));
-        assert!(shed.contains("50% · 2 GB of 4 GB") && !shed.contains("c cancel"));
-    }
-
-    #[test]
-    fn a_done_pull_hints_in_the_key_verb_grammar() {
-        let mut strip = TaskStrip::default();
-        let id = TaskId::next();
-        strip.start(id, TaskKind::Pull(plan("gemma3")));
-        let row = strip
-            .moved(
-                TaskEvent {
-                    id,
-                    state: TaskState::Done("pulled gemma3".to_owned()),
-                },
-                0,
-            )
-            .cloned();
-        let row = row.unwrap();
-        let selected = RowHints {
-            on_selected: true,
-            ..RowHints::default()
-        };
-        assert!(
-            text(&line(&row, 120, selected))
-                .trim_end()
-                .ends_with("pulled gemma3  w warm  l launch")
-        );
+        assert_eq!(bar_cells(floor), MIN_BAR_WIDTH as usize);
+        assert_eq!(bar_cells(floor - 1), 0);
+        let compact = text(&line(&row, floor - 1, cancellable));
+        assert!(compact.contains(&format!("50% · {figures}  c cancel")));
+        let bare = format!("50% · {figures}").width();
+        let shed = text(&line(&row, head + bare + cancel - 1, cancellable));
+        assert!(shed.contains(&format!("50% · {figures}")) && !shed.contains("c cancel"));
     }
 
     #[test]
@@ -396,14 +383,14 @@ mod tests {
             0,
         );
         let shown = strip.shown(10);
-        let selected = HintTargets::of(&strip, &shown, |reference| reference == "gemma3");
+        let selected = HintTargets::of(&strip, 10, |reference| reference == "gemma3");
         let line_for = |targets: HintTargets| {
             text(&line(shown[0], 120, targets.for_row(shown[0])))
                 .trim_end()
                 .to_owned()
         };
         assert!(line_for(selected).ends_with("pulled gemma3  w warm  l launch"));
-        let elsewhere = HintTargets::of(&strip, &shown, |reference| reference == "llava");
+        let elsewhere = HintTargets::of(&strip, 10, |reference| reference == "llava");
         assert!(line_for(elsewhere).ends_with("pulled gemma3"));
     }
 
@@ -449,7 +436,7 @@ mod tests {
 
     fn rendered(strip: &TaskStrip, height: usize) -> Vec<String> {
         let shown = strip.shown(height);
-        let targets = HintTargets::of(strip, &shown, |_| false);
+        let targets = HintTargets::of(strip, height, |_| false);
         shown
             .iter()
             .map(|row| {

@@ -12,12 +12,12 @@ use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
 
-/// The labels the block uses, the gateway's last since it is drawn only when
-/// the layout is stacked; the column is as wide as the widest drawn, plus a
-/// gap, so the side-by-side block does not widen for a row it never shows.
-const LABELS: [&str; 3] = ["memory", "disk", "gateway"];
-/// How many of [`LABELS`] the block draws beside a gateway block of its own.
-const SIDE_BY_SIDE_LABELS: usize = 2;
+/// The labels of the rows the block always draws; the column is as wide
+/// as the widest drawn, plus a gap, so the side-by-side block does not
+/// widen for a row it never shows.
+const MACHINE_LABELS: [&str; 2] = ["memory", "disk"];
+/// The label of the gateway row, drawn only when the layout is stacked.
+const GATEWAY_LABEL: &str = "gateway";
 /// The steps the memory bar cycles through, one per resident: three
 /// brightnesses of the plain foreground.
 const SEGMENT_STYLES: [Style; 3] = [BOLD, Style::new(), DIM];
@@ -84,15 +84,19 @@ fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// The width of the label column: over every label when `stacked`, since
-/// the gateway row joins the block, else over the memory and disk rows.
+/// The labels the block draws: the machine's, and the gateway's when
+/// `stacked`, since its row joins the block.
+fn labels(stacked: bool) -> Vec<&'static str> {
+    let mut labels = MACHINE_LABELS.to_vec();
+    if stacked {
+        labels.push(GATEWAY_LABEL);
+    }
+    labels
+}
+
+/// The width of the label column over the [`labels`] drawn.
 fn label_column(stacked: bool) -> usize {
-    let drawn = if stacked {
-        LABELS.len()
-    } else {
-        SIDE_BY_SIDE_LABELS
-    };
-    label_width(&LABELS[..drawn], 1)
+    label_width(&labels(stacked), 1)
 }
 
 /// `memory  nothing loaded · 64 GiB free`.
@@ -121,7 +125,7 @@ pub(super) fn gateway_state(facts: &Facts) -> String {
 /// or a dim `off`: the gateway block's first line, folded into the machine
 /// block when there is no room beside it.
 fn gateway_line(facts: &Facts, labels: usize) -> Line<'static> {
-    let mut spans = vec![label("gateway", labels)];
+    let mut spans = vec![label(GATEWAY_LABEL, labels)];
     match facts.gateway_port {
         Some(port) => {
             spans.push(Span::styled("on", WARM));
@@ -246,24 +250,20 @@ fn disk_line(facts: &Facts, labels: usize) -> Line<'static> {
 mod tests {
     use super::*;
 
-    use crate::support::residency::{Holder, Resident};
-    use crate::tui::testing::line_text;
+    use unicode_width::UnicodeWidthStr;
+
+    use crate::support::residency::Holder;
+    use crate::tui::testing::{facts_with_memory, resident_with_bytes, text};
     use crate::tui::ui::leading_label;
 
     #[test]
     fn every_label_is_listed() {
         let facts = Facts {
-            memory_bytes: 64 << 30,
-            residents: vec![Resident {
-                id: "m".to_owned(),
-                name: "m".to_owned(),
-                bytes: 4 << 30,
-                holder: Holder::Local,
-                expires_at_millis: None,
-            }],
+            residents: vec![resident_with_bytes("m", Holder::Local, 4 << 30)],
             disk_by_store: vec![("ollama".to_owned(), 1 << 30)],
-            ..Facts::default()
+            ..facts_with_memory(64)
         };
+        let listed = super::labels(true);
         let labels = label_column(true);
         let mut seen = std::collections::HashSet::new();
         for line in [
@@ -273,14 +273,12 @@ mod tests {
             gateway_line(&facts, labels),
         ] {
             let label = leading_label(&line, labels);
-            assert!(LABELS.contains(&label.as_str()), "{label} is not listed");
+            assert!(listed.contains(&label.as_str()), "{label} is not listed");
             seen.insert(label);
         }
-        assert_eq!(seen.len(), LABELS.len());
+        assert_eq!(seen.len(), listed.len());
         assert_eq!(leading_label(&legend_line(&facts, 80, labels), labels), "");
-        assert!(
-            line_text(&idle_memory_line(&facts, labels)).ends_with("nothing loaded · 60 GiB free")
-        );
+        assert!(text(&idle_memory_line(&facts, labels)).ends_with("nothing loaded · 60 GiB free"));
     }
 
     #[test]
@@ -290,11 +288,11 @@ mod tests {
         let facts = Facts::default();
         let disk = text::bytes(0);
         assert_eq!(
-            line_text(&disk_line(&facts, label_column(false))),
+            text(&disk_line(&facts, label_column(false))),
             format!(" disk   {disk}")
         );
         assert_eq!(
-            line_text(&disk_line(&facts, label_column(true))),
+            text(&disk_line(&facts, label_column(true))),
             format!(" disk    {disk}")
         );
     }
@@ -306,51 +304,51 @@ mod tests {
         assert_eq!(lines(&off, true), 3);
         let labels = label_column(true);
         let line = gateway_line(&off, labels);
-        assert!(line_text(&line).ends_with("gateway off"));
+        assert!(text(&line).ends_with("gateway off"));
         assert_eq!(line.spans[1].style, DIM);
         let on = Facts {
             gateway_port: Some(11434),
             ..Facts::default()
         };
         let line = gateway_line(&on, labels);
-        assert!(line_text(&line).ends_with("gateway on :11434 · 0 req/min"));
+        assert!(text(&line).ends_with("gateway on :11434 · 0 req/min"));
         assert_eq!(line.spans[1].style, WARM);
         assert_eq!(line.spans[2].style, DIM);
     }
 
     #[test]
     fn the_legend_never_runs_past_the_block() {
-        let resident = |name: &str| Resident {
-            id: name.to_owned(),
-            name: name.to_owned(),
-            bytes: 4 << 30,
-            holder: Holder::Local,
-            expires_at_millis: None,
-        };
+        let resident = |name: &str| resident_with_bytes(name, Holder::Local, 4 << 30);
         let facts = Facts {
-            memory_bytes: 64 << 30,
             residents: vec![
                 resident("qwen2.5-coder"),
                 resident("llava-phi3-mini"),
                 resident("deepseek-r1-distill"),
             ],
-            ..Facts::default()
+            ..facts_with_memory(64)
         };
         let labels = label_column(false);
-        let full = line_text(&legend_line(&facts, 120, labels));
-        assert!(full.ends_with("· 52 free"));
+        let full = legend_line(&facts, 120, labels);
+        let free = format!("· {} free", text::gib(facts.free_bytes()));
+        assert!(text(&full).ends_with(&free));
+        assert_eq!(free, "· 52 free");
         for width in [78, 60, 40, 20] {
             let line = legend_line(&facts, width, labels);
             assert!(
                 line.width() <= width,
                 "{:?} is {} cells at {width}",
-                line_text(&line),
+                text(&line),
                 line.width()
             );
         }
-        let no_free = line_text(&legend_line(&facts, 75, labels));
+        // One cell short of the free figure: the names stay whole, it goes.
+        let no_free = text(&legend_line(
+            &facts,
+            full.width() - free.width() + 1,
+            labels,
+        ));
         assert!(!no_free.contains("free") && no_free.contains("deepseek-r1-distill 4"));
-        let cut = line_text(&legend_line(&facts, 40, labels));
+        let cut = text(&legend_line(&facts, 40, labels));
         assert!(cut.ends_with('…'), "{cut:?}");
         assert!(!cut.contains("free"));
     }

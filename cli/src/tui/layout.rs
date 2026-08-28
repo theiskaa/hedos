@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 const WIDE_COLUMNS: u16 = 100;
 /// Height of the detail pane when stacked; at or under it the detail shows
 /// only what the shelf row does not.
-pub(crate) const STACKED_DETAIL_ROWS: u16 = 6;
+pub(super) const STACKED_DETAIL_ROWS: u16 = 6;
 /// Share of the width the shelf takes when side by side.
 const SHELF_PERCENT: u16 = 55;
 /// From this many rows the koala header earns its place; below it the header
@@ -16,7 +16,7 @@ const TALL_ROWS: u16 = 44;
 /// The koala header needs room for the koala and a panel beside it.
 const TALL_COLUMNS: u16 = 70;
 /// Rows of the koala header: the koala with a blank line above and below.
-pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 2;
+pub(super) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 2;
 /// The most task rows the strip shows at once.
 pub(super) const MAX_TASK_ROWS: u16 = 4;
 /// Rows a bordered block spends on its top and bottom edges.

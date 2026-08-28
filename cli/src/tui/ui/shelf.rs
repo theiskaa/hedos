@@ -296,7 +296,7 @@ mod tests {
 
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
-    use crate::tui::testing::line_text as text;
+    use crate::tui::testing::text;
 
     const WIDTHS: [usize; 5] = [2, 20, 10, 8, 7];
     const GIB: u64 = kernel::records::byte_format::BYTES_PER_GIB as u64;

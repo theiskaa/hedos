@@ -9,10 +9,11 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
-use super::{ACCENT, BOLD, DIM, EYEBROW, WARM, field_line, label, label_width, styled_field};
+use super::{
+    ACCENT, BOLD, DIM, EYEBROW, WARM, field_line, label, label_width, styled_field, value_width,
+};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label, verdict_label};
 use crate::tui::app::App;
@@ -48,7 +49,7 @@ const NO_GATEWAY_REQUESTS: &str = "no requests through the gateway";
 /// How much of the pane there is: the stacked pane's height decides first,
 /// then whether the user has expanded it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Detail {
+enum Depth {
     /// The stacked pane, four rows: what the shelf row does not already show.
     Compact,
     /// The facts, memory, gateway, and path.
@@ -84,11 +85,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         ))
         .border_style(border_style);
     let detail = if area.height <= STACKED_DETAIL_ROWS {
-        Detail::Compact
+        Depth::Compact
     } else if app.expanded {
-        Detail::Expanded
+        Depth::Expanded
     } else {
-        Detail::Full
+        Depth::Full
     };
     let lines = lines(
         record,
@@ -105,15 +106,14 @@ const GONE_SUFFIX: &str = " · gone";
 /// The pane's rows at `width` cells: a value that would run past the edge is
 /// clipped, a path elided in the middle. Compact is always four rows, the
 /// size standing in for a path the record does not have.
-fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> Vec<Line<'static>> {
+fn lines(record: &ModelRecord, facts: &Facts, detail: Depth, width: usize) -> Vec<Line<'static>> {
     let labels = label_column();
-    let value_width = width.saturating_sub(labels + 2);
+    let value_width = value_width(width, labels);
     let row = |label, value: String| field_line(label, text::clip(&value, value_width), labels);
     let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), EYEBROW));
     let path_line = || {
         record.primary_weight_path.as_ref().map(|path| {
-            let home = std::env::var_os("HOME").map(PathBuf::from);
-            let shown = text::home_relative(path, home.as_deref());
+            let shown = text::at_home(path);
             if record.state != ModelState::Missing {
                 return field_line("path", text::elide_middle(&shown, value_width), labels);
             }
@@ -136,7 +136,7 @@ fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> V
         (None, Some(context)) => format!("ctx {}", text::tokens(context)),
         (None, None) => DASH.to_owned(),
     };
-    if detail == Detail::Compact {
+    if detail == Depth::Compact {
         let mut lines = vec![
             row("fit", fit_line(record, facts)),
             residency_line(record, facts, value_width),
@@ -183,7 +183,7 @@ fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> V
     ));
     lines.push(Line::default());
     lines.extend(path_line());
-    if detail == Detail::Expanded {
+    if detail == Depth::Expanded {
         lines.push(Line::default());
         lines.push(eyebrow("RECORD"));
         lines.push(row("id", record.id.clone()));
@@ -204,7 +204,7 @@ fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> V
 fn activity_lines(
     activity: Option<&ModelActivity>,
     now: i64,
-    detail: Detail,
+    detail: Depth,
     value_width: usize,
 ) -> Vec<Line<'static>> {
     let labels = label_column();
@@ -236,7 +236,7 @@ fn activity_lines(
         ));
     }
     lines.push(absent("", text::sparkline(&activity.hourly)));
-    if detail == Detail::Expanded {
+    if detail == Depth::Expanded {
         lines.push(absent(
             "",
             format!("{:<width$}now", "24h ago", width = HOURS - 3),
@@ -373,9 +373,8 @@ fn residency_line(record: &ModelRecord, facts: &Facts, value_width: usize) -> Li
 mod tests {
     use super::*;
 
-    use crate::support::residency::Resident;
     use crate::tui::facts::ModelActivity;
-    use crate::tui::testing::{line_text as text, record_with};
+    use crate::tui::testing::{facts_with_memory, record_with, resident_with_bytes, text, texts};
     use crate::tui::ui::leading_label;
     use gateway::stats::LatencyPercentiles;
 
@@ -385,9 +384,8 @@ mod tests {
         record.alias = Some("alias".to_owned());
         record.primary_weight_path = Some("/models/m.gguf".to_owned());
         let mut facts = Facts {
-            memory_bytes: 64 << 30,
             collected_at_millis: 1_000_000,
-            ..Facts::default()
+            ..facts_with_memory(64)
         };
         facts.activity.models.insert(
             record.id.clone(),
@@ -403,7 +401,7 @@ mod tests {
             },
         );
         let mut seen = 0;
-        for line in lines(&record, &facts, Detail::Expanded, 80) {
+        for line in lines(&record, &facts, Depth::Expanded, 80) {
             let label = leading_label(&line, label_column());
             if label.is_empty() || label.chars().all(|c| c.is_uppercase()) {
                 continue;
@@ -420,11 +418,8 @@ mod tests {
         record.footprint_mb = Some(4 * 1024);
         record.primary_weight_path = Some("/models/m.gguf".to_owned());
         record.state = ModelState::Missing;
-        let facts = Facts {
-            memory_bytes: 64 << 30,
-            ..Facts::default()
-        };
-        let lines = lines(&record, &facts, Detail::Full, 80);
+        let facts = facts_with_memory(64);
+        let lines = lines(&record, &facts, Depth::Full, 80);
         let path = lines
             .iter()
             .find(|line| text(line).starts_with(" path"))
@@ -458,28 +453,17 @@ mod tests {
         let mut record = record_with("m", caps.into_iter().map(Capability::from).collect());
         record.footprint_mb = Some(4 * 1024);
         record.primary_weight_path = Some(format!("/models/{}.gguf", "x".repeat(80)));
+        let mut gateway = resident_with_bytes(&record.id, Holder::Gateway, 4 << 30);
+        gateway.expires_at_millis = Some(i64::MAX / 2);
         let facts = Facts {
-            memory_bytes: 64 << 30,
             gateway_port: Some(11434),
             residents: vec![
-                Resident {
-                    id: record.id.clone(),
-                    name: "m".to_owned(),
-                    bytes: 4 << 30,
-                    holder: Holder::Gateway,
-                    expires_at_millis: Some(i64::MAX / 2),
-                },
-                Resident {
-                    id: "other".to_owned(),
-                    name: "other".to_owned(),
-                    bytes: 30 << 30,
-                    holder: Holder::Local,
-                    expires_at_millis: None,
-                },
+                gateway,
+                resident_with_bytes("other", Holder::Local, 30 << 30),
             ],
-            ..Facts::default()
+            ..facts_with_memory(64)
         };
-        let lines = lines(&record, &facts, Detail::Expanded, 40);
+        let lines = lines(&record, &facts, Depth::Expanded, 40);
         for line in &lines {
             assert!(line.width() <= 40, "{:?} runs past the pane", text(line));
         }
@@ -494,8 +478,7 @@ mod tests {
         assert!(find("fit").ends_with('…'));
         assert!(find("residency").contains("warm") && find("residency").ends_with('…'));
         assert!(find("path").contains('…') && find("path").ends_with(".gguf"));
-        assert!(lines.iter().map(text).any(|line| line == " RECORD"));
-        assert!(!lines.iter().map(text).any(|line| line.contains("actions")));
+        assert!(texts(&lines).contains(&" RECORD".to_owned()));
     }
 
     #[test]
@@ -504,9 +487,8 @@ mod tests {
         record.footprint_mb = Some(4 * 1024);
         record.primary_weight_path = Some("/models/m.gguf".to_owned());
         let mut facts = Facts {
-            memory_bytes: 64 << 30,
             collected_at_millis: 1_000_000,
-            ..Facts::default()
+            ..facts_with_memory(64)
         };
         let labels_of = |lines: &[Line]| -> Vec<String> {
             lines
@@ -514,7 +496,7 @@ mod tests {
                 .map(|line| leading_label(line, label_column()))
                 .collect()
         };
-        let quiet = lines(&record, &facts, Detail::Compact, 80);
+        let quiet = lines(&record, &facts, Depth::Compact, 80);
         assert_eq!(labels_of(&quiet), ["fit", "residency", "last 24h", "path"]);
         assert!(text(&quiet[2]).contains("no requests through the gateway"));
 
@@ -527,26 +509,26 @@ mod tests {
                 last_seen_millis: 500_000,
             },
         );
-        let idle = lines(&record, &facts, Detail::Compact, 80);
+        let idle = lines(&record, &facts, Depth::Compact, 80);
         assert_eq!(labels_of(&idle), ["fit", "residency", "last used", "path"]);
         assert!(text(&idle[2]).ends_with("ago"));
 
         facts.activity.models.get_mut(&record.id).unwrap().requests = 12;
-        let busy = lines(&record, &facts, Detail::Compact, 80);
+        let busy = lines(&record, &facts, Depth::Compact, 80);
         assert_eq!(labels_of(&busy)[2], "last 24h");
         assert!(text(&busy[2]).contains("12 requests served"));
 
         record.primary_weight_path = None;
-        let pathless = lines(&record, &facts, Detail::Compact, 80);
+        let pathless = lines(&record, &facts, Depth::Compact, 80);
         assert_eq!(
             labels_of(&pathless),
             ["fit", "residency", "last 24h", "size"]
         );
         assert!(text(&pathless[3]).contains("4 GB"));
 
-        let full = lines(&record, &facts, Detail::Full, 80);
+        let full = lines(&record, &facts, Depth::Full, 80);
         assert!(labels_of(&full).contains(&"runtime".to_owned()));
         assert!(full.len() > STACKED_DETAIL_ROWS as usize);
-        assert!(!full.iter().map(text).any(|line| line == " RECORD"));
+        assert!(!texts(&full).contains(&" RECORD".to_owned()));
     }
 }

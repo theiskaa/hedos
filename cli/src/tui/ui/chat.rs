@@ -146,7 +146,7 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::testing::{line_text, record};
+    use crate::tui::testing::{record, text, texts};
 
     fn pane_with(text: &str, ending: Ending) -> ChatPane {
         let mut pane = ChatPane::open(record("m"));
@@ -161,10 +161,6 @@ mod tests {
             ending,
         });
         pane
-    }
-
-    fn texts(lines: &[Line]) -> Vec<String> {
-        lines.iter().map(line_text).collect()
     }
 
     #[test]
@@ -221,8 +217,8 @@ mod tests {
         let lines = turn_lines(&pane_with("", Ending::Failed(reason)).turns[1], 20, 0);
         assert!(lines.len() > 3, "{:?}", texts(&lines));
         for line in &lines {
-            assert!(line.width() <= 20, "{:?} runs past 20", line_text(line));
-            assert!(line_text(line).starts_with("  "));
+            assert!(line.width() <= 20, "{:?} runs past 20", text(line));
+            assert!(text(line).starts_with("  "));
             assert!(line.spans.iter().all(|span| span.style == FAILED));
         }
         assert!(texts(&lines)[0].starts_with("  failed: the"));
