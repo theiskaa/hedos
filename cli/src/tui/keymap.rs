@@ -76,7 +76,7 @@ pub const BINDINGS: &[Binding] = &[
     bind("↑/↓", "move", Group::Move),
     bind("g/G", "top / bottom", Group::Move),
     bind("enter", "expand", Group::Move),
-    bind("esc", "collapse", Group::Move),
+    glossed("esc", "collapse", "collapse / clear", Group::Move),
     bind("w", "warm", Group::Model),
     bind("u", "unload", Group::Model),
     glossed("l", "launch", "launch a harness", Group::Model),

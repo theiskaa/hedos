@@ -1,14 +1,15 @@
 //! The chat pane: the conversation with one model in the body, the prompt
 //! line under it. The user's turns are bright, replies are plain with their
 //! markdown emphasis honoured, a spinner turns until the first token, and how a
-//! reply ended sits under it. No hue in the body: the accent is brightness.
+//! reply ended sits under it, wrapped like the reply. No hue in the body: the
+//! accent is brightness.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{ACCENT, BOLD, CAUTION, DIM, FAILED, edited};
+use super::{ACCENT, BOLD, CAUTION, DIM, FAILED, edited, spinner};
 use crate::tui::app::App;
 use crate::tui::chat::{ChatPane, Ending, Speaker, Turn, View};
 use crate::tui::markup::{self, Emphasis};
@@ -20,8 +21,6 @@ const MARK: &str = "› ";
 const INDENT: &str = "  ";
 /// Rows under the transcript: the rule and the prompt line.
 const PROMPT_ROWS: u16 = 2;
-/// The spinner shown until the first token, one glyph per tick.
-const SPINNER: [&str; 6] = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"];
 
 /// Draw the chat pane into `area`.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -76,26 +75,18 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(Span::styled("─".repeat(inner.width as usize), DIM)),
         rule,
     );
+    let placeholder = format!("ask {} anything", pane.record.display_name());
     frame.render_widget(
-        Paragraph::new(Line::from(edited(&pane.input, MARK, width))),
+        Paragraph::new(Line::from(edited(&pane.input, MARK, width, &placeholder))),
         prompt,
     );
 }
 
-/// Every turn wrapped to `width`, a blank line between turns; a hint when
-/// nothing has been said yet.
+/// Every turn wrapped to `width`, a blank line between turns; nothing when
+/// nothing has been said yet, since the prompt's placeholder says what to do.
 fn transcript(pane: &ChatPane, width: usize, ticks: u64) -> Vec<Line<'static>> {
     if pane.turns.is_empty() {
-        return vec![
-            Line::default(),
-            Line::from(Span::styled(
-                format!(
-                    "{INDENT}ask {} anything; the conversation stays until the pane closes",
-                    pane.record.display_name()
-                ),
-                DIM,
-            )),
-        ];
+        return Vec::new();
     }
     let mut lines = vec![Line::default()];
     for turn in &pane.turns {
@@ -122,9 +113,8 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
         }
         Speaker::Model => {
             if turn.text.is_empty() && turn.ending == Ending::Open {
-                let glyph = SPINNER[(ticks % SPINNER.len() as u64) as usize];
                 lines.push(Line::from(vec![
-                    Span::styled(format!("{INDENT}{glyph}"), ACCENT),
+                    Span::styled(format!("{INDENT}{}", spinner(ticks)), ACCENT),
                     Span::styled(" thinking", DIM),
                 ]));
             } else if !turn.text.is_empty() {
@@ -139,16 +129,14 @@ fn turn_lines(turn: &Turn, width: usize, ticks: u64) -> Vec<Line<'static>> {
             }
             let ending = match &turn.ending {
                 Ending::Open | Ending::Done(None) => None,
-                Ending::Done(Some(stats)) => {
-                    text::stats(stats).map(|stats| Span::styled(format!("{INDENT}{stats}"), DIM))
-                }
-                Ending::Stopped => Some(Span::styled(format!("{INDENT}stopped"), CAUTION)),
-                Ending::Failed(reason) => {
-                    Some(Span::styled(format!("{INDENT}failed: {reason}"), FAILED))
-                }
+                Ending::Done(Some(stats)) => text::stats(stats).map(|stats| (stats, DIM)),
+                Ending::Stopped => Some(("stopped".to_owned(), CAUTION)),
+                Ending::Failed(reason) => Some((format!("failed: {reason}"), FAILED)),
             };
-            if let Some(span) = ending {
-                lines.push(Line::from(span));
+            if let Some((ending, style)) = ending {
+                for piece in wrap::wrap(&ending, body) {
+                    lines.push(Line::from(Span::styled(format!("{INDENT}{piece}"), style)));
+                }
             }
         }
     }
@@ -180,9 +168,8 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_pane_shows_the_hint() {
-        let lines = transcript(&ChatPane::open(record("m")), 60, 0);
-        assert!(texts(&lines)[1].contains("ask m anything"));
+    fn an_empty_pane_has_no_transcript() {
+        assert!(transcript(&ChatPane::open(record("m")), 60, 0).is_empty());
     }
 
     #[test]
@@ -196,7 +183,7 @@ mod tests {
     #[test]
     fn the_spinner_turns_only_before_the_first_token() {
         let waiting = texts(&turn_lines(&pane_with("", Ending::Open).turns[1], 40, 1));
-        assert_eq!(waiting, [format!("  {} thinking", SPINNER[1])]);
+        assert_eq!(waiting, [format!("  {} thinking", spinner(1))]);
         let streaming = texts(&turn_lines(
             &pane_with("word", Ending::Open).turns[1],
             40,
@@ -225,5 +212,22 @@ mod tests {
             0,
         ));
         assert_eq!(failed, ["  failed: gone"]);
+    }
+
+    #[test]
+    fn a_failed_reply_wraps_its_reason() {
+        let reason = "the runtime went away while the request was in flight, retry".to_owned();
+        assert_eq!(reason.len(), 60);
+        let lines = turn_lines(&pane_with("", Ending::Failed(reason)).turns[1], 20, 0);
+        assert!(lines.len() > 3, "{:?}", texts(&lines));
+        for line in &lines {
+            assert!(line.width() <= 20, "{:?} runs past 20", line_text(line));
+            assert!(line_text(line).starts_with("  "));
+            assert!(line.spans.iter().all(|span| span.style == FAILED));
+        }
+        assert!(texts(&lines)[0].starts_with("  failed: the"));
+        let stopped = turn_lines(&pane_with("ok", Ending::Stopped).turns[1], 20, 0);
+        assert_eq!(texts(&stopped), ["  ok", "  stopped"]);
+        assert_eq!(stopped[1].spans[0].style, CAUTION);
     }
 }

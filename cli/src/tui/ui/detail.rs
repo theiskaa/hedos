@@ -2,9 +2,10 @@
 //! beside what is already loaded, and what the gateway has served of it.
 
 use kernel::profiles::{FitAssessment, FitVerdict};
-use kernel::records::{Capability, ModelRecord};
+use kernel::records::{Capability, ModelRecord, ModelState};
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -98,6 +99,9 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// What the pane appends to a path whose file is no longer there.
+const GONE_SUFFIX: &str = " · gone";
+
 /// The pane's rows at `width` cells: a value that would run past the edge is
 /// clipped, a path elided in the middle. Compact is always four rows, the
 /// size standing in for a path the record does not have.
@@ -110,7 +114,18 @@ fn lines(record: &ModelRecord, facts: &Facts, detail: Detail, width: usize) -> V
         record.primary_weight_path.as_ref().map(|path| {
             let home = std::env::var_os("HOME").map(PathBuf::from);
             let shown = text::home_relative(path, home.as_deref());
-            field_line("path", text::elide_middle(&shown, value_width), labels)
+            if record.state != ModelState::Missing {
+                return field_line("path", text::elide_middle(&shown, value_width), labels);
+            }
+            let room = value_width.saturating_sub(GONE_SUFFIX.width());
+            let mut spans = styled_field(
+                "path",
+                text::elide_middle(&shown, room),
+                labels,
+                Style::new(),
+            );
+            spans.push(Span::styled(GONE_SUFFIX, DIM));
+            Line::from(spans)
         })
     };
     let size = match (record.footprint_bytes(), record.context_length) {
@@ -267,20 +282,47 @@ fn last_used(activity: &ModelActivity, now: i64) -> String {
     text::duration((now - activity.last_seen_millis) / 1000) + " ago"
 }
 
-/// `fits · 4.7 of 64 GiB`, then how much would be free with the rest of what
-/// is loaded still in memory; `too big` when it never fits.
-fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
-    let Some(FitAssessment {
-        verdict,
-        required_bytes,
-    }) = FitVerdict::assess(record.footprint_mb, facts.memory_bytes)
-    else {
-        return "unknown footprint".to_owned();
-    };
-    if verdict == FitVerdict::TooLarge {
-        return "too big for this machine".to_owned();
+/// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
+/// footprint is unknown: the shape the detail and the pull preview share.
+pub(super) fn fit_summary(footprint_mb: Option<i64>, memory_bytes: u64) -> String {
+    fit_parts(footprint_mb, memory_bytes).0
+}
+
+/// [`fit_summary`] and, when the model fits at all, the bytes it needs.
+fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
+    match FitVerdict::assess(footprint_mb, memory_bytes) {
+        None => ("unknown footprint".to_owned(), None),
+        Some(FitAssessment {
+            verdict: FitVerdict::TooLarge,
+            ..
+        }) => ("too big for this machine".to_owned(), None),
+        Some(FitAssessment {
+            verdict,
+            required_bytes,
+        }) => (
+            format!(
+                "{} · needs {} of {} GiB",
+                verdict_label(Some(verdict)),
+                text::gib(required_bytes),
+                text::gib(memory_bytes as i64)
+            ),
+            Some(required_bytes),
+        ),
     }
-    let verdict_label = verdict_label(Some(verdict));
+}
+
+/// [`fit_summary`], then how much would be free with the rest of what is
+/// loaded still in memory; a record whose weights are gone says so first.
+fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
+    let (summary, required_bytes) = fit_parts(record.footprint_mb, facts.memory_bytes);
+    let summary = if record.state == ModelState::Missing {
+        format!("weights are gone · {summary}")
+    } else {
+        summary
+    };
+    let Some(required_bytes) = required_bytes else {
+        return summary;
+    };
     let others: i64 = facts
         .residents
         .iter()
@@ -295,11 +337,7 @@ fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
     } else {
         format!(" · {} GiB free beside what's loaded", text::gib(free_after))
     };
-    format!(
-        "{verdict_label} · needs {} of {} GiB{beside}",
-        text::gib(required_bytes),
-        text::gib(facts.memory_bytes as i64)
-    )
+    format!("{summary}{beside}")
 }
 
 /// `residency   warm · gateway :11434 · unloads in 4m`, the holder clipped to
@@ -374,6 +412,35 @@ mod tests {
             seen += 1;
         }
         assert_eq!(seen, LABELS.len());
+    }
+
+    #[test]
+    fn a_gone_record_says_so_on_path_and_fit() {
+        let mut record = record_with("m", vec![Capability::chat()]);
+        record.footprint_mb = Some(4 * 1024);
+        record.primary_weight_path = Some("/models/m.gguf".to_owned());
+        record.state = ModelState::Missing;
+        let facts = Facts {
+            memory_bytes: 64 << 30,
+            ..Facts::default()
+        };
+        let lines = lines(&record, &facts, Detail::Full, 80);
+        let path = lines
+            .iter()
+            .find(|line| text(line).starts_with(" path"))
+            .expect("a path row");
+        assert!(
+            text(path).ends_with("/models/m.gguf · gone"),
+            "{:?}",
+            text(path)
+        );
+        assert_eq!(path.spans.last().map(|span| span.style), Some(DIM));
+        let fit = lines
+            .iter()
+            .map(text)
+            .find(|line| line.starts_with(" fit"))
+            .unwrap_or_default();
+        assert!(fit.contains("weights are gone · fits · needs"), "{fit:?}");
     }
 
     #[test]

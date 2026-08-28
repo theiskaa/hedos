@@ -14,6 +14,7 @@ use super::effect::{Effect, HandOff};
 use super::event::{Event, Key, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
 use super::launch::LaunchModal;
+use super::layout;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
@@ -134,6 +135,18 @@ impl App {
         self.order
             .get(self.selected())
             .and_then(|&index| self.records.get(index))
+    }
+
+    /// Whether the pull `reference` names the selected record, by the same
+    /// matching the pull modal uses to tell what is already on the shelf.
+    pub fn selected_is(&self, reference: &str) -> bool {
+        match (
+            self.selected_record(),
+            find_installed(&self.records, reference),
+        ) {
+            (Some(selected), Some(named)) => selected.id == named.id,
+            _ => false,
+        }
     }
 
     /// The records the shelf shows, in order.
@@ -522,9 +535,16 @@ impl App {
         vec![Effect::Copy(text)]
     }
 
-    /// Drop the newest failed task from the strip.
+    /// Drop the newest failed task from the strip, when its row is on
+    /// screen: the strip is as tall as its rows up to the layout's cap, so a
+    /// failure under older rows than that shows no hint and does not go.
     fn dismiss(&mut self) -> Vec<Effect> {
-        if self.tasks.dismiss_newest_failure() {
+        let shown = self.tasks.shown(layout::MAX_TASK_ROWS as usize);
+        let visible = self
+            .tasks
+            .newest_failure()
+            .is_some_and(|id| shown.iter().any(|row| row.id == id));
+        if visible && self.tasks.dismiss_newest_failure() {
             self.dirty = true;
             Vec::new()
         } else {
@@ -814,6 +834,11 @@ impl App {
         vec![Effect::Refresh]
     }
 
+    /// Whether the pull modal is waiting on a plan, its spinner turning.
+    fn planning(&self) -> bool {
+        matches!(&self.modal, Some(Modal::Pull(modal)) if matches!(modal.stage, Stage::Planning(_)))
+    }
+
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
         let now = self.ticks;
@@ -831,7 +856,7 @@ impl App {
             self.notice = None;
             self.dirty = true;
         }
-        if self.chat_pane().is_some_and(ChatPane::waiting) {
+        if self.chat_pane().is_some_and(ChatPane::waiting) || self.planning() {
             self.dirty = true;
         }
         if self.tasks.expire(now) {
@@ -951,6 +976,21 @@ mod tests {
         assert_eq!(app.selected(), 3);
         press(&mut app, Key::Char('g'));
         assert_eq!(app.selected(), 0);
+    }
+
+    #[test]
+    fn selected_is_matches_by_the_pull_modal_rule() {
+        let mut app = app(2);
+        press(&mut app, Key::Down);
+        assert_eq!(
+            app.selected_record().map(|r| r.name.as_str()),
+            Some("model-1")
+        );
+        assert!(app.selected_is("model-1"));
+        assert!(app.selected_is("owner/model-1"));
+        assert!(app.selected_is("MODEL-1"));
+        assert!(!app.selected_is("model-0"));
+        assert!(!app.selected_is("model-2"));
     }
 
     #[test]
@@ -1146,6 +1186,24 @@ mod tests {
     }
 
     #[test]
+    fn ticks_turn_the_planning_spinner_and_nothing_else() {
+        let mut app = app(1);
+        press(&mut app, Key::Char('p'));
+        app.take_dirty();
+        assert!(ticks(&mut app, 1).is_empty());
+        assert!(!app.take_dirty());
+        press(&mut app, Key::Enter);
+        assert!(matches!(pull(&app).stage, Stage::Planning(_)));
+        app.take_dirty();
+        assert!(ticks(&mut app, 1).is_empty());
+        assert!(app.take_dirty());
+        press(&mut app, Key::Escape);
+        app.take_dirty();
+        ticks(&mut app, 1);
+        assert!(!app.take_dirty());
+    }
+
+    #[test]
     fn a_typed_query_is_searched_after_the_debounce() {
         let mut app = app(1);
         press(&mut app, Key::Char('p'));
@@ -1299,6 +1357,30 @@ mod tests {
         assert!(app.tasks.rows().is_empty());
         press(&mut app, Key::Char('d'));
         assert_eq!(app.notice(), Some("nothing to dismiss"));
+    }
+
+    #[test]
+    fn dismiss_leaves_a_failure_the_strip_does_not_show() {
+        let mut app = app(1);
+        let failed = TaskId::next();
+        app.started(failed, TaskKind::Scan);
+        app.reduce(Event::Task(TaskEvent {
+            id: failed,
+            state: TaskState::Failed("no".to_owned()),
+        }));
+        for _ in 0..layout::MAX_TASK_ROWS {
+            let id = TaskId::next();
+            app.started(id, TaskKind::Scan);
+            app.reduce(Event::Task(TaskEvent {
+                id,
+                state: TaskState::Done("ok".to_owned()),
+            }));
+        }
+        app.notice = None;
+        press(&mut app, Key::Char('d'));
+        assert_eq!(app.notice(), Some("nothing to dismiss"));
+        assert_eq!(app.tasks.rows().len(), 1 + layout::MAX_TASK_ROWS as usize);
+        assert_eq!(app.tasks.newest_failure(), Some(failed));
     }
 
     #[test]

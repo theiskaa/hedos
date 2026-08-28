@@ -3,7 +3,7 @@
 //! pane's measure of how far its transcript scrolls. Colour is used
 //! sparingly: an orange accent for what is in focus, names a mode, or is in
 //! motion, and the terminal's own green for what is loaded, yellow for a
-//! tight fit, red for what failed or won't fit.
+//! tight fit, red for what failed.
 
 mod chat;
 mod detail;
@@ -22,7 +22,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::app::App;
 use super::edit::LineEdit;
-use super::layout::Panes;
+use super::layout::{Panes, stacks};
+use super::text;
 
 /// The quiet register: borders, labels, keys, models that can't run here.
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -45,7 +46,7 @@ const WARM: Style = Style::new().fg(Color::Green);
 const CAUTION: Style = Style::new().fg(Color::Yellow);
 /// The selected row of a list.
 const SELECTED_ROW: Style = Style::new().add_modifier(Modifier::REVERSED);
-/// What failed or won't fit.
+/// What failed, and nothing else.
 const FAILED: Style = Style::new().fg(Color::Red);
 /// The screen behind a modal: every colour and emphasis flattened to one dark
 /// grey so the card is the only thing lit.
@@ -58,6 +59,14 @@ const BAR_FILLED: &str = "█";
 const BAR_EMPTY: &str = "░";
 /// The text cursor shown while something is being typed.
 const CURSOR: &str = "▏";
+/// The glyphs of the spinner that turns while something is waited on, one
+/// per tick.
+const SPINNER: [&str; 6] = ["⠋", "⠙", "⠸", "⠴", "⠦", "⠇"];
+
+/// The spinner's glyph on tick `ticks`.
+fn spinner(ticks: u64) -> &'static str {
+    SPINNER[(ticks % SPINNER.len() as u64) as usize]
+}
 
 /// `text` padded with spaces to `width` terminal cells; a wide glyph counts
 /// for two, where `{:<width$}` would count it once and leave the column
@@ -115,9 +124,17 @@ fn field_line(label: &str, value: impl Into<String>, width: usize) -> Line<'stat
 }
 
 /// `mark` in the accent, then `input` around its cursor, windowed so that
-/// mark, text and cursor together take at most `width` cells.
-fn edited(input: &LineEdit, mark: &str, width: usize) -> Vec<Span<'static>> {
-    let (before, after) = input.view(width.saturating_sub(mark.width() + 1));
+/// mark, text and cursor together take at most `width` cells; while nothing
+/// is typed, a dim `placeholder` stands where the text will go.
+fn edited(input: &LineEdit, mark: &str, width: usize, placeholder: &str) -> Vec<Span<'static>> {
+    let room = width.saturating_sub(mark.width() + 1);
+    if input.is_empty() {
+        return vec![
+            Span::styled(mark.to_owned(), ACCENT),
+            Span::styled(text::clip(placeholder, room), DIM),
+        ];
+    }
+    let (before, after) = input.view(room);
     vec![
         Span::styled(mark.to_owned(), ACCENT),
         Span::raw(before),
@@ -165,20 +182,21 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let stacked = stacks(frame.area());
     let panes = Panes::compute(
         frame.area(),
         app.order.len(),
-        machine::lines(&app.facts),
+        machine::lines(&app.facts, stacked),
         app.tasks.rows().len(),
         app.expanded || app.chat_pane().is_some(),
     );
-    header::draw(frame, panes.header, app);
+    header::draw(frame, panes.header, app, panes.machine.height > 0);
     if app.chat_pane().is_some() {
         chat::draw(frame, panes.detail, app);
     } else {
         if !app.expanded {
             shelf::draw(frame, panes.shelf, app);
-            machine::draw(frame, panes.machine, panes.gateway, app);
+            machine::draw(frame, panes.machine, panes.gateway, app, stacked);
         }
         detail::draw(frame, panes.detail, app);
     }
@@ -218,5 +236,25 @@ mod tests {
         assert_eq!(right_aligned("abcdef", 3), "abcdef");
         assert_eq!(label_width(&["memory", "disk"], 1), 7);
         assert_eq!(label_width(&[], 2), 2);
+    }
+
+    #[test]
+    fn an_empty_field_shows_its_placeholder_in_place_of_the_cursor() {
+        use super::super::testing::line_text;
+        let mut input = LineEdit::default();
+        let blank = Line::from(edited(&input, " › ", 20, "name, owner/repo or name:tag"));
+        assert_eq!(line_text(&blank), " › name, owner/rep…");
+        assert!(blank.width() <= 20);
+        assert!(!line_text(&blank).contains(CURSOR));
+        assert_eq!(blank.spans[1].style, DIM);
+        input.apply(super::super::event::Key::Char('q'));
+        let typed = line_text(&Line::from(edited(&input, " › ", 20, "unused")));
+        assert_eq!(typed, format!(" › q{CURSOR}"));
+    }
+
+    #[test]
+    fn the_spinner_cycles_by_tick() {
+        assert_eq!(spinner(0), SPINNER[0]);
+        assert_eq!(spinner(7), SPINNER[1]);
     }
 }

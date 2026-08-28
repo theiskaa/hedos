@@ -18,7 +18,7 @@ const TALL_COLUMNS: u16 = 70;
 /// Rows of the koala header: the koala with a blank line above and below.
 pub(crate) const TALL_HEADER_ROWS: u16 = crate::support::banner::KOALA.len() as u16 + 2;
 /// The most task rows the strip shows at once.
-const MAX_TASK_ROWS: u16 = 4;
+pub(super) const MAX_TASK_ROWS: u16 = 4;
 /// Rows a bordered block spends on its top and bottom edges.
 const BORDER_ROWS: u16 = 2;
 /// Rows of the gateway block under the detail: a border, two lines, a border.
@@ -27,6 +27,11 @@ const GATEWAY_ROWS: u16 = 4;
 const MIN_SHELF_ROWS: u16 = 6;
 /// Rows the shelf's chrome takes: two borders and the column header.
 const SHELF_CHROME_ROWS: u16 = 3;
+
+/// Whether `area` is narrow enough that the panes stack.
+pub(crate) fn stacks(area: Rect) -> bool {
+    area.width < WIDE_COLUMNS
+}
 
 /// The panes of the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +138,7 @@ impl Panes {
         .areas(area);
         let (shelf, detail, machine, gateway) = if expanded {
             (Rect::default(), body, Rect::default(), Rect::default())
-        } else if area.width < WIDE_COLUMNS {
+        } else if stacks(area) {
             stacked(body, machine_block)
         } else {
             side_by_side(body, shelf_rows, machine_block)

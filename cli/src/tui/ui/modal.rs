@@ -13,9 +13,10 @@ use ratatui::widgets::{Block, Clear, Paragraph};
 use std::path::PathBuf;
 use unicode_width::UnicodeWidthStr;
 
+use super::detail::fit_summary;
 use super::{
-    ACCENT, BACKDROP, BOLD, DIM, EYEBROW, SELECTED_ROW, centered, edited, field_line, keys,
-    label_width, padded, right_aligned, styled_field,
+    ACCENT, BACKDROP, CAUTION, DIM, EYEBROW, SELECTED_ROW, centered, edited, field_line, keys,
+    label_width, padded, right_aligned, spinner, styled_field,
 };
 use crate::support::harnesses::HARNESSES;
 use crate::support::shelf_table::verdict_label;
@@ -23,11 +24,16 @@ use crate::tui::app::{App, Modal};
 use crate::tui::facts::Facts;
 use crate::tui::keymap;
 use crate::tui::launch::LaunchModal;
-use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, fit};
+use crate::tui::pull::{
+    CATEGORIES, ListingRow, MAX_MATCHES, PullMatch, PullModal, Stage, footprint_mb,
+};
 use crate::tui::text;
+use crate::tui::wrap;
 
-/// The pull modal's width: the listing needs it for its reference column.
-const PULL_WIDTH: u16 = 84;
+/// The pull modal's width: room for a listing row with its reference
+/// column at [`MAX_REFERENCE_WIDTH`], its size, and most catalog blurbs
+/// whole beside them; narrower terminals clamp it and the note elides.
+const PULL_WIDTH: u16 = 108;
 /// The remove modal's width: three label rows and one sentence, the path
 /// elided to fit.
 const REMOVE_WIDTH: u16 = 72;
@@ -46,6 +52,9 @@ const BORDER_ROWS: u16 = 2;
 const BORDER_COLUMNS: u16 = 2;
 /// Rows of the listing that are not matches: the input, a blank, the keys.
 const LISTING_CHROME_ROWS: usize = 3;
+/// Rows of the note stage that are not the note: a blank above, a blank
+/// and the keys below.
+const NOTE_CHROME_ROWS: usize = 3;
 /// The pull modal: the border, the input and a blank, every match with an
 /// eyebrow per category, and the keys.
 const PULL_HEIGHT: u16 =
@@ -58,15 +67,23 @@ const REMOVE_HEIGHT: u16 = 9 + BORDER_ROWS;
 const LAUNCH_HEIGHT: u16 = HARNESSES.len() as u16 + 5 + BORDER_ROWS;
 /// The labels of the preview and remove bodies; the column is as wide as
 /// the widest, plus a gap.
-const LABELS: [&str; 8] = [
-    "store", "on disk", "path", "after", "from", "to", "size", "download",
+const LABELS: [&str; 9] = [
+    "store", "on disk", "path", "after", "from", "to", "size", "fit", "download",
 ];
 /// Cells the size column of a pull row holds: `999.9 GB` at the widest.
 const SIZE_WIDTH: usize = 8;
-/// Cells the trailing fit verdict or popularity note is held to.
-const NOTE_WIDTH: usize = 14;
+/// The widest a pull row's reference column grows; longer references are
+/// clipped so the note keeps its room.
+const MAX_REFERENCE_WIDTH: usize = 32;
+/// The narrowest note worth printing; under it the row ends at the size.
+const NOTE_FLOOR: usize = 12;
+/// Under this much room for the note, the size goes too and the row is the
+/// reference alone.
+const SIZE_FLOOR: usize = 8;
 /// The prompt marker of the pull query.
 const MARK: &str = " › ";
+/// What the pull query accepts, shown while it is blank.
+const PULL_PLACEHOLDER: &str = "name, owner/repo or name:tag";
 
 /// Draw the open modal over `area`, if there is one.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -89,7 +106,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::bordered().border_style(DIM);
     let inner = block.inner(rect);
     let (title, lines) = match modal {
-        Modal::Pull(modal) => (" pull ".to_owned(), pull(modal, app, inner)),
+        Modal::Pull(modal) => (pull_title(modal), pull(modal, app, inner)),
         Modal::Remove(preview) => (
             format!(" remove {} ", preview.name),
             remove(preview, &app.facts, inner),
@@ -374,12 +391,18 @@ fn provider_width(matches: &[PullMatch]) -> usize {
     label_width(&ids, 0)
 }
 
+/// Cells a labelled value may take inside `inner`: the leading space, the
+/// label column, and a cell of air on the right.
+fn value_width(inner: Rect) -> usize {
+    (inner.width as usize).saturating_sub(label_column() + 2)
+}
+
 /// What removing the model does, in the store's own terms.
 fn remove(preview: &ModelDeletionPreview, facts: &Facts, inner: Rect) -> Vec<Line<'static>> {
     let row = |label, value: String| field_line(label, value, label_column());
-    let value_width = (inner.width as usize).saturating_sub(label_column() + 2);
+    let path_width = value_width(inner);
     let what = if preview.via_daemon {
-        "removes the tag through the Ollama daemon (ollama rm)".to_owned()
+        "removes the tag through the Ollama daemon · ollama rm".to_owned()
     } else if preview.paths.is_empty() {
         "nothing is left on disk; this forgets the record".to_owned()
     } else {
@@ -396,7 +419,7 @@ fn remove(preview: &ModelDeletionPreview, facts: &Facts, inner: Rect) -> Vec<Lin
     if let Some(path) = preview.paths.first() {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let shown = text::home_relative(path, home.as_deref());
-        lines.push(row("path", text::elide_middle(&shown, value_width)));
+        lines.push(row("path", text::elide_middle(&shown, path_width)));
     }
     lines.push(Line::default());
     lines.push(Line::from(format!(" {what}")));
@@ -414,6 +437,15 @@ fn remove(preview: &ModelDeletionPreview, facts: &Facts, inner: Rect) -> Vec<Lin
     lines
 }
 
+/// ` pull `, or ` pull qwen3:8b ` once a model is being resolved or previewed.
+fn pull_title(modal: &PullModal) -> String {
+    match &modal.stage {
+        Stage::Listing | Stage::Note(_) => " pull ".to_owned(),
+        Stage::Planning(reference) => format!(" pull {reference} "),
+        Stage::Preview(plan) => format!(" pull {} ", plan.display_name),
+    }
+}
+
 /// The pull modal's body for its current stage.
 fn pull(modal: &PullModal, app: &App, inner: Rect) -> Vec<Line<'static>> {
     match &modal.stage {
@@ -421,71 +453,102 @@ fn pull(modal: &PullModal, app: &App, inner: Rect) -> Vec<Line<'static>> {
         Stage::Planning(reference) => vec![
             Line::default(),
             Line::from(vec![
-                Span::raw(format!(" resolving {reference}")),
-                Span::styled("…", DIM),
+                Span::styled(format!(" {}", spinner(app.ticks())), ACCENT),
+                Span::styled(format!(" resolving {reference}"), DIM),
             ]),
             Line::default(),
             keys(&[("esc", "back")]),
         ],
-        Stage::Preview(plan) => preview(plan, app),
-        Stage::Note(note) => vec![
-            Line::default(),
-            Line::from(format!(" {note}")),
-            Line::default(),
-            keys(&[("esc", "back")]),
-        ],
+        Stage::Preview(plan) => preview(plan, app, inner),
+        Stage::Note(note) => {
+            let room = (inner.height as usize).saturating_sub(NOTE_CHROME_ROWS);
+            let mut lines = vec![Line::default()];
+            lines.extend(
+                wrap::wrap(note, (inner.width as usize).saturating_sub(2))
+                    .into_iter()
+                    .take(room)
+                    .map(|piece| Line::from(format!(" {piece}"))),
+            );
+            lines.push(Line::default());
+            lines.push(keys(&[("esc", "back")]));
+            lines
+        }
     }
 }
 
-fn preview(plan: &InstallPlan, app: &App) -> Vec<Line<'static>> {
-    let memory = app.facts.memory_bytes;
+/// The plan as labelled rows: where from and to, how big, how it fits, what
+/// the download comes to, and what the disk holds after.
+fn preview(plan: &InstallPlan, app: &App, inner: Rect) -> Vec<Line<'static>> {
     let row = |label, value: String| field_line(label, value, label_column());
-    let size = match plan.total_bytes {
-        Some(total) => format!(
-            "{} · {} when warm",
-            text::bytes(total),
-            verdict_label(fit(Some(total), memory))
-        ),
-        None => "size unknown".to_owned(),
-    };
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let destination = text::home_relative(&plan.destination, home.as_deref());
     let download = match (plan.remaining_bytes, plan.total_bytes) {
-        (Some(0), Some(_)) => "already on disk".to_owned(),
+        (Some(0), _) => "already on disk".to_owned(),
         (Some(remaining), Some(total)) if remaining < total => {
-            format!("{} of that", text::bytes(remaining))
+            format!("{} more", text::bytes(remaining))
         }
-        _ => "all of it".to_owned(),
+        (Some(remaining), _) => text::bytes(remaining),
+        (None, Some(total)) => text::bytes(total),
+        (None, None) => "unknown".to_owned(),
     };
     vec![
-        Line::default(),
-        Line::from(Span::styled(format!(" {}", plan.display_name), BOLD)),
         Line::default(),
         row(
             "from",
             format!("{} · {}", plan.provider.as_str(), plan.reference),
         ),
-        row("to", plan.destination.clone()),
-        row("size", size),
-        row("download", download),
+        row("to", text::elide_middle(&destination, value_width(inner))),
         row(
+            "size",
+            plan.total_bytes
+                .map_or_else(|| "unknown".to_owned(), text::bytes),
+        ),
+        row(
+            "fit",
+            fit_summary(plan.total_bytes.map(footprint_mb), app.facts.memory_bytes),
+        ),
+        row("download", download),
+        Line::from(styled_field(
             "after",
             format!(
                 "{} on disk",
                 text::bytes(app.facts.disk_bytes() + plan.remaining_bytes.unwrap_or(0))
             ),
-        ),
+            label_column(),
+            DIM,
+        )),
         Line::default(),
         keys(&[("enter", "pull"), ("esc", "back")]),
     ]
 }
 
+/// The width of a pull row's reference column: the widest reference among
+/// `matches`, up to [`MAX_REFERENCE_WIDTH`].
+fn reference_width(matches: &[PullMatch]) -> usize {
+    let references: Vec<&str> = matches
+        .iter()
+        .map(|candidate| candidate.reference.as_str())
+        .collect();
+    label_width(&references, 0).min(MAX_REFERENCE_WIDTH)
+}
+
 fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'static>> {
     let mut lines = vec![
-        Line::from(edited(&modal.input, MARK, inner.width as usize)),
+        Line::from(edited(
+            &modal.input,
+            MARK,
+            inner.width as usize,
+            PULL_PLACEHOLDER,
+        )),
         Line::default(),
     ];
     let listing_rows = modal.rows();
-    let provider_width = provider_width(&modal.matches);
-    let visible = (inner.height as usize).saturating_sub(LISTING_CHROME_ROWS);
+    let widths = (
+        provider_width(&modal.matches),
+        reference_width(&modal.matches),
+    );
+    let visible = (inner.height as usize)
+        .saturating_sub(LISTING_CHROME_ROWS + usize::from(modal.direct_installed.is_some()));
     let selected_at = listing_rows
         .iter()
         .position(|entry| matches!(entry, ListingRow::Match(index) if *index == modal.selected))
@@ -497,9 +560,10 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
                 format!(" {}", category.as_str().to_uppercase()),
                 EYEBROW,
             ))),
+            ListingRow::Blank => lines.push(Line::default()),
             ListingRow::Match(index) => {
                 let candidate = &modal.matches[*index];
-                let mut line = row(candidate, memory_bytes, provider_width, inner.width);
+                let mut line = row(candidate, memory_bytes, widths, inner.width);
                 if *index == modal.selected {
                     line = line.style(SELECTED_ROW);
                 }
@@ -507,9 +571,9 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
             }
         }
     }
-    if modal.matches.is_empty() {
+    if let Some(reference) = &modal.direct_installed {
         lines.push(Line::from(Span::styled(
-            " type a name, owner/repo, or name:tag",
+            format!(" {reference} is already on the shelf"),
             DIM,
         )));
     }
@@ -524,43 +588,66 @@ fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<Line<'stati
     lines
 }
 
-/// `provider  reference  size  fit`, the reference trimmed and the note
-/// elided so the columns hold.
+/// `provider  reference  size  note`: the provider and reference columns
+/// measured, the note taking what is left. The note says what matters most,
+/// in this order: `downloading`, a verdict that is not `fits`, then the
+/// catalog blurb, the hit's popularity, or `as typed`. A narrow row sheds
+/// the note, then the size.
 fn row(
     candidate: &PullMatch,
     memory_bytes: u64,
-    provider_width: usize,
+    (provider_width, reference_width): (usize, usize),
     width: u16,
 ) -> Line<'static> {
     let verdict = candidate.fit(memory_bytes);
-    let (size, note) = match (candidate.pulling, candidate.bytes) {
-        (true, bytes) => (
-            bytes.map(text::bytes).unwrap_or_default(),
-            "downloading".to_owned(),
-        ),
-        (false, Some(bytes)) => (text::bytes(bytes), verdict_label(verdict).to_owned()),
-        (false, None) => (String::new(), candidate.note.clone()),
+    let note = if candidate.pulling {
+        "downloading".to_owned()
+    } else if matches!(verdict, Some(FitVerdict::TightFit | FitVerdict::TooLarge)) {
+        verdict_label(verdict).to_owned()
+    } else {
+        candidate.note.clone()
     };
-    let tail = format!(
-        "{}  {}",
-        right_aligned(&size, SIZE_WIDTH),
-        padded(&text::clip(&note, NOTE_WIDTH), NOTE_WIDTH)
-    );
-    let head_width = (width as usize).saturating_sub(tail.width() + provider_width + 3);
-    let reference = text::clip(&candidate.reference, head_width);
-    let style = if candidate.pulling || verdict == Some(FitVerdict::TooLarge) {
-        DIM
+    let note_style = if !candidate.pulling && verdict == Some(FitVerdict::TightFit) {
+        CAUTION
     } else {
         Style::new()
     };
-    Line::from(vec![
+    // A card too narrow for the whole reference column clips the reference
+    // itself rather than run the row past the border.
+    let reference_width = reference_width.min((width as usize).saturating_sub(provider_width + 3));
+    let head = 1 + provider_width + 1 + reference_width + 1;
+    let note_width = (width as usize)
+        .saturating_sub(head)
+        .saturating_sub(SIZE_WIDTH + 2);
+    let mut spans = vec![
         Span::styled(
             format!(" {} ", padded(candidate.provider.as_str(), provider_width)),
             DIM,
         ),
-        Span::raw(format!("{} ", padded(&reference, head_width))),
-        Span::styled(tail, style),
-    ])
+        Span::raw(format!(
+            "{} ",
+            padded(
+                &text::clip(&candidate.reference, reference_width),
+                reference_width
+            )
+        )),
+    ];
+    if note_width >= SIZE_FLOOR {
+        let size = candidate.bytes.map(text::bytes).unwrap_or_default();
+        spans.push(Span::raw(right_aligned(&size, SIZE_WIDTH)));
+    }
+    if note_width >= NOTE_FLOOR {
+        spans.push(Span::styled(
+            format!("  {}", text::clip(&note, note_width)),
+            note_style,
+        ));
+    }
+    let line = Line::from(spans);
+    if candidate.pulling || verdict == Some(FitVerdict::TooLarge) {
+        line.style(DIM)
+    } else {
+        line
+    }
 }
 
 #[cfg(test)]
@@ -589,7 +676,7 @@ mod tests {
         let mut seen = Vec::new();
         for line in remove(&preview, &Facts::default(), inner)
             .iter()
-            .chain(&super::preview(&plan("gemma3"), &app))
+            .chain(&super::preview(&plan("gemma3"), &app, inner))
         {
             let is_label = line.spans.first().is_some_and(|span| {
                 span.style == DIM && span.content.width() == label_column() + 1
@@ -707,7 +794,7 @@ mod tests {
             "the closer is not under the table"
         );
         assert_eq!(rendered.last().map(String::as_str), Some(HELP_NOTE));
-        assert_eq!(HELP_NOTE.width(), help_inner(wide));
+        assert!(HELP_NOTE.width() <= help_inner(wide));
     }
 
     #[test]
@@ -758,11 +845,12 @@ mod tests {
     #[test]
     fn the_help_folds_to_two_columns_on_a_narrow_terminal() {
         let wide = wide_help_from();
-        assert_eq!(wide, 71);
+        // The one literal pin: the layout tripwire, tripped by any change to the keys.
+        assert_eq!(wide, 75);
         assert_eq!(help_columns(wide).len(), 3);
         assert_eq!(help_columns(wide - 1).len(), 2);
         assert_eq!(help_width(wide), HELP_WIDTH);
-        assert_eq!(help_width(wide - 1), 52);
+        assert!(help_width(wide - 1) < HELP_WIDTH);
         let narrow = help(wide - 1);
         assert!(
             narrow
@@ -817,17 +905,37 @@ mod tests {
         for width in [wide, wide + 1, 120] {
             fits(&help(width), help_inner(width), "help");
         }
-        for width in [wide - 1, 56] {
+        // The narrow card fits whole down to its own width plus the margins.
+        let snug = help_width(wide - 1) + 2 * MARGIN;
+        assert!(help_columns(wide - 1).len() == 2 && snug < wide);
+        for width in [wide - 1, snug] {
             fits(&help(width), help_inner(width), "narrow help");
             assert_eq!(help_inner(width), inner(help_width(width)));
         }
-        assert!(help_inner(55) < inner(help_width(55)));
+        assert!(help_inner(snug - 1) < inner(help_width(snug - 1)));
         let app = App::new(Vec::new(), Facts::default());
+        let pull_inner = Rect::new(0, 0, inner(PULL_WIDTH) as u16, PULL_HEIGHT - BORDER_ROWS);
         fits(
-            &super::preview(&plan("gemma3"), &app),
+            &super::preview(&plan("gemma3"), &app, pull_inner),
             inner(PULL_WIDTH),
             "pull",
         );
+        let mut modal = PullModal::open(&[], 64 << 30, &[]);
+        fits(
+            &listing(&modal, 64 << 30, pull_inner),
+            inner(PULL_WIDTH),
+            "pull listing",
+        );
+        modal.stage = Stage::Note("word ".repeat(40).trim_end().to_owned());
+        let note = super::pull(&modal, &app, pull_inner);
+        fits(&note, inner(PULL_WIDTH), "pull note");
+        assert!(
+            note.iter()
+                .filter(|line| text(line).contains("word"))
+                .count()
+                > 1
+        );
+        assert_eq!(text(&note[note.len() - 1]).trim_end(), " esc back");
 
         let launch_inner = Rect::new(0, 0, inner(LAUNCH_WIDTH) as u16, LAUNCH_HEIGHT);
         let launch = LaunchModal::open_with(&record_with("m", Vec::new()), |_| None);
@@ -860,10 +968,273 @@ mod tests {
         let remove = remove(&preview, &Facts::default(), remove_inner);
         fits(&remove, inner(REMOVE_WIDTH), "remove");
         assert!(remove.iter().map(text).any(|line| line.contains('…')));
+        let daemon = ModelDeletionPreview {
+            via_daemon: true,
+            ..preview
+        };
+        let daemon = super::remove(&daemon, &Facts::default(), remove_inner);
+        assert!(
+            daemon
+                .iter()
+                .map(text)
+                .any(|line| line == " removes the tag through the Ollama daemon · ollama rm")
+        );
 
         assert_eq!(modal_width(84, 120), 84);
         assert_eq!(modal_width(84, 80), 80 - 2 * MARGIN);
         assert_eq!(modal_width(72, 3), 0);
+    }
+
+    #[test]
+    fn the_preview_elides_its_destination() {
+        let app = App::new(
+            Vec::new(),
+            Facts {
+                memory_bytes: 64 << 30,
+                ..Facts::default()
+            },
+        );
+        let mut long = plan("gemma3");
+        long.destination = format!("/var/lib/ollama/models/blobs/{}", "a".repeat(120));
+        long.total_bytes = Some(4 << 30);
+        long.remaining_bytes = Some(1 << 30);
+        let inner = Rect::new(0, 0, 80, 12);
+        let lines: Vec<String> = super::preview(&long, &app, inner)
+            .iter()
+            .map(text)
+            .collect();
+        let to = lines
+            .iter()
+            .find(|line| line.starts_with(" to"))
+            .cloned()
+            .unwrap_or_default();
+        assert!(to.contains('…') && to.ends_with("aaaa"), "{to:?}");
+        assert!(Line::from(to.as_str()).width() <= 80);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with(" size") && line.ends_with("4 GB"))
+        );
+        assert!(
+            lines.iter().any(|line| line.starts_with(" fit")
+                && line.contains("fits · needs ")
+                && line.ends_with(" of 64 GiB")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with(" download") && line.ends_with("1 GB more"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with(" after") && line.ends_with("1 GB on disk"))
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("when warm") || line.contains("of that"))
+        );
+        let mut fresh = long.clone();
+        fresh.remaining_bytes = Some(4 << 30);
+        let fresh: Vec<String> = super::preview(&fresh, &app, inner)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            fresh
+                .iter()
+                .any(|line| line.starts_with(" download") && line.ends_with("  4 GB"))
+        );
+        let mut done = long;
+        done.remaining_bytes = Some(0);
+        let done: Vec<String> = super::preview(&done, &app, inner)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(done.iter().any(|line| line.ends_with("already on disk")));
+        let unknown: Vec<String> = super::preview(&plan("gemma3"), &app, inner)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(
+            unknown
+                .iter()
+                .any(|line| line.starts_with(" fit") && line.ends_with("unknown footprint"))
+        );
+        assert!(!unknown.iter().any(|line| line.trim() == "gemma3"));
+    }
+
+    /// The listing rows of a fresh modal at `width` cells inside the card.
+    fn listing_rows(width: u16) -> Vec<Line<'static>> {
+        let modal = PullModal::open(&[], 64 << 30, &[]);
+        listing(
+            &modal,
+            64 << 30,
+            Rect::new(0, 0, width, PULL_HEIGHT - BORDER_ROWS),
+        )
+        .into_iter()
+        .filter(|line| {
+            let shown = text(line);
+            shown.starts_with(" ollama") || shown.starts_with(" huggingface")
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_listing_row_shows_the_blurb_when_it_fits() {
+        let modal = PullModal::open(&[], 64 << 30, &[]);
+        let widths = (
+            provider_width(&modal.matches),
+            reference_width(&modal.matches),
+        );
+        assert!(widths.1 <= MAX_REFERENCE_WIDTH);
+        let gemma = modal
+            .matches
+            .iter()
+            .find(|candidate| candidate.bytes.is_some() && candidate.note.contains(' '))
+            .expect("a catalog entry with a blurb");
+        let line = text(&row(gemma, 64 << 30, widths, 120));
+        assert!(line.contains(&gemma.reference), "{line:?}");
+        assert!(line.contains(&gemma.note), "{line:?}");
+        assert!(!line.contains("  fits"), "{line:?}");
+        let mut tight = gemma.clone();
+        tight.bytes = Some(44 << 30);
+        let tight_line = row(&tight, 64 << 30, widths, 120);
+        assert!(
+            text(&tight_line).ends_with("tight"),
+            "{:?}",
+            text(&tight_line)
+        );
+        assert!(
+            tight_line
+                .spans
+                .last()
+                .is_some_and(|span| span.style == CAUTION)
+        );
+        let mut big = gemma.clone();
+        big.bytes = Some(200 << 30);
+        let big_line = row(&big, 64 << 30, widths, 120);
+        assert!(text(&big_line).ends_with("too big"));
+        assert_eq!(big_line.style, DIM);
+        let mut pulling = gemma.clone();
+        pulling.pulling = true;
+        let pulling_line = row(&pulling, 64 << 30, widths, 120);
+        assert!(text(&pulling_line).ends_with("downloading"));
+        assert_eq!(pulling_line.style, DIM);
+        let mut typed = gemma.clone();
+        typed.bytes = None;
+        typed.note = "as typed".to_owned();
+        assert!(text(&row(&typed, 64 << 30, widths, 120)).ends_with("as typed"));
+    }
+
+    #[test]
+    fn a_listing_row_sheds_its_note_then_its_size() {
+        for width in [82, 56, 40] {
+            for line in listing_rows(width) {
+                assert!(
+                    line.width() <= width as usize,
+                    "{:?} runs past {width}",
+                    text(&line)
+                );
+                assert!(!text(&line).trim_end().ends_with("fits"));
+            }
+        }
+        let full = listing_rows(82);
+        assert!(
+            full.iter().all(|line| text(line).contains("B  ")),
+            "{:?}",
+            text(&full[0])
+        );
+        let modal = PullModal::open(&[], 64 << 30, &[]);
+        let blurb = modal
+            .matches
+            .iter()
+            .find(|candidate| candidate.provider.as_str() == "ollama")
+            .map(|candidate| {
+                candidate
+                    .note
+                    .split(' ')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        assert!(!blurb.is_empty());
+        assert!(
+            full.iter()
+                .any(|line| text(line).contains(&format!("GB  {blurb}")))
+        );
+        let head = 1 + provider_width(&modal.matches) + 1 + reference_width(&modal.matches) + 1;
+        let size_only = (head + SIZE_WIDTH + 2 + SIZE_FLOOR) as u16;
+        let reference_only = size_only - 1;
+        assert!(size_only < 82 && reference_only >= 40, "{head}");
+        let sized = listing_rows(size_only);
+        assert!(
+            sized
+                .iter()
+                .all(|line| text(line).trim_end().ends_with("B"))
+        );
+        assert!(!sized.iter().any(|line| text(line).contains(&blurb)));
+        let bare = listing_rows(reference_only);
+        assert!(
+            !bare
+                .iter()
+                .any(|line| text(line).contains(" GB") || text(line).contains(" MB"))
+        );
+        assert!(
+            bare.iter()
+                .any(|line| text(line).contains(&modal.matches[0].reference))
+        );
+        let noted = listing_rows((head + SIZE_WIDTH + 2 + NOTE_FLOOR) as u16);
+        assert!(
+            noted
+                .iter()
+                .any(|line| text(line).contains(&format!("GB  {blurb}")))
+        );
+        let unnoted = listing_rows((head + SIZE_WIDTH + 2 + NOTE_FLOOR - 1) as u16);
+        assert!(!unnoted.iter().any(|line| text(line).contains(&blurb)));
+        assert!(
+            unnoted
+                .iter()
+                .all(|line| text(line).trim_end().ends_with("B"))
+        );
+        let narrow = listing_rows(40);
+        assert!(narrow.iter().all(|line| line.width() <= 40));
+        assert!(narrow.iter().any(|line| text(line).contains('…')));
+    }
+
+    #[test]
+    fn the_listing_names_a_typed_model_already_on_the_shelf() {
+        use crate::tui::event::Key;
+        let mut modal = PullModal::open(&[], 64 << 30, &[]);
+        let inner = Rect::new(0, 0, 82, PULL_HEIGHT - BORDER_ROWS);
+        let blank: Vec<String> = listing(&modal, 64 << 30, inner).iter().map(text).collect();
+        assert_eq!(blank[0].trim_end(), " › name, owner/repo or name:tag");
+        assert!(
+            !blank
+                .iter()
+                .any(|line| line.contains("already on the shelf"))
+        );
+        let first = modal.matches[0].reference.clone();
+        let shelf = vec![crate::tui::testing::record(&first)];
+        modal.refresh(&shelf, &[]);
+        for c in first.chars() {
+            modal.edit(Key::Char(c), 0);
+        }
+        assert_eq!(modal.direct_installed.as_deref(), Some(first.as_str()));
+        let lines = listing(&modal, 64 << 30, inner);
+        assert!(lines.len() <= inner.height as usize);
+        let texts: Vec<String> = lines.iter().map(text).collect();
+        assert!(
+            texts.contains(&format!(" {first} is already on the shelf")),
+            "{texts:?}"
+        );
+        assert_eq!(
+            texts.last().map(|line| line.trim_end()),
+            Some(" enter choose  ↑/↓ move  esc close")
+        );
     }
 
     #[test]

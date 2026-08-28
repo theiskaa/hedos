@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
+use kernel::discovery::service::DiscoverySummary;
 use kernel::install::event::{InstallEvent, InstallProgress};
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -26,7 +27,7 @@ use super::facts::Facts;
 use super::pull::SEARCH_LIMIT;
 use super::text;
 use crate::support::removal::remove_and_forget;
-use crate::support::residency::{is_resident, residency_outcome, unload_anywhere, warm_request};
+use crate::support::residency::{is_resident, unload_anywhere, warm_request};
 use crate::support::session::Session;
 
 /// How long a warm through the gateway may take; a large model legitimately
@@ -438,14 +439,30 @@ async fn scan(session: &Session) -> Result<String, String> {
         .discover()
         .await
         .map_err(|error| error.to_string())?;
-    let mut line = summary.headline();
-    if !summary.issues.is_empty() {
-        line.push_str(&format!(
-            " · {}",
-            text::count(summary.issues.len(), "issue")
-        ));
+    Ok(scan_summary(&summary))
+}
+
+/// `found 12 models · 9 hf · 3 ollama · 2 issues` in the strip's own
+/// register, the stores in their kinds' order, or `found nothing`.
+fn scan_summary(summary: &DiscoverySummary) -> String {
+    if summary.total_count == 0 {
+        return "found nothing".to_owned();
     }
-    Ok(line)
+    let mut parts = vec![format!(
+        "found {}",
+        text::count(summary.total_count, "model")
+    )];
+    parts.extend(
+        summary
+            .per_kind
+            .iter()
+            .filter(|(_, stat)| stat.count > 0)
+            .map(|(kind, stat)| format!("{} {}", stat.count, text::short_store(kind.as_str()))),
+    );
+    if !summary.issues.is_empty() {
+        parts.push(text::count(summary.issues.len(), "issue"));
+    }
+    parts.join(" · ")
 }
 
 async fn warm(session: &Session, id: &str) -> Result<String, String> {
@@ -464,8 +481,9 @@ async fn warm(session: &Session, id: &str) -> Result<String, String> {
         result.map_err(|error| error.to_string())?;
     }
     Ok(match is_resident(session, record).await {
-        Ok(resident) => residency_outcome(resident).to_owned(),
-        Err(reason) => format!("loaded; {reason}"),
+        Ok(true) => "warm in this process".to_owned(),
+        Ok(false) => "loaded · residency not tracked".to_owned(),
+        Err(reason) => format!("loaded · {reason}"),
     })
 }
 
@@ -488,7 +506,7 @@ async fn warm_via_gateway(id: &str, port: u16) -> Result<String, String> {
         .await
         .map_err(|error| error.to_string())?;
     if response.status().is_success() {
-        return Ok(format!("warm on the gateway at :{port}"));
+        return Ok(format!("warm on the gateway :{port}"));
     }
     let status = response.status();
     let reason = response.text().await.unwrap_or_default();
@@ -620,5 +638,46 @@ impl AuditReader {
             entries: Arc::clone(&entries),
         });
         entries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use kernel::discovery::service::KindStat;
+    use kernel::records::SourceKind;
+
+    #[test]
+    fn a_scan_summary_speaks_the_strip_register() {
+        let mut summary = DiscoverySummary {
+            total_count: 12,
+            issues: vec!["a".to_owned(), "b".to_owned()],
+            ..DiscoverySummary::default()
+        };
+        summary.per_kind.insert(
+            SourceKind::huggingface_cache(),
+            KindStat { count: 9, bytes: 0 },
+        );
+        summary
+            .per_kind
+            .insert(SourceKind::ollama(), KindStat { count: 3, bytes: 0 });
+        summary
+            .per_kind
+            .insert(SourceKind::lm_studio(), KindStat { count: 0, bytes: 0 });
+        let line = scan_summary(&summary);
+        assert!(line.starts_with("found 12 models · "));
+        assert!(line.contains("3 ollama") && line.contains("9 hf"));
+        assert!(line.ends_with(" · 2 issues"));
+        assert!(!line.contains("lm studio"));
+        assert!(!line.contains('\u{2014}') && !line.contains(", "));
+        assert!(!line.ends_with('.'));
+        assert!(line.chars().all(|c| !c.is_uppercase()));
+        assert_eq!(scan_summary(&DiscoverySummary::default()), "found nothing");
+        let one = DiscoverySummary {
+            total_count: 1,
+            ..DiscoverySummary::default()
+        };
+        assert_eq!(scan_summary(&one), "found 1 model");
     }
 }

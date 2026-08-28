@@ -27,7 +27,12 @@ pub(crate) const MAX_MATCHES: usize = 12;
 pub const SEARCH_LIMIT: usize = 8;
 /// How a model of `bytes` fits in `memory_bytes`, when its size is known.
 pub fn fit(bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
-    verdict(bytes.map(|bytes| bytes / BYTES_PER_MIB), memory_bytes)
+    verdict(bytes.map(footprint_mb), memory_bytes)
+}
+
+/// `bytes` as the whole MiB a footprint is measured in.
+pub fn footprint_mb(bytes: i64) -> i64 {
+    bytes / BYTES_PER_MIB
 }
 
 /// The catalog's groups, in the order the list shows them.
@@ -125,6 +130,10 @@ pub struct PullModal {
     pub matches: Vec<PullMatch>,
     pub selected: usize,
     pub stage: Stage,
+    /// The typed reference, normalised, when it names a model already on the
+    /// shelf; the list leaves that row out and the listing says so instead
+    /// of going quiet.
+    pub direct_installed: Option<String>,
     /// How many plans have been asked for; the newest is the only one whose
     /// answer counts.
     ask: u64,
@@ -139,11 +148,13 @@ pub struct PullModal {
     memory_bytes: u64,
 }
 
-/// A line of the listing: a category eyebrow, or a match by its index.
+/// A line of the listing: a category eyebrow, a match by its index, or the
+/// blank that keeps one category off the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListingRow {
     Eyebrow(InstallCategory),
     Match(usize),
+    Blank,
 }
 
 impl PullModal {
@@ -156,6 +167,7 @@ impl PullModal {
             matches: Vec::new(),
             selected: 0,
             stage: Stage::Listing,
+            direct_installed: None,
             search_due: None,
             hits: Vec::new(),
             installed: installed_names(shelf),
@@ -173,12 +185,16 @@ impl PullModal {
         self.rematch();
     }
 
-    /// The matches with an eyebrow wherever the category changes.
+    /// The matches with an eyebrow wherever the category changes, and a
+    /// blank before every eyebrow but the first.
     pub fn rows(&self) -> Vec<ListingRow> {
         let mut rows = Vec::new();
         let mut current = None;
         for (index, candidate) in self.matches.iter().enumerate() {
             if candidate.category.is_some() && candidate.category != current {
+                if current.is_some() {
+                    rows.push(ListingRow::Blank);
+                }
                 current = candidate.category;
                 rows.push(ListingRow::Eyebrow(
                     candidate.category.unwrap_or(InstallCategory::Chat),
@@ -279,7 +295,12 @@ impl PullModal {
         let grouped = query.is_empty();
         let catalog_room = MAX_MATCHES.saturating_sub(self.hits.len());
         let mut matches: Vec<PullMatch> = Vec::new();
-        matches.extend(PullMatch::direct(typed));
+        let direct = PullMatch::direct(typed);
+        self.direct_installed = direct
+            .as_ref()
+            .filter(|row| is_installed(&row.reference, &self.installed))
+            .map(|row| row.reference.clone());
+        matches.extend(direct);
         matches.extend(
             CATEGORIES
                 .iter()
@@ -356,8 +377,16 @@ mod tests {
             vec![Capability::chat()],
             ModelSource::new(SourceKind::ollama(), &first.reference),
         );
-        let modal = PullModal::open(&[record], MEMORY, &[]);
+        let mut modal = PullModal::open(&[record], MEMORY, &[]);
         assert!(modal.matches.iter().all(|m| m.reference != first.reference));
+        assert!(modal.direct_installed.is_none());
+        for c in first.reference.chars() {
+            modal.edit(Key::Char(c), 0);
+        }
+        assert!(modal.direct_installed.is_some());
+        assert!(modal.matches.iter().all(|m| m.reference != first.reference));
+        modal.edit(Key::Backspace, 0);
+        assert!(modal.direct_installed.is_none());
     }
 
     #[test]

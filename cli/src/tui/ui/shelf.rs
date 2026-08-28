@@ -1,8 +1,9 @@
 //! The shelf table: the `hedos ls` columns with a size instead of a fit
-//! verdict, since the verdict only matters when it is not `fits`.
+//! verdict, since the verdict only matters when it is not `fits`. A record
+//! whose weights are gone is dim and says `gone` where its size would be.
 
 use kernel::profiles::FitVerdict;
-use kernel::records::ModelRecord;
+use kernel::records::{ModelRecord, ModelState};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
@@ -53,10 +54,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let selected = app.selected();
 
     let body = rows.iter().enumerate().map(|(index, row)| {
-        let style = match (row.verdict, row.warm) {
-            (Some(FitVerdict::TooLarge), _) => DIM,
-            (_, true) => BOLD,
-            _ => Style::new(),
+        let style = if row.dim() {
+            DIM
+        } else if row.warm {
+            BOLD
+        } else {
+            Style::new()
         };
         // A row that won't fit is already dim; red is kept for what failed.
         let size_style = match row.verdict {
@@ -119,14 +122,27 @@ struct ShelfRow {
     cells: [String; 5],
     verdict: Option<FitVerdict>,
     warm: bool,
+    /// Whether the record's weights are gone from disk.
+    gone: bool,
 }
 
 impl ShelfRow {
+    /// The row for `record`; a record whose weights are gone has no size and
+    /// no verdict, only the word.
     fn new(record: &ModelRecord, warm: bool, budget: u64) -> Self {
-        let verdict = verdict(record.footprint_mb, budget);
-        let mut size = record
-            .footprint_bytes()
-            .map_or(DASH.to_owned(), text::bytes);
+        let gone = record.state == ModelState::Missing;
+        let verdict = if gone {
+            None
+        } else {
+            verdict(record.footprint_mb, budget)
+        };
+        let mut size = if gone {
+            "gone".to_owned()
+        } else {
+            record
+                .footprint_bytes()
+                .map_or(DASH.to_owned(), text::bytes)
+        };
         if matches!(verdict, Some(FitVerdict::TightFit | FitVerdict::TooLarge)) {
             size = format!("{size} {}", verdict_label(verdict));
         }
@@ -140,7 +156,13 @@ impl ShelfRow {
             ],
             verdict,
             warm,
+            gone,
         }
+    }
+
+    /// Whether the row draws dim: too big for the machine, or gone.
+    fn dim(&self) -> bool {
+        self.gone || self.verdict == Some(FitVerdict::TooLarge)
     }
 }
 
@@ -191,8 +213,10 @@ fn constraints(column_widths: &[usize; 5], columns: &[usize]) -> Vec<Constraint>
 }
 
 /// Cells of the title the filter may take while it is typed, mark and
-/// cursor included.
-const FILTER_WIDTH: usize = 28;
+/// cursor included: room for the whole placeholder.
+const FILTER_WIDTH: usize = 36;
+/// What the filter matches on, shown while it is blank.
+const FILTER_PLACEHOLDER: &str = "name, store, runtime, capability";
 
 /// ` shelf `, or the filter as it is typed with how many rows it keeps, plus
 /// the sort when it is not the shelf's own order.
@@ -200,7 +224,7 @@ fn title(app: &App) -> Line<'static> {
     let mut spans = Vec::new();
     if app.filtering || !app.filter.is_empty() {
         if app.filtering {
-            spans.extend(edited(&app.filter, " / ", FILTER_WIDTH));
+            spans.extend(edited(&app.filter, " / ", FILTER_WIDTH, FILTER_PLACEHOLDER));
         } else {
             spans.push(Span::styled(" / ", ACCENT));
             spans.push(Span::raw(app.filter.as_str().to_owned()));
@@ -311,6 +335,18 @@ mod tests {
             ShelfRow::new(&record(Some(1)), false, 16 * GIB).cells[3],
             "hf"
         );
+    }
+
+    #[test]
+    fn a_gone_row_is_dim_and_says_gone() {
+        let mut gone = record(Some(16 * 1024));
+        gone.state = ModelState::Missing;
+        let row = ShelfRow::new(&gone, false, 16 * GIB);
+        assert!(row.dim());
+        assert_eq!(row.cells[SIZE], "gone");
+        assert_eq!(row.verdict, None);
+        assert!(!ShelfRow::new(&record(Some(1024)), false, 16 * GIB).dim());
+        assert!(ShelfRow::new(&record(Some(16 * 1024)), false, 16 * GIB).dim());
     }
 
     #[test]

@@ -92,17 +92,11 @@ impl TaskStrip {
 
     /// Drop the newest failed row; whether there was one.
     pub fn dismiss_newest_failure(&mut self) -> bool {
-        match self
-            .rows
-            .iter()
-            .rposition(|row| matches!(row.state, TaskState::Failed(_)))
-        {
-            Some(index) => {
-                self.rows.remove(index);
-                true
-            }
-            None => false,
-        }
+        let Some(id) = self.newest_failure() else {
+            return false;
+        };
+        self.rows.retain(|row| row.id != id);
+        true
     }
 
     /// Whether any task is still running.
@@ -144,7 +138,39 @@ impl TaskStrip {
         })
     }
 
-    /// The newest pull still downloading.
+    /// The rows a strip `height` rows tall shows, in their order: every
+    /// running row, and the newest finished rows in what room is left. More
+    /// running rows than fit keep the newest.
+    pub fn shown(&self, height: usize) -> Vec<&TaskRow> {
+        let running = self.rows.iter().filter(|row| row.running()).count();
+        let mut finished_room = height.saturating_sub(running);
+        let mut running_room = height.min(running);
+        let mut kept = Vec::new();
+        for row in self.rows.iter().rev() {
+            let room = if row.running() {
+                &mut running_room
+            } else {
+                &mut finished_room
+            };
+            if *room > 0 {
+                *room -= 1;
+                kept.push(row);
+            }
+        }
+        kept.reverse();
+        kept
+    }
+
+    /// The newest failed row, the one `d` dismisses.
+    pub fn newest_failure(&self) -> Option<TaskId> {
+        self.rows
+            .iter()
+            .rev()
+            .find(|row| matches!(row.state, TaskState::Failed(_)))
+            .map(|row| row.id)
+    }
+
+    /// The newest pull still running, resolving or downloading.
     pub fn newest_running_pull(&self) -> Option<TaskId> {
         self.rows
             .iter()
@@ -186,7 +212,9 @@ mod tests {
             0,
         );
         assert!(!strip.expire(DONE_LINGER_TICKS));
+        assert_eq!(strip.newest_failure(), Some(id));
         assert!(strip.dismiss_newest_failure());
+        assert_eq!(strip.newest_failure(), None);
         assert!(!strip.dismiss_newest_failure());
     }
 
