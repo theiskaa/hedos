@@ -2,7 +2,7 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
-## Unreleased
+## v1.3.1 - 2026-08-29
 
 A craft pass over `hedos shelf`. Nothing the screen does has changed; how well it does it has.
 
