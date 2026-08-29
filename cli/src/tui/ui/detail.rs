@@ -11,8 +11,8 @@ use ratatui::widgets::{Block, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    ACCENT, BOLD, BORDER_COLUMNS, DIM, EYEBROW, WARM, field_line, label, label_width, styled_field,
-    value_width,
+    ACCENT, BOLD, BORDER_COLUMNS, COOL, DIM, EYEBROW, WARM, field_line, label, label_width, pane,
+    styled_field, value_width,
 };
 use crate::support::residency::Holder;
 use crate::support::shelf_table::{DASH, runtime_label};
@@ -54,9 +54,7 @@ fn label_column() -> usize {
 /// Draw the detail pane into `area` for the selected model.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let Some(record) = app.selected_record() else {
-        let block = Block::bordered()
-            .title(Span::styled(" detail ", DIM))
-            .border_style(DIM);
+        let block = pane(" detail ");
         frame.render_widget(block, area);
         return;
     };
@@ -87,8 +85,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 const GONE_SUFFIX: &str = " · gone";
 
 /// A `label   value` row, the value clipped to `value_width`.
-fn row(label: &str, value: &str, value_width: usize) -> Line<'static> {
-    field_line(label, text::clip(value, value_width), label_column())
+fn row(label: &str, value: &str, value_width: usize, style: Style) -> Line<'static> {
+    Line::from(styled_field(
+        label,
+        text::clip(value, value_width),
+        label_column(),
+        style,
+    ))
 }
 
 /// The stacked pane's four rows: what the shelf row does not already show,
@@ -96,7 +99,7 @@ fn row(label: &str, value: &str, value_width: usize) -> Line<'static> {
 fn compact_lines(record: &ModelRecord, facts: &Facts, width: usize) -> Vec<Line<'static>> {
     let value_width = value_width(width, label_column());
     vec![
-        row("fit", &fit_line(record, facts), value_width),
+        row("fit", &fit_line(record, facts), value_width, Style::new()),
         residency_line(record, facts, value_width),
         activity_line(
             facts.activity.for_record(record),
@@ -118,14 +121,16 @@ fn full_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     let value_width = value_width(width, label_column());
-    let row = |label, value: String| row(label, &value, value_width);
+    let row = |label, value: String| row(label, &value, value_width, Style::new());
+    // The runtime and the store wear the cool hue, as the shelf row shows them.
+    let cool_row = |label, value: String| self::row(label, &value, value_width, COOL);
     let eyebrow = |text: &'static str| Line::from(Span::styled(format!(" {text}"), EYEBROW));
     let mut lines = vec![
-        row(
+        cool_row(
             "runtime",
             text::short_runtime(runtime_label(record)).to_owned(),
         ),
-        row(
+        cool_row(
             "store",
             text::short_store(record.source.kind.as_str()).to_owned(),
         ),
@@ -205,7 +210,7 @@ fn size_line(record: &ModelRecord, value_width: usize) -> Line<'static> {
         (None, Some(context)) => format!("ctx {}", text::tokens(context)),
         (None, None) => DASH.to_owned(),
     };
-    row("size", &size, value_width)
+    row("size", &size, value_width, Style::new())
 }
 
 /// The last day of gateway traffic for the model: served requests, their

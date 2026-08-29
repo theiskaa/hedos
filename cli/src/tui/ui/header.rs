@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 use kernel::profiles::FitVerdict;
 use kernel::records::{ModelRecord, ModelState};
 
-use super::{BOLD, DIM, wordmark};
+use super::{DIM, EYEBROW, wordmark};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::verdict;
 use crate::tui::app::App;
@@ -68,7 +68,7 @@ fn draw_tall(frame: &mut Frame, area: Rect, app: &App) {
         .chain(
             KOALA
                 .iter()
-                .map(|row| Line::from(Span::styled(format!("  {row}"), BOLD))),
+                .map(|row| Line::from(Span::styled(format!("  {row}"), EYEBROW))),
         )
         .collect();
     frame.render_widget(Paragraph::new(koala_lines), koala);

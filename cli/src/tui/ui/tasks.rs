@@ -6,12 +6,12 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use kernel::install::event::InstallProgress;
 
-use super::{ACCENT, BOLD, DIM, FAILED, bar, key_spans, label_width, padded, right_aligned};
+use super::{ACCENT, BOLD, DIM, FAILED, bar, key_spans, label_width, padded, pane, right_aligned};
 use crate::tui::app::App;
 use crate::tui::keymap;
 use crate::tui::strip::{RowHints, TaskRow};
@@ -29,7 +29,7 @@ const PERCENT_WIDTH: usize = 4;
 /// Draw the strip into `area`; when it is short, the running rows stay and
 /// the oldest finished ones go.
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered().title(" tasks ").border_style(DIM);
+    let block = pane(" tasks ");
     let inner = block.inner(area);
     let height = inner.height as usize;
     let shown = app.tasks.shown(height);

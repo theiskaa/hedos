@@ -16,8 +16,8 @@ use crate::tui::pull::{
 };
 use crate::tui::text;
 use crate::tui::ui::{
-    ACCENT, BORDER_ROWS, CAUTION, DIM, EYEBROW, SELECTED_ROW, edited, field_line, keys, padded,
-    right_aligned, spinner, styled_field, value_width, widest,
+    ACCENT, BORDER_ROWS, CAUTION, DIM, EYEBROW, edited, field_line, keys, padded, right_aligned,
+    selected_row, spinner, styled_field, value_width, widest,
 };
 use crate::tui::wrap;
 
@@ -195,7 +195,7 @@ pub(super) fn listing(modal: &PullModal, memory_bytes: u64, inner: Rect) -> Vec<
                 let offer = &modal.matches[*index];
                 let mut line = row(offer, memory_bytes, widths, inner.width);
                 if *index == modal.selected {
-                    line = line.style(SELECTED_ROW);
+                    line = selected_row(line, inner.width as usize);
                 }
                 lines.push(line);
             }

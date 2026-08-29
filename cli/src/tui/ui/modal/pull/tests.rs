@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::tui::testing::{facts_with_memory, plan, text, texts};
+use crate::tui::ui::SELECTED_MARK;
 
 const MEMORY: u64 = 64 << 30;
 
@@ -84,8 +85,13 @@ fn listing_rows(width: u16) -> Vec<Line<'static>> {
     )
     .into_iter()
     .filter(|line| {
+        // The selected row carries the gutter mark where its space was.
         let shown = text(line);
-        shown.starts_with(" ollama") || shown.starts_with(" huggingface")
+        let shown = shown
+            .strip_prefix(SELECTED_MARK)
+            .or_else(|| shown.strip_prefix(' '))
+            .unwrap_or_default();
+        shown.starts_with("ollama") || shown.starts_with("huggingface")
     })
     .collect()
 }

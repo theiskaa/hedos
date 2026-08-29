@@ -5,9 +5,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use super::{BAR_EMPTY, BAR_FILLED, BOLD, DIM, WARM, label, label_width};
+use super::{BAR_EMPTY, BAR_FILLED, BOLD, DIM, ORANGE, SAND, TEAL, WARM, label, label_width, pane};
 use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
@@ -18,9 +18,13 @@ use crate::tui::text;
 const MACHINE_LABELS: [&str; 2] = ["memory", "disk"];
 /// The label of the gateway row, drawn only when the layout is stacked.
 const GATEWAY_LABEL: &str = "gateway";
-/// The steps the memory bar cycles through, one per resident: three
-/// brightnesses of the plain foreground.
-const SEGMENT_STYLES: [Style; 3] = [BOLD, Style::new(), DIM];
+/// The hues the memory bar cycles through, one per resident, borrowed as
+/// swatches so the legend tells the segments apart; they mean nothing here.
+const SEGMENT_STYLES: [Style; 3] = [
+    Style::new().fg(ORANGE),
+    Style::new().fg(SAND),
+    Style::new().fg(TEAL),
+];
 /// Cells the memory figure to the right of the bar needs: `  14.2 of 64 GiB`.
 const FIGURE_WIDTH: u16 = 18;
 const MIN_BAR_WIDTH: u16 = 10;
@@ -46,7 +50,7 @@ pub(super) fn draw(frame: &mut Frame, machine: Rect, gateway: Rect, app: &App, s
 }
 
 fn draw_machine(frame: &mut Frame, area: Rect, facts: &Facts, stacked: bool) {
-    let block = Block::bordered().title(" machine ").border_style(DIM);
+    let block = pane(" machine ");
     let inner = block.inner(area);
     let labels = label_column(stacked);
     let bar_width = inner
@@ -70,7 +74,7 @@ fn draw_machine(frame: &mut Frame, area: Rect, facts: &Facts, stacked: bool) {
 }
 
 fn draw_gateway(frame: &mut Frame, area: Rect, facts: &Facts) {
-    let block = Block::bordered().title(" gateway ").border_style(DIM);
+    let block = pane(" gateway ");
     let inner = block.inner(area);
     let state = match facts.gateway_port {
         Some(_) => Span::styled(format!(" {}", facts.gateway_state()), WARM),

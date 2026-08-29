@@ -12,7 +12,8 @@ use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    ACCENT, BOLD, BORDER_COLUMNS, CAUTION, DIM, SELECTED_ROW, WARM, centered, edited, keys,
+    ACCENT, BOLD, BORDER_COLUMNS, CAUTION, COOL, DIM, EYEBROW, SELECTED_MARK, SELECTED_ROW, WARM,
+    centered, edited, keys, pane,
 };
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
@@ -25,6 +26,9 @@ use crate::tui::text;
 const HEADERS: [&str; 5] = ["", "NAME", "RUNTIME", "STORE", "SIZE"];
 /// The column index of the model name, the one that flexes.
 const NAME: usize = 1;
+/// The column indices of the runtime and the store, the two in the cool hue.
+const RUNTIME: usize = 2;
+const STORE: usize = 3;
 /// The column index of the size, the one that is right-aligned.
 const SIZE: usize = 4;
 /// Space between columns.
@@ -32,8 +36,6 @@ const COLUMN_SPACING: u16 = 2;
 /// Column sets from fullest to sparsest: the store goes first, then the
 /// runtime, so a narrow pane keeps the name whole and the size visible.
 const COLUMN_SETS: [&[usize]; 3] = [&[0, 1, 2, 3, 4], &[0, 1, 2, 4], &[0, 1, 4]];
-/// The gutter mark on the selected row.
-const SELECTED: &str = "▎";
 
 /// Draw the shelf into `area`, scrolled so the selection stays in view, or
 /// the first-run invitation when there is nothing on it.
@@ -62,7 +64,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         SIZE => Cell::from(Line::from(HEADERS[SIZE]).right_aligned()),
         _ => Cell::from(HEADERS[column]),
     }))
-    .style(DIM);
+    .style(EYEBROW);
     let block = Block::bordered().title(title(app)).border_style(DIM);
     let body_area = block.inner(area);
     let table = Table::new(body, constraints(&column_widths, columns))
@@ -77,8 +79,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 /// One shelf row over `columns`: dim when it can't run here, bold when warm,
-/// the gutter marked when `selected`, and the size in the caution hue on a
-/// tight fit.
+/// the gutter marked when `selected`, the runtime and store in the cool hue
+/// unless the row is dim, and the size in the caution hue on a tight fit.
 fn body_row(row: &ShelfRow, selected: bool, columns: &[usize]) -> Row<'static> {
     let style = if row.dim() {
         DIM
@@ -101,11 +103,12 @@ fn body_row(row: &ShelfRow, selected: bool, columns: &[usize]) -> Row<'static> {
         }
     };
     let cells = columns.iter().map(|&column| match column {
-        0 if selected => marker(SELECTED),
+        0 if selected => marker(SELECTED_MARK),
         0 => marker(" "),
         SIZE => Cell::from(
             Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
         ),
+        RUNTIME | STORE if !row.dim() => Cell::from(Span::styled(row.cells[column].clone(), COOL)),
         _ => Cell::from(row.cells[column].clone()),
     });
     Row::new(cells).style(style)
@@ -242,7 +245,7 @@ fn title(app: &App) -> Line<'static> {
             DIM,
         ));
     } else {
-        spans.push(Span::raw(" shelf "));
+        spans.push(Span::styled(" shelf ", EYEBROW));
     }
     if app.sort != Sort::Name {
         spans.push(Span::styled(format!("· by {} ", app.sort.label()), DIM));
@@ -252,7 +255,7 @@ fn title(app: &App) -> Line<'static> {
 
 /// The koala and where to start, for a shelf with nothing on it yet.
 fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered().title(" shelf ").border_style(DIM);
+    let block = pane(" shelf ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -262,7 +265,7 @@ fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
         .iter()
         .zip(copy)
         .map(|(koala, line)| {
-            let mut spans = vec![Span::styled(format!("{koala}  "), BOLD)];
+            let mut spans = vec![Span::styled(format!("{koala}  "), EYEBROW)];
             spans.extend(line.spans);
             Line::from(spans)
         })

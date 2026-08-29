@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use crate::support::harnesses::HARNESSES;
 use crate::tui::launch::LaunchModal;
 use crate::tui::text;
-use crate::tui::ui::{BORDER_ROWS, DIM, SELECTED_ROW, keys, label_width, padded};
+use crate::tui::ui::{BORDER_ROWS, DIM, keys, label_width, padded, selected_row};
 
 /// The launch card's width: a harness, its binary, and the reason it is
 /// blocked, clipped to fit.
@@ -36,7 +36,7 @@ pub(super) fn launch(modal: &LaunchModal, inner: Rect) -> Vec<Line<'static>> {
             line = line.style(DIM);
         }
         if index == modal.selected {
-            line = line.style(SELECTED_ROW);
+            line = selected_row(line, inner.width as usize);
         }
         lines.push(line);
     }
