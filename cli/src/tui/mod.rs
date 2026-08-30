@@ -11,6 +11,7 @@ mod edit;
 mod effect;
 mod event;
 mod facts;
+mod keymap;
 mod launch;
 mod layout;
 mod markup;

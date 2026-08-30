@@ -1,7 +1,7 @@
 //! The task strip: the rows for background work and for what ran in the
-//! foreground, oldest first, each expiring a while after it finished. Owns
-//! the one invariant the reducer used to keep by hand: a finished row knows
-//! the tick it finished on.
+//! foreground, oldest first, each expiring a while after it finished. A
+//! finished row knows the tick it finished on, and the strip decides which
+//! rows a key acts on, so the reducer and the painter never disagree.
 
 use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 
@@ -92,17 +92,11 @@ impl TaskStrip {
 
     /// Drop the newest failed row; whether there was one.
     pub fn dismiss_newest_failure(&mut self) -> bool {
-        match self
-            .rows
-            .iter()
-            .rposition(|row| matches!(row.state, TaskState::Failed(_)))
-        {
-            Some(index) => {
-                self.rows.remove(index);
-                true
-            }
-            None => false,
-        }
+        let Some(id) = self.newest_failure() else {
+            return false;
+        };
+        self.rows.retain(|row| row.id != id);
+        true
     }
 
     /// Whether any task is still running.
@@ -144,13 +138,118 @@ impl TaskStrip {
         })
     }
 
-    /// The newest pull still downloading.
+    /// The rows a strip `height` rows tall shows, in their order: every
+    /// running row, and the newest finished rows in what room is left. More
+    /// running rows than fit keep the newest.
+    pub fn shown(&self, height: usize) -> Vec<&TaskRow> {
+        let running = self.rows.iter().filter(|row| row.running()).count();
+        let mut finished_room = height.saturating_sub(running);
+        let mut running_room = height.min(running);
+        let mut kept = Vec::new();
+        for row in self.rows.iter().rev() {
+            let room = if row.running() {
+                &mut running_room
+            } else {
+                &mut finished_room
+            };
+            if *room > 0 {
+                *room -= 1;
+                kept.push(row);
+            }
+        }
+        kept.reverse();
+        kept
+    }
+
+    /// The newest failed row, the one `d` dismisses.
+    pub fn newest_failure(&self) -> Option<TaskId> {
+        self.rows
+            .iter()
+            .rev()
+            .find(|row| matches!(row.state, TaskState::Failed(_)))
+            .map(|row| row.id)
+    }
+
+    /// The newest failed row when a strip `height` rows tall shows it: the
+    /// one `d` acts on, and the one that carries the hint. A failure under
+    /// more rows than fit shows no hint and does not go.
+    pub fn shown_failure(&self, height: usize) -> Option<TaskId> {
+        let shown = self.shown(height);
+        self.newest_failure()
+            .filter(|id| shown.iter().any(|row| row.id == *id))
+    }
+
+    /// The rows whose hints act among those a strip `height` rows tall
+    /// shows; a target off screen gets no hint, and the key does not act on
+    /// it either. `is_selected` says whether a pull reference names the
+    /// selected record. The painter passes the height it drew, the reducer
+    /// the layout's cap; the two differ only on a terminal too short for
+    /// the whole strip, where the drawn height falls under the cap.
+    pub fn hint_targets(&self, height: usize, is_selected: impl Fn(&str) -> bool) -> HintTargets {
+        let shown = self.shown(height);
+        let visible = |id: TaskId| shown.iter().any(|row| row.id == id);
+        let done_on_selected = shown
+            .iter()
+            .filter(|row| match (&row.kind, &row.state) {
+                (Some(TaskKind::Pull(plan)), TaskState::Done(_)) => is_selected(&plan.reference),
+                _ => false,
+            })
+            .map(|row| row.id)
+            .collect();
+        HintTargets {
+            failure: self.shown_failure(height),
+            pull: self.newest_running_pull().filter(|id| visible(*id)),
+            done_on_selected,
+        }
+    }
+
+    /// The newest pull still running, resolving or downloading.
     pub fn newest_running_pull(&self) -> Option<TaskId> {
         self.rows
             .iter()
             .rev()
             .find(|row| row.running() && matches!(row.kind, Some(TaskKind::Pull(_))))
             .map(|row| row.id)
+    }
+}
+
+/// The rows whose hints act, among those on screen: the newest failure
+/// answers `d`, the newest running pull `c`, and the done pulls whose model
+/// is selected `w` and `l`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HintTargets {
+    failure: Option<TaskId>,
+    pull: Option<TaskId>,
+    done_on_selected: Vec<TaskId>,
+}
+
+/// Which of a row's hints apply to it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowHints {
+    pub dismissable: bool,
+    pub cancellable: bool,
+    /// Whether `w` and `l` would act on the model this row pulled.
+    pub on_selected: bool,
+}
+
+impl HintTargets {
+    /// The failure `d` dismisses, if one is on screen.
+    pub fn failure(&self) -> Option<TaskId> {
+        self.failure
+    }
+
+    /// The pull `c` cancels, if one is on screen.
+    pub fn pull(&self) -> Option<TaskId> {
+        self.pull
+    }
+
+    /// The hints that apply to `row`.
+    pub fn for_row(&self, row: &TaskRow) -> RowHints {
+        RowHints {
+            dismissable: self.failure == Some(row.id),
+            cancellable: self.pull == Some(row.id),
+            on_selected: self.done_on_selected.contains(&row.id),
+        }
     }
 }
 
@@ -186,7 +285,9 @@ mod tests {
             0,
         );
         assert!(!strip.expire(DONE_LINGER_TICKS));
+        assert_eq!(strip.newest_failure(), Some(id));
         assert!(strip.dismiss_newest_failure());
+        assert_eq!(strip.newest_failure(), None);
         assert!(!strip.dismiss_newest_failure());
     }
 
@@ -218,5 +319,34 @@ mod tests {
         );
         assert_eq!(strip.rows().len(), 2);
         assert!(strip.rows()[1].kind.is_none());
+    }
+
+    fn pull_plan(reference: &str) -> TaskKind {
+        TaskKind::Pull(super::super::testing::plan(reference))
+    }
+
+    #[test]
+    fn hints_target_only_the_rows_a_strip_shows() {
+        let (mut strip, pull) = strip_with(pull_plan("gemma3"));
+        let targets = strip.hint_targets(4, |_| false);
+        assert_eq!(targets.pull(), Some(pull));
+        assert_eq!(targets.failure(), None);
+        assert!(targets.for_row(&strip.rows()[0]).cancellable);
+        for _ in 0..4 {
+            strip.start(TaskId::next(), TaskKind::Scan);
+        }
+        assert_eq!(strip.hint_targets(4, |_| false).pull(), None);
+        assert_eq!(strip.hint_targets(5, |_| false).pull(), Some(pull));
+        strip.moved(
+            TaskEvent {
+                id: pull,
+                state: TaskState::Done("pulled gemma3".to_owned()),
+            },
+            0,
+        );
+        let selected = strip.hint_targets(5, |reference| reference == "gemma3");
+        assert!(selected.for_row(&strip.rows()[0]).on_selected);
+        let elsewhere = strip.hint_targets(5, |reference| reference == "llava");
+        assert!(!elsewhere.for_row(&strip.rows()[0]).on_selected);
     }
 }

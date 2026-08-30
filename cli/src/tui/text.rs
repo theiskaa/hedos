@@ -1,12 +1,16 @@
 //! The labels and numbers the screen shows, in their short human forms.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use kernel::capabilities::GenerationStats;
+use kernel::profiles::{FitAssessment, FitVerdict};
+use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
+use crate::support::shelf_table::verdict_label;
+
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
@@ -79,6 +83,42 @@ pub fn home_relative(path: &str, home: Option<&Path>) -> String {
     }
 }
 
+/// `path` with this user's home written as `~`, read from `HOME` once.
+pub fn at_home(path: &str) -> String {
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    let home = HOME.get_or_init(|| std::env::var_os("HOME").map(PathBuf::from));
+    home_relative(path, home.as_deref())
+}
+
+/// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
+/// footprint is unknown: the shape the detail and the pull preview share.
+pub fn fit_summary(footprint_mb: Option<i64>, memory_bytes: u64) -> String {
+    fit_parts(footprint_mb, memory_bytes).0
+}
+
+/// [`fit_summary`] and, when the model fits at all, the bytes it needs.
+pub fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
+    match FitVerdict::assess(footprint_mb, memory_bytes) {
+        None => ("unknown footprint".to_owned(), None),
+        Some(FitAssessment {
+            verdict: FitVerdict::TooLarge,
+            ..
+        }) => ("too big for this machine".to_owned(), None),
+        Some(FitAssessment {
+            verdict,
+            required_bytes,
+        }) => (
+            format!(
+                "{} · needs {} of {} GiB",
+                verdict_label(Some(verdict)),
+                gib(required_bytes),
+                gib(memory_bytes as i64)
+            ),
+            Some(required_bytes),
+        ),
+    }
+}
+
 /// `text` cut to `width` cells by dropping its middle, so a path keeps both
 /// its root and its file name.
 pub fn elide_middle(text: &str, width: usize) -> String {
@@ -93,6 +133,38 @@ pub fn elide_middle(text: &str, width: usize) -> String {
     let tail = take_cells(graphemes.iter().rev().copied(), width - 1 - head.width());
     let tail: String = tail.graphemes(true).rev().collect();
     format!("{head}…{tail}")
+}
+
+/// `text` cut to `width` cells from the tail, with `…` where it was cut, for
+/// a value whose start carries the meaning.
+pub fn clip(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_owned();
+    }
+    if width < 2 {
+        return take_cells(text.graphemes(true), width);
+    }
+    format!("{}…", take_cells(text.graphemes(true), width - 1))
+}
+
+/// A count in its shortest readable form: `987`, `1.5k`, `45k`, `1.2M`.
+pub fn compact(count: i64) -> String {
+    const THOUSAND: f64 = 1000.0;
+    let count = count.max(0);
+    let scaled = |value: f64, unit: &str| {
+        if value >= 10.0 {
+            format!("{}{unit}", value.round() as i64)
+        } else {
+            format!("{}{unit}", one_decimal(value))
+        }
+    };
+    if count >= 999_500 {
+        scaled(count as f64 / (THOUSAND * THOUSAND), "M")
+    } else if count >= 1000 {
+        scaled(count as f64 / THOUSAND, "k")
+    } else {
+        count.to_string()
+    }
 }
 
 /// The leading graphemes of `graphemes` that fit in `width` cells.
@@ -246,6 +318,24 @@ mod tests {
             "/a/very…le.gguf"
         );
         assert_eq!(elide_middle("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn compact_reads_in_thousands() {
+        assert_eq!(compact(987), "987");
+        assert_eq!(compact(1_500), "1.5k");
+        assert_eq!(compact(45_312), "45k");
+        assert_eq!(compact(1_234_567), "1.2M");
+        assert_eq!(compact(999_950), "1M");
+        assert_eq!(compact(-3), "0");
+    }
+
+    #[test]
+    fn clipping_keeps_the_head() {
+        assert_eq!(clip("short", 10), "short");
+        assert_eq!(clip("chat, complete, embed", 12), "chat, compl…");
+        assert_eq!(clip("日本語のモデル", 5), "日本…");
+        assert_eq!(clip("abc", 1), "a");
     }
 
     #[test]

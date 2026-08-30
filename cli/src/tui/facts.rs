@@ -159,6 +159,17 @@ impl Facts {
     pub fn disk_bytes(&self) -> i64 {
         self.disk_by_store.iter().map(|(_, bytes)| bytes).sum()
     }
+
+    /// The gateway in a phrase: `on :11434 · 3 req/min`, or `off`.
+    pub fn gateway_state(&self) -> String {
+        match self.gateway_port {
+            Some(port) => format!(
+                "on :{port} · {} req/min",
+                self.activity.requests_last_minute
+            ),
+            None => "off".to_owned(),
+        }
+    }
 }
 
 /// Footprints summed per store kind, largest first, ties by name. A record

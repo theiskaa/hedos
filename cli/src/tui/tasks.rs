@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
+use kernel::discovery::service::DiscoverySummary;
 use kernel::install::event::{InstallEvent, InstallProgress};
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -26,7 +27,7 @@ use super::facts::Facts;
 use super::pull::SEARCH_LIMIT;
 use super::text;
 use crate::support::removal::remove_and_forget;
-use crate::support::residency::{is_resident, residency_outcome, unload_anywhere, warm_request};
+use crate::support::residency::{is_resident, unload_anywhere, warm_request};
 use crate::support::session::Session;
 
 /// How long a warm through the gateway may take; a large model legitimately
@@ -193,6 +194,12 @@ pub struct TaskLabel {
 }
 
 impl TaskKind {
+    /// Every verb a strip row can start with, the hand-offs' included; the
+    /// strip's verb column is as wide as the widest.
+    pub const VERBS: [&'static str; 8] = [
+        "scan", "warm", "unload", "pull", "remove", "launch", "chat", "serve",
+    ];
+
     /// The label the strip shows for this kind.
     pub fn label(&self) -> TaskLabel {
         TaskLabel {
@@ -432,11 +439,31 @@ async fn scan(session: &Session) -> Result<String, String> {
         .discover()
         .await
         .map_err(|error| error.to_string())?;
-    let mut line = summary.headline();
-    if !summary.issues.is_empty() {
-        line.push_str(&format!(" · {} issue(s)", summary.issues.len()));
+    Ok(scan_summary(&summary))
+}
+
+/// `found 12 models · 9 hf · 3 ollama · 2 issues` in the strip's own
+/// register, the stores in the order `per_kind` keeps them, sorted by
+/// kind, or `found nothing`.
+fn scan_summary(summary: &DiscoverySummary) -> String {
+    if summary.total_count == 0 {
+        return "found nothing".to_owned();
     }
-    Ok(line)
+    let mut parts = vec![format!(
+        "found {}",
+        text::count(summary.total_count, "model")
+    )];
+    parts.extend(
+        summary
+            .per_kind
+            .iter()
+            .filter(|(_, stat)| stat.count > 0)
+            .map(|(kind, stat)| format!("{} {}", stat.count, text::short_store(kind.as_str()))),
+    );
+    if !summary.issues.is_empty() {
+        parts.push(text::count(summary.issues.len(), "issue"));
+    }
+    parts.join(" · ")
 }
 
 async fn warm(session: &Session, id: &str) -> Result<String, String> {
@@ -455,8 +482,9 @@ async fn warm(session: &Session, id: &str) -> Result<String, String> {
         result.map_err(|error| error.to_string())?;
     }
     Ok(match is_resident(session, record).await {
-        Ok(resident) => residency_outcome(resident).to_owned(),
-        Err(reason) => format!("loaded; {reason}"),
+        Ok(true) => "warm in this process".to_owned(),
+        Ok(false) => "loaded · residency not tracked".to_owned(),
+        Err(reason) => format!("loaded · {reason}"),
     })
 }
 
@@ -479,7 +507,7 @@ async fn warm_via_gateway(id: &str, port: u16) -> Result<String, String> {
         .await
         .map_err(|error| error.to_string())?;
     if response.status().is_success() {
-        return Ok(format!("warm on the gateway at :{port}"));
+        return Ok(format!("warm on the gateway :{port}"));
     }
     let status = response.status();
     let reason = response.text().await.unwrap_or_default();
@@ -613,3 +641,6 @@ impl AuditReader {
         entries
     }
 }
+
+#[cfg(test)]
+mod tests;

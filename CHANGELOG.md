@@ -2,6 +2,19 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.3.1 - 2026-08-29
+
+A craft pass over `hedos shelf`. Nothing the screen does has changed; how well it does it has.
+
+- The help is generated from the keymap and grouped by what each key acts on, so a key cannot exist without its help line and nothing collides.
+- The footer sheds keys one at a time, keeps `? help  q quit` at every width, and adds `enter expand` and `o sort`.
+- The pull card carries each recommendation's blurb, spaces its categories, hints what to type, and names the model in its preview.
+- The shelf has a palette of its own: warm grey chrome, sand headings, a teal for runtimes and stores, and green, amber, and coral for what is loaded, tight, and failed, all built around the orange the wordmark now wears and orange kept for focus and motion; the selected row is a tinted bar with a gutter mark instead of a reversed one.
+- Modals sit on a darkened screen with dim borders.
+- Task rows show `c cancel` and `d dismiss` only on the row the key acts on, and a running download is never pushed off the strip.
+- Long values wrap or elide instead of running past their pane; the header and detail no longer repeat the machine block; the stacked layout gains a `gateway` line.
+- A model whose weights are gone reads as `gone` and can be removed or pulled again; an abandoned partial download is removable.
+
 ## v1.3.0 - 2026-08-27
 
 The shelf as a screen. `hedos shelf` opens a TUI over everything the command line already does, and keeps on screen what a command line cannot: what is loaded and by whom, how much memory is left, what the gateway served today. The rest of the release hardens what the screen exposed.
