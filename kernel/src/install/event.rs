@@ -1,16 +1,25 @@
 //! The progress and event types an install emits.
 
+use serde::{Deserialize, Serialize};
+
 /// Download progress for an install: bytes so far, the total (when known), and
 /// which file is in flight.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+///
+/// Serializable because a detached pull writes it into its `status.json`, which
+/// is the only way an attached client learns how far along the transfer is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub struct InstallProgress {
     /// Bytes downloaded so far.
+    #[serde(default)]
     pub bytes_downloaded: i64,
     /// The total to download, if known.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub total_bytes: Option<i64>,
     /// Whether `total_bytes` is a partial/growing estimate (so no fraction).
+    #[serde(default)]
     pub total_is_partial: bool,
     /// The file currently downloading, if any.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub current_file: Option<String>,
 }
 

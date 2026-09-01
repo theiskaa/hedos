@@ -10,6 +10,7 @@ pub mod file_selection;
 pub mod ollama_pull;
 pub mod plan;
 pub mod provider;
+pub mod pulls;
 pub mod reference;
 
 pub use catalog::{InstallCatalogEntry, InstallCategory, recommended, recommended_for_ram};
@@ -20,3 +21,7 @@ pub use plan::{
     ActiveInstall, InstallBrowseResult, InstallPlan, InstallPlanFile, InstallSearchHit,
 };
 pub use provider::{InstallAvailability, InstallProviderId};
+pub use pulls::{
+    PullControl, PullError, PullEvent, PullEventKind, PullJob, PullJobDir, PullLock, PullState,
+    PullStatus, PullStore,
+};
