@@ -103,10 +103,18 @@ pub fn build_kernel(dirs: &HedosDirs, settings: &Settings) -> Result<Kernel, Boo
 
 /// The default install service: the Ollama and Hugging Face providers.
 pub fn default_install_service() -> InstallService {
+    install_service(&Settings::default())
+}
+
+/// The install service the `settings` describe: the same providers, with the
+/// Hugging Face one keeping a paused pull's partial files as long as
+/// `pull.partial_age_hours` says.
+pub fn install_service(settings: &Settings) -> InstallService {
     let home = home_dir();
     let transport: Arc<dyn InstallTransport> = Arc::new(ReqwestTransport::new());
     let api = HFHubAPI::new(Arc::clone(&transport)).with_token(hf_token(&home));
-    let hugging_face = HuggingFaceInstallProvider::new(api, transport, hf_cache_root(&home), home);
+    let hugging_face = HuggingFaceInstallProvider::new(api, transport, hf_cache_root(&home), home)
+        .with_incomplete_age(settings.pull.partial_age());
     let providers: Vec<Arc<dyn InstallProvider>> = vec![
         Arc::new(OllamaInstallProvider::new()),
         Arc::new(hugging_face),

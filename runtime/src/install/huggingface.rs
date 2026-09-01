@@ -21,7 +21,10 @@ use kernel::install::{
 use kernel::records::SourceKind;
 use tokio::sync::mpsc;
 
-use super::hf_cache::{HFCacheLayout, HFCacheWriter};
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::hf_cache::{DEFAULT_INCOMPLETE_AGE, HFCacheLayout, HFCacheWriter};
 use super::hf_hub::HFHubAPI;
 use super::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use super::transport::InstallTransport;
@@ -35,6 +38,7 @@ pub struct HuggingFaceInstallProvider {
     transport: Arc<dyn InstallTransport>,
     root: PathBuf,
     home: PathBuf,
+    incomplete_age: Duration,
 }
 
 impl HuggingFaceInstallProvider {
@@ -51,7 +55,14 @@ impl HuggingFaceInstallProvider {
             transport,
             root: root.into(),
             home: home.into(),
+            incomplete_age: DEFAULT_INCOMPLETE_AGE,
         }
+    }
+
+    /// This provider keeping a paused pull's partial files for `age`.
+    pub fn with_incomplete_age(mut self, age: Duration) -> Self {
+        self.incomplete_age = age;
+        self
     }
 
     fn display_path(&self) -> String {
@@ -104,7 +115,8 @@ impl InstallProvider for HuggingFaceInstallProvider {
             }
 
             let layout = HFCacheLayout::new(&self.root, &repo);
-            let writer = HFCacheWriter::new(layout, Arc::clone(&self.transport));
+            let writer = HFCacheWriter::new(layout, Arc::clone(&self.transport))
+                .with_incomplete_age(self.incomplete_age);
             let total = summed_bytes(&selection);
             let present = writer.present_bytes(&selection, info.sha.as_deref().unwrap_or(""));
             let remaining = total.map(|total| (total - present).max(0));
@@ -128,27 +140,32 @@ impl InstallProvider for HuggingFaceInstallProvider {
     }
 
     fn install(&self, plan: InstallPlan) -> InstallEventStream {
+        self.install_keeping(plan, StdArc::new(AtomicBool::new(false)))
+    }
+
+    fn install_keeping(&self, plan: InstallPlan, keep: StdArc<AtomicBool>) -> InstallEventStream {
         let (tx, rx) = mpsc::channel(32);
         let api = self.api.clone();
         let transport = Arc::clone(&self.transport);
         let root = self.root.clone();
+        let incomplete_age = self.incomplete_age;
         tokio::spawn(async move {
             let layout = HFCacheLayout::new(&root, &plan.reference);
-            let writer = HFCacheWriter::new(layout, transport);
+            let writer = HFCacheWriter::new(layout, transport).with_incomplete_age(incomplete_age);
             let repo_existed_before = writer.layout().repo_directory().exists();
 
             let outcome = tokio::select! {
                 biased;
                 _ = tx.closed() => {
                     // Cancelled: the receiver is gone, so just clean up.
-                    clean_up_after_interruption(&writer, repo_existed_before);
+                    clean_up_after_interruption(&writer, repo_existed_before, &keep);
                     return;
                 }
                 outcome = run_install(&api, &writer, &plan, &tx) => outcome,
             };
 
             if let Err(error) = outcome {
-                clean_up_after_interruption(&writer, repo_existed_before);
+                clean_up_after_interruption(&writer, repo_existed_before, &keep);
                 let _ = tx.send(Err(error)).await;
             }
         });
@@ -266,8 +283,15 @@ fn download_order(mut selection: Vec<HFSibling>) -> Vec<HFSibling> {
 /// If the repo wasn't there before, drop a half-finished install: remove it
 /// entirely unless a substantial blob landed, in which case keep the blobs but
 /// drop the ref/snapshots until a blob actually completes.
-fn clean_up_after_interruption(writer: &HFCacheWriter, repo_existed_before: bool) {
-    if repo_existed_before {
+///
+/// A stop the user asked to be resumable keeps everything: a paused pull that
+/// came back to nothing on disk would make the record's word "paused" a lie.
+fn clean_up_after_interruption(
+    writer: &HFCacheWriter,
+    repo_existed_before: bool,
+    keep: &AtomicBool,
+) {
+    if repo_existed_before || keep.load(Ordering::Relaxed) {
         return;
     }
     if !writer.has_substantial_progress(WEIGHT_KEEP_THRESHOLD) {
@@ -385,6 +409,73 @@ impl InstallProgressMeter {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::install::transport::ReqwestTransport;
+
+    fn writer_at(root: &Path) -> HFCacheWriter {
+        let transport: Arc<dyn InstallTransport> = Arc::new(ReqwestTransport::new());
+        HFCacheWriter::new(HFCacheLayout::new(root, "org/Model"), transport)
+    }
+
+    /// A repo directory with one small blob in it, as a first-time pull that was
+    /// stopped early leaves behind.
+    fn half_pulled(root: &Path) -> HFCacheWriter {
+        let writer = writer_at(root);
+        writer.prepare_skeleton("rev1", None).expect("skeleton");
+        std::fs::write(
+            writer.layout().repo_directory().join("blobs").join("part"),
+            vec![1u8; 16],
+        )
+        .expect("blob");
+        writer
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("hedos-hfclean-{name}-{stamp}"));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn a_stop_the_user_asked_to_resume_keeps_what_landed() {
+        let root = temp_dir("keep");
+        let writer = half_pulled(&root);
+
+        clean_up_after_interruption(&writer, false, &AtomicBool::new(true));
+
+        assert!(
+            writer.layout().repo_directory().exists(),
+            "a paused pull kept nothing on disk"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_cancelled_first_pull_leaves_no_stub_behind() {
+        let root = temp_dir("drop");
+        let writer = half_pulled(&root);
+
+        clean_up_after_interruption(&writer, false, &AtomicBool::new(false));
+
+        assert!(!writer.layout().repo_directory().exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_repo_that_was_already_there_is_never_tidied() {
+        let root = temp_dir("existing");
+        let writer = half_pulled(&root);
+
+        clean_up_after_interruption(&writer, true, &AtomicBool::new(false));
+
+        assert!(writer.layout().repo_directory().exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     use super::*;
 
     fn weight(name: &str, bytes: i64) -> HFSibling {

@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use kernel::install::reference::{hugging_face_repo, is_hugging_face_link, ollama_direct_tag};
@@ -57,11 +57,13 @@ struct State {
     installs: HashMap<String, ActiveInstall>,
     phases: HashMap<String, InstallEvent>,
     terminal: HashMap<String, InstallEvent>,
+    failures: HashMap<String, InstallError>,
     terminal_order: VecDeque<String>,
     in_flight: HashMap<String, String>,
     subscribers: HashMap<String, HashMap<u64, mpsc::UnboundedSender<InstallEvent>>>,
     completion_subscribers: HashMap<u64, mpsc::UnboundedSender<HashSet<SourceKind>>>,
     cancels: HashMap<String, Arc<Notify>>,
+    keeps: HashMap<String, Arc<AtomicBool>>,
     next_token: u64,
 }
 
@@ -214,6 +216,7 @@ impl InstallService {
         let flight_key = flight_key(&plan);
 
         let cancel = Arc::new(Notify::new());
+        let keep = Arc::new(AtomicBool::new(false));
         let id = {
             let mut state = self.inner.lock();
             // Dedup before the disk check: an already-running install returns its
@@ -238,12 +241,21 @@ impl InstallService {
             state.phases.insert(id.clone(), InstallEvent::Queued);
             state.in_flight.insert(flight_key.clone(), id.clone());
             state.cancels.insert(id.clone(), Arc::clone(&cancel));
+            state.keeps.insert(id.clone(), Arc::clone(&keep));
             Inner::emit(&mut state, &id, &InstallEvent::Queued);
             id
         };
 
         let inner = Arc::clone(&self.inner);
-        tokio::spawn(run(inner, id.clone(), plan, flight_key, provider, cancel));
+        tokio::spawn(run(
+            inner,
+            id.clone(),
+            plan,
+            flight_key,
+            provider,
+            cancel,
+            keep,
+        ));
         Ok(id)
     }
 
@@ -283,9 +295,30 @@ impl InstallService {
         installs
     }
 
+    /// Why an install failed, while its terminal event is still remembered.
+    ///
+    /// The event carries only the message, because that is all a UI needs; a
+    /// worker deciding whether to retry needs the error itself.
+    pub fn failure(&self, id: &str) -> Option<InstallError> {
+        self.inner.lock().failures.get(id).cloned()
+    }
+
     /// Request cancellation of an install (a no-op for an unknown/concluded id).
     pub fn cancel(&self, id: &str) {
         let state = self.inner.lock();
+        if let Some(cancel) = state.cancels.get(id) {
+            cancel.notify_one();
+        }
+    }
+
+    /// Stop an install but keep what has landed, for a pull the user paused
+    /// rather than abandoned. The install still concludes as cancelled; what
+    /// changes is that the provider is told not to tidy the partial away.
+    pub fn stop_keeping(&self, id: &str) {
+        let state = self.inner.lock();
+        if let Some(keep) = state.keeps.get(id) {
+            keep.store(true, Ordering::Relaxed);
+        }
         if let Some(cancel) = state.cancels.get(id) {
             cancel.notify_one();
         }
@@ -364,24 +397,36 @@ impl Inner {
         Self::emit(&mut state, id, &InstallEvent::Progress(progress));
     }
 
-    fn conclude(&self, id: &str, flight_key: &str, source_kind: &SourceKind, event: InstallEvent) {
+    fn conclude(
+        &self,
+        id: &str,
+        flight_key: &str,
+        source_kind: &SourceKind,
+        event: InstallEvent,
+        failure: Option<InstallError>,
+    ) {
         let mut state = self.lock();
         if !state.installs.contains_key(id) {
             return;
         }
         Self::emit(&mut state, id, &event);
         state.terminal.insert(id.to_owned(), event);
+        if let Some(failure) = failure {
+            state.failures.insert(id.to_owned(), failure);
+        }
         state.terminal_order.push_back(id.to_owned());
         if state.terminal_order.len() > TERMINAL_HISTORY_LIMIT
             && let Some(oldest) = state.terminal_order.pop_front()
         {
             state.terminal.remove(&oldest);
+            state.failures.remove(&oldest);
         }
         // Dropping the subscriber senders ends each feed with a clean close.
         state.subscribers.remove(id);
         state.installs.remove(id);
         state.phases.remove(id);
         state.cancels.remove(id);
+        state.keeps.remove(id);
         if state.in_flight.get(flight_key) == Some(&id.to_owned()) {
             state.in_flight.remove(flight_key);
         }
@@ -413,15 +458,17 @@ async fn run(
     flight_key: String,
     provider: Arc<dyn InstallProvider>,
     cancel: Arc<Notify>,
+    keep: Arc<AtomicBool>,
 ) {
     let source_kind = provider.source_kind();
     inner.transition(&id, InstallEvent::Preparing);
-    let mut stream = provider.install(plan);
+    let mut stream = provider.install_keeping(plan, keep);
 
     // One `Notified` future, pinned for the whole loop, so cancellation is a
     // clean one-shot rather than a fresh future per iteration.
     let cancelled = cancel.notified();
     tokio::pin!(cancelled);
+    let mut failure = None;
     let terminal = loop {
         tokio::select! {
             biased;
@@ -434,9 +481,11 @@ async fn run(
                 Some(Ok(InstallStreamEvent::Progress(progress))) => {
                     inner.apply_progress(&id, progress);
                 }
-                Some(Err(error)) => break InstallEvent::Failed {
-                    message: error.to_string(),
-                },
+                Some(Err(error)) => {
+                    let message = error.to_string();
+                    failure = Some(error);
+                    break InstallEvent::Failed { message };
+                }
             },
         }
     };
@@ -444,7 +493,7 @@ async fn run(
     // Drop the stream before concluding so a cancel reaches the provider's
     // cleanup (its sender sees the receiver gone) before we mark the install done.
     drop(stream);
-    inner.conclude(&id, &flight_key, &source_kind, terminal);
+    inner.conclude(&id, &flight_key, &source_kind, terminal, failure);
 }
 
 fn flight_key(plan: &InstallPlan) -> String {

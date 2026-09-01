@@ -9,6 +9,7 @@ pub mod ollama;
 pub mod provider;
 pub mod service;
 pub mod transport;
+pub mod worker;
 
 pub use hf_cache::{HFCacheLayout, HFCacheWriter};
 pub use hf_hub::{HFHubAPI, HFModelInfo};
@@ -20,3 +21,6 @@ pub use transport::{
     InstallRequest, InstallResponse, InstallTransport, ReqwestTransport, StreamFuture, StreamStart,
     TransportFuture,
 };
+pub use worker::{PullWorker, Registrar, RetryPolicy, WorkerError};
+#[cfg(unix)]
+pub use worker::{ignore_hangup, spawn_detached};

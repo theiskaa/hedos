@@ -357,3 +357,27 @@ async fn begin_rejects_an_unknown_provider() {
         other => panic!("expected ProviderUnknown, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_failed_install_remembers_why_until_its_history_rolls_over() {
+    let provider = MockProvider::hf(Behavior::Fail(
+        Vec::new(),
+        "the connection was reset".to_owned(),
+    ));
+    let service = InstallService::new(vec![provider]);
+    let id = service.begin(plan()).expect("begin");
+    let mut events = service.events(&id);
+    while let Some(event) = events.recv().await {
+        if event.is_terminal() {
+            break;
+        }
+    }
+
+    match service.failure(&id) {
+        Some(InstallError::TransferFailed(message)) => {
+            assert_eq!(message, "the connection was reset");
+        }
+        other => panic!("expected the typed error back, got {other:?}"),
+    }
+    assert!(service.failure("no-such-install").is_none());
+}

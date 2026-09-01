@@ -4,6 +4,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProviderId, InstallSearchHit,
@@ -51,6 +53,19 @@ pub trait InstallProvider: Send + Sync {
 
     /// Whether the provider can install right now (daemon present, reachable, …).
     fn availability(&self) -> InstallFuture<'_, InstallAvailability>;
+
+    /// Install `plan`, keeping whatever landed if the install is stopped while
+    /// `keep` is set.
+    ///
+    /// A stop reaches a provider as its event receiver being dropped, which says
+    /// nothing about why. `keep` is how a deliberate pause is told apart from a
+    /// cancel, so a provider that tidies up after an interruption can leave a
+    /// paused download's bytes where they are. Providers that keep nothing of
+    /// their own (the Ollama daemon owns its blobs) need not override this.
+    fn install_keeping(&self, plan: InstallPlan, keep: Arc<AtomicBool>) -> InstallEventStream {
+        let _ = keep;
+        self.install(plan)
+    }
 
     /// Search for models matching `query`, up to `limit` hits.
     fn search(

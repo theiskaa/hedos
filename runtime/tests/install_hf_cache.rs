@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use kernel::install::InstallError;
 use kernel::install::file_selection::HFSibling;
@@ -346,7 +347,9 @@ async fn http_errors_map_to_auth_and_missing() {
         let result = download_one(&writer, &sibling, "rev1").await;
         match (check, result) {
             ("auth", Err(InstallError::AuthRequired(_))) => {}
-            ("missing", Err(InstallError::TransferFailed(m))) if m.contains("missing") => {}
+            // A file the repo does not serve is a fact, not a bad connection:
+            // a background pull must not keep asking for it.
+            ("missing", Err(InstallError::ReferenceNotFound(m))) if m.contains("model.bin") => {}
             ("other", Err(InstallError::TransferFailed(m))) if m.contains("HTTP 500") => {}
             other => panic!("unexpected for {status}: {other:?}"),
         }
@@ -399,5 +402,28 @@ async fn interruption_recovery_helpers_behave() {
 
     writer.remove_repo();
     assert!(!writer.layout().repo_directory().exists());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn how_long_a_partial_is_kept_is_a_setting() {
+    let root = temp_root();
+    let patient = writer(&root, StreamMock::serving(b""));
+    patient.prepare_skeleton("revX", None).expect("skeleton");
+    let blobs = patient.layout().repo_directory().join("blobs");
+    std::fs::write(blobs.join("stray.incomplete"), vec![1u8; 8]).unwrap();
+
+    // The default keeps a fresh stray: another install may still be writing it.
+    patient
+        .remove_stray_incompletes(&HashSet::new())
+        .expect("reap");
+    assert!(blobs.join("stray.incomplete").exists());
+
+    // A cache told to keep nothing reaps the same file.
+    let impatient = writer(&root, StreamMock::serving(b"")).with_incomplete_age(Duration::ZERO);
+    impatient
+        .remove_stray_incompletes(&HashSet::new())
+        .expect("reap");
+    assert!(!blobs.join("stray.incomplete").exists());
     std::fs::remove_dir_all(&root).ok();
 }

@@ -25,9 +25,10 @@ const HASH_CHUNK_BYTES: usize = 1 << 20;
 const STREAM_RESUMES: usize = 5;
 /// The wait before the first reopen; each further one waits a step longer.
 const RESUME_BACKOFF: Duration = Duration::from_secs(2);
-/// Stray `.incomplete` blobs younger than this are left alone (another install
-/// may still be writing them); older ones are reaped.
-const STALE_INCOMPLETE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long a stray `.incomplete` blob is kept by default. A younger one may
+/// belong to an install still writing it, and a paused pull's bytes are worth
+/// keeping for a while; `hedos.toml`'s `pull.partial_age_hours` overrides it.
+pub const DEFAULT_INCOMPLETE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The on-disk paths of one repo's hub-cache directory.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -92,12 +93,23 @@ impl HFCacheLayout {
 pub struct HFCacheWriter {
     layout: HFCacheLayout,
     transport: Arc<dyn InstallTransport>,
+    incomplete_age: Duration,
 }
 
 impl HFCacheWriter {
     /// A writer for `layout`, fetching over `transport`.
     pub fn new(layout: HFCacheLayout, transport: Arc<dyn InstallTransport>) -> Self {
-        Self { layout, transport }
+        Self {
+            layout,
+            transport,
+            incomplete_age: DEFAULT_INCOMPLETE_AGE,
+        }
+    }
+
+    /// This writer keeping a stray partial for `age` instead of the default day.
+    pub fn with_incomplete_age(mut self, age: Duration) -> Self {
+        self.incomplete_age = age;
+        self
     }
 
     /// The layout this writer targets.
@@ -227,9 +239,12 @@ impl HFCacheWriter {
                 }
                 206 => {}
                 401 | 403 => return Err(InstallError::AuthRequired(self.layout.repo.clone())),
+                // A file the plan named that the repo no longer serves is a
+                // fact about the repo, not a bad connection: retrying it would
+                // ask forever for something that is not there.
                 404 => {
-                    return Err(InstallError::TransferFailed(format!(
-                        "{} is missing from {}",
+                    return Err(InstallError::ReferenceNotFound(format!(
+                        "{} in {}",
                         sibling.rfilename, self.layout.repo
                     )));
                 }
@@ -315,7 +330,7 @@ impl HFCacheWriter {
     /// stale cutoff (a fresh one may belong to a concurrent install).
     pub fn remove_stray_incompletes(&self, keeping: &HashSet<String>) -> Result<(), InstallError> {
         let cutoff = SystemTime::now()
-            .checked_sub(STALE_INCOMPLETE_AGE)
+            .checked_sub(self.incomplete_age)
             .unwrap_or(SystemTime::UNIX_EPOCH);
         self.reap_incompletes(keeping, cutoff)
     }
