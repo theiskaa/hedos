@@ -23,5 +23,5 @@ pub use plan::{
 pub use provider::{InstallAvailability, InstallProviderId};
 pub use pulls::{
     PullControl, PullError, PullEvent, PullEventKind, PullJob, PullJobDir, PullLock, PullState,
-    PullStatus, PullStore,
+    PullStatus, PullStore, take_lock,
 };

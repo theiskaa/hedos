@@ -36,9 +36,12 @@ fn store(dir: &TempDir) -> PullStore {
     PullStore::new(dir.join("pulls"))
 }
 
-/// The lock file a worker leaves behind, with nobody holding it.
-fn abandoned_lock(job: &PullJobDir) {
+/// What a worker that died leaves behind: its pid in the record and its lock
+/// file with nobody holding it.
+fn abandoned_worker(job: &PullJobDir) {
     File::create(job.lock_path()).expect("lock file");
+    job.update_status(1, |status| status.pid = Some(4_242))
+        .expect("record the pid");
 }
 
 #[test]
@@ -237,7 +240,7 @@ fn a_running_job_with_no_worker_reads_as_interrupted() {
     let job = store.create(&plan("gemma3:4b"), 1_000).unwrap();
     job.update_status(1, |status| status.state = PullState::Running)
         .unwrap();
-    abandoned_lock(&job);
+    abandoned_worker(&job);
 
     assert!(!job.worker_alive());
     assert_eq!(job.stored_status().state, PullState::Running);
@@ -250,10 +253,12 @@ fn a_queued_job_waits_to_be_picked_up_before_it_can_be_interrupted() {
     let store = store(&dir);
     let job = store.create(&plan("gemma3:4b"), 1_000).unwrap();
 
-    // No lock file yet: the worker is still being spawned, not gone.
+    // No pid yet: the worker is still starting, or stood down before it ran.
+    assert_eq!(job.status().state, PullState::Queued);
+    File::create(job.lock_path()).unwrap();
     assert_eq!(job.status().state, PullState::Queued);
 
-    abandoned_lock(&job);
+    abandoned_worker(&job);
     assert_eq!(job.status().state, PullState::Interrupted);
 }
 
@@ -282,7 +287,7 @@ fn readers_probing_at_once_do_not_report_each_other_as_the_worker() {
     let job = store.create(&plan("gemma3:4b"), 1_000).unwrap();
     job.update_status(1, |status| status.state = PullState::Running)
         .unwrap();
-    abandoned_lock(&job);
+    abandoned_worker(&job);
 
     let wrong = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicBool::new(false));
@@ -325,14 +330,14 @@ fn an_ended_job_is_never_reread_as_interrupted() {
     {
         let job = store.create(&plan("gemma3:4b"), offset as i64).unwrap();
         job.update_status(1, |status| status.state = state).unwrap();
-        abandoned_lock(&job);
+        abandoned_worker(&job);
         assert_eq!(job.status().state, state);
     }
     let paused = store.create(&plan("gemma3:4b"), 10).unwrap();
     paused
         .update_status(1, |status| status.state = PullState::Paused)
         .unwrap();
-    abandoned_lock(&paused);
+    abandoned_worker(&paused);
     assert_eq!(paused.status().state, PullState::Paused);
 }
 
@@ -520,6 +525,20 @@ fn a_job_with_no_history_has_no_events() {
     let store = store(&dir);
     let job = store.create(&plan("gemma3:4b"), 1_000).unwrap();
     assert!(job.events().is_empty());
+}
+
+#[test]
+fn a_worker_that_stood_down_leaves_a_job_nobody_reads_as_interrupted() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let job = store.create(&plan("gemma3:4b"), 1_000).unwrap();
+    // A worker took the job's lock, found the reference already being pulled,
+    // and left without ever writing a pid.
+    drop(job.claim().unwrap().expect("an unclaimed job"));
+
+    assert!(job.lock_path().exists());
+    assert!(!job.worker_alive());
+    assert_eq!(job.status().state, PullState::Queued);
 }
 
 #[test]

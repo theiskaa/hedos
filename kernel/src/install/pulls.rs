@@ -528,17 +528,7 @@ impl PullJobDir {
     /// exclusive claim. A caller concluding "already owned" should try a few
     /// times over a short window first.
     pub fn claim(&self) -> Result<Option<PullLock>, PullError> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(self.lock_path())?;
-        match file.try_lock() {
-            Ok(()) => Ok(Some(PullLock { file })),
-            Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(error)) => Err(error.into()),
-        }
+        take_lock(&self.lock_path())
     }
 
     /// Whether a worker still owns this job.
@@ -584,15 +574,16 @@ impl PullJobDir {
     /// The record as it is true right now: a job a worker was meant to be
     /// holding, with nobody holding it, is `interrupted`.
     ///
-    /// A `queued` job counts only once its lock file exists, since that file is
-    /// the worker's first act. Without it the job has simply not been picked up
-    /// yet, and a client that read it as interrupted would start a second worker
-    /// on top of the one still being spawned.
+    /// A `queued` job counts only once a worker has written its pid, which it
+    /// does after it has everything it needs to run. Before that the job has
+    /// simply not been picked up yet, and a client that read it as interrupted
+    /// would start a second worker on top of one still starting, or on top of
+    /// one that stood down because another worker owns the same reference.
     pub fn status(&self) -> PullStatus {
         let mut status = self.stored_status();
         let expects_worker = match status.state {
             PullState::Running => true,
-            PullState::Queued => self.lock_path().exists(),
+            PullState::Queued => status.pid.is_some(),
             _ => false,
         };
         if expects_worker && !self.worker_alive() {
@@ -699,6 +690,22 @@ impl PullJobDir {
             true => Ok(()),
             false => Err(PullError::NotFound(self.job.id.clone())),
         }
+    }
+}
+
+/// Take an exclusive lock on `path`, creating it if it is not there, or `None`
+/// when someone else holds it. The lock lives with the returned handle.
+pub fn take_lock(path: &Path) -> Result<Option<PullLock>, PullError> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(PullLock { file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error.into()),
     }
 }
 
