@@ -481,7 +481,11 @@ impl PullStore {
 }
 
 /// The single job `found` yields: `None` when it yields nothing, an
-/// [`PullError::Ambiguous`] when it yields several.
+/// [`PullError::Ambiguous`] when it yields several that are equally plausible.
+///
+/// A name several jobs answer to means the one still going. Pulling a model a
+/// second time would otherwise make its own name ambiguous for good, since the
+/// first job keeps that name for as long as its record is kept.
 fn single<'a>(
     found: impl Iterator<Item = &'a PullJobDir>,
     query: &str,
@@ -490,10 +494,20 @@ fn single<'a>(
     match matches.as_slice() {
         [] => Ok(None),
         [only] => Ok(Some(only)),
-        many => Err(PullError::Ambiguous {
-            query: query.to_owned(),
-            count: many.len(),
-        }),
+        many => {
+            let going: Vec<&PullJobDir> = many
+                .iter()
+                .copied()
+                .filter(|job| !job.status().state.is_terminal())
+                .collect();
+            match going.as_slice() {
+                [only] => Ok(Some(only)),
+                _ => Err(PullError::Ambiguous {
+                    query: query.to_owned(),
+                    count: many.len(),
+                }),
+            }
+        }
     }
 }
 

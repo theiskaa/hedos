@@ -821,3 +821,38 @@ fn a_pull_whose_worker_never_arrived_is_not_joined_over_the_one_that_is_running(
 
     assert_eq!(found.id(), running.id());
 }
+
+#[test]
+fn a_name_several_jobs_answer_to_means_the_one_still_going() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let ended = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+    ended
+        .update_status(1_000, |status| status.state = PullState::Done)
+        .expect("end the first job");
+    let going = store.create(&plan("Qwen/Qwen3-8B"), 2_000).unwrap();
+    going
+        .update_status(2_000, |status| status.state = PullState::Paused)
+        .expect("stop the second job");
+
+    let found = store.resolve("Qwen/Qwen3-8B").expect("the job still going");
+
+    assert_eq!(found.id(), going.id());
+}
+
+#[test]
+fn a_name_two_live_jobs_answer_to_is_still_ambiguous() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    for at in [1_000, 2_000] {
+        let job = store.create(&plan("Qwen/Qwen3-8B"), at).unwrap();
+        job.update_status(at, |status| status.state = PullState::Paused)
+            .expect("stop the job");
+    }
+
+    let error = store
+        .resolve("Qwen/Qwen3-8B")
+        .expect_err("two live jobs cannot be told apart");
+
+    assert!(matches!(error, PullError::Ambiguous { count: 2, .. }));
+}
