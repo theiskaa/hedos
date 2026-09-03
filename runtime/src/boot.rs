@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use kernel::artifacts::ArtifactStore;
 use kernel::discovery::StoreScanner;
+use kernel::install::pulls::PullStore;
 use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
 
@@ -120,6 +121,17 @@ pub fn install_service(settings: &Settings) -> InstallService {
         Arc::new(hugging_face),
     ];
     InstallService::new(providers)
+}
+
+/// Where the pull job directories live under `dirs`. The workers, the CLI, and
+/// the screen all coordinate through this one directory.
+pub fn pull_root(dirs: &HedosDirs) -> PathBuf {
+    dirs.sub("pulls")
+}
+
+/// The store of pull jobs under `dirs`.
+pub fn pull_store(dirs: &HedosDirs) -> PullStore {
+    PullStore::new(pull_root(dirs))
 }
 
 /// Translate the runtime settings' discovery inputs into the kernel's discovery
