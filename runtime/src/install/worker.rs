@@ -66,6 +66,14 @@ pub enum WorkerError {
     #[error("{0} is already being pulled")]
     AlreadyPulling(String),
 
+    /// The job has ended, so there is nothing left to run.
+    #[error("this pull is already {0}")]
+    Ended(PullState),
+
+    /// A cancel is on its way to the job and has not been read yet.
+    #[error("this pull is being cancelled")]
+    Cancelling,
+
     /// The job's record could not be read or written.
     #[error(transparent)]
     Record(#[from] PullError),
@@ -214,6 +222,58 @@ pub fn claim_reference(
     Ok(pulls::take_lock(
         &directory.join(&name[..CLAIM_NAME_CHARS]),
     )?)
+}
+
+/// Put a worker back on a job that stopped, returning the new worker's pid.
+///
+/// The ask that stopped the job is dropped first: a worker spawned onto a job
+/// whose control file still says `pause` would honour it and stop again before
+/// moving a byte. A cancel is not dropped, because a cancel is not something to
+/// undo on the way past; the job is refused instead.
+///
+/// The record is put back to queued before the spawn, and settled as failed if
+/// the spawn does not happen, so a job is never left waiting for a process that
+/// was never started.
+#[cfg(unix)]
+pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
+    let state = job.status().state;
+    if state.is_terminal() {
+        return Err(WorkerError::Ended(state));
+    }
+    if job.worker_alive() {
+        return Err(WorkerError::AlreadyRunning);
+    }
+    match job.control() {
+        Some(PullControl::Cancel) => return Err(WorkerError::Cancelling),
+        Some(control) => job.clear_control(control)?,
+        None => {}
+    }
+    // The pid belongs to the worker that died; a queued record still holding one
+    // reads as a job whose worker vanished rather than one waiting for its next.
+    job.update_status(now_millis(), |status| {
+        status.state = PullState::Queued;
+        status.pid = None;
+        status.message = None;
+        status.next_attempt_at_ms = None;
+    })?;
+    match spawn_detached(job) {
+        Ok(pid) => Ok(pid),
+        Err(error) => {
+            let message = format!("could not start a worker: {error}");
+            let now = now_millis();
+            job.update_status(now, |status| {
+                status.state = PullState::Failed;
+                status.message = Some(message);
+            })?;
+            job.append(
+                PullEventKind::State {
+                    state: PullState::Failed,
+                },
+                now,
+            )?;
+            Err(error.into())
+        }
+    }
 }
 
 /// What a worker does once a pull has landed: register it, so the model reaches

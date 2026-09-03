@@ -18,7 +18,9 @@ use kernel::install::{
 use kernel::records::SourceKind;
 use runtime::install::InstallService;
 use runtime::install::provider::{InstallEventStream, InstallFuture, InstallProvider};
-use runtime::install::worker::{PullWorker, RetryPolicy, SlotPool, WorkerError, claim_reference};
+use runtime::install::worker::{
+    PullWorker, RetryPolicy, SlotPool, WorkerError, claim_reference, restart,
+};
 use runtime::settings::PullSettings;
 use support::TempDir;
 use tokio::sync::mpsc;
@@ -729,4 +731,73 @@ fn only_the_network_is_worth_retrying() {
         required_bytes: 10,
         available_bytes: 1
     }));
+}
+
+#[tokio::test]
+async fn a_stopped_job_is_put_back_to_queued_before_its_new_worker_starts() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| {
+        status.state = PullState::Interrupted;
+        status.pid = Some(4_242);
+        status.message = Some("connection reset".to_owned());
+        status.next_attempt_at_ms = Some(9_000);
+    })
+    .unwrap();
+    job.request(PullControl::Pause).unwrap();
+
+    // The spawn runs the real binary, which is not built in this test's target,
+    // so only the record it leaves behind is under test here.
+    let _ = restart(&job);
+
+    assert_eq!(job.control(), None, "the ask that stopped it is dropped");
+    let status = job.stored_status();
+    assert_eq!(status.pid, None);
+    assert_eq!(status.message, None);
+    assert_eq!(status.next_attempt_at_ms, None);
+}
+
+#[tokio::test]
+async fn a_cancel_on_its_way_is_not_undone_by_a_resume() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| status.state = PullState::Interrupted)
+        .unwrap();
+    job.request(PullControl::Cancel).unwrap();
+
+    match restart(&job) {
+        Err(WorkerError::Cancelling) => {}
+        other => panic!("a cancelling job should not be resumed, got {other:?}"),
+    }
+    assert_eq!(job.control(), Some(PullControl::Cancel));
+    assert_eq!(job.stored_status().state, PullState::Interrupted);
+}
+
+#[tokio::test]
+async fn a_job_that_has_ended_is_not_started_again() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| status.state = PullState::Done)
+        .unwrap();
+
+    match restart(&job) {
+        Err(WorkerError::Ended(PullState::Done)) => {}
+        other => panic!("a done job should not be resumed, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_job_a_worker_still_holds_is_not_started_again() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let _held = job.claim().unwrap().expect("the lock is free");
+
+    match restart(&job) {
+        Err(WorkerError::AlreadyRunning) => {}
+        other => panic!("a held job should not be resumed, got {other:?}"),
+    }
 }

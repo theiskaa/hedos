@@ -23,4 +23,4 @@ pub use transport::{
 };
 pub use worker::{PullWorker, Registrar, RetryPolicy, WorkerError};
 #[cfg(unix)]
-pub use worker::{ignore_hangup, spawn_detached};
+pub use worker::{ignore_hangup, restart, spawn_detached};
