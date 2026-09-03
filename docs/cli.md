@@ -93,7 +93,23 @@ Codex is not supported: it speaks the OpenAI Responses API, which this gateway d
 
 ### `hedos pull [reference]`
 
-Fetch a model from Ollama or Hugging Face, with a download progress bar. Ctrl-C cancels. When it finishes it runs a scan so the model appears on the shelf.
+Fetch a model from Ollama or Hugging Face. The download runs in a worker process of its own, so it outlives the terminal that started it; `hedos pull` follows that worker's progress, and Ctrl-C detaches from it rather than cancelling. `-d` starts the download and returns straight away. The worker scans when it finishes, so the model reaches the shelf whether anything is watching or not.
+
+Pulling a model that is already being fetched joins that download instead of starting a second one, and pulling one that stopped part-way carries on from the bytes on disk.
+
+The pulls under way are managed under the same verb:
+
+```
+hedos pull ls                  every pull, its state, progress, and what it is waiting for
+hedos pull attach <job>        follow one again
+hedos pull pause <job>         stop it, keeping what it has downloaded
+hedos pull resume <job>|--all  start a stopped one again
+hedos pull cancel <job>        stop it for good
+hedos pull logs <job> [-n n]   its history
+hedos pull clean [--keep n]    drop the records of pulls that have ended
+```
+
+A job is named by its id, an unambiguous prefix of one, or its reference; a name several pulls answer to means the one still going. Since a bare word is a valid Ollama tag, a model named after a subcommand is written `hedos pull -- ls`.
 
 - The reference is a Hugging Face repo (`org/model`) or an Ollama tag (`gemma3:4b`). hedos infers the provider from the shape.
 - Omit the reference in a terminal to search: type a query to search Hugging Face (results show download and like counts), or leave it blank for a short list of models that fit this machine's RAM. A "search again" entry in the list returns to the prompt, so you can move between recommendations and a search — or try another query — without restarting the command.
