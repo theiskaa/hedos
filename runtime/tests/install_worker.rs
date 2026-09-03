@@ -621,12 +621,15 @@ async fn two_jobs_for_one_reference_do_not_run_at_once() {
         Err(WorkerError::AlreadyPulling(reference)) => assert_eq!(reference, "org/Model"),
         other => panic!("expected the reference to be claimed, got {other:?}"),
     }
-    // The refused job must not look like one whose worker died, or a client
-    // with auto-resume on would respawn it against the same held reference.
-    assert_eq!(second.status().state, PullState::Queued);
+    // The refused job is settled rather than left live. A record that still
+    // reads queued would keep a client joining this job instead of the pull
+    // that owns the reference, and nothing would ever collect it.
+    let refused = second.status();
+    assert_eq!(refused.state, PullState::Failed);
+    assert!(refused.state.is_terminal());
+    assert!(refused.pid.is_none());
     assert!(
-        second
-            .status()
+        refused
             .message
             .unwrap_or_default()
             .contains("already being pulled")

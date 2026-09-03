@@ -263,20 +263,10 @@ impl PullWorker {
     pub async fn run(&self, job: &PullJobDir) -> Result<PullState, WorkerError> {
         let _claim = self.claim(job).await?.ok_or(WorkerError::AlreadyRunning)?;
         let descriptor = job.job().clone();
-        let held = claim_reference(
-            &self.root,
-            descriptor.provider.as_str(),
-            &descriptor.reference,
-        )?;
-        let Some(_reference) = held else {
-            // The record is left as it was, without a pid, so no client reads
-            // this job as one whose worker died and starts another.
-            job.update_status(now_millis(), |status| {
-                status.message = Some(format!("{} is already being pulled", descriptor.reference));
-            })?;
-            return Err(WorkerError::AlreadyPulling(descriptor.reference));
-        };
-
+        // The pid goes down the moment the job is held, before anything that
+        // can stand this worker back down. A job queued without one means
+        // nothing has taken it, which is what tells a client waiting for a
+        // worker from waiting for one that will never come.
         job.update_status(now_millis(), |status| {
             status.state = PullState::Queued;
             status.pid = Some(std::process::id());
@@ -289,6 +279,20 @@ impl PullWorker {
             },
             now_millis(),
         )?;
+
+        let held = claim_reference(
+            &self.root,
+            descriptor.provider.as_str(),
+            &descriptor.reference,
+        )?;
+        let Some(_reference) = held else {
+            // Settled rather than left queued: this job is redundant, and a
+            // record that stays live keeps a client joining it instead of the
+            // pull that owns the reference.
+            let message = format!("{} is already being pulled", descriptor.reference);
+            self.settle(job, PullState::Failed, Some(message))?;
+            return Err(WorkerError::AlreadyPulling(descriptor.reference));
+        };
 
         self.transfer(job, &descriptor).await
     }
