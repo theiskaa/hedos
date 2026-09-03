@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kernel::artifacts::ArtifactStore;
-use kernel::discovery::StoreScanner;
+use kernel::discovery::{ModelHabitat, StoreScanner};
 use kernel::install::pulls::PullStore;
 use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
@@ -132,6 +132,16 @@ pub fn pull_root(dirs: &HedosDirs) -> PathBuf {
 /// The store of pull jobs under `dirs`.
 pub fn pull_store(dirs: &HedosDirs) -> PullStore {
     PullStore::new(pull_root(dirs))
+}
+
+/// The scanners a discovery pass runs: every store the machine's habitat offers,
+/// plus Apple's on-device model. Every front end and the pull worker share this
+/// one list, so what a background pull adds to the shelf is what a foreground
+/// scan would have.
+pub fn discovery_scanners(settings: &Settings) -> Vec<Box<dyn StoreScanner>> {
+    let mut scanners = ModelHabitat::detect().scanners(None, &discovery_settings(settings));
+    scanners.push(apple_foundation_scanner());
+    scanners
 }
 
 /// Translate the runtime settings' discovery inputs into the kernel's discovery

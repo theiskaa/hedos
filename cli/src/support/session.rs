@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use kernel::discovery::{DiscoverySummary, ModelHabitat};
+use kernel::discovery::DiscoverySummary;
 use kernel::records::{Capability, ModelRecord};
 use runtime::boot::{self, HedosDirs};
 use runtime::facade::Kernel;
@@ -69,10 +69,10 @@ impl Session {
     /// Scan the machine's model stores, reconcile the registry, and resolve
     /// runtimes — returning the discovery summary.
     pub async fn discover(&self) -> Result<DiscoverySummary, CliError> {
-        let mut scanners =
-            ModelHabitat::detect().scanners(None, &boot::discovery_settings(&self.settings));
-        scanners.push(boot::apple_foundation_scanner());
-        Ok(self.kernel.discover(scanners).await?)
+        Ok(self
+            .kernel
+            .discover(boot::discovery_scanners(&self.settings))
+            .await?)
     }
 }
 
