@@ -740,3 +740,84 @@ fn the_states_agree_on_what_has_ended() {
     assert_eq!(PullControl::Cancel.resulting_state(), PullState::Cancelled);
     assert_eq!(PullControl::Cancel.to_string(), "cancel");
 }
+
+#[test]
+fn a_queued_job_nothing_ever_took_up_reads_as_abandoned() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let job = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+
+    assert!(!job.abandoned(1_000, 3_000), "not yet past the grace");
+    assert!(job.abandoned(9_000, 3_000), "nothing came for it");
+
+    // A worker writes its pid as soon as it holds the job, and that is what
+    // tells a job being picked up from one nobody is coming for.
+    job.update_status(9_000, |status| status.pid = Some(4_242))
+        .expect("record the pid");
+    assert!(!job.abandoned(99_000, 3_000));
+}
+
+#[test]
+fn a_job_a_worker_holds_is_never_abandoned() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let job = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+    let _worker = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+
+    assert!(!job.abandoned(99_000, 3_000));
+}
+
+#[test]
+fn a_pull_of_the_same_reference_is_joined_until_it_ends() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let hub = InstallProviderId::huggingface();
+    let job = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+    job.update_status(1_000, |status| {
+        status.state = PullState::Paused;
+    })
+    .expect("stop the job");
+
+    let found = store
+        .under_way(&hub, "qwen/qwen3-8b", 2_000)
+        .expect("a reference is matched whatever its case");
+    assert_eq!(found.id(), job.id());
+
+    assert!(
+        store
+            .under_way(&InstallProviderId::ollama(), "Qwen/Qwen3-8B", 2_000)
+            .is_none()
+    );
+    assert!(store.under_way(&hub, "Qwen/Qwen3-4B", 2_000).is_none());
+
+    job.update_status(1_000, |status| status.state = PullState::Done)
+        .expect("end the job");
+    assert!(store.under_way(&hub, "Qwen/Qwen3-8B", 2_000).is_none());
+}
+
+#[test]
+fn a_pull_whose_worker_never_arrived_is_not_joined_over_the_one_that_is_running() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let hub = InstallProviderId::huggingface();
+    let running = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+    let _worker = running.claim().expect("claim").expect("the lock is free");
+    running
+        .update_status(1_000, |status| {
+            status.state = PullState::Running;
+            status.pid = Some(std::process::id());
+        })
+        .expect("write the record");
+    // Newer, but nothing ever took it up: preferring it would hide the pull
+    // that is actually moving bytes.
+    store.create(&plan("Qwen/Qwen3-8B"), 2_000).unwrap();
+
+    let found = store
+        .under_way(&hub, "Qwen/Qwen3-8B", 9_000)
+        .expect("the live job");
+
+    assert_eq!(found.id(), running.id());
+}

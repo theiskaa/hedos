@@ -35,6 +35,10 @@ const CONTROL_FILE: &str = "control";
 /// The longest reference slug a job id carries; the timestamp in front is what
 /// makes the id unique, the slug is only there to make it readable.
 const SLUG_LIMIT: usize = 40;
+/// How long a job queued with no worker is given before it counts as abandoned.
+/// A worker writes its pid as soon as it holds the job, which it does within
+/// milliseconds of starting, so this is generous rather than tuned.
+pub const START_GRACE_MS: i64 = 3_000;
 /// How many suffixed ids `create` tries before giving up. Two pulls of the same
 /// reference in the same millisecond is already unlikely; sixty-four is a
 /// runaway guard, not a working limit.
@@ -422,6 +426,30 @@ impl PullStore {
         }
     }
 
+    /// The newest job pulling `reference` from `provider` that a client could
+    /// join: one still going, or one that stopped with bytes worth resuming.
+    ///
+    /// The reference is matched the way [`PullStore::resolve`] matches one, so a
+    /// tag the provider rewrote (`ls` into `ls:latest`) only joins the job it
+    /// created once the caller passes the rewritten form. A job whose worker
+    /// never arrived is past joining: nothing is coming for it, and preferring
+    /// it because it is newest would hide the pull that is actually running.
+    pub fn under_way(
+        &self,
+        provider: &InstallProviderId,
+        reference: &str,
+        now_ms: i64,
+    ) -> Option<PullJobDir> {
+        self.list()
+            .into_iter()
+            .rev()
+            .filter(|job| {
+                job.job().provider == *provider
+                    && job.job().reference.eq_ignore_ascii_case(reference)
+            })
+            .find(|job| !job.status().state.is_terminal() && !job.abandoned(now_ms, START_GRACE_MS))
+    }
+
     /// Remove ended jobs last touched before `before_ms`, keeping the newest
     /// `keep` of them however old they are. Returns how many were removed.
     ///
@@ -590,6 +618,22 @@ impl PullJobDir {
             status.state = PullState::Interrupted;
         }
         status
+    }
+
+    /// Whether the job is waiting for a worker that is not coming: queued with
+    /// no pid written, nobody holding the lock, and `grace_ms` past its last
+    /// write, by which time a worker on its way would have claimed it.
+    ///
+    /// This is the one state the liveness rule cannot speak for. A worker writes
+    /// its pid as soon as it holds the job, so `queued` without one means
+    /// nothing has taken the job yet; only time tells a job still being picked
+    /// up from one whose worker died on the way.
+    pub fn abandoned(&self, now_ms: i64, grace_ms: i64) -> bool {
+        let status = self.stored_status();
+        status.state == PullState::Queued
+            && status.pid.is_none()
+            && now_ms.saturating_sub(status.updated_at_ms) >= grace_ms
+            && !self.worker_alive()
     }
 
     /// Write `status` atomically, so a reader sees the old record or the new one
