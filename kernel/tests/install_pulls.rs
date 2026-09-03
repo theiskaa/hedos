@@ -742,6 +742,41 @@ fn the_states_agree_on_what_has_ended() {
 }
 
 #[test]
+fn a_name_several_jobs_answer_to_means_the_one_still_going() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let ended = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+    ended
+        .update_status(1_000, |status| status.state = PullState::Done)
+        .expect("end the first job");
+    let going = store.create(&plan("Qwen/Qwen3-8B"), 2_000).unwrap();
+    going
+        .update_status(2_000, |status| status.state = PullState::Paused)
+        .expect("stop the second job");
+
+    let found = store.resolve("Qwen/Qwen3-8B").expect("the job still going");
+
+    assert_eq!(found.id(), going.id());
+}
+
+#[test]
+fn a_name_two_live_jobs_answer_to_is_still_ambiguous() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    for at in [1_000, 2_000] {
+        let job = store.create(&plan("Qwen/Qwen3-8B"), at).unwrap();
+        job.update_status(at, |status| status.state = PullState::Paused)
+            .expect("stop the job");
+    }
+
+    let error = store
+        .resolve("Qwen/Qwen3-8B")
+        .expect_err("two live jobs cannot be told apart");
+
+    assert!(matches!(error, PullError::Ambiguous { count: 2, .. }));
+}
+
+#[test]
 fn a_queued_job_nothing_ever_took_up_reads_as_abandoned() {
     let dir = TempDir::new();
     let store = store(&dir);
@@ -823,36 +858,21 @@ fn a_pull_whose_worker_never_arrived_is_not_joined_over_the_one_that_is_running(
 }
 
 #[test]
-fn a_name_several_jobs_answer_to_means_the_one_still_going() {
+fn a_write_into_a_job_swept_from_under_it_leaves_nothing_behind() {
     let dir = TempDir::new();
     let store = store(&dir);
-    let ended = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
-    ended
-        .update_status(1_000, |status| status.state = PullState::Done)
-        .expect("end the first job");
-    let going = store.create(&plan("Qwen/Qwen3-8B"), 2_000).unwrap();
-    going
-        .update_status(2_000, |status| status.state = PullState::Paused)
-        .expect("stop the second job");
+    let job = store.create(&plan("Qwen/Qwen3-8B"), 1_000).unwrap();
+    let path = job.path().to_path_buf();
+    fs::remove_dir_all(&path).expect("sweep the job");
 
-    let found = store.resolve("Qwen/Qwen3-8B").expect("the job still going");
+    let error = job
+        .write_status(&PullStatus::queued(2_000))
+        .expect_err("a swept job is gone, not recreated");
 
-    assert_eq!(found.id(), going.id());
-}
-
-#[test]
-fn a_name_two_live_jobs_answer_to_is_still_ambiguous() {
-    let dir = TempDir::new();
-    let store = store(&dir);
-    for at in [1_000, 2_000] {
-        let job = store.create(&plan("Qwen/Qwen3-8B"), at).unwrap();
-        job.update_status(at, |status| status.state = PullState::Paused)
-            .expect("stop the job");
-    }
-
-    let error = store
-        .resolve("Qwen/Qwen3-8B")
-        .expect_err("two live jobs cannot be told apart");
-
-    assert!(matches!(error, PullError::Ambiguous { count: 2, .. }));
+    assert!(matches!(error, PullError::NotFound(_)));
+    // An atomic write makes its parents, so the guard has to take back what the
+    // write put there: a directory with a record and no descriptor is invisible
+    // to every listing and therefore uncollectable.
+    assert!(!path.exists());
+    assert!(store.jobs().expect("read the store").is_empty());
 }

@@ -657,9 +657,10 @@ impl PullJobDir {
     /// recreated: an atomic write makes its parents, and a worker writing into a
     /// removed job would leave a directory no listing can see.
     pub fn write_status(&self, status: &PullStatus) -> Result<(), PullError> {
-        self.require_directory()?;
-        persistence::write_json_atomic(&self.path.join(STATUS_FILE), status)?;
-        Ok(())
+        self.guard_write(|| {
+            persistence::write_json_atomic(&self.path.join(STATUS_FILE), status)?;
+            Ok(())
+        })
     }
 
     /// Read the stored record, hand it to `change`, and write it back stamped
@@ -717,9 +718,10 @@ impl PullJobDir {
 
     /// Ask the worker for `control`.
     pub fn request(&self, control: PullControl) -> Result<(), PullError> {
-        self.require_directory()?;
-        persistence::write_atomic(&self.path.join(CONTROL_FILE), control.as_str().as_bytes())?;
-        Ok(())
+        self.guard_write(|| {
+            persistence::write_atomic(&self.path.join(CONTROL_FILE), control.as_str().as_bytes())?;
+            Ok(())
+        })
     }
 
     /// Drop the control the worker has honoured, leaving a later one alone: a
@@ -743,8 +745,26 @@ impl PullJobDir {
         Ok(())
     }
 
-    fn require_directory(&self) -> Result<(), PullError> {
-        match self.path.is_dir() {
+    /// Refuse to write into a job that has been swept, and undo the write when
+    /// the sweep lands between the check and it.
+    ///
+    /// An atomic write makes the directories it needs, so a write racing a
+    /// sweep would otherwise leave a directory holding a record and no
+    /// descriptor: invisible to every listing, and therefore never collected.
+    fn guard_write(&self, write: impl FnOnce() -> Result<(), PullError>) -> Result<(), PullError> {
+        self.require_job()?;
+        write()?;
+        match self.require_job() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = fs::remove_dir_all(&self.path);
+                Err(error)
+            }
+        }
+    }
+
+    fn require_job(&self) -> Result<(), PullError> {
+        match self.path.join(JOB_FILE).is_file() {
             true => Ok(()),
             false => Err(PullError::NotFound(self.job.id.clone())),
         }
