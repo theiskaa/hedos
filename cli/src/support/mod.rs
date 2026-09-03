@@ -2,6 +2,7 @@
 //! interrupt handling.
 
 pub mod banner;
+pub mod clock;
 pub mod download;
 pub mod harnesses;
 pub mod http;
@@ -19,3 +20,4 @@ pub mod session;
 pub mod shelf_table;
 pub mod signals;
 pub mod spinner;
+pub mod table;

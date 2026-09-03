@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord};
 
+use crate::support::table::{self, DASH};
+
 /// The six columns shown for a model: warm marker, name, runtime, store, fit, caps.
 pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
     [
@@ -22,9 +24,6 @@ pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -
             .join(", "),
     ]
 }
-
-/// The placeholder for a value the record does not have.
-pub(crate) const DASH: &str = "—";
 
 /// The runtime id, or [`DASH`] for an unresolved runtime.
 pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
@@ -58,30 +57,9 @@ fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
     }
 }
 
-/// Column widths wide enough for every row and the optional header.
-pub(crate) fn widths(rows: &[[String; 6]], headers: Option<&[&str; 6]>) -> [usize; 6] {
-    let mut widths = headers.map_or([0; 6], |headers| headers.map(str::len));
-    for row in rows {
-        for (column, cell) in row.iter().enumerate() {
-            widths[column] = widths[column].max(cell.chars().count());
-        }
-    }
-    widths
-}
-
-/// Pad each cell to its column width and join with two spaces.
-fn format_row(cells: &[String; 6], widths: &[usize; 6]) -> String {
-    cells
-        .iter()
-        .enumerate()
-        .map(|(column, cell)| {
-            let pad = widths[column].saturating_sub(cell.chars().count());
-            format!("{cell}{}", " ".repeat(pad))
-        })
-        .collect::<Vec<_>>()
-        .join("  ")
-        .trim_end()
-        .to_owned()
+/// The six columns as a row of cells, for the shared table helpers.
+fn row_cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> Vec<String> {
+    cells(record, warm, total_memory_bytes).to_vec()
 }
 
 /// The `hedos ls` header row, one label per column.
@@ -90,18 +68,11 @@ pub(crate) const HEADERS: [&str; 6] = ["", "NAME", "RUNTIME", "STORE", "FIT", "C
 /// The full `hedos ls` table: a header row followed by one aligned row per model,
 /// with fit judged against `total_memory_bytes`.
 pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_bytes: u64) -> String {
-    let rows: Vec<[String; 6]> = records
+    let rows: Vec<Vec<String>> = records
         .iter()
-        .map(|record| cells(record, warm.contains(&record.id), total_memory_bytes))
+        .map(|record| row_cells(record, warm.contains(&record.id), total_memory_bytes))
         .collect();
-    let widths = widths(&rows, Some(&HEADERS));
-
-    let mut lines = Vec::with_capacity(rows.len() + 1);
-    lines.push(format_row(&HEADERS.map(String::from), &widths));
-    for row in &rows {
-        lines.push(format_row(row, &widths));
-    }
-    lines.join("\n")
+    table::render(&HEADERS, &rows)
 }
 
 /// Aligned one-line labels for the interactive picker, one per model, in the same
@@ -111,12 +82,12 @@ pub fn picker_labels(
     warm: &HashSet<String>,
     total_memory_bytes: u64,
 ) -> Vec<String> {
-    let rows: Vec<[String; 6]> = records
+    let rows: Vec<Vec<String>> = records
         .iter()
-        .map(|record| cells(record, warm.contains(&record.id), total_memory_bytes))
+        .map(|record| row_cells(record, warm.contains(&record.id), total_memory_bytes))
         .collect();
-    let widths = widths(&rows, None);
-    rows.iter().map(|row| format_row(row, &widths)).collect()
+    let widths = table::widths(&rows, None);
+    rows.iter().map(|row| table::row(row, &widths)).collect()
 }
 
 #[cfg(test)]

@@ -11,10 +11,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::support::shelf_table::verdict_label;
 
-const MINUTE: i64 = 60;
-const HOUR: i64 = 60 * MINUTE;
-const DAY: i64 = 24 * HOUR;
-
 /// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
     format_bytes(bytes)
@@ -24,20 +20,6 @@ pub fn bytes(bytes: i64) -> String {
 /// machine total: `14.2`. Negative counts read as zero.
 pub fn gib(bytes: i64) -> String {
     one_decimal(bytes.max(0) as f64 / BYTES_PER_GIB as f64)
-}
-
-/// A duration in seconds as its largest whole unit: `45s`, `26m`, `3h`, `2d`.
-pub fn duration(seconds: i64) -> String {
-    let seconds = seconds.max(0);
-    if seconds >= DAY {
-        format!("{}d", seconds / DAY)
-    } else if seconds >= HOUR {
-        format!("{}h", seconds / HOUR)
-    } else if seconds >= MINUTE {
-        format!("{}m", seconds / MINUTE)
-    } else {
-        format!("{seconds}s")
-    }
 }
 
 /// `buckets` as one bar per bucket, scaled to the largest; a flat line when
@@ -268,15 +250,6 @@ mod tests {
         assert_eq!(gib(14_200_000_000), "13.2");
         assert_eq!(gib(0), "0");
         assert_eq!(gib(-1), "0");
-    }
-
-    #[test]
-    fn durations_pick_the_largest_whole_unit() {
-        assert_eq!(duration(45), "45s");
-        assert_eq!(duration(26 * 60 + 30), "26m");
-        assert_eq!(duration(3 * 3600), "3h");
-        assert_eq!(duration(2 * 86_400 + 5), "2d");
-        assert_eq!(duration(-5), "0s");
     }
 
     #[test]

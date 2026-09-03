@@ -14,8 +14,10 @@ use super::{
     ACCENT, BOLD, BORDER_COLUMNS, COOL, DIM, EYEBROW, WARM, field_line, label, label_width, pane,
     styled_field, value_width,
 };
+use crate::support::clock;
 use crate::support::residency::Holder;
-use crate::support::shelf_table::{DASH, runtime_label};
+use crate::support::shelf_table::runtime_label;
+use crate::support::table::DASH;
 use crate::tui::app::App;
 use crate::tui::facts::{Facts, HOURS, ModelActivity};
 use crate::tui::layout::STACKED_DETAIL_ROWS;
@@ -294,7 +296,7 @@ fn served(activity: &ModelActivity) -> String {
 
 /// `4m ago`, measured from `now`.
 fn last_used(activity: &ModelActivity, now: i64) -> String {
-    text::duration((now - activity.last_seen_millis) / 1000) + " ago"
+    clock::duration((now - activity.last_seen_millis) / 1000) + " ago"
 }
 
 /// [`text::fit_summary`], then how much would be free with the rest of what
@@ -343,7 +345,7 @@ fn residency_line(record: &ModelRecord, facts: &Facts, value_width: usize) -> Li
                 },
             };
             if let Some(seconds) = resident.expires_in_seconds_at(facts.collected_at_millis) {
-                holder.push_str(&format!(" · unloads in {}", text::duration(seconds)));
+                holder.push_str(&format!(" · unloads in {}", clock::duration(seconds)));
             }
             spans.push(Span::styled(
                 text::clip(&holder, value_width.saturating_sub(WARM_LABEL.width())),

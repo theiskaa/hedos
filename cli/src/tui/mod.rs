@@ -45,6 +45,7 @@ use self::state::UiState;
 use self::tasks::{TaskContext, TaskLabel, TaskState};
 use crate::commands;
 use crate::error::CliError;
+use crate::support::clock;
 use crate::support::output::Out;
 use crate::support::session::Session;
 use crate::support::signals;
@@ -237,7 +238,7 @@ async fn run_hand_off(
             .await
             .map(|()| None),
     };
-    let ran = text::duration(started.elapsed().as_secs() as i64);
+    let ran = clock::duration(started.elapsed().as_secs() as i64);
     let state = match result {
         Ok(None) => TaskState::Done(format!("ran {ran}")),
         Ok(Some(status)) => match status.code() {

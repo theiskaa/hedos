@@ -16,7 +16,8 @@ use super::{
     centered, edited, keys, pane,
 };
 use crate::support::banner::{KOALA, KOALA_WIDTH};
-use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
+use crate::support::shelf_table::{runtime_label, verdict, verdict_label};
+use crate::support::table::DASH;
 use crate::tui::app::App;
 use crate::tui::keymap;
 use crate::tui::order::Sort;

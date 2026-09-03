@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{BAR_EMPTY, BAR_FILLED, BOLD, DIM, ORANGE, SAND, TEAL, WARM, label, label_width, pane};
+use crate::support::clock;
 use crate::tui::app::App;
 use crate::tui::facts::Facts;
 use crate::tui::text;
@@ -140,7 +141,7 @@ fn served_line(facts: &Facts) -> String {
     }
     format!(
         "last request {} ago · {} all time",
-        text::duration((facts.collected_at_millis - activity.last_request_millis) / 1000),
+        clock::duration((facts.collected_at_millis - activity.last_request_millis) / 1000),
         text::count(activity.total_requests as usize, "request")
     )
 }
