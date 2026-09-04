@@ -47,6 +47,27 @@ fn the_value_terminator_names_a_model_a_subcommand_shadows() {
 }
 
 #[test]
+fn a_reference_or_its_flags_beside_a_subcommand_is_refused_rather_than_dropped() {
+    // clap lets each of these through with both sides set; nothing is dropped
+    // on the way, and `run` refuses the mix before anything runs.
+    let with_reference = parse(&["hedos", "pull", "gemma3", "cancel", "1000-x"]);
+    assert_eq!(with_reference.reference.as_deref(), Some("gemma3"));
+    assert!(matches!(
+        with_reference.command,
+        Some(PullCommand::Cancel(_))
+    ));
+    let refused = refuse_mixed(&with_reference).expect_err("refused");
+    assert!(refused.to_string().contains("hedos pull -- gemma3"));
+
+    let with_flag = parse(&["hedos", "pull", "-d", "ls"]);
+    assert!(with_flag.detach && matches!(with_flag.command, Some(PullCommand::Ls)));
+    assert!(refuse_mixed(&with_flag).is_err());
+
+    assert!(refuse_mixed(&parse(&["hedos", "pull", "ls"])).is_ok());
+    assert!(refuse_mixed(&parse(&["hedos", "pull", "--", "ls"])).is_ok());
+}
+
+#[test]
 fn nothing_at_all_is_the_interactive_picker() {
     let args = parse(&["hedos", "pull"]);
     assert_eq!(args.reference, None);

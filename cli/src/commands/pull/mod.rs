@@ -59,6 +59,29 @@ pub(super) enum PullCommand {
     Clean(CleanArgs),
 }
 
+/// Refuse a reference or its flags written beside a subcommand. A subcommand
+/// name shadows a bare word, so `hedos pull gemma3 ls` or `hedos pull -d ls`
+/// would list, silently dropping what was asked for, and nothing would tell
+/// the user which of the two it did.
+fn refuse_mixed(args: &PullArgs) -> Result<(), CliError> {
+    if args.command.is_none() {
+        return Ok(());
+    }
+    if let Some(reference) = &args.reference {
+        return Err(CliError::new(format!(
+            "a reference and a subcommand do not go together. \
+             to pull a model named `{reference}`, write `hedos pull -- {reference}`"
+        )));
+    }
+    if args.detach || args.from.is_some() {
+        return Err(CliError::new(
+            "-d and --from apply to a reference, not to a subcommand. \
+             to pull a model named after one, write `hedos pull -d -- <name>`",
+        ));
+    }
+    Ok(())
+}
+
 /// The one pull a command acts on.
 #[derive(Args)]
 pub(super) struct JobArgs {
@@ -100,15 +123,7 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
     let Some(command) = &args.command else {
         return start::run(&args, out).await;
     };
-    // The flags belong to a reference, and a subcommand name shadows one. Left
-    // unsaid, `hedos pull -d ls` would list instead of pulling a model called
-    // `ls`, and nothing would tell the user which of the two it did.
-    if args.detach || args.from.is_some() {
-        return Err(CliError::new(
-            "-d and --from apply to a reference, not to a subcommand. \
-             to pull a model named after one, write `hedos pull -d -- <name>`",
-        ));
-    }
+    refuse_mixed(&args)?;
     // Managing a pull reads and writes the job directory and nothing else, so it
     // opens no registry and boots no kernel.
     let store = boot::pull_store(&HedosDirs::detect());

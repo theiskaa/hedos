@@ -230,6 +230,11 @@ impl TaskStrip {
         let Some(id) = self.newest_failure() else {
             return false;
         };
+        // A dismissed pull is still in the store, and the next poll would put
+        // it back as if it were news.
+        if let Some(job) = self.row(id).and_then(TaskRow::job) {
+            self.expired.insert(job.to_owned());
+        }
         self.rows.retain(|row| row.id != id);
         true
     }
@@ -717,6 +722,24 @@ mod tests {
         );
         old.aged_out = true;
         assert!(!strip.sync_pulls(vec![old], DONE_LINGER_TICKS + 3).moved);
+        assert!(strip.rows().is_empty());
+    }
+
+    #[test]
+    fn a_dismissed_pull_failure_is_not_put_back_by_the_next_poll() {
+        let failed = job_row(
+            "gemma3",
+            PullState::Failed,
+            TaskState::Failed("no".to_owned()),
+        );
+        let mut strip = strip_pulling(
+            "gemma3",
+            PullState::Failed,
+            TaskState::Failed("no".to_owned()),
+        );
+        assert!(strip.dismiss_newest_failure());
+        assert!(strip.rows().is_empty());
+        assert!(!strip.sync_pulls(vec![failed], 1).moved);
         assert!(strip.rows().is_empty());
     }
 

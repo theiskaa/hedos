@@ -11,7 +11,7 @@ use std::sync::Arc;
 use clap::Args;
 use kernel::install::pulls::PullJobDir;
 use runtime::boot;
-use runtime::install::{PullWorker, Registrar};
+use runtime::install::{PullWorker, Registrar, WorkerError};
 
 use crate::error::CliError;
 use crate::support::session::Session;
@@ -30,7 +30,22 @@ pub async fn run(args: PullWorkerArgs) -> Result<(), CliError> {
     // with closing one must not reach it.
     runtime::install::ignore_hangup();
     let job = PullJobDir::open(&args.job)?;
-    let session = Session::open()?;
+    // The job is held before the session opens: opening one builds a kernel,
+    // which on a cold disk can outlast the grace a client gives a worker to
+    // show up, and a client that gave up would start a second pull.
+    let claim = runtime::install::hold(&job)
+        .await?
+        .ok_or(WorkerError::AlreadyRunning)?;
+    // Held and then unable to go on reads as interrupted, and would be started
+    // again on every open with nothing to say why; the reason goes on the
+    // record while the lock still makes the write this worker's.
+    let session = match Session::open() {
+        Ok(session) => session,
+        Err(error) => {
+            runtime::install::fail(&job, format!("could not open a session: {error}"))?;
+            return Err(error);
+        }
+    };
     let install = boot::install_service(&session.settings);
     let worker = PullWorker::new(
         install,
@@ -38,7 +53,7 @@ pub async fn run(args: PullWorkerArgs) -> Result<(), CliError> {
         &session.settings.pull,
     )
     .with_registrar(registrar(&session));
-    worker.run(&job).await?;
+    worker.run_held(&job, claim).await?;
     Ok(())
 }
 
