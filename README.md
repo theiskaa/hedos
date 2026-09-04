@@ -77,7 +77,7 @@ Press `t` and the shelf gives way to a conversation with the selected model. The
 
 ![The chat pane inside hedos shelf: the prompt in bold, the reply streaming in with its markdown, a download running in the task strip underneath](assets/ui-chat.png)
 
-Pulls download in the task strip while you keep working, with `c` to cancel. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
+Pulls download in the task strip while you keep working; `c` asks whether to pause or cancel one. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
 
 ## Coding harnesses
 `hedos launch` runs a coding harness against a local model with nothing to configure. The gateway starts inside the same process on a free port, the harness is wired to it, and both stop together:
