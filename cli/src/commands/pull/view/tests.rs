@@ -1,32 +1,8 @@
 use super::*;
 
-use kernel::install::pulls::{PullEvent, PullState};
+use kernel::install::pulls::PullState;
 
 use crate::support::pulls::testing::{held, moved, status};
-
-#[test]
-fn history_lines_say_how_long_ago_and_what() {
-    let state = PullEvent {
-        at_ms: 60_000,
-        kind: PullEventKind::State {
-            state: PullState::Running,
-        },
-    };
-    assert_eq!(event_line(&state, 180_000), "   2m ago  running");
-
-    let retry = PullEvent {
-        at_ms: 170_000,
-        kind: PullEventKind::Retry {
-            attempt: 2,
-            reason: "connection reset".to_owned(),
-            delay_ms: 15_000,
-        },
-    };
-    assert_eq!(
-        event_line(&retry, 180_000),
-        "  10s ago  attempt 2 failed, retrying in 15s: connection reset"
-    );
-}
 
 #[test]
 fn the_table_lines_its_columns_up_under_a_header() {

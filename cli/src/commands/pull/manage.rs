@@ -14,6 +14,7 @@ use runtime::install::{restart, stop};
 
 use crate::error::CliError;
 use crate::support::output::Out;
+use crate::support::pulls::event_line;
 
 use super::attach::{self, Attached};
 use super::view;
@@ -164,7 +165,7 @@ pub(super) fn logs(store: &PullStore, args: &LogsArgs, out: &Out) -> Result<(), 
     }
     let now = now_millis();
     for event in shown {
-        out.line(&view::event_line(event, now));
+        out.line(&event_line(event, now));
     }
     Ok(())
 }

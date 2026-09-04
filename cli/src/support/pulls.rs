@@ -2,7 +2,7 @@
 //! in a table and the screen puts them in the task strip, and a pull should not
 //! describe itself differently depending on which one is looking.
 
-use kernel::install::pulls::{PullJobDir, PullStatus, START_GRACE_MS};
+use kernel::install::pulls::{PullEvent, PullEventKind, PullJobDir, PullStatus, START_GRACE_MS};
 use kernel::records::byte_format::format_bytes;
 
 use crate::support::clock;
@@ -53,6 +53,24 @@ pub fn note(job: &PullJobDir, status: &PullStatus, now_ms: i64) -> String {
         return format!("attempt {}", status.attempt);
     }
     String::new()
+}
+
+/// One line of history: how long ago it happened, then what happened.
+pub fn event_line(event: &PullEvent, now_ms: i64) -> String {
+    let ago = clock::millis(now_ms.saturating_sub(event.at_ms));
+    let what = match &event.kind {
+        PullEventKind::State { state } => state.to_string(),
+        PullEventKind::Status { text } => text.clone(),
+        PullEventKind::Retry {
+            attempt,
+            reason,
+            delay_ms,
+        } => format!(
+            "attempt {attempt} failed, retrying in {}: {reason}",
+            clock::millis(*delay_ms)
+        ),
+    };
+    format!("{ago:>5} ago  {what}")
 }
 
 /// `text` at [`NOTE_LIMIT`] characters, with an ellipsis when it was cut.

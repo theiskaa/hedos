@@ -1,13 +1,12 @@
 //! How a pull's record reads on the terminal: the listing table, the cells it is
-//! built from, one line of history, and the JSON beside them.
+//! built from, and the JSON beside them.
 //!
 //! The JSON shape follows the command: one job is one object, several jobs are
 //! an array of them, and only `resume`, which acts on many jobs and can refuse
 //! some of them, wraps its two lists in an object.
 
-use kernel::install::pulls::{PullEvent, PullEventKind, PullJobDir, PullStatus};
+use kernel::install::pulls::{PullJobDir, PullStatus};
 
-use crate::support::clock;
 use crate::support::pulls::{note, progress};
 use crate::support::table;
 
@@ -28,24 +27,6 @@ pub(super) fn table(jobs: &[(PullJobDir, PullStatus)], now_ms: i64) -> String {
         })
         .collect();
     table::render(&HEADERS, &rows)
-}
-
-/// One line of history: how long ago it happened, then what happened.
-pub(super) fn event_line(event: &PullEvent, now_ms: i64) -> String {
-    let ago = clock::millis(now_ms.saturating_sub(event.at_ms));
-    let what = match &event.kind {
-        PullEventKind::State { state } => state.to_string(),
-        PullEventKind::Status { text } => text.clone(),
-        PullEventKind::Retry {
-            attempt,
-            reason,
-            delay_ms,
-        } => format!(
-            "attempt {attempt} failed, retrying in {}: {reason}",
-            clock::millis(*delay_ms)
-        ),
-    };
-    format!("{ago:>5} ago  {what}")
 }
 
 /// What a client prints when it leaves a worker running.

@@ -1,6 +1,6 @@
 use super::*;
 
-use kernel::install::pulls::PullState;
+use kernel::install::pulls::{PullEvent, PullState};
 
 use crate::support::pulls::testing::{TempDir, held, job as make_job, moved, status};
 
@@ -83,4 +83,28 @@ fn a_long_message_is_cut_to_the_width_it_is_given() {
     let note = note(&held.job, &status, 0);
     assert_eq!(note.chars().count(), NOTE_LIMIT);
     assert!(note.ends_with('…'));
+}
+
+#[test]
+fn history_lines_say_how_long_ago_and_what() {
+    let state = PullEvent {
+        at_ms: 60_000,
+        kind: PullEventKind::State {
+            state: PullState::Running,
+        },
+    };
+    assert_eq!(event_line(&state, 180_000), "   2m ago  running");
+
+    let retry = PullEvent {
+        at_ms: 170_000,
+        kind: PullEventKind::Retry {
+            attempt: 2,
+            reason: "connection reset".to_owned(),
+            delay_ms: 15_000,
+        },
+    };
+    assert_eq!(
+        event_line(&retry, 180_000),
+        "  10s ago  attempt 2 failed, retrying in 15s: connection reset"
+    );
 }
