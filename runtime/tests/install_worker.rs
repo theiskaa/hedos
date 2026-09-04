@@ -19,7 +19,8 @@ use kernel::records::SourceKind;
 use runtime::install::InstallService;
 use runtime::install::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use runtime::install::worker::{
-    PullWorker, RetryPolicy, SlotPool, WorkerError, claim_reference, restart,
+    PullWorker, RetryPolicy, SlotPool, Started, Stopped, WorkerError, claim_reference, restart,
+    resume_all, start_or_join, stop,
 };
 use runtime::settings::PullSettings;
 use support::TempDir;
@@ -800,4 +801,95 @@ async fn a_job_a_worker_still_holds_is_not_started_again() {
         Err(WorkerError::AlreadyRunning) => {}
         other => panic!("a held job should not be resumed, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_pull_of_a_model_already_going_joins_it_rather_than_starting_a_second() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let _held = job.claim().unwrap().expect("the lock is free");
+    job.update_status(1_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+    })
+    .unwrap();
+
+    let started = start_or_join(&store, &plan("org/Model")).unwrap();
+
+    assert_eq!(started, Started::Joined);
+    // Two workers on one model would fight over the same half-written files.
+    assert_eq!(store.jobs().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn asking_for_a_model_carries_on_the_pull_of_it_that_stopped() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| status.state = PullState::Paused)
+        .unwrap();
+
+    // Asking for a model is an instruction, so the paused pull of it is the one
+    // that answers, rather than a second job onto the same half-written files.
+    let started = start_or_join(&store, &plan("org/Model")).unwrap();
+
+    assert_eq!(started, Started::Resumed);
+    assert_eq!(store.jobs().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn resuming_everything_leaves_the_pulls_the_user_paused_alone() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let cut_off = store.create(&plan("org/CutOff"), 1_000).unwrap();
+    cut_off
+        .update_status(1_000, |status| status.state = PullState::Interrupted)
+        .unwrap();
+    let paused = store.create(&plan("org/Paused"), 2_000).unwrap();
+    paused
+        .update_status(2_000, |status| status.state = PullState::Paused)
+        .unwrap();
+    let done = store.create(&plan("org/Done"), 3_000).unwrap();
+    done.update_status(3_000, |status| status.state = PullState::Done)
+        .unwrap();
+
+    let resumed = resume_all(&store);
+
+    // Nobody asked for any of these. A worker that died is picked back up; a
+    // pause the user chose has to survive, or a pause cannot be kept at all.
+    assert_eq!(resumed.len(), 1);
+    assert_eq!(resumed[0].0, cut_off.id());
+    assert_eq!(paused.status().state, PullState::Paused);
+    assert_eq!(done.status().state, PullState::Done);
+}
+
+#[tokio::test]
+async fn stopping_says_whether_it_asked_a_worker_or_settled_the_record_itself() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+
+    let held = store.create(&plan("org/Held"), 1_000).unwrap();
+    let _worker = held.claim().unwrap().expect("the lock is free");
+    held.update_status(1_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+    })
+    .unwrap();
+    // A caller cannot work this out by reading the record twice: a job that
+    // moved from queued to running in between would read as settled.
+    assert!(matches!(
+        stop(&held, PullControl::Cancel).unwrap(),
+        Stopped::Asked(_)
+    ));
+    assert_eq!(held.status().state, PullState::Running);
+
+    let loose = store.create(&plan("org/Loose"), 2_000).unwrap();
+    loose
+        .update_status(2_000, |status| status.state = PullState::Paused)
+        .unwrap();
+    assert_eq!(
+        stop(&loose, PullControl::Cancel).unwrap(),
+        Stopped::Settled(PullState::Cancelled)
+    );
 }

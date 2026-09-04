@@ -22,8 +22,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use kernel::install::plan::InstallPlan;
 use kernel::install::pulls::{
     self, PullControl, PullError, PullEventKind, PullJob, PullJobDir, PullLock, PullState,
+    PullStore,
 };
 use kernel::install::{InstallError, InstallEvent, InstallProgress};
 use kernel::time::now_millis;
@@ -67,11 +69,11 @@ pub enum WorkerError {
     AlreadyPulling(String),
 
     /// The job has ended, so there is nothing left to run.
-    #[error("this pull is already {0}")]
+    #[error("already {0}")]
     Ended(PullState),
 
     /// A cancel is on its way to the job and has not been read yet.
-    #[error("this pull is being cancelled")]
+    #[error("a cancel is already on its way")]
     Cancelling,
 
     /// The job's record could not be read or written.
@@ -224,6 +226,65 @@ pub fn claim_reference(
     )?)
 }
 
+/// What a stop did.
+///
+/// The caller cannot work this out for itself. Reading the record before and
+/// after would straddle a live worker, and a job that moved from queued to
+/// running in between would read as though the stop had settled it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopped {
+    /// The ask was left for the worker holding the job, which stops when it
+    /// next reads the control file.
+    Asked(PullState),
+    /// Nobody was holding the job, so the record was settled here.
+    Settled(PullState),
+}
+
+impl Stopped {
+    /// The state the record now reads.
+    pub fn state(self) -> PullState {
+        match self {
+            Self::Asked(state) | Self::Settled(state) => state,
+        }
+    }
+
+    /// Whether the record was settled here rather than left for a worker.
+    pub fn settled(self) -> bool {
+        matches!(self, Self::Settled(_))
+    }
+}
+
+/// Ask the job's worker to stop the way `control` says, and settle the record
+/// here when no worker holds it, because there is nobody left to hear the ask.
+///
+/// The ask is written whatever the state, and left on disk once the record is
+/// settled: a worker that was still starting reads it and stands down rather
+/// than downloading over a job that is already over.
+pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerError> {
+    let state = job.status().state;
+    if state.is_terminal() {
+        return Err(WorkerError::Ended(state));
+    }
+    job.request(control)?;
+    // The record is read again after the liveness probe, never before it: a
+    // worker finishing in the moment between the two would otherwise have its
+    // `done` overwritten, for a model that is installed.
+    if job.worker_alive() || job.stored_status().state.is_terminal() {
+        return Ok(Stopped::Asked(job.status().state));
+    }
+    let settled = control.resulting_state();
+    let now = now_millis();
+    job.update_status(now, |status| {
+        status.state = settled;
+        status.next_attempt_at_ms = None;
+        if settled.is_terminal() {
+            status.pid = None;
+        }
+    })?;
+    job.append(PullEventKind::State { state: settled }, now)?;
+    Ok(Stopped::Settled(settled))
+}
+
 /// Put a worker back on a job that stopped, returning the new worker's pid.
 ///
 /// The ask that stopped the job is dropped first: a worker spawned onto a job
@@ -256,6 +317,47 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
         status.message = None;
         status.next_attempt_at_ms = None;
     })?;
+    spawn_worker(job)
+}
+
+/// What starting a pull did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Started {
+    /// A job was created and a worker spawned on it.
+    Created,
+    /// A pull of this model was already going, so this is that one.
+    Joined,
+    /// A pull of this model had stopped, and a worker was put back on it.
+    Resumed,
+}
+
+/// Start a pull of `plan`, or join the pull of that model already under way.
+///
+/// Two pulls of one model would fight over the same half-written files, so a
+/// job still going is joined rather than duplicated, and one that stopped with
+/// bytes worth keeping is carried on from where it got to.
+///
+/// Asking for a model is an instruction, so a paused pull of it is resumed
+/// here whatever `pull.auto_resume` says: that setting governs what happens
+/// with nobody asking, which is [`resume_all`].
+#[cfg(unix)]
+pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, WorkerError> {
+    if let Some(job) = store.under_way(&plan.provider, &plan.reference, now_millis()) {
+        if !job.status().state.is_resumable() {
+            return Ok(Started::Joined);
+        }
+        restart(&job)?;
+        return Ok(Started::Resumed);
+    }
+    let job = store.create(plan, now_millis())?;
+    spawn_worker(&job)?;
+    Ok(Started::Created)
+}
+
+/// Spawn a worker on `job`, settling the job if it cannot be spawned: a job
+/// left queued for a process that was never started would wait for good.
+#[cfg(unix)]
+fn spawn_worker(job: &PullJobDir) -> Result<u32, WorkerError> {
     match spawn_detached(job) {
         Ok(pid) => Ok(pid),
         Err(error) => {
@@ -274,6 +376,24 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
             Err(error.into())
         }
     }
+}
+
+/// Put a worker back on every pull that stopped without anyone choosing to stop
+/// it, reporting what happened to each by job id.
+///
+/// A pull whose worker died while the machine was asleep is the common case,
+/// and the alternative is a list of downloads to restart by hand. A pull the
+/// user paused is left exactly where they left it: nobody asked for it here,
+/// and un-pausing it behind their back would make a pause impossible to keep.
+#[cfg(unix)]
+pub fn resume_all(store: &PullStore) -> Vec<(String, Result<u32, WorkerError>)> {
+    store
+        .jobs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|job| job.status().state == PullState::Interrupted)
+        .map(|job| (job.id().to_owned(), restart(&job)))
+        .collect()
 }
 
 /// What a worker does once a pull has landed: register it, so the model reaches
