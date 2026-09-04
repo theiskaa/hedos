@@ -655,7 +655,12 @@ impl PullJobDir {
     /// nothing has taken the job yet; only time tells a job still being picked
     /// up from one whose worker died on the way.
     pub fn abandoned(&self, now_ms: i64, grace_ms: i64) -> bool {
-        let status = self.stored_status();
+        self.abandoned_by(&self.stored_status(), now_ms, grace_ms)
+    }
+
+    /// [`abandoned`](Self::abandoned) for a record already read, so a reader
+    /// that holds one does not read it again; the lock is still probed.
+    pub fn abandoned_by(&self, status: &PullStatus, now_ms: i64, grace_ms: i64) -> bool {
         status.state == PullState::Queued
             && status.pid.is_none()
             && now_ms.saturating_sub(status.updated_at_ms) >= grace_ms
