@@ -69,10 +69,12 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         Arc::new(session),
         runtime::boot::default_install_service(),
     ));
+    let pull_settings = &context.session().settings.pull;
+    runtime::install::collect_ended(&context.pull_store(), pull_settings);
     // A pull whose worker died while the machine slept is the common way one
     // stops, and the screen is where the user finds out. With auto-resume on,
     // they find it going again rather than waiting to be told to carry on.
-    if context.session().settings.pull.auto_resume {
+    if pull_settings.auto_resume {
         runtime::install::resume_all(&context.pull_store());
     }
     let tasks::Snapshot { records, facts } = context.snapshot().await;

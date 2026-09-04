@@ -16,7 +16,7 @@ use kernel::install::pulls::{PullEventKind, PullJobDir, PullState};
 use kernel::install::{InstallError, InstallPlan};
 use kernel::time::now_millis;
 use runtime::boot::{self, HedosDirs};
-use runtime::install::{restart, spawn_detached};
+use runtime::install::{collect_ended, restart, spawn_detached};
 use runtime::settings::{Settings, SettingsStore};
 
 use crate::error::CliError;
@@ -35,6 +35,7 @@ pub(super) async fn run(args: &PullArgs, out: &Out) -> Result<(), CliError> {
     let install = boot::install_service(&settings);
     let (provider, reference) = pick::target(out, &install, args).await?;
     let store = boot::pull_store(&dirs);
+    collect_ended(&store, &settings.pull);
 
     if let Some(job) = store.under_way(&provider, &reference, now_millis()) {
         return rejoin(out, &job, args.detach, &settings).await;
