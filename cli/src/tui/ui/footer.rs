@@ -2,9 +2,9 @@
 //! selected model can do, each key dim and its verb plain; help and quit sit
 //! against the right edge. A notice takes the line over while it lasts.
 //! Designed for 100 columns and up, where four actions show; narrower, the
-//! sort and expand keys go first, then the actions one at a time from the
-//! right, then the core keys the same way down to the move key, so help and
-//! quit always show.
+//! pulls, sort and expand keys go first, then the actions one at a time from
+//! the right, then the core keys the same way down to the move key, so help
+//! and quit always show.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -19,8 +19,9 @@ use crate::tui::keymap::{self, Pair};
 /// any action; the first is the floor.
 const CORE: [&str; 5] = ["j/k", "/", "p", "s", "S"];
 /// The keys shown after the core when there is room, shed before any action,
-/// the last first.
-const EXTRAS: [&str; 2] = ["enter", "o"];
+/// the last first: the pulls screen goes before the sort, since the strip
+/// already shows what is pulling.
+const EXTRAS: [&str; 3] = ["enter", "o", "P"];
 /// The keys that close the line.
 const ALWAYS: [&str; 2] = ["?", "q"];
 /// The pulls screen's keys that apply whatever is selected.
@@ -282,12 +283,13 @@ mod tests {
         }
         let signatures: Vec<String> = steps.iter().map(signature).collect();
         assert!(signatures[0].starts_with(
-            " j/k move  / filter  p pull  s scan  S serve  enter expand  o sort  │ w warm"
+            " j/k move  / filter  p pull  s scan  S serve  enter expand  o sort  P pulls  │ w warm"
         ));
         assert!(signatures[0].contains("y copy path"));
-        assert!(!signatures[1].contains("o sort") && signatures[1].contains("enter expand"));
-        assert!(!signatures[2].contains("enter expand") && signatures[2].contains("y copy path"));
-        assert!(!signatures[3].contains("y copy path") && signatures[3].contains("x remove"));
+        assert!(!signatures[1].contains("P pulls") && signatures[1].contains("o sort"));
+        assert!(!signatures[2].contains("o sort") && signatures[2].contains("enter expand"));
+        assert!(!signatures[3].contains("enter expand") && signatures[3].contains("y copy path"));
+        assert!(!signatures[4].contains("y copy path") && signatures[4].contains("x remove"));
         // Past the extras shed one by one and every action shed the same
         // way, the core stands alone.
         let fixed_only = &signatures[EXTRAS.len() + ALL.len()];
