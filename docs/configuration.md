@@ -38,12 +38,12 @@ max_concurrent_inference = 4
 # holds across terminals.
 max_concurrent = 2
 # Whether a pull whose worker died (a closed laptop, a killed terminal) is
-# started again when the shelf next opens, or when you pull it again. A pull
-# you paused stays paused.
+# started again when the shelf next opens. Pulling the model again always
+# carries it on, whatever this says. A pull you paused stays paused.
 auto_resume = true
-# How long a half-downloaded file is kept once nothing is fetching it, in
-# hours. A paused pull's bytes live this long, so it is also how long a pause
-# is worth resuming.
+# How long a half-downloaded file another pull left behind is kept, in hours,
+# before an install of the same repo tidies it. A paused pull's own bytes are
+# kept for as long as it is paused.
 partial_age_hours = 24
 # How long a failing transfer keeps retrying, in minutes, before it is left
 # interrupted for you to resume.

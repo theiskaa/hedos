@@ -198,9 +198,9 @@ pub struct PullSettings {
     pub max_concurrent: i64,
     /// Whether a pull whose worker died is started again when a client notices.
     pub auto_resume: bool,
-    /// How long a half-downloaded file is kept once nothing is fetching it.
-    /// A paused pull's bytes live exactly this long, so it also sets how long a
-    /// pause is worth resuming.
+    /// How long a half-downloaded file another pull left behind is kept before
+    /// an install of the same repo tidies it. A paused pull's own bytes are
+    /// kept for as long as it is paused.
     pub partial_age_hours: i64,
     /// How long a failing transfer keeps retrying before it is left interrupted.
     pub retry_window_minutes: i64,
