@@ -425,3 +425,37 @@ fn registering_the_same_id_from_two_instances_converges() {
     assert_eq!(c.len(), 1);
     assert_eq!(c.get(&id).unwrap().alias.as_deref(), Some("FromB"));
 }
+
+#[test]
+fn a_refresh_picks_up_what_another_process_registered() {
+    let dir = TempDir::new();
+    let mut screen = Registry::open(dir.path()).unwrap();
+    let generation = screen.generation();
+
+    // A second handle on the same directory is another process: the pull worker
+    // that registers what it fetched.
+    let mut worker = Registry::open(dir.path()).unwrap();
+    worker.register(record("pulled", "/models/pulled")).unwrap();
+
+    // The in-memory view is only reloaded under a mutation, so until it is told
+    // to look again the screen shows a shelf without the model.
+    assert!(screen.is_empty());
+
+    assert!(screen.refresh().unwrap());
+    assert_eq!(screen.len(), 1);
+    assert!(screen.list().iter().any(|held| held.name == "pulled"));
+    // What was cached against the old generation was derived from records that
+    // have just been replaced.
+    assert!(screen.generation() > generation);
+}
+
+#[test]
+fn a_refresh_that_finds_nothing_new_is_not_a_change() {
+    let dir = TempDir::new();
+    let mut registry = Registry::open(dir.path()).unwrap();
+    registry.register(record("held", "/models/held")).unwrap();
+    let generation = registry.generation();
+
+    assert!(!registry.refresh().unwrap());
+    assert_eq!(registry.generation(), generation);
+}

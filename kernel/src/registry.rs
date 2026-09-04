@@ -113,6 +113,25 @@ impl Registry {
         Ok(())
     }
 
+    /// Re-read the store, picking up what another process has committed since
+    /// this one loaded it. Returns whether anything changed.
+    ///
+    /// The in-memory view is otherwise only reloaded under a mutation, which is
+    /// enough while one process owns the shelf. A pull worker registering what
+    /// it fetched is another process, and a screen that never re-read would show
+    /// a download as landed with the model nowhere on its shelf.
+    pub fn refresh(&mut self) -> Result<bool, RegistryError> {
+        let models = Self::load_models(&self.directory)?;
+        if models == self.models {
+            return Ok(false);
+        }
+        self.models = models;
+        // Whatever was cached against the old generation was derived from
+        // records that have just been replaced.
+        self.generation += 1;
+        Ok(true)
+    }
+
     /// Acquire an exclusive OS advisory lock on a `models.json.lock` sibling,
     /// blocking until it is available. The returned file releases the lock when
     /// dropped; callers hold it only for the span of one mutation, never longer.
