@@ -30,7 +30,7 @@ pub(super) fn stop(card: &StopCard, inner: Rect) -> Vec<Line<'static>> {
         row("on disk", landed(&card.progress)),
         Line::default(),
         Line::from(" pause keeps what has landed, to resume later"),
-        Line::from(" cancel throws it away, not to the trash"),
+        Line::from(" cancel ends it for good; nothing resumes from what landed"),
         Line::default(),
         keys(&[("p", "pause"), ("x", "cancel"), ("esc", "keep going")]),
     ]
@@ -79,7 +79,7 @@ mod tests {
         assert!(shown[1].starts_with(" model") && shown[1].ends_with("Qwen/Qwen2.5-1.5B-Instruct"));
         assert!(shown[2].starts_with(" on disk") && shown[2].ends_with("3 GB of 4 GB"));
         assert!(shown.iter().any(|line| line.starts_with(" pause keeps")));
-        assert!(shown.iter().any(|line| line.starts_with(" cancel throws")));
+        assert!(shown.iter().any(|line| line.starts_with(" cancel ends it")));
         assert_eq!(
             shown.last().map(|line| line.trim_end()),
             Some(" p pause  x cancel  esc keep going")

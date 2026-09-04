@@ -923,7 +923,7 @@ impl App {
     /// cadence.
     fn open_pulls(&mut self) -> Vec<Effect> {
         self.screen = Screen::Pulls;
-        self.pulls.select_newest_live();
+        self.pulls.open();
         self.dirty = true;
         self.last_pull_poll = self.ticks;
         let mut effects = vec![Effect::PollPulls];

@@ -1022,10 +1022,11 @@ fn the_pulls_screen_opens_on_the_newest_pull_going_and_reads_the_store_at_once()
     assert_eq!(app.screen, Screen::Shelf);
     press(&mut app, Key::Char('P'));
     assert_eq!(app.screen, Screen::Pulls);
-    // The selection is the screen's own and survives a visit to the shelf.
+    // The selection is the screen's own and survives a visit to the shelf:
+    // it was moved to `done` above, and is still there.
     assert_eq!(
         app.pulls.selected_row().map(|row| row.reference.as_str()),
-        Some("going")
+        Some("done")
     );
     press(&mut app, Key::Char('P'));
     assert_eq!(app.screen, Screen::Shelf);

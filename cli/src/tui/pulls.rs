@@ -48,6 +48,9 @@ pub struct PullsScreen {
     /// A job to put the selection on when it appears: the one a pull started
     /// from here was given, so the screen lands on what it just started.
     follow: Option<String>,
+    /// Whether the screen has been opened before; the first open lands on the
+    /// newest pull going, later ones keep the selection.
+    opened: bool,
 }
 
 /// The rate of one transfer, read from consecutive records.
@@ -194,8 +197,18 @@ impl PullsScreen {
         self.follow = Some(job);
     }
 
+    /// The screen is being opened: the first time, the selection lands on the
+    /// newest pull going, which is what someone opening it most likely came
+    /// for; after that it stays where it was left.
+    pub fn open(&mut self) {
+        if !self.opened {
+            self.select_newest_live();
+            self.opened = true;
+        }
+    }
+
     /// Put the selection on the newest pull still going, or the newest row
-    /// when none is: what someone opening the screen most likely came for.
+    /// when none is.
     pub fn select_newest_live(&mut self) {
         let index = self
             .rows

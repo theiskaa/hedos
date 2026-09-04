@@ -122,6 +122,33 @@ fn a_pull_started_here_takes_the_selection_when_it_appears() {
 }
 
 #[test]
+fn the_first_open_lands_on_the_newest_pull_going_and_later_ones_keep_the_selection() {
+    let mut screen = PullsScreen::default();
+    screen.sync(&[
+        created(downloading("going"), 1),
+        created(
+            job_row(
+                "done",
+                PullState::Done,
+                TaskState::Done("pulled done".to_owned()),
+            ),
+            2,
+        ),
+    ]);
+    screen.open();
+    assert_eq!(
+        screen.selected_row().map(|row| row.reference.as_str()),
+        Some("going")
+    );
+    screen.step(-1);
+    screen.open();
+    assert_eq!(
+        screen.selected_row().map(|row| row.reference.as_str()),
+        Some("done")
+    );
+}
+
+#[test]
 fn opening_lands_on_the_newest_pull_still_going() {
     let mut screen = PullsScreen::default();
     screen.sync(&[
