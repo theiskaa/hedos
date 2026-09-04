@@ -679,6 +679,34 @@ fn sweep_collects_old_ended_jobs_and_keeps_the_newest() {
 }
 
 #[test]
+fn forget_takes_only_an_ended_job_nobody_holds() {
+    let dir = TempDir::new();
+    let store = store(&dir);
+    let job = store.create(&plan("gemma3:4b"), 10).unwrap();
+    job.update_status(20, |status| status.state = PullState::Running)
+        .unwrap();
+    assert!(matches!(
+        job.forget(),
+        Err(PullError::NotEnded {
+            state: PullState::Running,
+            ..
+        })
+    ));
+    assert!(job.path().exists());
+
+    let claim = job.claim().unwrap().expect("an unclaimed job");
+    job.update_status(30, |status| status.state = PullState::Done)
+        .unwrap();
+    assert!(matches!(job.forget(), Err(PullError::Held(_))));
+    assert!(job.path().exists());
+
+    drop(claim);
+    job.forget().unwrap();
+    assert!(!job.path().exists());
+    assert!(store.list().is_empty());
+}
+
+#[test]
 fn sweep_leaves_a_job_whose_worker_still_holds_it() {
     let dir = TempDir::new();
     let store = store(&dir);

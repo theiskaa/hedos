@@ -82,6 +82,19 @@ pub enum PullError {
     /// The job directory could not be named uniquely.
     #[error("could not claim a directory for a pull of {0}")]
     Unclaimable(String),
+
+    /// The job has not ended, so its record is still the way to reach it.
+    #[error("{id} is {state}, not ended")]
+    NotEnded {
+        /// The job.
+        id: String,
+        /// Where it is.
+        state: PullState,
+    },
+
+    /// A worker still holds the job, whatever its record reads.
+    #[error("a worker still holds {0}")]
+    Held(String),
 }
 
 /// Where a pull is in its life.
@@ -453,9 +466,8 @@ impl PullStore {
     /// Remove ended jobs last touched before `before_ms`, keeping the newest
     /// `keep` of them however old they are. Returns how many were removed.
     ///
-    /// A job whose worker still holds the lock is never removed, however its
-    /// record reads: a worker writes `done` and then registers what it fetched,
-    /// and deleting the directory under it would leave a partial one behind.
+    /// Each goes through [`forget`](PullJobDir::forget), so a job whose
+    /// worker still holds the lock is left, however its record reads.
     pub fn sweep(&self, keep: usize, before_ms: i64) -> usize {
         let mut ended: Vec<(i64, PullJobDir)> = self
             .list()
@@ -472,7 +484,7 @@ impl PullStore {
         ended.sort_by_key(|(touched_at, _)| std::cmp::Reverse(*touched_at));
         let mut removed = 0;
         for (touched_at, job) in ended.into_iter().skip(keep) {
-            if touched_at < before_ms && job.remove().is_ok() {
+            if touched_at < before_ms && job.forget().is_ok() {
                 removed += 1;
             }
         }
@@ -743,6 +755,26 @@ impl PullJobDir {
     pub fn remove(&self) -> Result<(), PullError> {
         fs::remove_dir_all(&self.path)?;
         Ok(())
+    }
+
+    /// Forget an ended job: [`remove`](Self::remove) once the record has
+    /// ended and no worker holds the lock. A worker holds the lock until it
+    /// exits, a moment after it settles the record, so a record that reads
+    /// ended can still be under a worker, and deleting the directory then
+    /// would leave a partial one behind. The rule every collector follows,
+    /// the sweep included.
+    pub fn forget(&self) -> Result<(), PullError> {
+        let state = self.stored_status().state;
+        if !state.is_terminal() {
+            return Err(PullError::NotEnded {
+                id: self.id().to_owned(),
+                state,
+            });
+        }
+        if self.worker_alive() {
+            return Err(PullError::Held(self.id().to_owned()));
+        }
+        self.remove()
     }
 
     /// Refuse to write into a job that has been swept, and undo the write when
