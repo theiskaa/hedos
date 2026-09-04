@@ -321,10 +321,10 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
 }
 
 /// What starting a pull did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Started {
-    /// A job was created and a worker spawned on it.
-    Created,
+    /// A job was created and a worker spawned on it; this is the job.
+    Created(String),
     /// A pull of this model was already going, so this is that one.
     Joined,
     /// A pull of this model had stopped, and a worker was put back on it.
@@ -351,7 +351,7 @@ pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, W
     }
     let job = store.create(plan, now_millis())?;
     spawn_worker(&job)?;
-    Ok(Started::Created)
+    Ok(Started::Created(job.id().to_owned()))
 }
 
 /// Spawn a worker on `job`, settling the job if it cannot be spawned: a job
