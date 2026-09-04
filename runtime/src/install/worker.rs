@@ -378,6 +378,14 @@ fn spawn_worker(job: &PullJobDir) -> Result<u32, WorkerError> {
     }
 }
 
+/// Drop the records of ended pulls beyond the newest `pull.keep_ended`,
+/// reporting how many went. The housekeeping a front end does when it opens
+/// the store, since nothing else runs on a schedule: the listing would
+/// otherwise grow until someone ran `hedos pull clean`.
+pub fn collect_ended(store: &PullStore, settings: &PullSettings) -> usize {
+    store.sweep(settings.kept_ended(), now_millis())
+}
+
 /// Put a worker back on every pull that stopped without anyone choosing to stop
 /// it, reporting what happened to each by job id.
 ///

@@ -204,6 +204,10 @@ pub struct PullSettings {
     pub partial_age_hours: i64,
     /// How long a failing transfer keeps retrying before it is left interrupted.
     pub retry_window_minutes: i64,
+    /// How many ended pulls keep their record, for `hedos pull ls` and the
+    /// pulls screen to show; the rest are dropped when hedos next opens the
+    /// store. `hedos pull clean` drops them sooner.
+    pub keep_ended: i64,
 }
 
 impl Default for PullSettings {
@@ -213,6 +217,7 @@ impl Default for PullSettings {
             auto_resume: true,
             partial_age_hours: 24,
             retry_window_minutes: 120,
+            keep_ended: 20,
         }
     }
 }
@@ -231,6 +236,11 @@ impl PullSettings {
     /// How long a failing transfer keeps retrying.
     pub fn retry_window(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.retry_window_minutes.clamp(1, 60 * 24) as u64 * 60)
+    }
+
+    /// How many ended pulls keep their record, as the count a sweep keeps.
+    pub fn kept_ended(&self) -> usize {
+        self.keep_ended.clamp(0, 10_000) as usize
     }
 }
 
@@ -520,8 +530,10 @@ mod tests {
             auto_resume: true,
             partial_age_hours: 2,
             retry_window_minutes: 30,
+            keep_ended: 5,
         };
         assert_eq!(settings.slots(), 3);
+        assert_eq!(settings.kept_ended(), 5);
         assert_eq!(
             settings.partial_age(),
             std::time::Duration::from_secs(7_200)
@@ -538,9 +550,11 @@ mod tests {
             max_concurrent: 0,
             partial_age_hours: 0,
             retry_window_minutes: -5,
+            keep_ended: -1,
             ..PullSettings::default()
         };
         assert_eq!(none.slots(), 1, "a pull has to be able to run");
+        assert_eq!(none.kept_ended(), 0, "keeping none is a choice");
         assert_eq!(none.partial_age(), std::time::Duration::from_secs(3_600));
         assert_eq!(none.retry_window(), std::time::Duration::from_secs(60));
 
@@ -548,9 +562,11 @@ mod tests {
             max_concurrent: i64::MAX,
             partial_age_hours: i64::MAX,
             retry_window_minutes: i64::MAX,
+            keep_ended: i64::MAX,
             ..PullSettings::default()
         };
         assert_eq!(far_too_much.slots(), 64);
+        assert_eq!(far_too_much.kept_ended(), 10_000);
         assert!(far_too_much.partial_age() < std::time::Duration::from_secs(400 * 24 * 3_600));
         assert_eq!(
             far_too_much.retry_window(),

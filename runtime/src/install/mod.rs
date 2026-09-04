@@ -21,6 +21,6 @@ pub use transport::{
     InstallRequest, InstallResponse, InstallTransport, ReqwestTransport, StreamFuture, StreamStart,
     TransportFuture,
 };
-pub use worker::{PullWorker, Registrar, RetryPolicy, Stopped, WorkerError, stop};
+pub use worker::{PullWorker, Registrar, RetryPolicy, Stopped, WorkerError, collect_ended, stop};
 #[cfg(unix)]
 pub use worker::{Started, ignore_hangup, restart, resume_all, spawn_detached, start_or_join};

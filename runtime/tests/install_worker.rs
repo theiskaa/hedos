@@ -19,8 +19,8 @@ use kernel::records::SourceKind;
 use runtime::install::InstallService;
 use runtime::install::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use runtime::install::worker::{
-    PullWorker, RetryPolicy, SlotPool, Started, Stopped, WorkerError, claim_reference, restart,
-    resume_all, start_or_join, stop,
+    PullWorker, RetryPolicy, SlotPool, Started, Stopped, WorkerError, claim_reference,
+    collect_ended, restart, resume_all, start_or_join, stop,
 };
 use runtime::settings::PullSettings;
 use support::TempDir;
@@ -892,4 +892,36 @@ async fn stopping_says_whether_it_asked_a_worker_or_settled_the_record_itself() 
         stop(&loose, PullControl::Cancel).unwrap(),
         Stopped::Settled(PullState::Cancelled)
     );
+}
+
+#[test]
+fn collecting_keeps_the_newest_ended_pulls_the_settings_ask_for() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    for (index, reference) in ["a/old", "b/newer", "c/newest"].iter().enumerate() {
+        let job = store
+            .create(&plan(reference), 1_000 + index as i64)
+            .unwrap();
+        job.update_status(2_000 + index as i64, |status| {
+            status.state = PullState::Done
+        })
+        .unwrap();
+    }
+    let going = store.create(&plan("d/going"), 5_000).unwrap();
+    going
+        .update_status(5_000, |status| status.state = PullState::Running)
+        .unwrap();
+
+    let settings = PullSettings {
+        keep_ended: 1,
+        ..PullSettings::default()
+    };
+    assert_eq!(collect_ended(&store, &settings), 2);
+    let left: Vec<String> = store
+        .list()
+        .iter()
+        .map(|job| job.job().reference.clone())
+        .collect();
+    assert_eq!(left, ["c/newest", "d/going"]);
+    assert_eq!(collect_ended(&store, &settings), 0);
 }
