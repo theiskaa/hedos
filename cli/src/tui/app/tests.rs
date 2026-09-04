@@ -1013,9 +1013,10 @@ fn the_pulls_screen_opens_on_the_newest_pull_going_and_reads_the_store_at_once()
     assert!(app.take_dirty());
     assert_eq!(app.pulls.history_lines(), ["done"]);
 
-    // The shelf's keys do not fire on the screen, and the way back is esc or P.
+    // The shelf's model keys do not fire on the screen, and the way back is
+    // esc or P.
     assert!(press(&mut app, Key::Char('w')).is_empty());
-    assert!(press(&mut app, Key::Char('x')).is_empty());
+    assert!(press(&mut app, Key::Char('u')).is_empty());
     assert!(app.modal.is_none());
     press(&mut app, Key::Escape);
     assert_eq!(app.screen, Screen::Shelf);
@@ -1082,6 +1083,77 @@ fn the_pulls_screen_acts_on_the_selected_pull_and_asks_before_stopping_it() {
     assert!(press(&mut app, Key::Char('c')).is_empty());
     assert_eq!(app.notice(), Some("paused is paused, not downloading"));
     assert!(app.modal.is_none());
+}
+
+#[test]
+fn the_pulls_screen_starts_a_pull_and_forgets_an_ended_one() {
+    let mut app = app(1);
+    app.reduce(Event::Pulls(vec![
+        job_row(
+            "done",
+            PullState::Done,
+            TaskState::Done("pulled done".to_owned()),
+        ),
+        downloading("going"),
+    ]));
+    press(&mut app, Key::Char('P'));
+    assert!(press(&mut app, Key::Char('x')).is_empty());
+    assert_eq!(app.notice(), Some("going is running, not ended"));
+    press(&mut app, Key::Char('j'));
+    assert_eq!(
+        press(&mut app, Key::Char('x')),
+        vec![Effect::ControlPull(
+            PullAction::Forget,
+            "1000-done".to_owned()
+        )]
+    );
+
+    // `p` is the shelf's `p`: the same catalog opens over the screen, and the
+    // job a pull started from it was given takes the selection when it
+    // appears. A start that was refused names no job, so nothing is followed.
+    press(&mut app, Key::Char('p'));
+    assert!(matches!(app.modal, Some(Modal::Pull(_))));
+    let mut modal = PullModal::open(&[], 0, &[]);
+    modal.stage = Stage::Preview(plan("new"));
+    app.modal = Some(Modal::Pull(Box::new(modal)));
+    assert!(matches!(
+        press(&mut app, Key::Enter).as_slice(),
+        [Effect::StartPull(_)]
+    ));
+    assert_eq!(app.screen, Screen::Pulls);
+    app.reduce(Event::PullRefused("new is already downloading".to_owned()));
+    let mut other = downloading("other");
+    other.descriptor.created_at_ms = 4;
+    let mut new = downloading("new");
+    new.descriptor.created_at_ms = 5;
+    app.reduce(Event::Pulls(vec![
+        job_row(
+            "done",
+            PullState::Done,
+            TaskState::Done("pulled done".to_owned()),
+        ),
+        downloading("going"),
+        other.clone(),
+    ]));
+    assert_eq!(
+        app.pulls.selected_row().map(|row| row.reference.as_str()),
+        Some("done")
+    );
+    app.reduce(Event::PullStarted("1000-new".to_owned()));
+    app.reduce(Event::Pulls(vec![
+        job_row(
+            "done",
+            PullState::Done,
+            TaskState::Done("pulled done".to_owned()),
+        ),
+        downloading("going"),
+        other,
+        new,
+    ]));
+    assert_eq!(
+        app.pulls.selected_row().map(|row| row.reference.as_str()),
+        Some("new")
+    );
 }
 
 #[test]

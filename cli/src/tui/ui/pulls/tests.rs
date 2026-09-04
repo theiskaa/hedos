@@ -150,7 +150,7 @@ fn an_empty_store_says_where_a_pull_starts() {
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("no pulls yet · p on the shelf pulls one"))
+            .any(|line| line.contains("no pulls yet · p pulls one"))
     );
     assert!(lines[0].contains(" pull "));
 }

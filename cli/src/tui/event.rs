@@ -32,6 +32,8 @@ pub enum Event {
     Pulls(Vec<JobRow>),
     /// One job's history, as lines already phrased against the clock.
     History { job: String, lines: Vec<String> },
+    /// A pull was started from here, as this job.
+    PullStarted(String),
     /// A pull could not be started, stopped, or resumed, and why.
     PullRefused(String),
     /// The shelf and facts were re-read.

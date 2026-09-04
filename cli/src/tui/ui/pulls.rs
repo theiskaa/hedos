@@ -41,7 +41,7 @@ const LABELS: [&str; 9] = [
 
 /// What the list says when the store is empty.
 fn empty_note() -> String {
-    format!("no pulls yet · p on the shelf {}s one", keymap::verb("p"))
+    format!("no pulls yet · p {}s one", keymap::verb("p"))
 }
 
 /// The width of the detail's label column.

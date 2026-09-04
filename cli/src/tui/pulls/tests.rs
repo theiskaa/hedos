@@ -76,6 +76,52 @@ fn rows_are_listed_newest_first_and_the_selection_follows_its_job() {
 }
 
 #[test]
+fn a_pull_started_here_takes_the_selection_when_it_appears() {
+    let mut screen = PullsScreen::default();
+    screen.sync(&[created(downloading("a"), 1), created(downloading("b"), 2)]);
+    screen.step(1);
+    screen.follow("1000-c".to_owned());
+    // A poll without it leaves the selection where it was, and so does one
+    // that brings some other job.
+    screen.sync(&[created(downloading("a"), 1), created(downloading("b"), 2)]);
+    assert_eq!(
+        screen.selected_row().map(|row| row.reference.as_str()),
+        Some("a")
+    );
+    screen.sync(&[
+        created(downloading("a"), 1),
+        created(downloading("b"), 2),
+        created(downloading("d"), 4),
+    ]);
+    assert_eq!(
+        screen.selected_row().map(|row| row.reference.as_str()),
+        Some("a")
+    );
+    screen.sync(&[
+        created(downloading("a"), 1),
+        created(downloading("b"), 2),
+        created(downloading("c"), 3),
+        created(downloading("d"), 4),
+    ]);
+    assert_eq!(
+        screen.selected_row().map(|row| row.reference.as_str()),
+        Some("c")
+    );
+    // Once taken, the next arrival does not move it.
+    screen.sync(&[
+        created(downloading("a"), 1),
+        created(downloading("b"), 2),
+        created(downloading("c"), 3),
+        created(downloading("d"), 4),
+        created(downloading("e"), 5),
+    ]);
+    assert_eq!(
+        screen.selected_row().map(|row| row.reference.as_str()),
+        Some("c")
+    );
+}
+
+#[test]
 fn opening_lands_on_the_newest_pull_still_going() {
     let mut screen = PullsScreen::default();
     screen.sync(&[

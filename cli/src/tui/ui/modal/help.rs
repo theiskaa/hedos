@@ -1,6 +1,8 @@
 //! The help card: the keymap's groups laid out in columns of `key  verb`
 //! cells, three of them on a wide terminal and two on a narrow one, the
-//! closer under the table and the one idea behind the keys under that.
+//! closer under the table and the one idea behind the keys under that. The
+//! pulls screen's keys are one group among them, listed by verb rather than
+//! gloss: `Y`'s gloss is the bare `id`, which only reads joined with `y`.
 
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -106,6 +108,17 @@ fn help_cell(keys: &[&str]) -> (String, String) {
 /// joined ones as one cell.
 fn group_cells(group: keymap::Group) -> Vec<HelpCell> {
     let mut cells = vec![HelpCell::Header(group.label())];
+    cells.extend(match group {
+        keymap::Group::Pulls => pulls_rows(),
+        group => shelf_rows(group),
+    });
+    cells
+}
+
+/// A shelf group's bindings in the order they are declared, the joined ones
+/// as one cell.
+fn shelf_rows(group: keymap::Group) -> Vec<HelpCell> {
+    let mut cells = Vec::new();
     let mut joined_already: Vec<&str> = Vec::new();
     for binding in keymap::BINDINGS
         .iter()
@@ -126,20 +139,37 @@ fn group_cells(group: keymap::Group) -> Vec<HelpCell> {
     cells
 }
 
-/// `top` over `bottom` in one column, a blank between them.
-fn stacked(top: keymap::Group, bottom: keymap::Group) -> Vec<HelpCell> {
-    let mut cells = group_cells(top);
-    cells.push(HelpCell::Blank);
-    cells.extend(group_cells(bottom));
+/// The pulls screen's rows, each key with its verb.
+fn pulls_rows() -> Vec<HelpCell> {
+    keymap::pulls_help_bindings()
+        .map(|binding| HelpCell::Row {
+            key: binding.key.to_owned(),
+            gloss: binding.verb.to_owned(),
+        })
+        .collect()
+}
+
+/// `groups` in one column, a blank between each and the next.
+fn stacked(groups: &[keymap::Group]) -> Vec<HelpCell> {
+    let mut cells = Vec::new();
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            cells.push(HelpCell::Blank);
+        }
+        cells.extend(group_cells(*group));
+    }
     cells
 }
 
-/// The help in three columns, the screen keys under the move keys.
+/// The help in three columns, the pulls keys under the move keys and the
+/// screen keys under the model keys: the split that keeps every column
+/// near the shelf's height, so the card stays short enough for its closer
+/// to show on a 24-row terminal.
 fn three_columns() -> Vec<Vec<HelpCell>> {
     use keymap::Group;
     vec![
-        stacked(Group::Move, Group::Screen),
-        group_cells(Group::Model),
+        stacked(&[Group::Move, Group::Pulls]),
+        stacked(&[Group::Model, Group::Screen]),
         group_cells(Group::Shelf),
     ]
 }
@@ -148,8 +178,8 @@ fn three_columns() -> Vec<Vec<HelpCell>> {
 fn two_columns() -> Vec<Vec<HelpCell>> {
     use keymap::Group;
     vec![
-        stacked(Group::Move, Group::Screen),
-        stacked(Group::Model, Group::Shelf),
+        stacked(&[Group::Move, Group::Screen, Group::Pulls]),
+        stacked(&[Group::Model, Group::Shelf]),
     ]
 }
 
@@ -249,7 +279,8 @@ mod tests {
     }
 
     /// Every binding's key as the help cells it: joined bindings as their
-    /// one cell, the rest as themselves.
+    /// one cell, the rest as themselves, and the pulls screen's keys again
+    /// under their own heading.
     fn bound_keys() -> Vec<String> {
         let joined = |key: &str| JOINED.iter().find(|set| set.contains(&key));
         keymap::BINDINGS
@@ -259,6 +290,7 @@ mod tests {
                 Some(set) => Some(help_cell(set).0),
                 None => Some(binding.key.to_owned()),
             })
+            .chain(keymap::pulls_help_bindings().map(|binding| binding.key.to_owned()))
             .collect()
     }
 
@@ -325,7 +357,18 @@ mod tests {
                 && line.contains("MODEL")
                 && line.contains("SHELF"))
         );
-        assert!(rows.iter().any(|line| line.starts_with("  SCREEN")));
+        assert!(rows.iter().any(|line| line.contains("SCREEN")));
+        assert!(rows.iter().any(|line| line.starts_with("  PULLS")));
+        // The card stays short enough for its closer on a 24-row terminal.
+        assert!(layout.height() <= 24, "{} rows", layout.height());
+        assert!(
+            rows.iter()
+                .any(|line| line.starts_with("  x ") && line.contains("forget"))
+        );
+        assert!(
+            rows.iter()
+                .any(|line| line.starts_with("  Y ") && line.contains("copy id"))
+        );
         assert!(rows.iter().any(|line| line.contains("launch a harness")));
         assert!(rows.iter().any(|line| line.contains("esc       collapse")));
         assert!(rows.iter().any(|line| line.contains("chat in terminal")));

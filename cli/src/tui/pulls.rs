@@ -45,6 +45,9 @@ pub struct PullsScreen {
     history: Option<(String, Vec<String>)>,
     /// When the last poll read the store.
     polled_at_ms: i64,
+    /// A job to put the selection on when it appears: the one a pull started
+    /// from here was given, so the screen lands on what it just started.
+    follow: Option<String>,
 }
 
 /// The rate of one transfer, read from consecutive records.
@@ -151,10 +154,18 @@ impl PullsScreen {
             self.polled_at_ms = at;
         }
         self.rows = rows;
-        let index = self
-            .selected_job
+        let followed = self
+            .follow
             .as_deref()
-            .and_then(|job| self.rows.iter().position(|row| row.job == job))
+            .and_then(|job| self.rows.iter().position(|row| row.job == job));
+        if followed.is_some() {
+            self.follow = None;
+        }
+        let index = followed
+            .or_else(|| {
+                let job = self.selected_job.as_deref()?;
+                self.rows.iter().position(|row| row.job == job)
+            })
             .unwrap_or(self.selected());
         self.select(index);
         changed
@@ -176,6 +187,11 @@ impl PullsScreen {
         self.table.select(Some(index));
         self.selected_job = job;
         moved
+    }
+
+    /// Have `job` take the selection once a poll lists it.
+    pub fn follow(&mut self, job: String) {
+        self.follow = Some(job);
     }
 
     /// Put the selection on the newest pull still going, or the newest row

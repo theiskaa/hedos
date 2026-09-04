@@ -24,7 +24,7 @@ const EXTRAS: [&str; 2] = ["enter", "o"];
 /// The keys that close the line.
 const ALWAYS: [&str; 2] = ["?", "q"];
 /// The pulls screen's keys that apply whatever is selected.
-const PULLS_FIXED: [&str; 2] = ["j/k", "esc"];
+const PULLS_FIXED: [&str; 3] = ["j/k", "p", "esc"];
 
 /// One footer worth trying.
 struct Candidate {
@@ -57,16 +57,17 @@ fn chat_line(streaming: bool) -> Line<'static> {
     }
 }
 
-/// The pulls screen's keys: moving and the way back, then what the selected
-/// pull answers to; narrower, the actions go, then the way back, and the
-/// move key alone is the floor.
+/// The pulls screen's keys: moving, pulling and the way back, then what the
+/// selected pull answers to; narrower, the actions go from the right, then
+/// the fixed keys the same way down to the move key, which is the floor.
 fn pulls_line(app: &App, width: usize) -> Line<'static> {
     let fixed = keymap::pulls_pairs(&PULLS_FIXED);
     let actions = keymap::pulls_pairs(&pulls_actions(app));
-    let candidates: [(&[Pair], &[Pair]); 3] =
-        [(&fixed, &actions), (&fixed, &[]), (&fixed[..1], &[])];
+    let candidates = (0..=actions.len())
+        .rev()
+        .map(|kept| (&fixed[..], &actions[..kept]))
+        .chain((1..fixed.len()).rev().map(|kept| (&fixed[..kept], &[][..])));
     candidates
-        .iter()
         .map(|(fixed, actions)| footer_line(fixed, actions, width))
         .find(|line| line.width() < width)
         .unwrap_or_else(|| footer_line(&fixed[..1], &[], width))
@@ -83,6 +84,9 @@ fn pulls_actions(app: &App) -> Vec<&'static str> {
     }
     if row.pull_state.is_resumable() {
         actions.push("R");
+    }
+    if row.pull_state.is_terminal() {
+        actions.push("x");
     }
     actions.push("Y");
     actions
@@ -194,7 +198,7 @@ mod tests {
 
         let mut app = App::new(Vec::new(), Facts::default());
         let empty = text(&pulls_line(&app, 100));
-        assert!(empty.starts_with(" j/k move  esc shelf   ") && !empty.contains('│'));
+        assert!(empty.starts_with(" j/k move  p pull  esc shelf   ") && !empty.contains('│'));
         assert!(empty.ends_with("? help  q quit"));
         assert_eq!(Line::from(empty.as_str()).width(), 99);
         app.pulls.sync(&[downloading("going")]);
@@ -208,11 +212,28 @@ mod tests {
         )]);
         let stopped = text(&pulls_line(&app, 100));
         assert!(stopped.contains("│ R resume  Y copy id") && !stopped.contains("c stop"));
+        app.pulls.sync(&[job_row(
+            "done",
+            PullState::Done,
+            TaskState::Done("pulled done".to_owned()),
+        )]);
+        let ended = text(&pulls_line(&app, 100));
+        assert!(ended.contains("│ x forget  Y copy id") && !ended.contains("R resume"));
 
-        // 40 columns: the actions go, then the way back; help and quit stay.
-        let narrow = text(&pulls_line(&app, 40));
-        assert!(Line::from(narrow.as_str()).width() < 40, "{narrow:?}");
-        assert!(narrow.starts_with(" j/k move  esc shelf") && narrow.ends_with("? help  q quit"));
+        // 60 columns: the last action goes and the first stays; 48: the
+        // actions go, the way back stays; 40: the way back goes too; help
+        // and quit stay throughout.
+        let one_action = text(&pulls_line(&app, 60));
+        assert!(one_action.contains("│ x forget  ") && !one_action.contains("copy id"));
+        let narrow = text(&pulls_line(&app, 48));
+        assert!(Line::from(narrow.as_str()).width() < 48, "{narrow:?}");
+        assert!(
+            narrow.starts_with(" j/k move  p pull  esc shelf")
+                && !narrow.contains('│')
+                && narrow.ends_with("? help  q quit")
+        );
+        let without_back = text(&pulls_line(&app, 40));
+        assert!(without_back.starts_with(" j/k move  p pull  ") && !without_back.contains("esc"));
         let floor = text(&pulls_line(&app, 30));
         assert!(floor.starts_with(" j/k move  ") && floor.ends_with("? help  q quit"));
         assert!(!floor.contains("esc"));

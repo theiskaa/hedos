@@ -377,6 +377,10 @@ impl App {
                 self.history(job, lines);
                 Vec::new()
             }
+            Event::PullStarted(job) => {
+                self.pulls.follow(job);
+                Vec::new()
+            }
             Event::PullRefused(reason) => self.notify(reason),
             Event::Task(event) => self.task(event),
             Event::Refreshed(refreshed) => {
@@ -452,11 +456,7 @@ impl App {
             Key::Char('r') => return self.refresh(),
             Key::Char('w') => return self.warm(),
             Key::Char('u') => return self.unload(),
-            Key::Char('p') => self.open(Modal::Pull(Box::new(PullModal::open(
-                &self.records,
-                self.facts.memory_bytes,
-                &self.tasks.pulling(),
-            )))),
+            Key::Char('p') => self.open_pull_modal(),
             Key::Char('P') => return self.open_pulls(),
             Key::Char('x') => return self.remove(),
             Key::Char('l') => return self.launch(),
@@ -937,7 +937,16 @@ impl App {
         self.dirty = true;
     }
 
-    /// The keys of the pulls screen. The screen's `q` and `?` are the
+    /// Open the catalog and search that a pull starts from.
+    fn open_pull_modal(&mut self) {
+        self.open(Modal::Pull(Box::new(PullModal::open(
+            &self.records,
+            self.facts.memory_bytes,
+            &self.tasks.pulling(),
+        ))));
+    }
+
+    /// The keys of the pulls screen. The screen's `q`, `?` and `p` are the
     /// shelf's; everything else is its own, so no shelf verb fires by
     /// accident on a pull.
     fn pulls_key(&mut self, key: Key) -> Vec<Effect> {
@@ -945,6 +954,8 @@ impl App {
             Key::Char('q') => return vec![Effect::Quit],
             Key::Escape | Key::Char('P') => self.close_pulls(),
             Key::Char('?') => self.open(Modal::Help),
+            Key::Char('p') => self.open_pull_modal(),
+            Key::Char('x') => return self.forget_selected_pull(),
             Key::Down | Key::ScrollDown | Key::Char('j') => return self.move_pull(1),
             Key::Up | Key::ScrollUp | Key::Char('k') => return self.move_pull(-1),
             Key::Top | Key::Char('g') => return self.select_pull(0),
@@ -1015,6 +1026,20 @@ impl App {
         if self.pulls.history(job, lines) && self.screen == Screen::Pulls {
             self.dirty = true;
         }
+    }
+
+    /// Take the selected pull's record away once it has ended, or say why
+    /// not. The rule is the store's; this only spares a round trip for the
+    /// answer the screen can already see.
+    fn forget_selected_pull(&mut self) -> Vec<Effect> {
+        let Some(row) = self.pulls.selected_row() else {
+            return self.notify("no pull is selected".to_owned());
+        };
+        if row.pull_state.is_terminal() {
+            return vec![Effect::ControlPull(PullAction::Forget, row.job.clone())];
+        }
+        let text = format!("{} is {}, not ended", row.reference, row.pull_state);
+        self.notify(text)
     }
 
     /// Put a worker back on the selected pull, or say why not.

@@ -15,11 +15,11 @@ use kernel::discovery::service::DiscoverySummary;
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::{PullControl, PullStore};
+use kernel::install::pulls::{PullControl, PullError, PullStore};
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use kernel::time::now_millis;
 use runtime::install::service::InstallService;
-use runtime::install::{Started, restart, start_or_join, stop};
+use runtime::install::{Started, WorkerError, restart, start_or_join, stop};
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use super::event::{Event, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
 use super::jobs;
-use super::pull::SEARCH_LIMIT;
+use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
 use crate::support::pulls::event_line;
 use crate::support::removal::remove_and_forget;
@@ -348,13 +348,16 @@ pub fn spawn_start_pull(
 ) {
     let store = context.pull_store();
     let tx = tx.clone();
+    let reference = plan.reference.clone();
     tokio::spawn(async move {
-        match start_pull(&store, plan) {
-            Ok(Some(note)) | Err(note) => {
-                let _ = tx.send(Event::PullRefused(note));
+        let _ = tx.send(match start_pull(&store, plan) {
+            Ok(Started::Created(job)) => Event::PullStarted(job),
+            Ok(Started::Joined) => Event::PullRefused(already_downloading(&reference)),
+            Ok(Started::Resumed) => {
+                Event::PullRefused(format!("carrying on the pull of {reference}"))
             }
-            Ok(None) => {}
-        }
+            Err(error) => Event::PullRefused(format!("{reference}: {error}")),
+        });
         spawn_pulls_into(&store, &tx);
     });
 }
@@ -385,6 +388,8 @@ pub enum PullAction {
     Cancel,
     /// Put a worker back on it.
     Resume,
+    /// Take its record away once it has ended.
+    Forget,
 }
 
 /// Send the rows as they read right now, so a key that changed one shows its
@@ -393,25 +398,30 @@ fn spawn_pulls_into(store: &PullStore, tx: &mpsc::UnboundedSender<Event>) {
     let _ = tx.send(Event::Pulls(jobs::rows(store, now_millis())));
 }
 
-/// Start a pull, or join the one already fetching that model, and say which
-/// happened when it was not simply started.
-fn start_pull(store: &PullStore, plan: InstallPlan) -> Result<Option<String>, String> {
-    match start_or_join(store, &plan) {
-        Ok(Started::Created) => Ok(None),
-        Ok(Started::Joined) => Ok(Some(format!("{} is already downloading", plan.reference))),
-        Ok(Started::Resumed) => Ok(Some(format!("carrying on the pull of {}", plan.reference))),
-        Err(error) => Err(format!("{}: {error}", plan.reference)),
-    }
+/// Start a pull, or join the one already fetching that model.
+fn start_pull(store: &PullStore, plan: InstallPlan) -> Result<Started, WorkerError> {
+    start_or_join(store, &plan)
 }
 
+/// Act on the job `id` names; the reason, phrased for the footer, when the
+/// job refuses.
 fn act_on_pull(store: &PullStore, action: PullAction, id: &str) -> Result<(), String> {
     let job = store.open(id).map_err(|error| error.to_string())?;
+    let refused = |error: WorkerError| error.to_string();
     match action {
-        PullAction::Pause => stop(&job, PullControl::Pause).map(|_| ()),
-        PullAction::Cancel => stop(&job, PullControl::Cancel).map(|_| ()),
-        PullAction::Resume => restart(&job).map(|_| ()),
+        PullAction::Pause => stop(&job, PullControl::Pause).map(|_| ()).map_err(refused),
+        PullAction::Cancel => stop(&job, PullControl::Cancel).map(|_| ()).map_err(refused),
+        PullAction::Resume => restart(&job).map(|_| ()).map_err(refused),
+        PullAction::Forget => job.forget().map_err(|error| match error {
+            // The worker holds the lock until it exits, a moment after the
+            // record reads done; the id it holds means nothing on screen.
+            PullError::Held(_) => format!(
+                "{} is still being finished by its worker; try again",
+                job.job().reference
+            ),
+            error => error.to_string(),
+        }),
     }
-    .map_err(|error| error.to_string())
 }
 
 /// Run `work` against the context and hand its answer to the loop; for the
