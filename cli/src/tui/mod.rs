@@ -19,6 +19,7 @@ mod markup;
 mod order;
 mod pull;
 mod state;
+mod stop;
 mod strip;
 mod tasks;
 #[cfg(test)]

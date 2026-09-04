@@ -7,6 +7,7 @@
 //! the same records `hedos pull ls` reads, which is why a pull started in a
 //! terminal appears here, and why closing the screen leaves it running.
 
+use kernel::install::event::InstallProgress;
 use kernel::install::pulls::{PullState, PullStatus, PullStore, START_GRACE_MS};
 
 use super::strip::ENDED_LINGER_MS;
@@ -26,6 +27,9 @@ pub struct JobRow {
     /// Where the pull is in the record's own vocabulary, which is finer than
     /// the strip's.
     pub pull_state: PullState,
+    /// What has landed, whatever `state` shows: a pull queued for a retry
+    /// keeps its bytes, and a stop card must not call them nothing.
+    pub progress: InstallProgress,
 }
 
 /// Every pull worth showing, oldest first.
@@ -62,6 +66,7 @@ pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
                 reference: job.job().reference.clone(),
                 state: state(pull_state, &status, &job.job().reference, note),
                 pull_state,
+                progress: status.progress.clone(),
             })
         })
         .collect()

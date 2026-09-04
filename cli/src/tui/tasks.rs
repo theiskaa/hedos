@@ -358,6 +358,8 @@ pub fn spawn_pull_control(
 /// What a key on a pull row asks of its job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullAction {
+    /// Stop it, keeping what landed for a resume.
+    Pause,
     /// Stop it for good.
     Cancel,
     /// Put a worker back on it.
@@ -384,6 +386,7 @@ fn start_pull(store: &PullStore, plan: InstallPlan) -> Result<Option<String>, St
 fn act_on_pull(store: &PullStore, action: PullAction, id: &str) -> Result<(), String> {
     let job = store.open(id).map_err(|error| error.to_string())?;
     match action {
+        PullAction::Pause => stop(&job, PullControl::Pause).map(|_| ()),
         PullAction::Cancel => stop(&job, PullControl::Cancel).map(|_| ()),
         PullAction::Resume => restart(&job).map(|_| ()),
     }

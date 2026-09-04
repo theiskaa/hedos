@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use kernel::install::pulls::PullState;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
@@ -19,6 +20,7 @@ use super::layout;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
+use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::install::find_installed;
@@ -51,6 +53,8 @@ pub enum Modal {
     Pull(Box<PullModal>),
     /// Confirming a removal, with what it would delete.
     Remove(ModelDeletionPreview),
+    /// Choosing how to stop a pull, with what each way keeps.
+    Stop(StopCard),
     /// The key table.
     Help,
     /// Choosing a harness to launch on the selected model.
@@ -401,6 +405,7 @@ impl App {
             Some(Modal::Chat(_)) => return self.chat_key(key),
             Some(Modal::Pull(_)) => return self.pull_key(key),
             Some(Modal::Remove(_)) => return self.remove_key(key),
+            Some(Modal::Stop(_)) => return self.stop_key(key),
             Some(Modal::Help) => return self.help_key(key),
             Some(Modal::Launch(_)) => return self.launch_key(key),
             None => {}
@@ -459,7 +464,7 @@ impl App {
                 self.expanded = !self.expanded;
                 self.dirty = true;
             }
-            Key::Char('c') => return self.cancel_pull(),
+            Key::Char('c') => return self.stop_pull(),
             Key::Char('R') => return self.resume_pull(),
             _ => {}
         }
@@ -813,11 +818,66 @@ impl App {
         })]
     }
 
-    /// Cancel the newest running pull, when its row is on screen.
-    fn cancel_pull(&mut self) -> Vec<Effect> {
-        match self.hinted_job(HintTargets::pull) {
-            Some(job) => vec![Effect::ControlPull(PullAction::Cancel, job)],
+    /// Open the stop card over the newest running pull, when its row is on
+    /// screen. Nothing stops until the card is answered.
+    fn stop_pull(&mut self) -> Vec<Effect> {
+        let card = self
+            .hint_targets()
+            .pull()
+            .and_then(|id| self.tasks.row(id))
+            .and_then(StopCard::over);
+        match card {
+            Some(card) => {
+                self.open(Modal::Stop(card));
+                Vec::new()
+            }
             None => self.notify("nothing is downloading".to_owned()),
+        }
+    }
+
+    /// The card re-checks its pull before acting: it can land, or be stopped
+    /// from a terminal, between the poll and the key.
+    fn stop_key(&mut self, key: Key) -> Vec<Effect> {
+        let Some(choice) = StopCard::choice(key) else {
+            return Vec::new();
+        };
+        let Some(Modal::Stop(mut card)) = self.modal.take() else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        let StopChoice::Stop(action) = choice else {
+            return Vec::new();
+        };
+        if !card.follow(self.tasks.pull_row(&card.job)) {
+            return self.pull_gone(&card);
+        }
+        vec![Effect::ControlPull(action, card.job)]
+    }
+
+    /// Keep the open stop card on its pull: the figures move under it, and
+    /// the pull can end without it.
+    fn follow_stop_card(&mut self) {
+        let Some(Modal::Stop(card)) = self.modal.as_mut() else {
+            return;
+        };
+        if card.follow(self.tasks.pull_row(&card.job)) {
+            return;
+        }
+        let card = card.clone();
+        self.close_modal();
+        self.pull_gone(&card);
+    }
+
+    /// Say why the card's pull cannot be stopped any more: it landed, or it
+    /// stopped without the card.
+    fn pull_gone(&mut self, card: &StopCard) -> Vec<Effect> {
+        let landed = self
+            .tasks
+            .pull_row(&card.job)
+            .is_some_and(|row| row.pull_state == Some(PullState::Done));
+        match landed {
+            true => self.notify(format!("{} landed", card.reference)),
+            false => self.notify(format!("{} is no longer downloading", card.reference)),
         }
     }
 
@@ -966,6 +1026,7 @@ impl App {
             return Vec::new();
         }
         self.dirty = true;
+        self.follow_stop_card();
         // Two pulls can land in one poll; the newest is the one to select, the
         // same rule a single landing follows.
         match changes.landed.last() {

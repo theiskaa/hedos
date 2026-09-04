@@ -117,11 +117,16 @@ pub fn leading_label(line: &Line, width: usize) -> String {
 /// A pull job as a poll of the job directory reports it, named after
 /// `reference` so a row and the job behind it are easy to tell apart.
 pub fn job_row(reference: &str, pull_state: PullState, state: TaskState) -> JobRow {
+    let progress = match &state {
+        TaskState::Downloading(progress) => progress.clone(),
+        _ => InstallProgress::default(),
+    };
     JobRow {
         job: format!("1000-{reference}"),
         reference: reference.to_owned(),
         state,
         pull_state,
+        progress,
     }
 }
 

@@ -3,6 +3,7 @@
 //! finished row knows the tick it finished on, and the strip decides which
 //! rows a key acts on, so the reducer and the painter never disagree.
 
+use kernel::install::event::InstallProgress;
 use kernel::install::pulls::PullState;
 
 use super::jobs::JobRow;
@@ -42,6 +43,9 @@ pub struct TaskRow {
     /// the row is drawn from: `cancelled` and `done` both read as finished on
     /// screen, and only one of them put a model on the shelf.
     pub pull_state: Option<PullState>,
+    /// What a pull has landed, whatever `state` shows; nothing for a task run
+    /// here.
+    pub progress: InstallProgress,
     /// The tick the task finished on, for expiry.
     finished_at: Option<u64>,
 }
@@ -58,6 +62,12 @@ impl TaskRow {
             RowSource::Task(kind) => Some(kind),
             _ => None,
         }
+    }
+
+    /// Whether this row shows a pull that is still going, queued or
+    /// downloading.
+    pub fn pull_going(&self) -> bool {
+        self.pull_state.is_some_and(PullState::is_live)
     }
 
     /// The pull job this row shows, if it shows one.
@@ -89,6 +99,7 @@ impl TaskStrip {
             source: RowSource::Task(kind),
             state: TaskState::Running,
             pull_state: None,
+            progress: InstallProgress::default(),
             finished_at: None,
         });
     }
@@ -102,6 +113,7 @@ impl TaskStrip {
             source: RowSource::HandOff,
             state,
             pull_state: None,
+            progress: InstallProgress::default(),
             finished_at: Some(now),
         });
     }
@@ -139,6 +151,10 @@ impl TaskStrip {
                             changes.landed.push(job.reference);
                         }
                     }
+                    if row.progress != job.progress {
+                        row.progress = job.progress;
+                        changes.moved = true;
+                    }
                     if row.state == job.state {
                         continue;
                     }
@@ -160,6 +176,7 @@ impl TaskStrip {
                         source: RowSource::Pull(job.job),
                         state: job.state,
                         pull_state: Some(job.pull_state),
+                        progress: job.progress,
                         finished_at,
                     });
                     changes.moved = true;
@@ -233,9 +250,12 @@ impl TaskStrip {
     }
 
     fn going(&self) -> impl Iterator<Item = &TaskRow> {
-        self.rows
-            .iter()
-            .filter(|row| row.pull_state.is_some_and(PullState::is_live))
+        self.rows.iter().filter(|row| row.pull_going())
+    }
+
+    /// The row showing pull `job`, whatever state it is in.
+    pub fn pull_row(&self, job: &str) -> Option<&TaskRow> {
+        self.rows.iter().find(|row| row.job() == Some(job))
     }
 
     /// Whether a task of `kind`'s shape is already running here.
@@ -318,7 +338,7 @@ impl TaskStrip {
         self.rows
             .iter()
             .rev()
-            .find(|row| row.pull_state.is_some_and(PullState::is_live))
+            .find(|row| row.pull_going())
             .map(|row| row.id)
     }
 
@@ -331,9 +351,14 @@ impl TaskStrip {
             .map(|row| row.id)
     }
 
+    /// The row of task `id`.
+    pub fn row(&self, id: TaskId) -> Option<&TaskRow> {
+        self.rows.iter().find(|row| row.id == id)
+    }
+
     /// The job a row shows, by the row's id.
     pub fn job_of(&self, id: TaskId) -> Option<&str> {
-        self.rows.iter().find(|row| row.id == id)?.job()
+        self.row(id)?.job()
     }
 }
 
@@ -365,7 +390,8 @@ pub struct HintTargets {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RowHints {
     pub dismissable: bool,
-    pub cancellable: bool,
+    /// Whether `c` would open the stop card over the pull this row shows.
+    pub stoppable: bool,
     /// Whether `R` would put a worker back on the pull this row shows.
     pub resumable: bool,
     /// Whether `w` and `l` would act on the model this row pulled.
@@ -378,7 +404,7 @@ impl HintTargets {
         self.failure
     }
 
-    /// The pull `c` cancels, if one is on screen.
+    /// The pull `c` offers to stop, if one is on screen.
     pub fn pull(&self) -> Option<TaskId> {
         self.pull
     }
@@ -392,7 +418,7 @@ impl HintTargets {
     pub fn for_row(&self, row: &TaskRow) -> RowHints {
         RowHints {
             dismissable: self.failure == Some(row.id),
-            cancellable: self.pull == Some(row.id),
+            stoppable: self.pull == Some(row.id),
             resumable: self.stopped == Some(row.id),
             on_selected: self.done_on_selected.contains(&row.id),
         }
@@ -402,8 +428,6 @@ impl HintTargets {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use kernel::install::event::InstallProgress;
 
     use super::super::testing::job_row;
 
@@ -490,7 +514,7 @@ mod tests {
         let targets = strip.hint_targets(4, |_| false);
         assert_eq!(targets.pull(), Some(pull));
         assert_eq!(targets.failure(), None);
-        assert!(targets.for_row(&strip.rows()[0]).cancellable);
+        assert!(targets.for_row(&strip.rows()[0]).stoppable);
         for _ in 0..4 {
             strip.start(TaskId::next(), TaskKind::Scan);
         }
@@ -555,7 +579,7 @@ mod tests {
         let targets = strip.hint_targets(4, |_| false);
         assert_eq!(targets.stopped(), Some(id));
         assert!(targets.for_row(&strip.rows()[0]).resumable);
-        assert!(!targets.for_row(&strip.rows()[0]).cancellable);
+        assert!(!targets.for_row(&strip.rows()[0]).stoppable);
         assert_eq!(strip.job_of(id), Some("1000-gemma3"));
 
         // It is waiting on the user, and the job directory keeps it for as long
@@ -704,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_that_ended_answers_neither_cancel_nor_resume() {
+    fn a_pull_that_ended_answers_neither_stop_nor_resume() {
         for (place, state) in [
             (PullState::Done, TaskState::Done("pulled gemma3".to_owned())),
             (

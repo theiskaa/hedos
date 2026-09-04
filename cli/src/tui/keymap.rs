@@ -103,7 +103,7 @@ pub const BINDINGS: &[Binding] = &[
     bind("/", "filter", Group::Shelf),
     bind("o", "sort", Group::Shelf),
     bind("r", "refresh", Group::Shelf),
-    glossed("c", "cancel", "cancel pull", Group::Shelf),
+    glossed("c", "stop", "stop pull", Group::Shelf),
     glossed("R", "resume", "resume pull", Group::Shelf),
     bind("d", "dismiss", Group::Shelf),
     bind("S", "serve", Group::Screen),

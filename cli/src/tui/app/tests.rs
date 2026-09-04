@@ -3,6 +3,7 @@ use super::*;
 use crate::tui::keymap;
 use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
 use crate::tui::testing::{downloading, job_row, plan, resident};
+use kernel::install::event::InstallProgress;
 use kernel::install::pulls::PullState;
 use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
@@ -347,7 +348,7 @@ fn polled(reference: &str, place: PullState, state: TaskState) -> Event {
 }
 
 #[test]
-fn cancel_targets_the_newest_pull_still_going() {
+fn stop_asks_first_and_targets_the_newest_pull_still_going() {
     let mut app = app(1);
     assert!(press(&mut app, Key::Char('c')).is_empty());
     assert_eq!(app.notice(), Some("nothing is downloading"));
@@ -356,8 +357,24 @@ fn cancel_targets_the_newest_pull_still_going() {
         PullState::Queued,
         TaskState::Status("queued".to_owned()),
     ));
+    // `c` opens the card and stops nothing by itself.
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert!(matches!(&app.modal, Some(Modal::Stop(card)) if card.job == "1000-x"));
+    assert!(press(&mut app, Key::Escape).is_empty());
+    assert!(app.modal.is_none());
+    press(&mut app, Key::Char('c'));
     assert_eq!(
-        press(&mut app, Key::Char('c')),
+        press(&mut app, Key::Char('p')),
+        vec![Effect::ControlPull(PullAction::Pause, "1000-x".to_owned())]
+    );
+    assert!(app.modal.is_none());
+    // A second `c` is not a cancel: the key that opened the card would confirm
+    // it on a key repeat.
+    press(&mut app, Key::Char('c'));
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert!(matches!(app.modal, Some(Modal::Stop(_))));
+    assert_eq!(
+        press(&mut app, Key::Char('x')),
         vec![Effect::ControlPull(PullAction::Cancel, "1000-x".to_owned())]
     );
     // Newer running rows push the pull off the strip, where `c` cannot reach it.
@@ -380,6 +397,63 @@ fn cancel_targets_the_newest_pull_still_going() {
     app.modal = Some(Modal::Pull(Box::new(modal)));
     assert!(press(&mut app, Key::Enter).is_empty());
     assert_eq!(app.notice(), Some("x is already downloading"));
+}
+
+#[test]
+fn the_stop_card_follows_its_pull_and_closes_when_it_ends() {
+    let mut app = app(1);
+    app.reduce(Event::Pulls(vec![downloading("x")]));
+    press(&mut app, Key::Char('c'));
+    let mut moved = downloading("x");
+    moved.progress = InstallProgress {
+        bytes_downloaded: 5,
+        total_bytes: Some(9),
+        ..InstallProgress::default()
+    };
+    moved.state = TaskState::Downloading(moved.progress.clone());
+    app.reduce(Event::Pulls(vec![moved]));
+    assert!(matches!(&app.modal, Some(Modal::Stop(card)) if card.progress.bytes_downloaded == 5));
+
+    // A pull stopped from a terminal while the card waits: the card goes,
+    // and the key it was waiting for stops nothing.
+    app.reduce(polled(
+        "x",
+        PullState::Paused,
+        TaskState::Stopped("paused".to_owned()),
+    ));
+    assert!(app.modal.is_none());
+    assert_eq!(app.notice(), Some("x is no longer downloading"));
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+
+    // The same race, decided between the poll and the key: the card's own
+    // check refuses rather than cancelling a pull that already stopped.
+    app.tasks = TaskStrip::default();
+    app.reduce(Event::Pulls(vec![downloading("y")]));
+    press(&mut app, Key::Char('c'));
+    app.tasks = TaskStrip::default();
+    assert!(press(&mut app, Key::Char('x')).is_empty());
+    assert_eq!(app.notice(), Some("y is no longer downloading"));
+    assert!(app.modal.is_none());
+
+    // The card acts on the job it shows, not on whatever pull is newest by
+    // the time it is answered; and a pull that lands under it is a landing,
+    // not a stop.
+    app.reduce(Event::Pulls(vec![downloading("z")]));
+    press(&mut app, Key::Char('c'));
+    app.reduce(Event::Pulls(vec![downloading("z"), downloading("w")]));
+    assert!(matches!(&app.modal, Some(Modal::Stop(card)) if card.job == "1000-z"));
+    assert_eq!(
+        press(&mut app, Key::Char('p')),
+        vec![Effect::ControlPull(PullAction::Pause, "1000-z".to_owned())]
+    );
+    press(&mut app, Key::Char('c'));
+    assert!(matches!(&app.modal, Some(Modal::Stop(card)) if card.job == "1000-w"));
+    app.reduce(Event::Pulls(vec![
+        downloading("z"),
+        job_row("w", PullState::Done, TaskState::Done("pulled w".to_owned())),
+    ]));
+    assert!(app.modal.is_none());
+    assert_eq!(app.notice(), Some("w landed"));
 }
 
 #[test]

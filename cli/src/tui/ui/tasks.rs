@@ -48,8 +48,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// A task's row at `width` cells: verb, subject, then its detail, with the
-/// hints that act on this row; `c` sits on a pull at any running stage, `w`
-/// and `l` on a done pull while its model is selected.
+/// hints that act on this row; `c` sits on a pull at any running stage and
+/// opens the stop card, `w` and `l` on a done pull while its model is selected.
 fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
     let verb = format!(
         " {} ",
@@ -58,7 +58,7 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
     let subject = format!("{}  ", row.label.subject);
     let head = verb.width() + subject.width();
     let activity = row.kind().map_or("", TaskKind::activity);
-    let cancel = if hinted.cancellable {
+    let stop = if hinted.stoppable {
         hints(&["c"])
     } else {
         Vec::new()
@@ -66,18 +66,17 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
     let (verb_style, detail) = match &row.state {
         TaskState::Running => {
             let mut spans = vec![Span::styled(activity, DIM)];
-            spans.extend(cancel);
+            spans.extend(stop);
             (ACCENT, spans)
         }
         TaskState::Status(status) => {
             let mut spans = vec![Span::styled(status.clone(), DIM)];
-            spans.extend(cancel);
+            spans.extend(stop);
             (ACCENT, spans)
         }
-        TaskState::Downloading(progress) => (
-            ACCENT,
-            download(progress, width.saturating_sub(head), cancel),
-        ),
+        TaskState::Downloading(progress) => {
+            (ACCENT, download(progress, width.saturating_sub(head), stop))
+        }
         TaskState::Done(summary) => {
             let mut spans = vec![Span::styled(summary.clone(), DIM)];
             if hinted.on_selected {
@@ -106,22 +105,22 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
 }
 
 /// A bar and figures when the total is firm, bytes so far when it is not.
-/// The bar takes what `room` leaves after the figures and `cancel`, the
+/// The bar takes what `room` leaves after the figures and `stop`, the
 /// hint of the one download `c` acts on and nothing on the rest, within its
 /// bounds; when that is under the floor the figures stand alone, and the
 /// hint goes too if it would not fit.
 fn download(
     progress: &InstallProgress,
     room: usize,
-    cancel: Vec<Span<'static>>,
+    stop: Vec<Span<'static>>,
 ) -> Vec<Span<'static>> {
     let done = text::bytes(progress.bytes_downloaded);
-    let cancel_width: usize = cancel.iter().map(Span::width).sum();
+    let stop_width: usize = stop.iter().map(Span::width).sum();
     let mut spans = match (progress.fraction(), progress.total_bytes) {
         (Some(fraction), Some(total)) => {
             let percent = format!("{}%", (fraction * 100.0) as u64);
             let figures = format!("{done} of {}", text::bytes(total));
-            let fixed = PERCENT_WIDTH + 2 + figures.width() + 2 + cancel_width;
+            let fixed = PERCENT_WIDTH + 2 + figures.width() + 2 + stop_width;
             let bar_width = room.saturating_sub(fixed).min(MAX_BAR_WIDTH as usize);
             if bar_width >= MIN_BAR_WIDTH as usize {
                 let filled = (fraction * bar_width as f64).round() as usize;
@@ -138,7 +137,7 @@ fn download(
                     Span::styled(format!(" · {figures}"), DIM),
                 ];
                 let used: usize = spans.iter().map(Span::width).sum();
-                if used + cancel_width > room {
+                if used + stop_width > room {
                     return spans;
                 }
                 spans
@@ -146,7 +145,7 @@ fn download(
         }
         _ => vec![Span::styled(format!("{done} so far"), DIM)],
     };
-    spans.extend(cancel);
+    spans.extend(stop);
     spans
 }
 

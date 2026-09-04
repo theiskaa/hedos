@@ -102,7 +102,7 @@ fn a_failed_row_keeps_the_reason_plain_and_offers_dismiss() {
 }
 
 #[test]
-fn a_download_offers_cancel_from_the_keymap() {
+fn a_download_offers_stop_from_the_keymap() {
     let progress = InstallProgress {
         bytes_downloaded: 1 << 30,
         total_bytes: Some(4 << 30),
@@ -135,12 +135,12 @@ fn the_bar_shrinks_with_the_strip() {
         0,
     );
     let row = strip.rows()[0].clone();
-    let cancellable = RowHints {
-        cancellable: true,
+    let stoppable = RowHints {
+        stoppable: true,
         ..RowHints::default()
     };
     let bar_cells = |width| {
-        let line = line(&row, width, cancellable);
+        let line = line(&row, width, stoppable);
         assert!(line.width() <= width, "{:?} runs past {width}", text(&line));
         text(&line)
             .chars()
@@ -148,24 +148,24 @@ fn the_bar_shrinks_with_the_strip() {
             .count()
     };
     // The row's fixed cells: the verb column, the subject, the percent,
-    // the figures, the cancel hint, and the gaps between them.
+    // the figures, the stop hint, and the gaps between them.
     let head = 1 + label_width(&TaskKind::VERBS, 0) + 1 + row.label.subject.width() + 2;
     let figures = "2 GB of 4 GB";
-    let cancel: usize = hints(&["c"]).iter().map(Span::width).sum();
-    let fixed = PERCENT_WIDTH + 2 + figures.len() + 2 + cancel;
+    let stop: usize = hints(&["c"]).iter().map(Span::width).sum();
+    let fixed = PERCENT_WIDTH + 2 + figures.len() + 2 + stop;
     let floor = head + fixed + MIN_BAR_WIDTH as usize;
     assert_eq!(bar_cells(120), MAX_BAR_WIDTH as usize);
-    assert!(text(&line(&row, 120, cancellable)).contains(&format!("  50%  {figures}")));
+    assert!(text(&line(&row, 120, stoppable)).contains(&format!("  50%  {figures}")));
     let medium = bar_cells(floor + 4);
     let bounds = MIN_BAR_WIDTH as usize..MAX_BAR_WIDTH as usize;
     assert!(bounds.contains(&medium), "{medium}");
     assert_eq!(bar_cells(floor), MIN_BAR_WIDTH as usize);
     assert_eq!(bar_cells(floor - 1), 0);
-    let compact = text(&line(&row, floor - 1, cancellable));
-    assert!(compact.contains(&format!("50% · {figures}  c cancel")));
+    let compact = text(&line(&row, floor - 1, stoppable));
+    assert!(compact.contains(&format!("50% · {figures}  c stop")));
     let bare = format!("50% · {figures}").width();
-    let shed = text(&line(&row, head + bare + cancel - 1, cancellable));
-    assert!(shed.contains(&format!("50% · {figures}")) && !shed.contains("c cancel"));
+    let shed = text(&line(&row, head + bare + stop - 1, stoppable));
+    assert!(shed.contains(&format!("50% · {figures}")) && !shed.contains("c stop"));
 }
 
 #[test]
@@ -270,7 +270,7 @@ fn rendered(strip: &TaskStrip, height: usize) -> Vec<String> {
 }
 
 #[test]
-fn cancel_sits_on_the_newest_pull_even_while_it_is_only_queued() {
+fn stop_sits_on_the_newest_pull_even_while_it_is_only_queued() {
     let mut strip = strip_of(0, 0, 1);
     let queued = |note: &str| {
         job_row(
@@ -282,22 +282,22 @@ fn cancel_sits_on_the_newest_pull_even_while_it_is_only_queued() {
     strip.sync_pulls(vec![queued("queued")], 0);
     let lines = rendered(&strip, 10);
     assert_eq!(lines.len(), 2);
-    assert!(lines[0].contains("pull-0") && !lines[0].contains("cancel"));
+    assert!(lines[0].contains("pull-0") && !lines[0].contains("stop"));
     assert!(
-        lines[1].ends_with("pull-b  queued  c cancel"),
+        lines[1].ends_with("pull-b  queued  c stop"),
         "{:?}",
         lines[1]
     );
     strip.sync_pulls(vec![queued("resolving on hf")], 0);
     let lines = rendered(&strip, 10);
     assert!(
-        lines[1].ends_with("resolving on hf  c cancel"),
+        lines[1].ends_with("resolving on hf  c stop"),
         "{:?}",
         lines[1]
     );
     let mut strip = TaskStrip::default();
     strip.start(TaskId::next(), TaskKind::Scan);
-    assert!(!rendered(&strip, 10)[0].contains("cancel"));
+    assert!(!rendered(&strip, 10)[0].contains("stop"));
 }
 
 #[test]
@@ -318,8 +318,8 @@ fn only_the_newest_failure_offers_dismiss() {
     assert_eq!(lines.len(), 4);
     assert!(lines[0].ends_with("failed 0") && !lines[0].contains("dismiss"));
     assert!(lines[1].ends_with("failed 1  d dismiss"));
-    assert!(lines[2].contains("so far") && !lines[2].contains("cancel"));
-    assert!(lines[3].ends_with("so far  c cancel"), "{:?}", lines[3]);
+    assert!(lines[2].contains("so far") && !lines[2].contains("stop"));
+    assert!(lines[3].ends_with("so far  c stop"), "{:?}", lines[3]);
 }
 
 #[test]
@@ -338,7 +338,7 @@ fn a_running_download_survives_the_cap() {
     }
     let lines = rendered(&strip, 4);
     assert_eq!(lines.len(), 4);
-    assert!(lines[0].starts_with(" pull") && lines[0].ends_with("c cancel"));
+    assert!(lines[0].starts_with(" pull") && lines[0].ends_with("c stop"));
     assert!(lines[1].ends_with("done 2"));
     assert!(lines[3].ends_with("done 4"));
     let all = rendered(&strip, 10);
