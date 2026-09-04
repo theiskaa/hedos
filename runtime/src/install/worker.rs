@@ -413,9 +413,26 @@ pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, W
             Err(error) => return Err(error),
         }
     }
+    fail_abandoned(store, plan)?;
     let job = store.create(plan, now_millis())?;
     spawn_worker(&job)?;
     Ok(Started::Created(job.id().to_owned()))
+}
+
+/// Settle every job of `plan`'s model that nobody ever took up, since the new
+/// job is taking its place: left queued, it would sit in the listing for good
+/// and be given a worker the moment the real pull ended.
+fn fail_abandoned(store: &PullStore, plan: &InstallPlan) -> Result<(), WorkerError> {
+    let now = now_millis();
+    for job in store.jobs()? {
+        if job.job().provider == plan.provider
+            && job.job().reference.eq_ignore_ascii_case(&plan.reference)
+            && job.abandoned(now, START_GRACE_MS)
+        {
+            fail(&job, "no worker took it up; started again".to_owned())?;
+        }
+    }
+    Ok(())
 }
 
 /// Spawn a worker on `job`, settling the job if it cannot be spawned: a job

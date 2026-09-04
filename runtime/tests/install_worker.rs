@@ -820,6 +820,26 @@ async fn a_resume_never_writes_over_an_ending_written_after_its_probe() {
 }
 
 #[tokio::test]
+async fn pulling_a_model_past_a_job_nobody_took_up_settles_that_job() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let abandoned = store.create(&plan("org/Model"), 1_000).unwrap();
+    let other = store.create(&plan("org/Other"), 1_000).unwrap();
+
+    // The spawn runs this test binary, which exits at once; the records are
+    // what is under test.
+    let started = start_or_join(&store, &plan("org/Model")).unwrap();
+    assert!(matches!(started, Started::Created(ref id) if id != abandoned.id()));
+    let settled = abandoned.stored_status();
+    assert_eq!(settled.state, PullState::Failed);
+    assert_eq!(
+        settled.message.as_deref(),
+        Some("no worker took it up; started again")
+    );
+    assert_eq!(other.stored_status().state, PullState::Queued);
+}
+
+#[tokio::test]
 async fn resuming_everything_takes_up_a_job_nobody_ever_came_for() {
     let dir = TempDir::new();
     let store = PullStore::new(dir.join("pulls"));
