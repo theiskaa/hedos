@@ -12,6 +12,7 @@ use kernel::time::now_millis;
 use crate::error::CliError;
 use crate::support::download::Download;
 use crate::support::output::Out;
+use crate::support::pulls;
 use crate::support::signals;
 
 use super::view;
@@ -74,7 +75,7 @@ fn show(download: &mut Download, status: &PullStatus, job: &PullJobDir, now_ms: 
 
 /// What a queued pull is waiting for.
 fn waiting(job: &PullJobDir, status: &PullStatus, now_ms: i64) -> String {
-    let note = view::note(job, status, now_ms);
+    let note = pulls::note(job, status, now_ms);
     match note.is_empty() {
         true => "queued".to_owned(),
         false => format!("queued · {note}"),

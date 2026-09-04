@@ -7,11 +7,10 @@
 //! left to hear the ask.
 
 use kernel::install::pulls::{
-    PullControl, PullEvent, PullEventKind, PullJobDir, PullState, PullStatus, PullStore,
-    START_GRACE_MS,
+    PullControl, PullEvent, PullJobDir, PullStatus, PullStore, START_GRACE_MS,
 };
 use kernel::time::now_millis;
-use runtime::install::restart;
+use runtime::install::{restart, stop};
 
 use crate::error::CliError;
 use crate::support::output::Out;
@@ -74,8 +73,12 @@ pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), Cli
             job.id()
         )));
     }
-    job.request(PullControl::Pause)?;
-    out.line(&format!("pausing {}", job.id()));
+    let stopped = stop(&job, PullControl::Pause)
+        .map_err(|error| CliError::new(format!("{}: {error}", job.id())))?;
+    out.line(&match stopped.settled() {
+        true => format!("paused {}", job.id()),
+        false => format!("pausing {}", job.id()),
+    });
     out.json(&view::json(&job, &job.status()));
     Ok(())
 }
@@ -87,23 +90,9 @@ pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), Cli
 /// settled here too, because there is nobody left to settle it.
 pub(super) fn cancel(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
     let job = store.resolve(query)?;
-    let state = job.status().state;
-    if state.is_terminal() {
-        return Err(CliError::new(format!("{} is already {state}", job.id())));
-    }
-    job.request(PullControl::Cancel)?;
-    // The ask stays on disk even once the record is settled here: a worker that
-    // was still starting as this ran will read it and stop rather than download
-    // over a cancelled job, and nothing resumes a cancelled one.
-    //
-    // The record is read again after the liveness probe, never before it. A
-    // worker finishing in the moment between the two would otherwise have its
-    // `done` overwritten with `cancelled`, for a model that is installed.
-    let settled = !job.worker_alive() && !job.stored_status().state.is_terminal();
-    if settled {
-        settle(&job, PullState::Cancelled)?;
-    }
-    out.line(&match settled {
+    let stopped = stop(&job, PullControl::Cancel)
+        .map_err(|error| CliError::new(format!("{}: {error}", job.id())))?;
+    out.line(&match stopped.settled() {
         true => format!("cancelled {}", job.id()),
         false => format!("cancelling {}", job.id()),
     });
@@ -213,20 +202,6 @@ fn records(store: &PullStore) -> Result<Vec<(PullJobDir, PullStatus)>, CliError>
             (job, status)
         })
         .collect())
-}
-
-/// Move `job` to `state`, in the record and in the history.
-fn settle(job: &PullJobDir, state: PullState) -> Result<(), CliError> {
-    let now = now_millis();
-    job.update_status(now, |status| {
-        status.state = state;
-        status.next_attempt_at_ms = None;
-        if state.is_terminal() {
-            status.pid = None;
-        }
-    })?;
-    job.append(PullEventKind::State { state }, now)?;
-    Ok(())
 }
 
 #[cfg(test)]

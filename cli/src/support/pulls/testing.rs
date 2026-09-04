@@ -1,13 +1,14 @@
-//! Scaffolding for the pull command's tests: a temporary store and the plans and
-//! records the commands read.
+//! Scaffolding for the tests that read a pull's record: a temporary store, and
+//! the plans and jobs to fill it with.
 
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use kernel::install::event::InstallProgress;
 use kernel::install::plan::{InstallPlan, InstallPlanFile};
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::{PullJobDir, PullStore};
+use kernel::install::pulls::{PullJobDir, PullLock, PullState, PullStatus, PullStore};
 
 /// Keeps two directories made in the same nanosecond apart.
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
@@ -60,4 +61,46 @@ pub fn plan(reference: &str) -> InstallPlan {
 /// A job for `reference` in `store`, created at `now`.
 pub fn job(store: &PullStore, reference: &str, now: i64) -> PullJobDir {
     store.create(&plan(reference), now).expect("create the job")
+}
+
+/// A job with a worker holding it, so the record under test is the only thing a
+/// reader is going by.
+pub struct Held {
+    _directory: TempDir,
+    pub job: PullJobDir,
+    _lock: PullLock,
+}
+
+/// A held job in a directory named for `label`.
+pub fn held(label: &str) -> Held {
+    let directory = TempDir::new(label);
+    let job = job(&directory.store(), "Qwen/Qwen3-8B", 1_000);
+    let lock = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+    Held {
+        _directory: directory,
+        job,
+        _lock: lock,
+    }
+}
+
+/// A record in `state` and nothing else.
+pub fn status(state: PullState) -> PullStatus {
+    let mut status = PullStatus::queued(1_000);
+    status.state = state;
+    status
+}
+
+/// A running record that has transferred `downloaded` of `total`.
+pub fn moved(downloaded: i64, total: Option<i64>, partial: bool) -> PullStatus {
+    let mut status = status(PullState::Running);
+    status.progress = InstallProgress {
+        bytes_downloaded: downloaded,
+        total_bytes: total,
+        total_is_partial: partial,
+        current_file: None,
+    };
+    status
 }

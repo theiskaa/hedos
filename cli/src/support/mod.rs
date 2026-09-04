@@ -13,6 +13,7 @@ pub mod ollama;
 pub mod output;
 pub mod paths;
 pub mod payload;
+pub mod pulls;
 pub mod removal;
 pub mod residency;
 pub mod serving;

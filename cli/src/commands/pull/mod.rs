@@ -13,8 +13,6 @@ mod attach;
 mod manage;
 mod pick;
 mod start;
-#[cfg(test)]
-mod testing;
 mod view;
 pub mod worker;
 

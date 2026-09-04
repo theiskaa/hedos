@@ -1,8 +1,8 @@
 use super::*;
 
-use kernel::install::pulls::{self, PullLock};
+use kernel::install::pulls::{self, PullEventKind, PullLock, PullState};
 
-use crate::commands::pull::testing::{TempDir, job as make_job};
+use crate::support::pulls::testing::{TempDir, job as make_job};
 
 fn out() -> Out {
     Out::new(false)
