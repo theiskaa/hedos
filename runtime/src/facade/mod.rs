@@ -363,6 +363,17 @@ impl Kernel {
         Ok(entry.adapter.honored_param_keys(&record, &capability))
     }
 
+    /// Re-read the registry from disk, picking up what another process wrote,
+    /// and say whether anything changed.
+    ///
+    /// A pull runs in a worker of its own and registers what it fetched there,
+    /// so a long-lived front end has to be told to look again; nothing else it
+    /// does would reload a record it did not write itself.
+    pub async fn reload_registry(&self) -> Result<bool, KernelError> {
+        let mut registry = self.registry.lock().await;
+        Ok(registry.refresh()?)
+    }
+
     /// Every registered model, as a shared snapshot. The snapshot is rebuilt only
     /// when the registry's generation has moved since the last call, so repeated
     /// calls between mutations are a refcount bump rather than a fresh deep clone
