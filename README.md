@@ -77,7 +77,7 @@ Press `t` and the shelf gives way to a conversation with the selected model. The
 
 ![The chat pane inside hedos shelf: the prompt in bold, the reply streaming in with its markdown, a download running in the task strip underneath](assets/ui-chat.png)
 
-Pulls download in the task strip while you keep working; `c` asks whether to pause or cancel one. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
+Pulls download in the task strip while you keep working; `c` asks whether to pause or cancel one, and `P` opens a screen of every pull with the selected one's rate, estimate, and history. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
 
 ## Coding harnesses
 `hedos launch` runs a coding harness against a local model with nothing to configure. The gateway starts inside the same process on a free port, the harness is wired to it, and both stop together:
@@ -103,6 +103,8 @@ The gateway is bound to loopback and treats every local caller as trusted. It do
 The shelf is not read-only. The install service resolves a reference (a `huggingface.co` or `ollama.com` link, an `org/repo`, or a `name:tag`) and plans the install before a byte moves: the file set, the sizes, the destination, and the pinned revision.
 
 Installs write into each platform's native habitat. Ollama models pull through the daemon's own API. Hugging Face models download into the standard hub cache layout (blobs, snapshots, refs) with `Range` resume and incremental SHA-256 verified against the LFS oids. hedos owns no weights directory, so every other tool still sees the model, and installs never touch the registry; the scanners discover the result. Gated repositories authenticate with `HF_TOKEN` from the environment, or the token `huggingface-cli login` writes.
+
+A pull outlives the terminal that started it. `hedos pull <ref>` hands the download to a worker process of its own and follows it; Ctrl-C detaches and leaves it running, `-d` never attaches at all. `hedos pull ls` lists every pull, `attach`, `pause`, `resume`, `cancel`, and `logs` act on one by id, and a transfer that breaks retries with a growing pause before it is left for you to resume. A worker that dies with the machine asleep is picked back up the next time the shelf opens, or when you pull the model again.
 
 Removal is symmetric. `hedos rm <model>` shows a deletion preview (the files, the estimated bytes) and does nothing until you pass `-y`. File-backed models are deleted from disk; Ollama models delete through the daemon.
 
