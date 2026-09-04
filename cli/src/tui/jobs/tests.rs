@@ -123,17 +123,26 @@ fn a_store_that_was_never_made_has_no_pulls_rather_than_an_error() {
 }
 
 #[test]
-fn a_pull_that_ended_long_ago_is_not_shown_at_all() {
+fn a_pull_that_ended_long_ago_is_marked_for_the_strip_to_leave_out() {
     // Its record stays in the store until someone runs `hedos pull clean`, so a
-    // strip that took every ended job would put back every row it expired.
+    // strip that took every ended job would put back every row it expired;
+    // the pulls screen still lists it, which is where it is cleaned from.
     let directory = TempDir::new("jobs-stale");
     let store = directory.store();
     let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
     job.update_status(1_000, |status| status.state = PullState::Done)
         .expect("write the record");
 
-    assert_eq!(rows(&store, 2_000).len(), 1);
-    assert!(rows(&store, 1_000 + ENDED_LINGER_MS).is_empty());
+    let fresh = rows(&store, 2_000);
+    assert_eq!(fresh.len(), 1);
+    assert!(!fresh[0].aged_out);
+    assert_eq!(fresh[0].started_ago, "1s");
+    assert_eq!(fresh[0].updated_ago, "1s");
+    let old = rows(&store, 1_000 + ENDED_LINGER_MS);
+    assert_eq!(old.len(), 1);
+    assert!(old[0].aged_out);
+    assert_eq!(old[0].descriptor.reference, "Qwen/Qwen3-8B");
+    assert_eq!(old[0].status.state, PullState::Done);
 }
 
 #[test]

@@ -18,6 +18,7 @@ mod layout;
 mod markup;
 mod order;
 mod pull;
+mod pulls;
 mod state;
 mod stop;
 mod strip;
@@ -297,6 +298,7 @@ async fn drive(
                 }
                 Effect::Refresh => tasks::spawn_refresh(context, tx),
                 Effect::PollPulls => tasks::spawn_pulls(context, tx),
+                Effect::PollHistory(job) => tasks::spawn_history(job, context, tx),
                 Effect::StartPull(plan) => tasks::spawn_start_pull(*plan, context, tx),
                 Effect::ControlPull(action, job) => {
                     tasks::spawn_pull_control(action, job, context, tx);

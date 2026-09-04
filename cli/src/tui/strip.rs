@@ -3,6 +3,8 @@
 //! finished row knows the tick it finished on, and the strip decides which
 //! rows a key acts on, so the reducer and the painter never disagree.
 
+use std::collections::HashSet;
+
 use kernel::install::event::InstallProgress;
 use kernel::install::pulls::PullState;
 
@@ -14,9 +16,9 @@ use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 pub(super) const DONE_LINGER_TICKS: u64 = 60 * super::app::TICKS_PER_SECOND;
 pub(super) const FAILED_LINGER_TICKS: u64 = 10 * 60 * super::app::TICKS_PER_SECOND;
 /// The same window as [`FAILED_LINGER_TICKS`] in wall-clock milliseconds, for
-/// deciding which ended pulls are recent enough to show at all. A row expires
-/// no sooner than its record ages past this, so nothing the strip drops can be
-/// put back by the next poll.
+/// deciding which ended pulls the strip takes on at all: one that ended before
+/// the screen opened is not news. A row the strip has already expired is
+/// remembered separately, since a done row goes sooner than this.
 pub(super) const ENDED_LINGER_MS: i64 =
     (FAILED_LINGER_TICKS / super::app::TICKS_PER_SECOND) as i64 * 1_000;
 
@@ -83,6 +85,9 @@ impl TaskRow {
 #[derive(Debug, Default)]
 pub struct TaskStrip {
     rows: Vec<TaskRow>,
+    /// The pull jobs whose rows have expired, so the next poll, which still
+    /// lists them, does not put them back.
+    expired: HashSet<String>,
 }
 
 impl TaskStrip {
@@ -151,8 +156,8 @@ impl TaskStrip {
                             changes.landed.push(job.reference);
                         }
                     }
-                    if row.progress != job.progress {
-                        row.progress = job.progress;
+                    if row.progress != job.status.progress {
+                        row.progress = job.status.progress;
                         changes.moved = true;
                     }
                     if row.state == job.state {
@@ -166,6 +171,13 @@ impl TaskStrip {
                     changes.moved = true;
                 }
                 None => {
+                    // A pull that ended long ago is left out rather than shown
+                    // and then expired: its record stays until someone cleans
+                    // it, and a strip that took every ended job would put back
+                    // every row it expired on the very next poll.
+                    if job.aged_out || self.expired.contains(&job.job) {
+                        continue;
+                    }
                     let finished_at = (!job.state.running()).then_some(now);
                     self.rows.push(TaskRow {
                         id: TaskId::next(),
@@ -176,7 +188,7 @@ impl TaskStrip {
                         source: RowSource::Pull(job.job),
                         state: job.state,
                         pull_state: Some(job.pull_state),
-                        progress: job.progress,
+                        progress: job.status.progress,
                         finished_at,
                     });
                     changes.moved = true;
@@ -189,6 +201,7 @@ impl TaskStrip {
     /// Drop the rows whose time is up on tick `now`; whether any was.
     pub fn expire(&mut self, now: u64) -> bool {
         let before = self.rows.len();
+        let expired = &mut self.expired;
         self.rows.retain(|row| {
             // A stopped pull is not history: it is waiting on the user, the key
             // that carries it on is on its row, and the job directory keeps it
@@ -197,13 +210,17 @@ impl TaskStrip {
             if matches!(row.state, TaskState::Stopped(_)) {
                 return true;
             }
-            row.finished_at.is_none_or(|finished| {
+            let kept = row.finished_at.is_none_or(|finished| {
                 let linger = match row.state {
                     TaskState::Failed(_) => FAILED_LINGER_TICKS,
                     _ => DONE_LINGER_TICKS,
                 };
                 now < finished + linger
-            })
+            });
+            if !kept && let Some(job) = row.job() {
+                expired.insert(job.to_owned());
+            }
+            kept
         });
         self.rows.len() != before
     }
@@ -378,7 +395,7 @@ pub struct PullChanges {
 /// The rows whose hints act, among those on screen: the newest failure
 /// answers `d`, the newest running pull `c`, and the done pulls whose model
 /// is selected `w` and `l`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HintTargets {
     failure: Option<TaskId>,
     pull: Option<TaskId>,
@@ -678,8 +695,28 @@ mod tests {
         assert!(strip.expire(DONE_LINGER_TICKS + 1));
         assert!(strip.rows().is_empty());
 
-        // What `jobs::rows` leaves out once a record is older than the linger.
-        assert!(!strip.sync_pulls(Vec::new(), DONE_LINGER_TICKS + 2).moved);
+        // The store still lists the job, well inside the window the strip
+        // takes ended pulls on; the row it expired stays gone.
+        let done = job_row(
+            "gemma3",
+            PullState::Done,
+            TaskState::Done("pulled gemma3".to_owned()),
+        );
+        assert!(
+            !strip
+                .sync_pulls(vec![done.clone()], DONE_LINGER_TICKS + 2)
+                .moved
+        );
+        assert!(strip.rows().is_empty());
+
+        // A pull that ended before the screen opened is not taken on at all.
+        let mut old = job_row(
+            "other",
+            PullState::Done,
+            TaskState::Done("pulled other".to_owned()),
+        );
+        old.aged_out = true;
+        assert!(!strip.sync_pulls(vec![old], DONE_LINGER_TICKS + 3).moved);
         assert!(strip.rows().is_empty());
     }
 

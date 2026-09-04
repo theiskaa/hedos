@@ -405,12 +405,12 @@ fn the_stop_card_follows_its_pull_and_closes_when_it_ends() {
     app.reduce(Event::Pulls(vec![downloading("x")]));
     press(&mut app, Key::Char('c'));
     let mut moved = downloading("x");
-    moved.progress = InstallProgress {
+    moved.status.progress = InstallProgress {
         bytes_downloaded: 5,
         total_bytes: Some(9),
         ..InstallProgress::default()
     };
-    moved.state = TaskState::Downloading(moved.progress.clone());
+    moved.state = TaskState::Downloading(moved.status.progress.clone());
     app.reduce(Event::Pulls(vec![moved]));
     assert!(matches!(&app.modal, Some(Modal::Stop(card)) if card.progress.bytes_downloaded == 5));
 
@@ -964,6 +964,204 @@ fn every_unbound_char_does_nothing() {
         assert!(effects.is_empty(), "{c:?} has effects but is not bound");
         assert!(!app.take_dirty(), "{c:?} redraws but is not bound");
         assert!(app.notice().is_none(), "{c:?} notifies but is not bound");
+    }
+}
+
+#[test]
+fn the_pulls_screen_opens_on_the_newest_pull_going_and_reads_the_store_at_once() {
+    let mut app = app(1);
+    app.reduce(Event::Pulls(vec![
+        job_row(
+            "done",
+            PullState::Done,
+            TaskState::Done("pulled done".to_owned()),
+        ),
+        downloading("going"),
+    ]));
+    app.take_dirty();
+    assert_eq!(
+        press(&mut app, Key::Char('P')),
+        vec![
+            Effect::PollPulls,
+            Effect::PollHistory("1000-going".to_owned())
+        ]
+    );
+    assert_eq!(app.screen, Screen::Pulls);
+    assert!(app.take_dirty());
+    assert_eq!(
+        app.pulls.selected_row().map(|row| row.reference.as_str()),
+        Some("going")
+    );
+
+    // Moving the selection reads the history of what it lands on; the
+    // history that comes back for the selected job redraws the screen.
+    assert_eq!(
+        press(&mut app, Key::Char('j')),
+        vec![Effect::PollHistory("1000-done".to_owned())]
+    );
+    assert!(press(&mut app, Key::Char('j')).is_empty());
+    app.take_dirty();
+    app.reduce(Event::History {
+        job: "1000-going".to_owned(),
+        lines: vec!["queued".to_owned()],
+    });
+    assert!(!app.take_dirty());
+    app.reduce(Event::History {
+        job: "1000-done".to_owned(),
+        lines: vec!["done".to_owned()],
+    });
+    assert!(app.take_dirty());
+    assert_eq!(app.pulls.history_lines(), ["done"]);
+
+    // The shelf's keys do not fire on the screen, and the way back is esc or P.
+    assert!(press(&mut app, Key::Char('w')).is_empty());
+    assert!(press(&mut app, Key::Char('x')).is_empty());
+    assert!(app.modal.is_none());
+    press(&mut app, Key::Escape);
+    assert_eq!(app.screen, Screen::Shelf);
+    press(&mut app, Key::Char('P'));
+    assert_eq!(app.screen, Screen::Pulls);
+    // The selection is the screen's own and survives a visit to the shelf.
+    assert_eq!(
+        app.pulls.selected_row().map(|row| row.reference.as_str()),
+        Some("going")
+    );
+    press(&mut app, Key::Char('P'));
+    assert_eq!(app.screen, Screen::Shelf);
+    assert_eq!(press(&mut app, Key::Char('q')), vec![Effect::Quit]);
+}
+
+#[test]
+fn the_pulls_screen_acts_on_the_selected_pull_and_asks_before_stopping_it() {
+    let mut app = app(1);
+    press(&mut app, Key::Char('P'));
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert_eq!(app.notice(), Some("no pull is selected"));
+    assert!(press(&mut app, Key::Char('Y')).is_empty());
+    assert_eq!(app.notice(), Some("no pull is selected"));
+
+    app.reduce(Event::Pulls(vec![
+        job_row(
+            "paused",
+            PullState::Paused,
+            TaskState::Stopped("paused".to_owned()),
+        ),
+        downloading("going"),
+    ]));
+    app.pulls.select_newest_live();
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert!(matches!(&app.modal, Some(Modal::Stop(card)) if card.job == "1000-going"));
+    assert_eq!(
+        press(&mut app, Key::Char('p')),
+        vec![Effect::ControlPull(
+            PullAction::Pause,
+            "1000-going".to_owned()
+        )]
+    );
+    assert_eq!(app.screen, Screen::Pulls);
+    assert!(press(&mut app, Key::Char('R')).is_empty());
+    assert_eq!(app.notice(), Some("going is running, not stopped"));
+    assert_eq!(
+        press(&mut app, Key::Char('Y')),
+        vec![Effect::Copy("1000-going".to_owned())]
+    );
+
+    // The two share a creation time, so the higher id, `paused`, sits on top.
+    press(&mut app, Key::Char('g'));
+    assert_eq!(
+        app.pulls.selected_row().map(|row| row.reference.as_str()),
+        Some("paused")
+    );
+    assert_eq!(
+        press(&mut app, Key::Char('R')),
+        vec![Effect::ControlPull(
+            PullAction::Resume,
+            "1000-paused".to_owned()
+        )]
+    );
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert_eq!(app.notice(), Some("paused is paused, not downloading"));
+    assert!(app.modal.is_none());
+}
+
+#[test]
+fn the_pulls_screen_polls_at_the_busy_cadence_and_reads_the_selected_history() {
+    let mut app = app(1);
+    app.reduce(Event::Pulls(vec![job_row(
+        "done",
+        PullState::Done,
+        TaskState::Done("pulled done".to_owned()),
+    )]));
+    // Nothing is going: idle cadence on the shelf.
+    let mut polls = 0;
+    for _ in 0..PULL_IDLE_POLL_TICKS {
+        polls += ticks(&mut app, 1)
+            .iter()
+            .filter(|effect| matches!(effect, Effect::PollPulls))
+            .count();
+    }
+    assert_eq!(polls, 1);
+    press(&mut app, Key::Char('P'));
+    let mut polls = Vec::new();
+    for _ in 0..PULL_IDLE_POLL_TICKS {
+        polls.extend(ticks(&mut app, 1));
+    }
+    let reads = polls
+        .iter()
+        .filter(|effect| matches!(effect, Effect::PollPulls))
+        .count();
+    assert_eq!(reads as u64, PULL_IDLE_POLL_TICKS / PULL_POLL_TICKS);
+    assert!(polls.contains(&Effect::PollHistory("1000-done".to_owned())));
+}
+
+#[test]
+fn every_pulls_binding_does_something_and_nothing_else_does() {
+    let rows = || {
+        vec![
+            job_row(
+                "a",
+                PullState::Paused,
+                TaskState::Stopped("paused".to_owned()),
+            ),
+            downloading("b"),
+            downloading("c"),
+        ]
+    };
+    for binding in keymap::pulls_bindings() {
+        for key in keys_of(binding) {
+            let mut app = app(1);
+            app.reduce(Event::Pulls(rows()));
+            press(&mut app, Key::Char('P'));
+            press(&mut app, Key::Down);
+            app.take_dirty();
+            let effects = press(&mut app, key);
+            assert!(
+                !effects.is_empty() || app.take_dirty() || app.notice().is_some(),
+                "{} ({key:?}) does nothing on the pulls screen",
+                binding.key
+            );
+        }
+    }
+    let bound: Vec<char> = keymap::pulls_bindings()
+        .flat_map(|binding| keymap::chars(binding.key))
+        .chain(['q', '?', 'P'])
+        .collect();
+    for c in (0x20u8..=0x7e)
+        .map(char::from)
+        .filter(|c| !bound.contains(c))
+    {
+        let mut app = app(1);
+        app.reduce(Event::Pulls(rows()));
+        press(&mut app, Key::Char('P'));
+        app.take_dirty();
+        let effects = press(&mut app, Key::Char(c));
+        assert!(effects.is_empty(), "{c:?} has effects on the pulls screen");
+        assert!(!app.take_dirty(), "{c:?} redraws the pulls screen");
+        assert!(app.notice().is_none(), "{c:?} notifies on the pulls screen");
+        assert!(
+            app.modal.is_none(),
+            "{c:?} opens a card on the pulls screen"
+        );
     }
 }
 

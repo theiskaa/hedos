@@ -19,6 +19,7 @@ use super::launch::LaunchModal;
 use super::layout;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage, already_downloading};
+use super::pulls::PullsScreen;
 use super::state::UiState;
 use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
@@ -45,6 +46,14 @@ const PAGE_LINES: usize = 10;
 const WHEEL_LINES: usize = 3;
 /// How long a footer notice stays.
 const NOTICE_TICKS: u64 = 2 * TICKS_PER_SECOND;
+
+/// Which surface has the body: the shelf, or the pulls screen in its place.
+/// Modals sit in front of either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Shelf,
+    Pulls,
+}
 
 /// What can sit in front of the shelf.
 #[derive(Debug, Clone, PartialEq)]
@@ -98,6 +107,11 @@ pub struct App {
     pub tasks: TaskStrip,
     /// The modal in front of the shelf, while one is open.
     pub modal: Option<Modal>,
+    /// Which surface has the body.
+    pub screen: Screen,
+    /// The pulls screen, kept while the shelf shows so that opening it is
+    /// instant and its selection survives a visit to the shelf.
+    pub pulls: PullsScreen,
     /// Whether the detail pane has the whole body.
     pub expanded: bool,
     /// A short message in the footer, until the tick it expires on.
@@ -133,6 +147,8 @@ impl App {
             sort: Sort::default(),
             tasks: TaskStrip::default(),
             modal: None,
+            screen: Screen::Shelf,
+            pulls: PullsScreen::default(),
             expanded: false,
             notice: None,
             select_pulled: None,
@@ -356,7 +372,11 @@ impl App {
                 Vec::new()
             }
             Event::Tick => self.tick(),
-            Event::Pulls(rows) => self.pulls(rows),
+            Event::Pulls(rows) => self.pulls_polled(rows),
+            Event::History { job, lines } => {
+                self.history(job, lines);
+                Vec::new()
+            }
             Event::PullRefused(reason) => self.notify(reason),
             Event::Task(event) => self.task(event),
             Event::Refreshed(refreshed) => {
@@ -410,6 +430,9 @@ impl App {
             Some(Modal::Launch(_)) => return self.launch_key(key),
             None => {}
         }
+        if self.screen == Screen::Pulls {
+            return self.pulls_key(key);
+        }
         if self.filtering && !matches!(key, Key::Up | Key::Down | Key::ScrollUp | Key::ScrollDown) {
             return self.filter_key(key);
         }
@@ -434,6 +457,7 @@ impl App {
                 self.facts.memory_bytes,
                 &self.tasks.pulling(),
             )))),
+            Key::Char('P') => return self.open_pulls(),
             Key::Char('x') => return self.remove(),
             Key::Char('l') => return self.launch(),
             Key::Char('T') => return self.hand_off_chat(),
@@ -894,6 +918,117 @@ impl App {
         self.tasks.job_of(id).map(str::to_owned)
     }
 
+    /// Put the pulls screen in the shelf's place, on the newest pull still
+    /// going, and read the store straight away rather than on the next
+    /// cadence.
+    fn open_pulls(&mut self) -> Vec<Effect> {
+        self.screen = Screen::Pulls;
+        self.pulls.select_newest_live();
+        self.dirty = true;
+        self.last_pull_poll = self.ticks;
+        let mut effects = vec![Effect::PollPulls];
+        effects.extend(self.history_poll());
+        effects
+    }
+
+    /// Put the shelf back.
+    fn close_pulls(&mut self) {
+        self.screen = Screen::Shelf;
+        self.dirty = true;
+    }
+
+    /// The keys of the pulls screen. The screen's `q` and `?` are the
+    /// shelf's; everything else is its own, so no shelf verb fires by
+    /// accident on a pull.
+    fn pulls_key(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Char('q') => return vec![Effect::Quit],
+            Key::Escape | Key::Char('P') => self.close_pulls(),
+            Key::Char('?') => self.open(Modal::Help),
+            Key::Down | Key::ScrollDown | Key::Char('j') => return self.move_pull(1),
+            Key::Up | Key::ScrollUp | Key::Char('k') => return self.move_pull(-1),
+            Key::Top | Key::Char('g') => return self.select_pull(0),
+            Key::Bottom | Key::Char('G') => return self.select_pull(usize::MAX),
+            Key::Char('c') => return self.stop_selected_pull(),
+            Key::Char('R') => return self.resume_selected_pull(),
+            Key::Char('Y') => return self.copy_selected_job(),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    fn move_pull(&mut self, delta: isize) -> Vec<Effect> {
+        if !self.pulls.step(delta) {
+            return Vec::new();
+        }
+        self.dirty = true;
+        self.history_poll().into_iter().collect()
+    }
+
+    fn select_pull(&mut self, index: usize) -> Vec<Effect> {
+        if !self.pulls.select(index) {
+            return Vec::new();
+        }
+        self.dirty = true;
+        self.history_poll().into_iter().collect()
+    }
+
+    /// A read of the selected job's history, when there is one to read.
+    fn history_poll(&self) -> Option<Effect> {
+        self.pulls
+            .selected_row()
+            .map(|row| Effect::PollHistory(row.job.clone()))
+    }
+
+    /// Open the stop card over the selected pull, or say why not.
+    fn stop_selected_pull(&mut self) -> Vec<Effect> {
+        let Some(row) = self.pulls.selected_row() else {
+            return self.notify("no pull is selected".to_owned());
+        };
+        match StopCard::over_job(row) {
+            Some(card) => {
+                self.open(Modal::Stop(card));
+                Vec::new()
+            }
+            None => {
+                let text = format!("{} is {}, not downloading", row.reference, row.pull_state);
+                self.notify(text)
+            }
+        }
+    }
+
+    /// Put the selected pull's job id on the clipboard, which is what a
+    /// `hedos pull` command names it by.
+    fn copy_selected_job(&mut self) -> Vec<Effect> {
+        match self.pulls.selected_row() {
+            Some(row) => {
+                let id = row.job.clone();
+                self.copy(id)
+            }
+            None => self.notify("no pull is selected".to_owned()),
+        }
+    }
+
+    /// Take one job's history; the screen shows it only while that job is
+    /// the selected one.
+    fn history(&mut self, job: String, lines: Vec<String>) {
+        if self.pulls.history(job, lines) && self.screen == Screen::Pulls {
+            self.dirty = true;
+        }
+    }
+
+    /// Put a worker back on the selected pull, or say why not.
+    fn resume_selected_pull(&mut self) -> Vec<Effect> {
+        let Some(row) = self.pulls.selected_row() else {
+            return self.notify("no pull is selected".to_owned());
+        };
+        if row.pull_state.is_resumable() {
+            return vec![Effect::ControlPull(PullAction::Resume, row.job.clone())];
+        }
+        let text = format!("{} is {}, not stopped", row.reference, row.pull_state);
+        self.notify(text)
+    }
+
     fn searched(&mut self, searched: Searched) {
         let Some(Modal::Pull(modal)) = self.modal.as_mut() else {
             return;
@@ -988,13 +1123,18 @@ impl App {
         if self.tasks.expire(now) {
             self.dirty = true;
         }
-        let pull_cadence = match self.tasks.any_pulling() {
+        // The pulls screen is someone watching, so it reads at the busy
+        // cadence whether or not anything is moving.
+        let pull_cadence = match self.tasks.any_pulling() || self.screen == Screen::Pulls {
             true => PULL_POLL_TICKS,
             false => PULL_IDLE_POLL_TICKS,
         };
         if now - self.last_pull_poll >= pull_cadence {
             self.last_pull_poll = now;
             effects.push(Effect::PollPulls);
+            if self.screen == Screen::Pulls {
+                effects.extend(self.history_poll());
+            }
         }
         let cadence = if self.busy() {
             BUSY_REFRESH_TICKS
@@ -1020,7 +1160,10 @@ impl App {
     ///
     /// A model that landed is selected once it reaches the shelf, the same way
     /// a pull started here used to be, whichever process actually fetched it.
-    fn pulls(&mut self, rows: Vec<JobRow>) -> Vec<Effect> {
+    fn pulls_polled(&mut self, rows: Vec<JobRow>) -> Vec<Effect> {
+        if self.pulls.sync(&rows) && self.screen == Screen::Pulls {
+            self.dirty = true;
+        }
         let changes = self.tasks.sync_pulls(rows, self.ticks);
         if !changes.moved {
             return Vec::new();

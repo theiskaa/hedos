@@ -10,7 +10,7 @@
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::PullState;
+use kernel::install::pulls::{PullJob, PullState, PullStatus};
 use kernel::records::{Capability, Modality, ModelRecord, ModelSource, SourceKind};
 use kernel::removal::ModelDeletionPreview;
 use ratatui::text::Line;
@@ -126,7 +126,26 @@ pub fn job_row(reference: &str, pull_state: PullState, state: TaskState) -> JobR
         reference: reference.to_owned(),
         state,
         pull_state,
-        progress,
+        status: PullStatus {
+            state: pull_state,
+            progress,
+            ..PullStatus::queued(0)
+        },
+        descriptor: PullJob {
+            id: format!("1000-{reference}"),
+            provider: InstallProviderId::ollama(),
+            reference: reference.to_owned(),
+            display_name: reference.to_owned(),
+            destination: format!("/models/{reference}"),
+            revision: None,
+            total_bytes: None,
+            created_at_ms: 0,
+        },
+        note: String::new(),
+        started_ago: "0s".to_owned(),
+        updated_ago: "0s".to_owned(),
+        polled_at_ms: 0,
+        aged_out: false,
     }
 }
 

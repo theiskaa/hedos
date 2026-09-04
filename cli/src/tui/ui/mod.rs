@@ -1,6 +1,6 @@
 //! Drawing the app state. Panes read the app and write to the frame; the only
-//! mutable state they touch is the shelf's scroll position and the chat
-//! pane's measure of how far its transcript scrolls.
+//! mutable state they touch is the shelf's and the pulls list's scroll
+//! positions and the chat pane's measure of how far its transcript scrolls.
 //!
 //! The style vocabulary, one meaning per style: `DIM` is the quiet register,
 //! `BOLD` the loud one, `ACCENT` what is in focus, names a mode, or is in
@@ -33,6 +33,7 @@ mod footer;
 mod header;
 mod machine;
 mod modal;
+mod pulls;
 mod shelf;
 mod tasks;
 
@@ -43,7 +44,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 use unicode_width::UnicodeWidthStr;
 
-use super::app::App;
+use super::app::{App, Screen};
 use super::edit::LineEdit;
 use super::layout::{Panes, stacks};
 use super::text;
@@ -248,6 +249,24 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
 
 /// Draw one frame of `app`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let panes = match app.screen {
+        Screen::Shelf => draw_shelf(frame, app),
+        Screen::Pulls => draw_pulls(frame, app),
+    };
+    tasks::draw(frame, panes.tasks, app);
+    footer::draw(frame, panes.footer, app);
+    if modal::draw(frame, frame.area(), app) && app.notice().is_some() {
+        // The backdrop flattens the footer with the rest of the screen, and
+        // a notice raised from inside a card has to read, so its row is
+        // painted again over the backdrop.
+        frame.buffer_mut().set_style(panes.footer, Style::reset());
+        footer::draw(frame, panes.footer, app);
+    }
+}
+
+/// The shelf's body: header, shelf, machine block and detail, or the chat
+/// pane in the body's place.
+fn draw_shelf(frame: &mut Frame, app: &mut App) -> Panes {
     let stacked = stacks(frame.area());
     let panes = Panes::compute(
         frame.area(),
@@ -266,15 +285,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         detail::draw(frame, panes.detail, app);
     }
-    tasks::draw(frame, panes.tasks, app);
-    footer::draw(frame, panes.footer, app);
-    if modal::draw(frame, frame.area(), app) && app.notice().is_some() {
-        // The backdrop flattens the footer with the rest of the screen, and
-        // a notice raised from inside a card has to read, so its row is
-        // painted again over the backdrop.
-        frame.buffer_mut().set_style(panes.footer, Style::reset());
-        footer::draw(frame, panes.footer, app);
-    }
+    panes
+}
+
+/// The pulls screen's body: header, the list where the shelf goes, the
+/// selected pull where the model's detail goes.
+fn draw_pulls(frame: &mut Frame, app: &mut App) -> Panes {
+    let panes = Panes::pulls(frame.area(), app.pulls.rows().len(), app.tasks.rows().len());
+    header::draw(frame, panes.header, app, false);
+    pulls::draw_list(frame, panes.shelf, app);
+    pulls::draw_detail(frame, panes.detail, app);
+    panes
 }
 
 /// A rect of `width` by `height` in the middle of `area`, no larger than

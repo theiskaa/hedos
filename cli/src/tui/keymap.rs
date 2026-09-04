@@ -8,8 +8,12 @@
 //! share the shelf's grammar.
 //!
 //! A capital letter is normally the sibling of its lowercase (`t`/`T`, `y`/`Y`,
-//! `g`/`G`). `R` is the exception: `r` is taken by an unrelated shelf verb and
-//! no free lowercase says "resume".
+//! `g`/`G`, `p`/`P`). `R` is the exception: `r` is taken by an unrelated shelf
+//! verb and no free lowercase says "resume".
+//!
+//! The pulls screen answers to a few of the shelf's keys with the same verbs,
+//! listed in [`PULLS_KEYS`] and resolved through the one table, and to `esc`
+//! as the way back, which is the one binding of its own.
 
 /// A key and its verb, as every key line draws them.
 pub type Pair = (&'static str, &'static str);
@@ -99,6 +103,7 @@ pub const BINDINGS: &[Binding] = &[
     bind("y", "copy path", Group::Model),
     glossed("Y", "copy id", "id", Group::Model),
     bind("p", "pull", Group::Shelf),
+    bind("P", "pulls", Group::Shelf),
     bind("s", "scan", Group::Shelf),
     bind("/", "filter", Group::Shelf),
     bind("o", "sort", Group::Shelf),
@@ -111,9 +116,33 @@ pub const BINDINGS: &[Binding] = &[
     bind("q", "quit", Group::Screen),
 ];
 
+/// The shelf keys the pulls screen answers to, with the shelf's verbs, on top
+/// of the screen group's `?` and `q`. `P` closes it too, as the sibling of
+/// the `P` that opened it.
+pub const PULLS_KEYS: [&str; 6] = ["j/k", "↑/↓", "g/G", "c", "R", "Y"];
+/// The pulls screen's one key of its own: the way back.
+const BACK: Binding = glossed("esc", "shelf", "back to the shelf", Group::Screen);
+
 /// The binding for `key`, if there is one.
 pub fn binding(key: &str) -> Option<&'static Binding> {
     BINDINGS.iter().find(|binding| binding.key == key)
+}
+
+/// Every key the pulls screen answers to.
+pub fn pulls_bindings() -> impl Iterator<Item = &'static Binding> {
+    PULLS_KEYS
+        .iter()
+        .filter_map(|key| binding(key))
+        .chain(std::iter::once(&BACK))
+}
+
+/// `(key, verb)` pairs for `keys` on the pulls screen, in that order,
+/// skipping any that is not bound there.
+pub fn pulls_pairs(keys: &[&str]) -> Vec<Pair> {
+    keys.iter()
+        .filter_map(|key| pulls_bindings().find(|binding| binding.key == *key))
+        .map(|binding| (binding.key, binding.verb))
+        .collect()
 }
 
 /// The verb bound to `key`; empty for a key that is not bound, which the
@@ -164,6 +193,15 @@ mod tests {
                 binding.key
             );
         }
+    }
+
+    #[test]
+    fn every_pulls_key_resolves_to_a_shelf_binding_plus_the_way_back() {
+        assert_eq!(pulls_bindings().count(), PULLS_KEYS.len() + 1);
+        assert_eq!(
+            pulls_pairs(&["j/k", "w", "esc"]),
+            vec![("j/k", "move"), ("esc", "shelf")]
+        );
     }
 
     #[test]

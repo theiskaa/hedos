@@ -12,6 +12,7 @@
 use kernel::install::event::InstallProgress;
 
 use super::event::Key;
+use super::jobs::JobRow;
 use super::strip::TaskRow;
 use super::tasks::PullAction;
 
@@ -47,6 +48,19 @@ impl StopCard {
             job: job.to_owned(),
             reference: row.label.subject.clone(),
             progress: row.progress.clone(),
+        })
+    }
+
+    /// The card over the pull the screen's `row` lists; `None` for one that
+    /// is not going.
+    pub fn over_job(row: &JobRow) -> Option<Self> {
+        if !row.pull_state.is_live() {
+            return None;
+        }
+        Some(Self {
+            job: row.job.clone(),
+            reference: row.reference.clone(),
+            progress: row.status.progress.clone(),
         })
     }
 
@@ -115,10 +129,20 @@ mod tests {
             PullState::Queued,
             TaskState::Status("retrying in 4s".to_owned()),
         );
-        retrying.progress.bytes_downloaded = 1 << 30;
-        let strip = strip_with(vec![retrying]);
+        retrying.status.progress.bytes_downloaded = 1 << 30;
+        let strip = strip_with(vec![retrying.clone()]);
         let card = StopCard::over(&strip.rows()[0]).expect("a retry is going");
         assert_eq!(card.progress.bytes_downloaded, 1 << 30);
+        let from_screen = StopCard::over_job(&retrying).expect("a retry is going");
+        assert_eq!(from_screen, card);
+        assert!(
+            StopCard::over_job(&job_row(
+                "s",
+                PullState::Paused,
+                TaskState::Stopped("paused".to_owned())
+            ))
+            .is_none()
+        );
 
         let mut strip = TaskStrip::default();
         strip.start(TaskId::next(), TaskKind::Scan);
@@ -130,12 +154,12 @@ mod tests {
         let strip = strip_with(vec![downloading("x")]);
         let mut card = StopCard::over(&strip.rows()[0]).expect("downloading is going");
         let mut moved = downloading("x");
-        moved.progress = InstallProgress {
+        moved.status.progress = InstallProgress {
             bytes_downloaded: 7,
             total_bytes: Some(9),
             ..InstallProgress::default()
         };
-        moved.state = TaskState::Downloading(moved.progress.clone());
+        moved.state = TaskState::Downloading(moved.status.progress.clone());
         let strip = strip_with(vec![moved]);
         assert!(card.follow(strip.rows().first()));
         assert_eq!(card.progress.bytes_downloaded, 7);

@@ -12,9 +12,9 @@ use unicode_width::UnicodeWidthStr;
 use kernel::install::event::InstallProgress;
 
 use super::{ACCENT, BOLD, DIM, FAILED, bar, key_spans, label_width, padded, pane, right_aligned};
-use crate::tui::app::App;
+use crate::tui::app::{App, Screen};
 use crate::tui::keymap;
-use crate::tui::strip::{RowHints, TaskRow};
+use crate::tui::strip::{HintTargets, RowHints, TaskRow};
 use crate::tui::tasks::{TaskKind, TaskState};
 use crate::tui::text;
 
@@ -37,9 +37,14 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     // for.
     app.note_task_rows(height);
     let shown = app.tasks.shown(height);
-    let targets = app
-        .tasks
-        .hint_targets(height, |reference| app.selected_is(reference));
+    // On the pulls screen the keys act on the list's selection, so a hint
+    // beside a strip row would name a pull the key might not touch.
+    let targets = match app.screen {
+        Screen::Shelf => app
+            .tasks
+            .hint_targets(height, |reference| app.selected_is(reference)),
+        Screen::Pulls => HintTargets::default(),
+    };
     let lines: Vec<Line> = shown
         .iter()
         .map(|row| line(row, inner.width as usize, targets.for_row(row)))

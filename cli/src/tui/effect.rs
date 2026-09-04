@@ -59,6 +59,8 @@ pub enum Effect {
     Refresh,
     /// Re-read the pull jobs.
     PollPulls,
+    /// Re-read the history of one pull job, for the pulls screen's detail.
+    PollHistory(String),
     /// Search the providers for a query.
     Search(String),
     /// Resolve an install plan; the number tells its answer from a stale

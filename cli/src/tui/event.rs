@@ -30,6 +30,8 @@ pub enum Event {
     Task(TaskEvent),
     /// The pull jobs, as the job directory reads right now.
     Pulls(Vec<JobRow>),
+    /// One job's history, as lines already phrased against the clock.
+    History { job: String, lines: Vec<String> },
     /// A pull could not be started, stopped, or resumed, and why.
     PullRefused(String),
     /// The shelf and facts were re-read.

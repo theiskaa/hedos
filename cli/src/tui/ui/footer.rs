@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{BOLD, DIM, key_spans, keys};
-use crate::tui::app::App;
+use crate::tui::app::{App, Screen};
 use crate::tui::keymap::{self, Pair};
 
 /// The keys that apply whatever is selected and are worth the room before
@@ -23,6 +23,8 @@ const CORE: [&str; 5] = ["j/k", "/", "p", "s", "S"];
 const EXTRAS: [&str; 2] = ["enter", "o"];
 /// The keys that close the line.
 const ALWAYS: [&str; 2] = ["?", "q"];
+/// The pulls screen's keys that apply whatever is selected.
+const PULLS_FIXED: [&str; 2] = ["j/k", "esc"];
 
 /// One footer worth trying.
 struct Candidate {
@@ -37,7 +39,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let line = match (app.notice(), app.chat_pane()) {
         (Some(notice), _) => Line::from(Span::styled(format!(" {notice}"), BOLD)),
         (None, Some(pane)) => chat_line(pane.streaming()),
-        (None, None) => fitting_line(&app.actions(), area.width as usize, app.expanded),
+        (None, None) => match app.screen {
+            Screen::Shelf => fitting_line(&app.actions(), area.width as usize, app.expanded),
+            Screen::Pulls => pulls_line(app, area.width as usize),
+        },
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -50,6 +55,37 @@ fn chat_line(streaming: bool) -> Line<'static> {
     } else {
         keys(&[("enter", "send"), ("↑/↓", "scroll"), ("esc", "close")])
     }
+}
+
+/// The pulls screen's keys: moving and the way back, then what the selected
+/// pull answers to; narrower, the actions go, then the way back, and the
+/// move key alone is the floor.
+fn pulls_line(app: &App, width: usize) -> Line<'static> {
+    let fixed = keymap::pulls_pairs(&PULLS_FIXED);
+    let actions = keymap::pulls_pairs(&pulls_actions(app));
+    let candidates: [(&[Pair], &[Pair]); 3] =
+        [(&fixed, &actions), (&fixed, &[]), (&fixed[..1], &[])];
+    candidates
+        .iter()
+        .map(|(fixed, actions)| footer_line(fixed, actions, width))
+        .find(|line| line.width() < width)
+        .unwrap_or_else(|| footer_line(&fixed[..1], &[], width))
+}
+
+/// The keys the selected pull answers to, in footer order.
+fn pulls_actions(app: &App) -> Vec<&'static str> {
+    let Some(row) = app.pulls.selected_row() else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+    if row.pull_state.is_live() {
+        actions.push("c");
+    }
+    if row.pull_state.is_resumable() {
+        actions.push("R");
+    }
+    actions.push("Y");
+    actions
 }
 
 /// The extra pairs: `enter` says what it does to the detail now, `expand`
@@ -145,6 +181,41 @@ mod tests {
         for key in CORE.iter().chain(&EXTRAS).chain(&ALWAYS).chain(&ALL) {
             assert!(keymap::binding(key).is_some(), "{key} is not bound");
         }
+        assert_eq!(keymap::pulls_pairs(&PULLS_FIXED).len(), PULLS_FIXED.len());
+    }
+
+    #[test]
+    fn the_pulls_line_offers_what_the_selected_pull_answers_to_and_sheds_to_fit() {
+        use kernel::install::pulls::PullState;
+
+        use crate::tui::facts::Facts;
+        use crate::tui::tasks::TaskState;
+        use crate::tui::testing::{downloading, job_row};
+
+        let mut app = App::new(Vec::new(), Facts::default());
+        let empty = text(&pulls_line(&app, 100));
+        assert!(empty.starts_with(" j/k move  esc shelf   ") && !empty.contains('│'));
+        assert!(empty.ends_with("? help  q quit"));
+        assert_eq!(Line::from(empty.as_str()).width(), 99);
+        app.pulls.sync(&[downloading("going")]);
+        app.pulls.select_newest_live();
+        let live = text(&pulls_line(&app, 100));
+        assert!(live.contains("│ c stop  Y copy id") && !live.contains("R resume"));
+        app.pulls.sync(&[job_row(
+            "paused",
+            PullState::Paused,
+            TaskState::Stopped("paused".to_owned()),
+        )]);
+        let stopped = text(&pulls_line(&app, 100));
+        assert!(stopped.contains("│ R resume  Y copy id") && !stopped.contains("c stop"));
+
+        // 40 columns: the actions go, then the way back; help and quit stay.
+        let narrow = text(&pulls_line(&app, 40));
+        assert!(Line::from(narrow.as_str()).width() < 40, "{narrow:?}");
+        assert!(narrow.starts_with(" j/k move  esc shelf") && narrow.ends_with("? help  q quit"));
+        let floor = text(&pulls_line(&app, 30));
+        assert!(floor.starts_with(" j/k move  ") && floor.ends_with("? help  q quit"));
+        assert!(!floor.contains("esc"));
     }
 
     /// What a candidate is made of, for reading a failure.

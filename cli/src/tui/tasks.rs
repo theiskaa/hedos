@@ -29,6 +29,7 @@ use super::facts::Facts;
 use super::jobs;
 use super::pull::SEARCH_LIMIT;
 use super::text;
+use crate::support::pulls::event_line;
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{is_resident, unload_anywhere, warm_request};
 use crate::support::session::Session;
@@ -315,6 +316,26 @@ pub fn spawn_pulls(context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
         let _ = tx.send(Event::Pulls(jobs::rows(&store, now_millis())));
+    });
+}
+
+/// Read the history of job `id` and hand it to the loop as lines. A job that
+/// is gone has no history, which the screen shows as none.
+pub fn spawn_history(id: String, context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>) {
+    let store = context.pull_store();
+    let tx = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let now = now_millis();
+        let lines = store
+            .open(&id)
+            .map(|job| {
+                job.events()
+                    .iter()
+                    .map(|event| event_line(event, now))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let _ = tx.send(Event::History { job: id, lines });
     });
 }
 
