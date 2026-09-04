@@ -23,6 +23,4 @@ pub use transport::{
 };
 pub use worker::{PullWorker, Registrar, RetryPolicy, Stopped, WorkerError, collect_ended, stop};
 #[cfg(unix)]
-pub use worker::{
-    Started, fail, hold, ignore_hangup, restart, resume_all, spawn_detached, start_or_join,
-};
+pub use worker::{Started, fail, hold, ignore_hangup, restart, resume_all, start_or_join};

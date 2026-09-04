@@ -108,8 +108,8 @@ pub fn default_install_service() -> InstallService {
 }
 
 /// The install service the `settings` describe: the same providers, with the
-/// Hugging Face one keeping a paused pull's partial files as long as
-/// `pull.partial_age_hours` says.
+/// Hugging Face one keeping a half-downloaded file another pull left behind
+/// as long as `pull.partial_age_hours` says.
 pub fn install_service(settings: &Settings) -> InstallService {
     let home = home_dir();
     let transport: Arc<dyn InstallTransport> = Arc::new(ReqwestTransport::new());

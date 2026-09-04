@@ -380,9 +380,9 @@ pub enum Started {
     /// A job was created and a worker spawned on it; this is the job.
     Created(String),
     /// A pull of this model was already going, so this is that one.
-    Joined,
+    Joined(String),
     /// A pull of this model had stopped, and a worker was put back on it.
-    Resumed,
+    Resumed(String),
 }
 
 /// Start a pull of `plan`, or join the pull of that model already under way.
@@ -398,15 +398,18 @@ pub enum Started {
 pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, WorkerError> {
     if let Some(job) = store.under_way(&plan.provider, &plan.reference, now_millis()) {
         if !job.status().state.is_resumable() {
-            return Ok(Started::Joined);
+            return Ok(Started::Joined(job.id().to_owned()));
         }
         match restart(&job) {
-            Ok(_) => return Ok(Started::Resumed),
+            Ok(_) => return Ok(Started::Resumed(job.id().to_owned())),
             // A stopped job carrying a cancel its worker never read has just
             // been settled by that cancel; the way is clear for a new pull.
             Err(WorkerError::Cancelled) => {}
-            // It ended between the lookup and now, most likely landing.
-            Err(WorkerError::Ended(_)) => return Ok(Started::Joined),
+            // It ended between the lookup and now, most likely landing, or
+            // another client put a worker on it first.
+            Err(WorkerError::Ended(_) | WorkerError::AlreadyRunning) => {
+                return Ok(Started::Joined(job.id().to_owned()));
+            }
             Err(error) => return Err(error),
         }
     }

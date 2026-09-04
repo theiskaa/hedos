@@ -889,7 +889,7 @@ async fn a_pull_of_a_model_already_going_joins_it_rather_than_starting_a_second(
 
     let started = start_or_join(&store, &plan("org/Model")).unwrap();
 
-    assert_eq!(started, Started::Joined);
+    assert_eq!(started, Started::Joined(job.id().to_owned()));
     // Two workers on one model would fight over the same half-written files.
     assert_eq!(store.jobs().unwrap().len(), 1);
 }
@@ -906,7 +906,7 @@ async fn asking_for_a_model_carries_on_the_pull_of_it_that_stopped() {
     // that answers, rather than a second job onto the same half-written files.
     let started = start_or_join(&store, &plan("org/Model")).unwrap();
 
-    assert_eq!(started, Started::Resumed);
+    assert_eq!(started, Started::Resumed(job.id().to_owned()));
     assert_eq!(store.jobs().unwrap().len(), 1);
 }
 

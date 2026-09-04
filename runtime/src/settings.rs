@@ -196,7 +196,9 @@ impl Default for GatewaySettings {
 pub struct PullSettings {
     /// How many pulls may transfer at the same time; the rest queue.
     pub max_concurrent: i64,
-    /// Whether a pull whose worker died is started again when a client notices.
+    /// Whether a pull whose worker died is started again when the shelf next
+    /// opens. Pulling the model again carries a stopped pull on whatever this
+    /// says: that is asking for it.
     pub auto_resume: bool,
     /// How long a half-downloaded file another pull left behind is kept before
     /// an install of the same repo tidies it. A paused pull's own bytes are
