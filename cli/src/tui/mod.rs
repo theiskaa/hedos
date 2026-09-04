@@ -99,6 +99,10 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     // burst of them would age the strip and fire a refresh per 10 s away.
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    // The job directory is read before the first frame rather than on the
+    // first cadence, so a download under way is on the strip when the screen
+    // appears, which is the point of it surviving the terminal.
+    tasks::spawn_pulls(&context, &tx);
     let terminal_modes = TerminalModes::capture();
     let outcome = loop {
         match on_terminal(

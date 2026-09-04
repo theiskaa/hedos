@@ -273,11 +273,19 @@ fn history_is_kept_only_for_the_selected_job() {
         screen.selected_row().map(|row| row.reference.as_str()),
         Some("b")
     );
+    assert_eq!(screen.history_wanted().as_deref(), Some("1000-b"));
     assert!(!screen.history("1000-a".to_owned(), vec!["queued".to_owned()]));
     assert!(screen.history_lines().is_empty());
     assert!(screen.history("1000-b".to_owned(), vec!["queued".to_owned()]));
     assert_eq!(screen.history_lines(), ["queued"]);
     assert!(!screen.history("1000-b".to_owned(), vec!["queued".to_owned()]));
+    // Read, and the record has not moved since: nothing to read again.
+    assert_eq!(screen.history_wanted(), None);
+    let mut moved = created(downloading("b"), 2);
+    moved.status.updated_at_ms = 5_000;
+    screen.sync(&[created(downloading("a"), 1), moved]);
+    assert_eq!(screen.history_wanted().as_deref(), Some("1000-b"));
     screen.step(1);
     assert!(screen.history_lines().is_empty());
+    assert_eq!(screen.history_wanted().as_deref(), Some("1000-a"));
 }

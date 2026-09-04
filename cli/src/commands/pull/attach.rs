@@ -75,7 +75,11 @@ fn show(download: &mut Download, status: &PullStatus, job: &PullJobDir, now_ms: 
 
 /// What a queued pull is waiting for.
 fn waiting(job: &PullJobDir, status: &PullStatus, now_ms: i64) -> String {
-    let note = pulls::note(job, status, now_ms);
+    let note = pulls::note(
+        status,
+        job.abandoned_by(status, now_ms, START_GRACE_MS),
+        now_ms,
+    );
     match note.is_empty() {
         true => "queued".to_owned(),
         false => format!("queued · {note}"),

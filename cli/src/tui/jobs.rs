@@ -62,13 +62,14 @@ pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
             // A job queued with nobody coming for it is stopped, whatever the
             // record says: the kernel already refuses to join one, and a strip
             // that called it live would never let the model be pulled again.
-            let pull_state = match job.abandoned(now_ms, START_GRACE_MS) {
+            let abandoned = job.abandoned_by(&status, now_ms, START_GRACE_MS);
+            let pull_state = match abandoned {
                 true => PullState::Interrupted,
                 false => status.state,
             };
             let aged_out = pull_state.is_terminal()
                 && now_ms.saturating_sub(status.updated_at_ms) >= ENDED_LINGER_MS;
-            let note = pulls::note(&job, &status, now_ms);
+            let note = pulls::note(&status, abandoned, now_ms);
             let descriptor = job.job().clone();
             JobRow {
                 job: job.id().to_owned(),

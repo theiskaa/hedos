@@ -5,7 +5,7 @@
 //! an array of them, and only `resume`, which acts on many jobs and can refuse
 //! some of them, wraps its two lists in an object.
 
-use kernel::install::pulls::{PullJobDir, PullStatus};
+use kernel::install::pulls::{PullJobDir, PullStatus, START_GRACE_MS};
 
 use crate::support::pulls::{note, progress};
 use crate::support::table;
@@ -22,7 +22,11 @@ pub(super) fn table(jobs: &[(PullJobDir, PullStatus)], now_ms: i64) -> String {
                 job.job().reference.clone(),
                 status.state.to_string(),
                 progress(status),
-                note(job, status, now_ms),
+                note(
+                    status,
+                    job.abandoned_by(status, now_ms, START_GRACE_MS),
+                    now_ms,
+                ),
             ]
         })
         .collect();

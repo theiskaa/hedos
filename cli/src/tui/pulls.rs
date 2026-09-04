@@ -41,8 +41,9 @@ pub struct PullsScreen {
     selected_job: Option<String>,
     /// The rate reading of each running transfer, by job.
     meters: HashMap<String, Meter>,
-    /// The history of one job, as read on the last poll of it.
-    history: Option<(String, Vec<String>)>,
+    /// The history of one job, as read when its record last moved: the job,
+    /// the record's `updated_at_ms` at the time, and the lines.
+    history: Option<(String, i64, Vec<String>)>,
     /// When the last poll read the store.
     polled_at_ms: i64,
     /// A job to put the selection on when it appears: the one a pull started
@@ -220,22 +221,34 @@ impl PullsScreen {
 
     /// Take the history of `job`; whether the screen shows it.
     pub fn history(&mut self, job: String, lines: Vec<String>) -> bool {
-        let shown = self.selected_row().is_some_and(|row| row.job == job);
-        if !shown {
+        let Some(row) = self.selected_row().filter(|row| row.job == job) else {
             return false;
-        }
+        };
+        let read_at = row.status.updated_at_ms;
         let changed = self
             .history
             .as_ref()
-            .is_none_or(|(had, lines_had)| *had != job || *lines_had != lines);
-        self.history = Some((job, lines));
+            .is_none_or(|(had, _, lines_had)| *had != job || *lines_had != lines);
+        self.history = Some((job, read_at, lines));
         changed
+    }
+
+    /// The selected job whose history is not read yet, or was read before
+    /// its record last moved. A history grows only when the record does, so
+    /// this is what keeps the poll from re-reading a file that has not
+    /// changed twice a second.
+    pub fn history_wanted(&self) -> Option<String> {
+        let row = self.selected_row()?;
+        let current = self.history.as_ref().is_some_and(|(job, read_at, _)| {
+            *job == row.job && *read_at == row.status.updated_at_ms
+        });
+        (!current).then(|| row.job.clone())
     }
 
     /// The selected job's history, as far as it has been read.
     pub fn history_lines(&self) -> &[String] {
         match (&self.history, self.selected_row()) {
-            (Some((job, lines)), Some(row)) if *job == row.job => lines,
+            (Some((job, _, lines)), Some(row)) if *job == row.job => lines,
             _ => &[],
         }
     }

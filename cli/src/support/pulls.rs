@@ -2,7 +2,7 @@
 //! in a table and the screen puts them in the task strip, and a pull should not
 //! describe itself differently depending on which one is looking.
 
-use kernel::install::pulls::{PullEvent, PullEventKind, PullJobDir, PullStatus, START_GRACE_MS};
+use kernel::install::pulls::{PullEvent, PullEventKind, PullStatus};
 use kernel::records::byte_format::format_bytes;
 
 use crate::support::clock;
@@ -30,10 +30,13 @@ pub fn progress(status: &PullStatus) -> String {
 /// The one thing worth saying about a pull beside its state: that no worker took
 /// it up, else when the next attempt is due, else why it stopped, else what a
 /// still-running provider last said, else which attempt is running.
-pub fn note(job: &PullJobDir, status: &PullStatus, now_ms: i64) -> String {
+///
+/// `abandoned` is the caller's reading of the job, since it costs a lock probe
+/// the caller has usually just paid for.
+pub fn note(status: &PullStatus, abandoned: bool, now_ms: i64) -> String {
     // A queued job waiting behind `max_concurrent` and one nothing ever came for
     // read the same in the record, and only one of them is going to move.
-    if job.abandoned(now_ms, START_GRACE_MS) {
+    if abandoned {
         return "no worker".to_owned();
     }
     if let Some(due) = status.next_attempt_at_ms {

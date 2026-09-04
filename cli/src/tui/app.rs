@@ -986,9 +986,7 @@ impl App {
 
     /// A read of the selected job's history, when there is one to read.
     fn history_poll(&self) -> Option<Effect> {
-        self.pulls
-            .selected_row()
-            .map(|row| Effect::PollHistory(row.job.clone()))
+        self.pulls.history_wanted().map(Effect::PollHistory)
     }
 
     /// Open the stop card over the selected pull, or say why not.
