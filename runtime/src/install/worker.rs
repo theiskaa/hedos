@@ -25,7 +25,7 @@ use std::time::Duration;
 use kernel::install::plan::InstallPlan;
 use kernel::install::pulls::{
     self, PullControl, PullError, PullEventKind, PullJob, PullJobDir, PullLock, PullState,
-    PullStore,
+    PullStore, START_GRACE_MS,
 };
 use kernel::install::{InstallError, InstallEvent, InstallProgress};
 use kernel::time::now_millis;
@@ -73,8 +73,8 @@ pub enum WorkerError {
     Ended(PullState),
 
     /// A cancel is on its way to the job and has not been read yet.
-    #[error("a cancel is already on its way")]
-    Cancelling,
+    #[error("cancelled: a cancel was waiting for it")]
+    Cancelled,
 
     /// The job's record could not be read or written.
     #[error(transparent)]
@@ -272,6 +272,12 @@ pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerErr
     if job.worker_alive() || job.stored_status().state.is_terminal() {
         return Ok(Stopped::Asked(job.status().state));
     }
+    Ok(Stopped::Settled(settle_here(job, control)?))
+}
+
+/// Settle the record the way `control` asks, on behalf of a worker that is not
+/// there to do it.
+fn settle_here(job: &PullJobDir, control: PullControl) -> Result<PullState, WorkerError> {
     let settled = control.resulting_state();
     let now = now_millis();
     job.update_status(now, |status| {
@@ -282,7 +288,7 @@ pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerErr
         }
     })?;
     job.append(PullEventKind::State { state: settled }, now)?;
-    Ok(Stopped::Settled(settled))
+    Ok(settled)
 }
 
 /// Put a worker back on a job that stopped, returning the new worker's pid.
@@ -290,7 +296,8 @@ pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerErr
 /// The ask that stopped the job is dropped first: a worker spawned onto a job
 /// whose control file still says `pause` would honour it and stop again before
 /// moving a byte. A cancel is not dropped, because a cancel is not something to
-/// undo on the way past; the job is refused instead.
+/// undo on the way past: it is honoured here instead, since the worker it was
+/// meant for is gone and nobody else will, and the job is reported cancelled.
 ///
 /// The record is put back to queued before the spawn, and settled as failed if
 /// the spawn does not happen, so a job is never left waiting for a process that
@@ -304,8 +311,18 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
     if job.worker_alive() {
         return Err(WorkerError::AlreadyRunning);
     }
+    // Read again after the probe, as `stop` does: a worker that finished in
+    // the moment between the two has just written its ending, and a cancel it
+    // never read must not be written over it.
+    let state = job.stored_status().state;
+    if state.is_terminal() {
+        return Err(WorkerError::Ended(state));
+    }
     match job.control() {
-        Some(PullControl::Cancel) => return Err(WorkerError::Cancelling),
+        Some(PullControl::Cancel) => {
+            settle_here(job, PullControl::Cancel)?;
+            return Err(WorkerError::Cancelled);
+        }
         Some(control) => job.clear_control(control)?,
         None => {}
     }
@@ -318,6 +335,43 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
         status.next_attempt_at_ms = None;
     })?;
     spawn_worker(job)
+}
+
+/// Take `job` for this process: claim its lock, retrying past a reader's
+/// shared probe, and stamp this pid before anything that can stand the worker
+/// down, which is what [`PullJobDir::abandoned`] reads. `None` when another
+/// worker holds it.
+pub async fn hold(job: &PullJobDir) -> Result<Option<PullLock>, WorkerError> {
+    let Some(lock) = claim(job).await? else {
+        return Ok(None);
+    };
+    job.update_status(now_millis(), |status| {
+        status.state = PullState::Queued;
+        status.pid = Some(std::process::id());
+        status.message = None;
+        status.next_attempt_at_ms = None;
+    })?;
+    job.append(
+        PullEventKind::State {
+            state: PullState::Queued,
+        },
+        now_millis(),
+    )?;
+    Ok(Some(lock))
+}
+
+/// Take the job's lock, giving a passing reader's shared probe a few chances
+/// to get out of the way before concluding someone else owns it.
+async fn claim(job: &PullJobDir) -> Result<Option<PullLock>, WorkerError> {
+    for attempt in 0..CLAIM_ATTEMPTS {
+        if let Some(lock) = job.claim()? {
+            return Ok(Some(lock));
+        }
+        if attempt + 1 < CLAIM_ATTEMPTS {
+            tokio::time::sleep(CLAIM_RETRY).await;
+        }
+    }
+    Ok(None)
 }
 
 /// What starting a pull did.
@@ -346,8 +400,15 @@ pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, W
         if !job.status().state.is_resumable() {
             return Ok(Started::Joined);
         }
-        restart(&job)?;
-        return Ok(Started::Resumed);
+        match restart(&job) {
+            Ok(_) => return Ok(Started::Resumed),
+            // A stopped job carrying a cancel its worker never read has just
+            // been settled by that cancel; the way is clear for a new pull.
+            Err(WorkerError::Cancelled) => {}
+            // It ended between the lookup and now, most likely landing.
+            Err(WorkerError::Ended(_)) => return Ok(Started::Joined),
+            Err(error) => return Err(error),
+        }
     }
     let job = store.create(plan, now_millis())?;
     spawn_worker(&job)?;
@@ -361,21 +422,30 @@ fn spawn_worker(job: &PullJobDir) -> Result<u32, WorkerError> {
     match spawn_detached(job) {
         Ok(pid) => Ok(pid),
         Err(error) => {
-            let message = format!("could not start a worker: {error}");
-            let now = now_millis();
-            job.update_status(now, |status| {
-                status.state = PullState::Failed;
-                status.message = Some(message);
-            })?;
-            job.append(
-                PullEventKind::State {
-                    state: PullState::Failed,
-                },
-                now,
-            )?;
+            fail(job, format!("could not start a worker: {error}"))?;
             Err(error.into())
         }
     }
+}
+
+/// Settle `job` as failed for `message`, on behalf of a worker that could not
+/// start or could not go on: a job left queued for a process that is not
+/// coming would wait for good.
+pub fn fail(job: &PullJobDir, message: String) -> Result<(), WorkerError> {
+    let now = now_millis();
+    job.update_status(now, |status| {
+        status.state = PullState::Failed;
+        status.message = Some(message);
+        status.pid = None;
+        status.next_attempt_at_ms = None;
+    })?;
+    job.append(
+        PullEventKind::State {
+            state: PullState::Failed,
+        },
+        now,
+    )?;
+    Ok(())
 }
 
 /// Drop the records of ended pulls beyond the newest `pull.keep_ended`,
@@ -390,16 +460,28 @@ pub fn collect_ended(store: &PullStore, settings: &PullSettings) -> usize {
 /// it, reporting what happened to each by job id.
 ///
 /// A pull whose worker died while the machine was asleep is the common case,
-/// and the alternative is a list of downloads to restart by hand. A pull the
-/// user paused is left exactly where they left it: nobody asked for it here,
-/// and un-pausing it behind their back would make a pause impossible to keep.
+/// and the alternative is a list of downloads to restart by hand. A job nobody
+/// ever took up is the same case one step earlier: its worker died before it
+/// held the job, and nothing else collects it. A pull the user paused is left
+/// exactly where they left it: nobody asked for it here, and un-pausing it
+/// behind their back would make a pause impossible to keep.
 #[cfg(unix)]
 pub fn resume_all(store: &PullStore) -> Vec<(String, Result<u32, WorkerError>)> {
+    let now = now_millis();
     store
         .jobs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|job| job.status().state == PullState::Interrupted)
+        .filter(|job| {
+            job.status().state == PullState::Interrupted
+                // An abandoned job the user has already pulled past is left:
+                // its worker would lose the reference to the pull under way
+                // and fail as a duplicate on every open.
+                || (job.abandoned(now, START_GRACE_MS)
+                    && store
+                        .under_way(&job.job().provider, &job.job().reference, now)
+                        .is_none())
+        })
         .map(|job| (job.id().to_owned(), restart(&job)))
         .collect()
 }
@@ -449,25 +531,17 @@ impl PullWorker {
     /// however that happens: a client that finds the lock free and the record
     /// still saying `running` knows this worker died.
     pub async fn run(&self, job: &PullJobDir) -> Result<PullState, WorkerError> {
-        let _claim = self.claim(job).await?.ok_or(WorkerError::AlreadyRunning)?;
-        let descriptor = job.job().clone();
-        // The pid goes down the moment the job is held, before anything that
-        // can stand this worker back down. A job queued without one means
-        // nothing has taken it, which is what tells a client waiting for a
-        // worker from waiting for one that will never come.
-        job.update_status(now_millis(), |status| {
-            status.state = PullState::Queued;
-            status.pid = Some(std::process::id());
-            status.message = None;
-            status.next_attempt_at_ms = None;
-        })?;
-        job.append(
-            PullEventKind::State {
-                state: PullState::Queued,
-            },
-            now_millis(),
-        )?;
+        let claim = hold(job).await?.ok_or(WorkerError::AlreadyRunning)?;
+        self.run_held(job, claim).await
+    }
 
+    /// Run `job`, already [held](hold) by this process, to its end.
+    pub async fn run_held(
+        &self,
+        job: &PullJobDir,
+        _claim: PullLock,
+    ) -> Result<PullState, WorkerError> {
+        let descriptor = job.job().clone();
         let held = claim_reference(
             &self.root,
             descriptor.provider.as_str(),
@@ -483,20 +557,6 @@ impl PullWorker {
         };
 
         self.transfer(job, &descriptor).await
-    }
-
-    /// Take the job's lock, giving a passing reader's shared probe a few
-    /// chances to get out of the way before concluding someone else owns it.
-    async fn claim(&self, job: &PullJobDir) -> Result<Option<PullLock>, WorkerError> {
-        for attempt in 0..CLAIM_ATTEMPTS {
-            if let Some(lock) = job.claim()? {
-                return Ok(Some(lock));
-            }
-            if attempt + 1 < CLAIM_ATTEMPTS {
-                tokio::time::sleep(CLAIM_RETRY).await;
-            }
-        }
-        Ok(None)
     }
 
     /// Attempt the transfer until it lands, is stopped, or stops being worth
@@ -777,9 +837,14 @@ impl PullWorker {
             if message.is_some() {
                 status.message = message;
             }
-            if state.is_terminal() {
-                status.pid = None;
-            }
+            // Written again on every pass, not only on the first: a client's
+            // restart racing this worker's start can land a record with no
+            // pid after it, and a queued job without one is read as taken by
+            // nobody.
+            status.pid = match state.is_terminal() {
+                true => None,
+                false => Some(std::process::id()),
+            };
         })?;
         job.append(PullEventKind::State { state }, now)?;
         Ok(state)

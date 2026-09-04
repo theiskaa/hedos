@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::{PullControl, PullState, PullStore};
+use kernel::install::pulls::{PullControl, PullEvent, PullEventKind, PullState, PullStore};
 use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProgress, InstallSearchHit,
     InstallStreamEvent,
@@ -760,7 +760,7 @@ async fn a_stopped_job_is_put_back_to_queued_before_its_new_worker_starts() {
 }
 
 #[tokio::test]
-async fn a_cancel_on_its_way_is_not_undone_by_a_resume() {
+async fn a_cancel_its_worker_never_read_is_honoured_by_a_resume_instead_of_wedging_the_job() {
     let dir = TempDir::new();
     let store = PullStore::new(dir.join("pulls"));
     let job = store.create(&plan("org/Model"), 1_000).unwrap();
@@ -769,11 +769,83 @@ async fn a_cancel_on_its_way_is_not_undone_by_a_resume() {
     job.request(PullControl::Cancel).unwrap();
 
     match restart(&job) {
-        Err(WorkerError::Cancelling) => {}
-        other => panic!("a cancelling job should not be resumed, got {other:?}"),
+        Err(WorkerError::Cancelled) => {}
+        other => panic!("the cancel should have been honoured, got {other:?}"),
     }
-    assert_eq!(job.control(), Some(PullControl::Cancel));
-    assert_eq!(job.stored_status().state, PullState::Interrupted);
+    assert_eq!(job.stored_status().state, PullState::Cancelled);
+    assert!(matches!(
+        job.events().last(),
+        Some(PullEvent {
+            kind: PullEventKind::State {
+                state: PullState::Cancelled
+            },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn asking_for_a_model_whose_stopped_pull_carries_a_cancel_starts_afresh() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| status.state = PullState::Interrupted)
+        .unwrap();
+    job.request(PullControl::Cancel).unwrap();
+
+    // The spawn runs this test binary, which exits at once; the records are
+    // what is under test.
+    let started = start_or_join(&store, &plan("org/Model")).unwrap();
+    assert!(matches!(started, Started::Created(ref id) if id != job.id()));
+    assert_eq!(job.stored_status().state, PullState::Cancelled);
+    assert_eq!(store.list().len(), 2);
+}
+
+#[tokio::test]
+async fn a_resume_never_writes_over_an_ending_written_after_its_probe() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    // A worker finished and let go, but the cancel it never read is still on
+    // disk: the ending stands, and the cancel is not honoured over it.
+    job.update_status(1_000, |status| status.state = PullState::Done)
+        .unwrap();
+    job.request(PullControl::Cancel).unwrap();
+
+    match restart(&job) {
+        Err(WorkerError::Ended(PullState::Done)) => {}
+        other => panic!("a done job should stay done, got {other:?}"),
+    }
+    assert_eq!(job.stored_status().state, PullState::Done);
+}
+
+#[tokio::test]
+async fn resuming_everything_takes_up_a_job_nobody_ever_came_for() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let abandoned = store.create(&plan("org/Abandoned"), 1_000).unwrap();
+    let fresh = store
+        .create(&plan("org/Fresh"), kernel::time::now_millis())
+        .unwrap();
+    let paused = store.create(&plan("org/Paused"), 1_000).unwrap();
+    paused
+        .update_status(1_000, |status| status.state = PullState::Paused)
+        .unwrap();
+
+    // An abandoned job whose model is being pulled again beside it is left,
+    // since its worker would only fail as a duplicate.
+    let passed = store.create(&plan("org/Passed"), 1_000).unwrap();
+    store
+        .create(&plan("org/Passed"), kernel::time::now_millis())
+        .unwrap();
+
+    // The spawn runs this test binary, which exits at once; which jobs were
+    // taken up is what is under test.
+    let restarted: Vec<String> = resume_all(&store).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(restarted, [abandoned.id().to_owned()]);
+    assert_eq!(fresh.stored_status().state, PullState::Queued);
+    assert_eq!(paused.stored_status().state, PullState::Paused);
+    assert_eq!(passed.stored_status().pid, None);
 }
 
 #[tokio::test]
