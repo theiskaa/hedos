@@ -352,8 +352,8 @@ pub fn spawn_start_pull(
     tokio::spawn(async move {
         let _ = tx.send(match start_pull(&store, plan) {
             Ok(Started::Created(job)) => Event::PullStarted(job),
-            Ok(Started::Joined) => Event::PullRefused(already_downloading(&reference)),
-            Ok(Started::Resumed) => {
+            Ok(Started::Joined(_)) => Event::PullRefused(already_downloading(&reference)),
+            Ok(Started::Resumed(_)) => {
                 Event::PullRefused(format!("carrying on the pull of {reference}"))
             }
             Err(error) => Event::PullRefused(format!("{reference}: {error}")),

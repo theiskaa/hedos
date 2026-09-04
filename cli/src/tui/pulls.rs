@@ -197,13 +197,13 @@ impl PullsScreen {
         self.follow = Some(job);
     }
 
-    /// The screen is being opened: the first time, the selection lands on the
-    /// newest pull going, which is what someone opening it most likely came
-    /// for; after that it stays where it was left.
-    pub fn open(&mut self) {
+    /// The screen is being entered: the first time it has rows, the selection
+    /// lands on the newest pull going, which is what someone opening it most
+    /// likely came for; after that it stays where it was left.
+    pub fn entered(&mut self) {
         if !self.opened {
             self.select_newest_live();
-            self.opened = true;
+            self.opened = !self.rows.is_empty();
         }
     }
 

@@ -12,7 +12,8 @@
 //! display name, a destination, and a size to show before a byte moves, and by
 //! the time the worker runs the plan's remaining bytes are stale anyway.
 
-use kernel::install::pulls::PullJobDir;
+use kernel::install::provider::InstallProviderId;
+use kernel::install::pulls::{PullJobDir, PullStore};
 use kernel::install::{InstallError, InstallPlan};
 use kernel::time::now_millis;
 use runtime::boot::{self, HedosDirs};
@@ -37,9 +38,7 @@ pub(super) async fn run(args: &PullArgs, out: &Out) -> Result<(), CliError> {
     let store = boot::pull_store(&dirs);
     collect_ended(&store, &settings.pull);
 
-    if let Some(job) = store.under_way(&provider, &reference, now_millis())
-        && rejoin(out, &job, args.detach).await?
-    {
+    if rejoined(out, &store, &provider, &reference, args.detach).await? {
         return Ok(());
     }
 
@@ -49,9 +48,7 @@ pub(super) async fn run(args: &PullArgs, out: &Out) -> Result<(), CliError> {
         // path surfaces, rather than a second, thinner message here.
         return Err(InstallError::AuthRequired(reference).into());
     }
-    if let Some(job) = store.under_way(&provider, &plan.reference, now_millis())
-        && rejoin(out, &job, args.detach).await?
-    {
+    if rejoined(out, &store, &provider, &plan.reference, args.detach).await? {
         return Ok(());
     }
     if interactive::is_interactive(out) && !confirmed(out, &plan)? {
@@ -61,20 +58,78 @@ pub(super) async fn run(args: &PullArgs, out: &Out) -> Result<(), CliError> {
 
     let started = start_or_join(&store, &plan)
         .map_err(|error| CliError::new(format!("{}: {error}", plan.reference)))?;
-    let job = match started {
-        Started::Created(id) => store.open(&id)?,
-        // A pull of this model turned up between the lookup and the start; it
-        // is that one, wherever it is.
-        Started::Joined | Started::Resumed => store
-            .under_way(&provider, &plan.reference, now_millis())
-            .ok_or_else(|| {
-                CliError::new(format!(
-                    "{} ended before it could be joined",
-                    plan.reference
-                ))
-            })?,
+    // A pull of this model can turn up between the lookup and the start; the
+    // runtime names the job either way.
+    let job = match &started {
+        Started::Created(id) => store.open(id)?,
+        Started::Joined(id) => {
+            let job = store.open(id)?;
+            announce_joined(out, &job);
+            job
+        }
+        Started::Resumed(id) => {
+            let job = store.open(id)?;
+            announce_resumed(out, &job);
+            job
+        }
     };
     hand_off(out, &job, args.detach).await
+}
+
+/// Join the pull of `reference` already under way, if there is one; whether
+/// there was, and it was seen through.
+async fn rejoined(
+    out: &Out,
+    store: &PullStore,
+    provider: &InstallProviderId,
+    reference: &str,
+    detach: bool,
+) -> Result<bool, CliError> {
+    match store.under_way(provider, reference, now_millis()) {
+        Some(job) => rejoin(out, &job, detach).await,
+        None => Ok(false),
+    }
+}
+
+/// Join a pull that already exists, starting a worker again when it had
+/// stopped: asking for the model is asking for it to go on, whatever
+/// `pull.auto_resume` says about pulls nobody asked about. `false` when the
+/// job turned out to be over, which leaves the way clear for a new one.
+async fn rejoin(out: &Out, job: &PullJobDir, detach: bool) -> Result<bool, CliError> {
+    if job.status().state.is_resumable() {
+        match restart(job) {
+            Ok(_) => announce_resumed(out, job),
+            // A cancel its worker never read has just been honoured.
+            Err(WorkerError::Cancelled) => {
+                out.line(&format!("{} was cancelled; starting afresh", job.id()));
+                return Ok(false);
+            }
+            // Another client put a worker on it in the same moment.
+            Err(WorkerError::AlreadyRunning) => announce_joined(out, job),
+            // It ended between the lookup and now, most likely landing.
+            Err(WorkerError::Ended(_)) => {
+                attach::report(out, job, &job.status())?;
+                return Ok(true);
+            }
+            Err(error) => return Err(CliError::new(format!("{}: {error}", job.id()))),
+        }
+    } else {
+        announce_joined(out, job);
+    }
+    hand_off(out, job, detach).await?;
+    Ok(true)
+}
+
+fn announce_joined(out: &Out, job: &PullJobDir) {
+    out.line(&format!(
+        "{} is already being pulled as {}",
+        job.job().reference,
+        job.id()
+    ));
+}
+
+fn announce_resumed(out: &Out, job: &PullJobDir) {
+    out.line(&format!("resuming {} ({})", job.id(), job.job().reference));
 }
 
 /// Show what will be fetched and where, and ask before it is.
@@ -89,32 +144,6 @@ fn confirmed(out: &Out, plan: &InstallPlan) -> Result<bool, CliError> {
         plan.display_name, plan.destination
     ));
     interactive::confirm("Download now?", true)
-}
-
-/// Join a pull that already exists, starting a worker again when it had
-/// stopped: asking for the model is asking for it to go on, whatever
-/// `pull.auto_resume` says about pulls nobody asked about. `false` when the
-/// job turned out to be over, which leaves the way clear for a new one.
-async fn rejoin(out: &Out, job: &PullJobDir, detach: bool) -> Result<bool, CliError> {
-    if job.status().state.is_resumable() {
-        match restart(job) {
-            Ok(_) => out.line(&format!("resuming {} ({})", job.id(), job.job().reference)),
-            // A cancel its worker never read has just been honoured.
-            Err(WorkerError::Cancelled) => {
-                out.line(&format!("{} was cancelled; starting afresh", job.id()));
-                return Ok(false);
-            }
-            Err(error) => return Err(CliError::new(format!("{}: {error}", job.id()))),
-        }
-    } else {
-        out.line(&format!(
-            "{} is already being pulled as {}",
-            job.job().reference,
-            job.id()
-        ));
-    }
-    hand_off(out, job, detach).await?;
-    Ok(true)
 }
 
 /// Watch the worker, or leave it to itself.
@@ -134,3 +163,6 @@ fn detached(out: &Out, job: &PullJobDir) -> Result<(), CliError> {
     out.json(&view::json(job, &job.status()));
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

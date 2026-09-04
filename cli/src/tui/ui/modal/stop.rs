@@ -30,7 +30,7 @@ pub(super) fn stop(card: &StopCard, inner: Rect) -> Vec<Line<'static>> {
         row("on disk", landed(&card.progress)),
         Line::default(),
         Line::from(" pause keeps what has landed, to resume later"),
-        Line::from(" cancel ends it for good; nothing resumes from what landed"),
+        Line::from(" cancel ends it for good; the pull cannot be resumed"),
         Line::default(),
         keys(&[("p", "pause"), ("x", "cancel"), ("esc", "keep going")]),
     ]

@@ -135,16 +135,37 @@ fn the_first_open_lands_on_the_newest_pull_going_and_later_ones_keep_the_selecti
             2,
         ),
     ]);
-    screen.open();
+    screen.entered();
     assert_eq!(
         screen.selected_row().map(|row| row.reference.as_str()),
         Some("going")
     );
     screen.step(-1);
-    screen.open();
+    screen.entered();
     assert_eq!(
         screen.selected_row().map(|row| row.reference.as_str()),
         Some("done")
+    );
+
+    // Entered before the first poll landed, the screen has nothing to land
+    // on; the first entry with rows is the one that counts.
+    let mut early = PullsScreen::default();
+    early.entered();
+    early.sync(&[
+        created(downloading("going"), 1),
+        created(
+            job_row(
+                "done",
+                PullState::Done,
+                TaskState::Done("pulled done".to_owned()),
+            ),
+            2,
+        ),
+    ]);
+    early.entered();
+    assert_eq!(
+        early.selected_row().map(|row| row.reference.as_str()),
+        Some("going")
     );
 }
 

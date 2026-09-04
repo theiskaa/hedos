@@ -919,11 +919,11 @@ impl App {
     }
 
     /// Put the pulls screen in the shelf's place, on the newest pull still
-    /// going, and read the store straight away rather than on the next
-    /// cadence.
+    /// going the first time, and read the store straight away rather than on
+    /// the next cadence.
     fn open_pulls(&mut self) -> Vec<Effect> {
         self.screen = Screen::Pulls;
-        self.pulls.open();
+        self.pulls.entered();
         self.dirty = true;
         self.last_pull_poll = self.ticks;
         let mut effects = vec![Effect::PollPulls];
