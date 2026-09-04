@@ -32,6 +32,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = pane(" tasks ");
     let inner = block.inner(area);
     let height = inner.height as usize;
+    // The reducer reads the hints back at key time and must agree with what is
+    // drawn here, which on a short terminal is fewer rows than the layout asked
+    // for.
+    app.note_task_rows(height);
     let shown = app.tasks.shown(height);
     let targets = app
         .tasks
@@ -53,7 +57,7 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
     );
     let subject = format!("{}  ", row.label.subject);
     let head = verb.width() + subject.width();
-    let activity = row.kind.as_ref().map_or("", TaskKind::activity);
+    let activity = row.kind().map_or("", TaskKind::activity);
     let cancel = if hinted.cancellable {
         hints(&["c"])
     } else {
@@ -78,6 +82,13 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
             let mut spans = vec![Span::styled(summary.clone(), DIM)];
             if hinted.on_selected {
                 spans.extend(hints(&["w", "l"]));
+            }
+            (DIM, spans)
+        }
+        TaskState::Stopped(how) => {
+            let mut spans = vec![Span::styled(how.clone(), DIM)];
+            if hinted.resumable {
+                spans.extend(hints(&["R"]));
             }
             (DIM, spans)
         }

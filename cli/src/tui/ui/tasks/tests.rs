@@ -1,10 +1,11 @@
 use super::*;
 
+use kernel::install::pulls::PullState;
 use ratatui::style::Style;
 
 use crate::tui::strip::{HintTargets, TaskStrip};
 use crate::tui::tasks::{TaskEvent, TaskId, TaskLabel};
-use crate::tui::testing::{plan, text};
+use crate::tui::testing::{downloading, job_row, text};
 
 fn recorded(state: TaskState) -> TaskRow {
     let mut strip = TaskStrip::default();
@@ -42,7 +43,6 @@ fn every_task_verb_is_listed() {
             id: "m".to_owned(),
             name: "m".to_owned(),
         },
-        TaskKind::Pull(plan("gemma3")),
         TaskKind::Remove {
             id: "m".to_owned(),
             name: "m".to_owned(),
@@ -66,7 +66,6 @@ fn every_task_verb_is_listed() {
             | TaskKind::Warm { .. }
             | TaskKind::WarmViaGateway { .. }
             | TaskKind::Unload { .. }
-            | TaskKind::Pull(_)
             | TaskKind::Remove { .. } => {}
         }
         let verb = kind.verb();
@@ -127,18 +126,15 @@ fn the_bar_shrinks_with_the_strip() {
         ..InstallProgress::default()
     };
     let mut strip = TaskStrip::default();
-    let id = TaskId::next();
-    strip.start(id, TaskKind::Pull(plan("gemma3")));
-    let row = strip
-        .moved(
-            TaskEvent {
-                id,
-                state: TaskState::Downloading(progress),
-            },
-            0,
-        )
-        .cloned()
-        .unwrap();
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Running,
+            TaskState::Downloading(progress),
+        )],
+        0,
+    );
+    let row = strip.rows()[0].clone();
     let cancellable = RowHints {
         cancellable: true,
         ..RowHints::default()
@@ -173,15 +169,46 @@ fn the_bar_shrinks_with_the_strip() {
 }
 
 #[test]
+fn a_stopped_pull_says_how_it_stopped_with_or_without_the_key() {
+    let mut strip = TaskStrip::default();
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Paused,
+            TaskState::Stopped("paused".to_owned()),
+        )],
+        0,
+    );
+    let row = &strip.rows()[0];
+
+    let offered = text(&line(
+        row,
+        120,
+        RowHints {
+            resumable: true,
+            ..RowHints::default()
+        },
+    ));
+    assert!(
+        offered.trim_end().ends_with("paused  R resume"),
+        "{offered:?}"
+    );
+
+    // Off screen, or under a newer stopped pull, the row still says what it is.
+    let quiet = text(&line(row, 120, RowHints::default()));
+    assert!(quiet.trim_end().ends_with("paused"), "{quiet:?}");
+    assert!(!quiet.contains("resume"));
+}
+
+#[test]
 fn a_done_pull_hints_only_while_it_is_selected() {
     let mut strip = TaskStrip::default();
-    let id = TaskId::next();
-    strip.start(id, TaskKind::Pull(plan("gemma3")));
-    strip.moved(
-        TaskEvent {
-            id,
-            state: TaskState::Done("pulled gemma3".to_owned()),
-        },
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Done,
+            TaskState::Done("pulled gemma3".to_owned()),
+        )],
         0,
     );
     let shown = strip.shown(10);
@@ -222,17 +249,10 @@ fn strip_of(failed: usize, done: usize, running: usize) -> TaskStrip {
             0,
         );
     }
-    for index in 0..running {
-        let id = TaskId::next();
-        strip.start(id, TaskKind::Pull(plan(&format!("pull-{index}"))));
-        strip.moved(
-            TaskEvent {
-                id,
-                state: TaskState::Downloading(InstallProgress::default()),
-            },
-            0,
-        );
-    }
+    let pulls = (0..running)
+        .map(|index| downloading(&format!("pull-{index}")))
+        .collect();
+    strip.sync_pulls(pulls, 0);
     strip
 }
 
@@ -250,25 +270,25 @@ fn rendered(strip: &TaskStrip, height: usize) -> Vec<String> {
 }
 
 #[test]
-fn cancel_sits_on_the_newest_pull_even_while_it_resolves() {
+fn cancel_sits_on_the_newest_pull_even_while_it_is_only_queued() {
     let mut strip = strip_of(0, 0, 1);
-    let id = TaskId::next();
-    strip.start(id, TaskKind::Pull(plan("pull-b")));
+    let queued = |note: &str| {
+        job_row(
+            "pull-b",
+            PullState::Queued,
+            TaskState::Status(note.to_owned()),
+        )
+    };
+    strip.sync_pulls(vec![queued("queued")], 0);
     let lines = rendered(&strip, 10);
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("pull-0") && !lines[0].contains("cancel"));
     assert!(
-        lines[1].ends_with("pull-b  starting  c cancel"),
+        lines[1].ends_with("pull-b  queued  c cancel"),
         "{:?}",
         lines[1]
     );
-    strip.moved(
-        TaskEvent {
-            id,
-            state: TaskState::Status("resolving on hf".to_owned()),
-        },
-        0,
-    );
+    strip.sync_pulls(vec![queued("resolving on hf")], 0);
     let lines = rendered(&strip, 10);
     assert!(
         lines[1].ends_with("resolving on hf  c cancel"),

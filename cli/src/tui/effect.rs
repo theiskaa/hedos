@@ -3,10 +3,11 @@
 
 use std::path::PathBuf;
 
+use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
 use kernel::records::{JsonValue, ModelRecord};
 
-use super::tasks::{TaskId, TaskKind, TaskLabel};
+use super::tasks::{PullAction, TaskKind, TaskLabel};
 use crate::support::harnesses::HarnessSpec;
 
 /// Something that needs the terminal for a while: the UI steps aside, it
@@ -56,13 +57,18 @@ pub enum Effect {
     Spawn(TaskKind),
     /// Re-read the shelf and the machine facts.
     Refresh,
+    /// Re-read the pull jobs.
+    PollPulls,
     /// Search the providers for a query.
     Search(String),
     /// Resolve an install plan; the number tells its answer from a stale
     /// one's.
     Plan(InstallProviderId, String, u64),
-    /// Cancel a running pull.
-    Cancel(TaskId),
+    /// Start a pull of `plan` in a worker of its own, or join the one already
+    /// fetching that model.
+    StartPull(Box<InstallPlan>),
+    /// Ask a pull's job to stop, or put a worker back on it.
+    ControlPull(PullAction, String),
     /// Put text on the clipboard.
     Copy(String),
     /// Step aside for something that owns the terminal until it ends.

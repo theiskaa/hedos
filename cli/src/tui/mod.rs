@@ -11,6 +11,7 @@ mod edit;
 mod effect;
 mod event;
 mod facts;
+mod jobs;
 mod keymap;
 mod launch;
 mod layout;
@@ -66,6 +67,12 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         Arc::new(session),
         runtime::boot::default_install_service(),
     ));
+    // A pull whose worker died while the machine slept is the common way one
+    // stops, and the screen is where the user finds out. With auto-resume on,
+    // they find it going again rather than waiting to be told to carry on.
+    if context.session().settings.pull.auto_resume {
+        runtime::install::resume_all(&context.pull_store());
+    }
     let tasks::Snapshot { records, facts } = context.snapshot().await;
     let mut app = App::new(records, facts);
     app.restore(&UiState::load(&state_dir));
@@ -112,8 +119,9 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         }
     };
     app.remembered().save(&state_dir);
-    // A pull or removal is finished rather than cut mid-way; a scan runs to
-    // completion inside one poll anyway. Either way, say why the prompt is late.
+    // A removal is finished rather than cut between deleting and forgetting; a
+    // scan runs to completion inside one poll anyway. A download is not waited
+    // for at all: it belongs to a worker that outlives this process.
     if context.busy() || app.busy() {
         out.line("finishing background work…");
     }
@@ -287,11 +295,15 @@ async fn drive(
                     app.started(id, kind);
                 }
                 Effect::Refresh => tasks::spawn_refresh(context, tx),
+                Effect::PollPulls => tasks::spawn_pulls(context, tx),
+                Effect::StartPull(plan) => tasks::spawn_start_pull(*plan, context, tx),
+                Effect::ControlPull(action, job) => {
+                    tasks::spawn_pull_control(action, job, context, tx);
+                }
                 Effect::Search(query) => tasks::spawn_search(query, context, tx),
                 Effect::Plan(provider, reference, ask) => {
                     tasks::spawn_plan(provider, reference, ask, context, tx);
                 }
-                Effect::Cancel(id) => context.cancel(id),
                 Effect::Copy(text) => copy_to_clipboard(&text),
                 Effect::Ask {
                     record_id,

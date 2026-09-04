@@ -13,13 +13,14 @@ use super::edit::LineEdit;
 use super::effect::{Effect, HandOff};
 use super::event::{Event, Key, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
+use super::jobs::JobRow;
 use super::launch::LaunchModal;
 use super::layout;
 use super::order::{Sort, order};
 use super::pull::{PullModal, Stage, already_downloading};
 use super::state::UiState;
 use super::strip::{HintTargets, TaskStrip};
-use super::tasks::{TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
+use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::install::find_installed;
 use crate::support::residency::{Holder, warm_request};
 use crate::support::shelf_table::verdict;
@@ -30,6 +31,13 @@ pub(super) const TICKS_PER_SECOND: u64 = 1000 / TICK.as_millis() as u64;
 /// Refresh cadence while a task runs, and while idle.
 const BUSY_REFRESH_TICKS: u64 = 2 * TICKS_PER_SECOND;
 const IDLE_REFRESH_TICKS: u64 = 10 * TICKS_PER_SECOND;
+/// How often the job directory is read while a pull is going. The worker
+/// rewrites its record about twice a second, so reading faster than this would
+/// only re-read the same figures.
+const PULL_POLL_TICKS: u64 = TICKS_PER_SECOND / 2;
+/// How often it is read while none is, which is how a pull started in a
+/// terminal turns up here.
+const PULL_IDLE_POLL_TICKS: u64 = 2 * TICKS_PER_SECOND;
 /// How far a page key moves the chat transcript, and a wheel notch.
 const PAGE_LINES: usize = 10;
 const WHEEL_LINES: usize = 3;
@@ -96,6 +104,12 @@ pub struct App {
     ticks: u64,
     /// The tick of the last refresh request.
     last_refresh: u64,
+    /// The tick of the last read of the job directory.
+    last_pull_poll: u64,
+    /// How many strip rows the last frame actually had room for. A key must act
+    /// on the same row the hint was drawn on, and on a terminal too short for
+    /// the whole strip that is fewer rows than the layout asked for.
+    drawn_task_rows: std::cell::Cell<usize>,
     /// The sequence of the last refresh applied, so older ones are dropped.
     applied_refresh: u64,
     dirty: bool,
@@ -120,6 +134,8 @@ impl App {
             select_pulled: None,
             ticks: 0,
             last_refresh: 0,
+            last_pull_poll: 0,
+            drawn_task_rows: std::cell::Cell::new(layout::MAX_TASK_ROWS as usize),
             applied_refresh: 0,
             dirty: true,
         }
@@ -336,6 +352,8 @@ impl App {
                 Vec::new()
             }
             Event::Tick => self.tick(),
+            Event::Pulls(rows) => self.pulls(rows),
+            Event::PullRefused(reason) => self.notify(reason),
             Event::Task(event) => self.task(event),
             Event::Refreshed(refreshed) => {
                 self.refreshed(refreshed);
@@ -442,6 +460,7 @@ impl App {
                 self.dirty = true;
             }
             Key::Char('c') => return self.cancel_pull(),
+            Key::Char('R') => return self.resume_pull(),
             _ => {}
         }
         Vec::new()
@@ -474,12 +493,12 @@ impl App {
                 Err(reason) => return self.notify(reason),
             },
             (Stage::Preview(plan), Key::Enter) => {
-                let kind = TaskKind::Pull(plan.clone());
-                if self.tasks.already_running(&kind) {
-                    return self.notify(already_downloading(kind.subject()));
+                let plan = plan.clone();
+                if self.tasks.is_pulling(&plan.reference) {
+                    return self.notify(already_downloading(&plan.reference));
                 }
                 self.close_modal();
-                return vec![Effect::Spawn(kind)];
+                return vec![Effect::StartPull(Box::new(plan))];
             }
             (Stage::Preview(_) | Stage::Note(_), Key::Escape | Key::Backspace)
             | (Stage::Planning(_), Key::Escape) => {
@@ -545,9 +564,15 @@ impl App {
     /// no hint and the key leaves it alone.
     fn hint_targets(&self) -> HintTargets {
         self.tasks
-            .hint_targets(layout::MAX_TASK_ROWS as usize, |reference| {
+            .hint_targets(self.drawn_task_rows.get(), |reference| {
                 self.selected_is(reference)
             })
+    }
+
+    /// Record how many strip rows the frame being drawn has room for, so the
+    /// keys act on exactly the rows that carry their hints.
+    pub(super) fn note_task_rows(&self, rows: usize) {
+        self.drawn_task_rows.set(rows);
     }
 
     /// Drop the newest failed task from the strip, when its row is on screen.
@@ -790,10 +815,23 @@ impl App {
 
     /// Cancel the newest running pull, when its row is on screen.
     fn cancel_pull(&mut self) -> Vec<Effect> {
-        match self.hint_targets().pull() {
-            Some(id) => vec![Effect::Cancel(id)],
+        match self.hinted_job(HintTargets::pull) {
+            Some(job) => vec![Effect::ControlPull(PullAction::Cancel, job)],
             None => self.notify("nothing is downloading".to_owned()),
         }
+    }
+
+    fn resume_pull(&mut self) -> Vec<Effect> {
+        match self.hinted_job(HintTargets::stopped) {
+            Some(job) => vec![Effect::ControlPull(PullAction::Resume, job)],
+            None => self.notify("no pull is waiting to go on".to_owned()),
+        }
+    }
+
+    /// The pull job the hint `target` points at, when its row is on screen.
+    fn hinted_job(&self, target: impl Fn(&HintTargets) -> Option<TaskId>) -> Option<String> {
+        let id = target(&self.hint_targets())?;
+        self.tasks.job_of(id).map(str::to_owned)
     }
 
     fn searched(&mut self, searched: Searched) {
@@ -890,6 +928,14 @@ impl App {
         if self.tasks.expire(now) {
             self.dirty = true;
         }
+        let pull_cadence = match self.tasks.any_pulling() {
+            true => PULL_POLL_TICKS,
+            false => PULL_IDLE_POLL_TICKS,
+        };
+        if now - self.last_pull_poll >= pull_cadence {
+            self.last_pull_poll = now;
+            effects.push(Effect::PollPulls);
+        }
         let cadence = if self.busy() {
             BUSY_REFRESH_TICKS
         } else {
@@ -906,11 +952,29 @@ impl App {
             return Vec::new();
         };
         let finished = !row.running();
-        if let (Some(TaskKind::Pull(plan)), TaskState::Done(_)) = (&row.kind, &row.state) {
-            self.select_pulled = Some(plan.reference.clone());
-        }
         self.dirty = true;
         if finished { self.refresh() } else { Vec::new() }
+    }
+
+    /// Fold a poll of the job directory into the strip.
+    ///
+    /// A model that landed is selected once it reaches the shelf, the same way
+    /// a pull started here used to be, whichever process actually fetched it.
+    fn pulls(&mut self, rows: Vec<JobRow>) -> Vec<Effect> {
+        let changes = self.tasks.sync_pulls(rows, self.ticks);
+        if !changes.moved {
+            return Vec::new();
+        }
+        self.dirty = true;
+        // Two pulls can land in one poll; the newest is the one to select, the
+        // same rule a single landing follows.
+        match changes.landed.last() {
+            Some(reference) => {
+                self.select_pulled = Some(reference.clone());
+                self.refresh()
+            }
+            None => Vec::new(),
+        }
     }
 
     fn refreshed(&mut self, refreshed: Refreshed) {

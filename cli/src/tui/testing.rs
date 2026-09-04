@@ -1,20 +1,23 @@
 //! The builders every test module under `tui` needs: a record, a resident,
-//! a plan, a deletion preview, the machine's facts, and ways to read a
-//! rendered line back as text.
+//! a plan, a pull job, a deletion preview, the machine's facts, and ways to
+//! read a rendered line back as text.
 //!
 //! The tripwire policy: a test derives its expectations from the constants
 //! the code is built from, so a layout change moves the test with it. At
 //! most one literal pin per layout is kept, marked as such, to trip when
 //! the constants themselves drift.
 
+use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::records::SourceKind;
-use kernel::records::{Capability, Modality, ModelRecord, ModelSource};
+use kernel::install::pulls::PullState;
+use kernel::records::{Capability, Modality, ModelRecord, ModelSource, SourceKind};
 use kernel::removal::ModelDeletionPreview;
 use ratatui::text::Line;
 
 use super::facts::Facts;
+use super::jobs::JobRow;
+use super::tasks::TaskState;
 use crate::support::residency::{Holder, Resident};
 
 /// An Ollama-sourced chat model called `name`.
@@ -109,4 +112,24 @@ pub fn leading_label(line: &Line, width: usize) -> String {
         .collect::<String>()
         .trim_end()
         .to_owned()
+}
+
+/// A pull job as a poll of the job directory reports it, named after
+/// `reference` so a row and the job behind it are easy to tell apart.
+pub fn job_row(reference: &str, pull_state: PullState, state: TaskState) -> JobRow {
+    JobRow {
+        job: format!("1000-{reference}"),
+        reference: reference.to_owned(),
+        state,
+        pull_state,
+    }
+}
+
+/// A pull of `reference` that is downloading, with nothing transferred yet.
+pub fn downloading(reference: &str) -> JobRow {
+    job_row(
+        reference,
+        PullState::Running,
+        TaskState::Downloading(InstallProgress::default()),
+    )
 }

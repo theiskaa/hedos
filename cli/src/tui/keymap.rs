@@ -6,6 +6,10 @@
 //! back`, `y remove`, `n keep`, `esc close`, the chat pane's footer) are
 //! named where they are drawn: they answer only inside their card and never
 //! share the shelf's grammar.
+//!
+//! A capital letter is normally the sibling of its lowercase (`t`/`T`, `y`/`Y`,
+//! `g`/`G`). `R` is the exception: `r` is taken by an unrelated shelf verb and
+//! no free lowercase says "resume".
 
 /// A key and its verb, as every key line draws them.
 pub type Pair = (&'static str, &'static str);
@@ -100,6 +104,7 @@ pub const BINDINGS: &[Binding] = &[
     bind("o", "sort", Group::Shelf),
     bind("r", "refresh", Group::Shelf),
     glossed("c", "cancel", "cancel pull", Group::Shelf),
+    glossed("R", "resume", "resume pull", Group::Shelf),
     bind("d", "dismiss", Group::Shelf),
     bind("S", "serve", Group::Screen),
     bind("?", "help", Group::Screen),

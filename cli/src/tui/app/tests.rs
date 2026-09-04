@@ -1,7 +1,9 @@
 use super::*;
+
 use crate::tui::keymap;
 use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
-use crate::tui::testing::{plan, resident};
+use crate::tui::testing::{downloading, job_row, plan, resident};
+use kernel::install::pulls::PullState;
 use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
 fn record(index: usize) -> ModelRecord {
@@ -227,12 +229,38 @@ fn failures_stay_much_longer_than_results() {
 
 #[test]
 fn idle_refresh_is_slower_than_busy_refresh() {
+    // The job directory is polled on its own cadence, which this is not about.
+    let refreshes = |effects: Vec<Effect>| {
+        effects
+            .into_iter()
+            .filter(|effect| *effect == Effect::Refresh)
+            .collect::<Vec<_>>()
+    };
     let mut app = app(1);
-    let idle = ticks(&mut app, IDLE_REFRESH_TICKS);
+    let idle = refreshes(ticks(&mut app, IDLE_REFRESH_TICKS));
     assert_eq!(idle, vec![Effect::Refresh]);
     app.started(TaskId::next(), TaskKind::Scan);
-    let busy = ticks(&mut app, BUSY_REFRESH_TICKS);
+    let busy = refreshes(ticks(&mut app, BUSY_REFRESH_TICKS));
     assert_eq!(busy, vec![Effect::Refresh]);
+}
+
+#[test]
+fn the_job_directory_is_read_more_often_while_a_pull_is_going() {
+    let polls = |effects: Vec<Effect>| {
+        effects
+            .iter()
+            .filter(|effect| **effect == Effect::PollPulls)
+            .count()
+    };
+    let mut app = app(1);
+    let idle = polls(ticks(&mut app, PULL_IDLE_POLL_TICKS * 4));
+    app.reduce(Event::Pulls(vec![downloading("x")]));
+    let going = polls(ticks(&mut app, PULL_IDLE_POLL_TICKS * 4));
+
+    assert!(
+        going > idle,
+        "a download that is moving should be read more often: {going} against {idle}"
+    );
 }
 
 #[test]
@@ -312,15 +340,26 @@ fn an_abandoned_partial_download_can_be_removed() {
     assert!(matches!(app.modal, Some(Modal::Remove(_))));
 }
 
+/// One pull of `reference` in `state`, as a poll of the job directory reports
+/// it.
+fn polled(reference: &str, place: PullState, state: TaskState) -> Event {
+    Event::Pulls(vec![job_row(reference, place, state)])
+}
+
 #[test]
-fn cancel_targets_the_newest_running_pull() {
+fn cancel_targets_the_newest_pull_still_going() {
     let mut app = app(1);
     assert!(press(&mut app, Key::Char('c')).is_empty());
     assert_eq!(app.notice(), Some("nothing is downloading"));
-    let id = TaskId::next();
-    let plan = plan("x");
-    app.started(id, TaskKind::Pull(plan.clone()));
-    assert_eq!(press(&mut app, Key::Char('c')), vec![Effect::Cancel(id)]);
+    app.reduce(polled(
+        "x",
+        PullState::Queued,
+        TaskState::Status("queued".to_owned()),
+    ));
+    assert_eq!(
+        press(&mut app, Key::Char('c')),
+        vec![Effect::ControlPull(PullAction::Cancel, "1000-x".to_owned())]
+    );
     // Newer running rows push the pull off the strip, where `c` cannot reach it.
     for _ in 0..layout::MAX_TASK_ROWS {
         app.started(TaskId::next(), TaskKind::Scan);
@@ -328,15 +367,55 @@ fn cancel_targets_the_newest_running_pull() {
     assert!(press(&mut app, Key::Char('c')).is_empty());
     assert_eq!(app.notice(), Some("nothing is downloading"));
     app.tasks = TaskStrip::default();
-    app.started(id, TaskKind::Pull(plan.clone()));
+    app.reduce(polled(
+        "x",
+        PullState::Queued,
+        TaskState::Status("queued".to_owned()),
+    ));
 
     let mut modal = PullModal::open(&[], 0, &[]);
-    let mut replanned = plan;
+    let mut replanned = plan("x");
     replanned.remaining_bytes = Some(5);
     modal.stage = Stage::Preview(replanned);
     app.modal = Some(Modal::Pull(Box::new(modal)));
     assert!(press(&mut app, Key::Enter).is_empty());
     assert_eq!(app.notice(), Some("x is already downloading"));
+}
+
+#[test]
+fn resume_targets_the_newest_pull_that_stopped() {
+    let mut app = app(1);
+    assert!(press(&mut app, Key::Char('R')).is_empty());
+    assert_eq!(app.notice(), Some("no pull is waiting to go on"));
+
+    // A pull still going answers `c`, not `R`; only a stopped one offers to be
+    // carried on.
+    app.reduce(Event::Pulls(vec![downloading("x")]));
+    assert!(press(&mut app, Key::Char('R')).is_empty());
+
+    app.reduce(polled(
+        "x",
+        PullState::Paused,
+        TaskState::Stopped("paused".to_owned()),
+    ));
+    assert_eq!(
+        press(&mut app, Key::Char('R')),
+        vec![Effect::ControlPull(PullAction::Resume, "1000-x".to_owned())]
+    );
+}
+
+#[test]
+fn starting_a_pull_hands_the_plan_to_a_worker() {
+    let mut app = app(1);
+    let mut modal = PullModal::open(&[], 0, &[]);
+    let plan = plan("gemma3");
+    modal.stage = Stage::Preview(plan.clone());
+    app.modal = Some(Modal::Pull(Box::new(modal)));
+
+    let effects = press(&mut app, Key::Enter);
+
+    assert_eq!(effects, vec![Effect::StartPull(Box::new(plan))]);
+    assert!(app.modal.is_none());
 }
 
 #[test]
@@ -705,13 +784,16 @@ fn chat_and_serve_hand_off_when_they_can() {
 #[test]
 fn a_finished_pull_selects_what_it_pulled_on_the_next_refresh() {
     let mut app = app(2);
-    let id = TaskId::next();
-    let plan = plan("qwen2.5:14b");
-    app.started(id, TaskKind::Pull(plan));
-    let effects = app.reduce(Event::Task(TaskEvent {
-        id,
-        state: TaskState::Done("pulled".to_owned()),
-    }));
+    app.reduce(polled(
+        "qwen2.5:14b",
+        PullState::Queued,
+        TaskState::Status("queued".to_owned()),
+    ));
+    let effects = app.reduce(polled(
+        "qwen2.5:14b",
+        PullState::Done,
+        TaskState::Done("pulled qwen2.5:14b".to_owned()),
+    ));
     assert_eq!(effects, vec![Effect::Refresh]);
     // A refresh that predates the pulled record leaves the intent alone.
     app.reduce(Event::Refreshed(Refreshed {
