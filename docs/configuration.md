@@ -38,8 +38,8 @@ max_concurrent_inference = 4
 # holds across terminals.
 max_concurrent = 2
 # Whether a pull whose worker died (a closed laptop, a killed terminal) is
-# started again when the shelf next opens. Pulling the model again always
-# carries it on, whatever this says. A pull you paused stays paused.
+# started again when the shelf next opens. A pull you paused stays paused
+# until you resume it or pull the model again, whatever this says.
 auto_resume = true
 # How long a half-downloaded file another pull left behind is kept, in hours,
 # before an install of the same repo tidies it. A paused pull's own bytes are
