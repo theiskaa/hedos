@@ -34,8 +34,8 @@ port = 43367
 max_concurrent_inference = 4
 
 [pull]
-# How many pulls transfer at once; the rest queue for a free slot. The cap
-# holds across terminals.
+# How many pulls transfer at once; the rest queue for a free slot, and say
+# `waiting for a free slot` in `hedos pull ls`. The cap holds across terminals.
 max_concurrent = 2
 # Whether a pull whose worker died (a closed laptop, a killed terminal) is
 # started again when the shelf next opens. A pull you paused stays paused

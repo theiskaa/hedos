@@ -182,13 +182,14 @@ impl HFCacheWriter {
 
     /// Download `sibling`, resuming from any saved `.incomplete`, verifying the
     /// hash, moving it into `blobs/`, and symlinking it under `snapshots/<rev>`.
-    /// `on_bytes` receives each byte delta (negative when a partial is discarded).
+    /// `on_bytes` hears of every byte as it is counted: found on disk, fetched,
+    /// or given up.
     pub async fn download(
         &self,
         sibling: &HFSibling,
         revision: &str,
         request: InstallRequest,
-        on_bytes: &mut (dyn FnMut(i64) + Send),
+        on_bytes: &mut (dyn FnMut(Landed) + Send),
     ) -> Result<(), InstallError> {
         let pending_name = Self::pending_blob_name(sibling, revision);
 
@@ -198,7 +199,7 @@ impl HFCacheWriter {
         {
             let _ = fs::remove_file(self.layout.incomplete_url(&pending_name));
             self.link(&sibling.rfilename, revision, sha)?;
-            on_bytes(sibling.bytes.unwrap_or(0));
+            on_bytes(Landed::OnDisk(sibling.bytes.unwrap_or(0)));
             return Ok(());
         }
 
@@ -218,7 +219,7 @@ impl HFCacheWriter {
         if incomplete.exists() {
             written = self.hash_existing(&incomplete, &mut hasher)?;
             if written > 0 {
-                on_bytes(written);
+                on_bytes(Landed::OnDisk(written));
             }
         } else {
             fs::File::create(&incomplete).map_err(io_err(&incomplete))?;
@@ -240,7 +241,7 @@ impl HFCacheWriter {
             if start.status == 416 && written > 0 {
                 fs::write(&incomplete, b"").map_err(io_err(&incomplete))?;
                 hasher = Sha256::new();
-                on_bytes(-written);
+                on_bytes(Landed::Discarded(written));
                 written = 0;
                 start = self.transport.stream(base_request.clone()).await?;
             }
@@ -251,7 +252,7 @@ impl HFCacheWriter {
                     if written > 0 {
                         fs::write(&incomplete, b"").map_err(io_err(&incomplete))?;
                         hasher = Sha256::new();
-                        on_bytes(-written);
+                        on_bytes(Landed::Discarded(written));
                         written = 0;
                     }
                 }
@@ -290,7 +291,7 @@ impl HFCacheWriter {
                 handle.write_all(&chunk).map_err(io_err(&incomplete))?;
                 hasher.update(&chunk);
                 written += chunk.len() as i64;
-                on_bytes(chunk.len() as i64);
+                on_bytes(Landed::Fetched(chunk.len() as i64));
             }
             handle.flush().map_err(io_err(&incomplete))?;
             drop(handle);
@@ -453,6 +454,30 @@ impl HFCacheWriter {
 /// what the OS said.
 fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
     move |error| InstallError::Local(format!("{}: {error}", path.display()))
+}
+
+/// Bytes a download counts as it goes, told apart by where they came from:
+/// what was on disk is known before anything is fetched, and a snapshot that
+/// reports it as fetched would read as a transfer that moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landed {
+    /// Bytes already on disk when the download began: a saved partial, or a
+    /// whole blob from an earlier pull.
+    OnDisk(i64),
+    /// Bytes fetched from the wire.
+    Fetched(i64),
+    /// Bytes on disk given up, because the server would not resume from them.
+    Discarded(i64),
+}
+
+impl Landed {
+    /// The change to the byte count: negative for bytes given up.
+    pub fn bytes(self) -> i64 {
+        match self {
+            Self::OnDisk(bytes) | Self::Fetched(bytes) => bytes,
+            Self::Discarded(bytes) => -bytes,
+        }
+    }
 }
 
 /// A per-process counter so concurrent `write_atomic` calls (even for the same
@@ -624,7 +649,7 @@ mod tests {
                 &sibling,
                 "rev",
                 InstallRequest::get("https://x/w.bin"),
-                &mut |delta| seen += delta,
+                &mut |delta| seen += delta.bytes(),
             )
             .await
             .expect("resumed");

@@ -38,6 +38,9 @@ enum Behavior {
     FailsWarm(InstallError),
     /// Say something, then finish.
     Says(String),
+    /// Say something, transfer more, then hold the stream open until it is
+    /// cancelled.
+    SaysThenMoves(String),
     /// Report progress, then hold the stream open until it is cancelled.
     Hangs,
 }
@@ -153,6 +156,13 @@ impl InstallProvider for MockProvider {
                         .await;
                     let _ = tx.send(Err(error)).await;
                 }
+                Behavior::SaysThenMoves(text) => {
+                    let _ = tx.send(Ok(InstallStreamEvent::Status(text))).await;
+                    let _ = tx
+                        .send(Ok(InstallStreamEvent::Progress(progress_at(800))))
+                        .await;
+                    tx.closed().await;
+                }
                 Behavior::Hangs => tx.closed().await,
             }
         });
@@ -212,9 +222,15 @@ async fn a_pull_that_lands_is_recorded_done_and_registered() {
     let registered = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&registered);
 
+    let during = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&during);
+    let registering = job.clone();
     let worker = worker(provider, &store, 2).with_registrar(Arc::new(move || {
         let counter = Arc::clone(&counter);
+        let seen = Arc::clone(&seen);
+        let registering = registering.clone();
         Box::pin(async move {
+            *seen.lock().unwrap() = registering.stored_status().status_line;
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(())
         })
@@ -223,6 +239,9 @@ async fn a_pull_that_lands_is_recorded_done_and_registered() {
     assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
     let status = job.status();
     assert_eq!(status.state, PullState::Done);
+    // While the store was scanned the record said so; not after.
+    assert_eq!(during.lock().unwrap().as_deref(), Some("registering"));
+    assert_eq!(status.status_line, None, "over with the job");
     assert_eq!(status.progress.bytes_downloaded, 400);
     assert_eq!(status.pid, None);
     assert_eq!(registered.load(Ordering::Relaxed), 1);
@@ -359,9 +378,11 @@ async fn a_streak_that_gets_nowhere_ends_the_job_interrupted() {
     let provider = MockProvider::new(vec![Behavior::FailsCold(InstallError::TransferFailed(
         "the network is gone".to_owned(),
     ))]);
+    // The window is wide enough for two retries on a loaded machine, and the
+    // last step repeats until it is spent.
     let worker = worker(Arc::clone(&provider), &store, 2).with_policy(RetryPolicy::new(
         vec![Duration::from_millis(20), Duration::from_millis(40)],
-        Duration::from_millis(500),
+        Duration::from_millis(1_500),
     ));
 
     assert_eq!(worker.run(&job).await.unwrap(), PullState::Interrupted);
@@ -451,10 +472,9 @@ async fn what_the_provider_says_reaches_the_record_and_the_history() {
     );
 
     assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
-    assert_eq!(
-        job.status().status_line.as_deref(),
-        Some("resolving 3 files")
-    );
+    // The history keeps what was said; the record does not once the job
+    // has ended, since it is what the job is doing.
+    assert_eq!(job.status().status_line, None);
     assert!(job.events().into_iter().any(|event| matches!(
         event.kind,
         kernel::install::pulls::PullEventKind::Status { ref text } if text == "resolving 3 files"
@@ -523,13 +543,67 @@ async fn a_worker_waits_for_a_slot_and_takes_it_when_one_frees_up() {
     let taken = pool.try_take().unwrap().expect("a free slot");
 
     let worker = worker(MockProvider::new(vec![Behavior::Lands]), &store, 1);
+    let watched = job.clone();
     let releasing = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(120)).await;
+        // While it waits, the record says what for.
+        assert_eq!(
+            watched.stored_status().status_line.as_deref(),
+            Some("waiting for a free slot")
+        );
         drop(taken);
     });
 
     assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
     releasing.await.unwrap();
+    assert_eq!(job.stored_status().status_line, None);
+    assert!(job.events().into_iter().any(|event| matches!(
+        event.kind,
+        PullEventKind::Status { ref text } if text == "waiting for a free slot"
+    )));
+}
+
+#[tokio::test]
+async fn what_the_provider_said_comes_off_the_record_once_bytes_move() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let worker = worker(
+        MockProvider::new(vec![Behavior::SaysThenMoves(
+            "Resolving org/Model".to_owned(),
+        )]),
+        &store,
+        2,
+    );
+
+    let watching = job.clone();
+    let watcher = tokio::spawn(async move {
+        loop {
+            let status = watching.stored_status();
+            if status.progress.bytes_downloaded >= 800 {
+                // The line was written, then the bytes moved past it.
+                assert!(watching.events().into_iter().any(|event| matches!(
+                    event.kind,
+                    PullEventKind::Status { ref text } if text == "Resolving org/Model"
+                )));
+                // The bytes and the clear are one write, but the watcher may
+                // have read the record between the flush and this poll.
+                for _ in 0..50 {
+                    if watching.stored_status().status_line.is_none() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(watching.stored_status().status_line, None);
+                watching.request(PullControl::Cancel).unwrap();
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Cancelled);
+    watcher.await.unwrap();
 }
 
 #[tokio::test]

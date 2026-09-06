@@ -112,7 +112,7 @@ async fn download_one(
             sibling,
             revision,
             InstallRequest::get("http://hf.test/file"),
-            &mut |delta| total += delta,
+            &mut |delta| total += delta.bytes(),
         )
         .await?;
     Ok(total)

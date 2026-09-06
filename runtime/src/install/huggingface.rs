@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use std::sync::Arc as StdArc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::hf_cache::{DEFAULT_INCOMPLETE_AGE, HFCacheLayout, HFCacheWriter};
+use super::hf_cache::{DEFAULT_INCOMPLETE_AGE, HFCacheLayout, HFCacheWriter, Landed};
 use super::hf_hub::HFHubAPI;
 use super::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use super::transport::InstallTransport;
@@ -235,19 +235,15 @@ async fn run_install(
 
     let meter = Arc::new(InstallProgressMeter::new(summed_bytes(&ordered)));
     for sibling in &ordered {
-        let _ = tx
-            .send(Ok(InstallStreamEvent::Progress(
-                meter.begin(&sibling.rfilename),
-            )))
-            .await;
+        meter.begin(&sibling.rfilename);
         let request = api.resolve_request(&plan.reference, &revision, &sibling.rfilename);
         let meter = Arc::clone(&meter);
         // A sender clone for the sync progress callback. `closed()` tracks the
         // receiver, not the sender count, so this clone doesn't defeat the outer
         // cancel arm; it's dropped when the closure drops at the iteration's end.
         let tx = tx.clone();
-        let mut on_bytes = move |delta: i64| {
-            if let Some(progress) = meter.add(delta) {
+        let mut on_bytes = move |landed: Landed| {
+            if let Some(progress) = meter.add(landed) {
                 // Progress is throttled and lossy-tolerant; a full channel just
                 // means the consumer will catch up on the next emit.
                 let _ = tx.try_send(Ok(InstallStreamEvent::Progress(progress)));
@@ -344,6 +340,9 @@ struct MeterState {
     current_file: Option<String>,
     last_emitted_bytes: i64,
     last_emitted_at: Instant,
+    /// Whether a file has begun since the last emit, so the next delta emits
+    /// at once and carries the file's name.
+    fresh: bool,
 }
 
 impl InstallProgressMeter {
@@ -358,27 +357,40 @@ impl InstallProgressMeter {
                 current_file: None,
                 last_emitted_bytes: 0,
                 last_emitted_at: Instant::now(),
+                fresh: false,
             }),
         }
     }
 
-    fn begin(&self, file: &str) -> InstallProgress {
+    /// Start on `file`. Nothing is emitted here, and nothing is for the bytes
+    /// the file already has on disk: the first chunk from the wire is the
+    /// first snapshot, counted on top of them, so no snapshot ever reads lower
+    /// than what is on disk and none reads bytes on disk as bytes that moved.
+    fn begin(&self, file: &str) {
         let mut state = self.lock();
         state.current_file = Some(file.to_owned());
-        state.last_emitted_bytes = state.downloaded;
-        state.last_emitted_at = Instant::now();
-        self.snapshot(&state)
+        state.fresh = true;
     }
 
-    fn add(&self, delta: i64) -> Option<InstallProgress> {
+    fn add(&self, landed: Landed) -> Option<InstallProgress> {
         let mut state = self.lock();
-        state.downloaded += delta;
+        state.downloaded += landed.bytes();
         let now = Instant::now();
-        if state.downloaded - state.last_emitted_bytes < Self::EMIT_BYTES
-            && now.duration_since(state.last_emitted_at) < Self::EMIT_INTERVAL
-        {
+        let due = match landed {
+            Landed::OnDisk(_) => false,
+            // Bytes given up read lower at once, rather than a snapshot later
+            // that would look like a transfer going backwards on its own.
+            Landed::Discarded(_) => true,
+            Landed::Fetched(_) => {
+                state.fresh
+                    || state.downloaded - state.last_emitted_bytes >= Self::EMIT_BYTES
+                    || now.duration_since(state.last_emitted_at) >= Self::EMIT_INTERVAL
+            }
+        };
+        if !due {
             return None;
         }
+        state.fresh = false;
         state.last_emitted_bytes = state.downloaded;
         state.last_emitted_at = now;
         Some(self.snapshot(&state))
@@ -507,13 +519,46 @@ mod tests {
     fn the_meter_throttles_small_frequent_updates() {
         let meter = InstallProgressMeter::new(Some(100 << 20));
         meter.begin("w.bin");
-        // A tiny delta right after begin: under both the 8 MiB and 300 ms thresholds.
-        assert!(meter.add(16).is_none());
+        // The first chunk of a file emits whatever its size, naming the file.
+        let first = meter
+            .add(Landed::Fetched(16))
+            .expect("the first chunk emits");
+        assert_eq!(first.bytes_downloaded, 16);
+        assert_eq!(first.current_file.as_deref(), Some("w.bin"));
+        // A tiny delta after that: under both the 8 MiB and 300 ms thresholds.
+        assert!(meter.add(Landed::Fetched(16)).is_none());
         // A delta over the byte threshold emits.
-        let emitted = meter.add(9 << 20).expect("a large delta emits");
-        assert_eq!(emitted.bytes_downloaded, (9 << 20) + 16);
+        let emitted = meter
+            .add(Landed::Fetched(9 << 20))
+            .expect("a large delta emits");
+        assert_eq!(emitted.bytes_downloaded, (9 << 20) + 32);
         assert_eq!(emitted.total_bytes, Some(100 << 20));
         assert!(!emitted.total_is_partial); // HF totals are exact → a fraction shows
+    }
+
+    #[test]
+    fn bytes_on_disk_are_counted_but_never_reported_as_a_transfer() {
+        let meter = InstallProgressMeter::new(Some(1_000));
+        meter.begin("config.json");
+        assert!(
+            meter.add(Landed::OnDisk(20)).is_none(),
+            "a whole blob from before"
+        );
+        meter.begin("w.bin");
+        assert!(meter.add(Landed::OnDisk(600)).is_none(), "a saved partial");
+        // The first chunk is the first snapshot anyone sees: on top of what
+        // was there, never a zero, and never the partial alone as if it moved.
+        let first = meter
+            .add(Landed::Fetched(1))
+            .expect("the first chunk emits");
+        assert_eq!(first.bytes_downloaded, 621);
+        assert_eq!(first.current_file.as_deref(), Some("w.bin"));
+        // A server that would not resume: the partial is given up, and the
+        // count reads lower at once.
+        let dropped = meter
+            .add(Landed::Discarded(601))
+            .expect("bytes given up are reported at once");
+        assert_eq!(dropped.bytes_downloaded, 20);
     }
 
     #[test]

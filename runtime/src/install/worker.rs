@@ -715,6 +715,8 @@ impl PullWorker {
                 status.attempt = attempts;
                 status.next_attempt_at_ms = None;
                 status.message = None;
+                // Whatever the wait or the last attempt said is over.
+                status.status_line = None;
             })?;
 
             let outcome = self.attempt_once(job, descriptor).await?;
@@ -776,10 +778,17 @@ impl PullWorker {
             if let Some(control) = self.rest(job, delay).await {
                 return self.honour(job, control);
             }
+            // The wait is over; the record would otherwise say "retry in 0s"
+            // and the reason over anything the slot wait says.
+            job.update_status(now_millis(), |status| {
+                status.next_attempt_at_ms = None;
+                status.message = None;
+            })?;
         }
     }
 
     async fn wait_for_slot(&self, job: &PullJobDir) -> Result<Waited, WorkerError> {
+        let mut waited = false;
         loop {
             if let Some(control) = job.control() {
                 return Ok(Waited::Stopped(control));
@@ -788,10 +797,29 @@ impl PullWorker {
                 return Ok(Waited::Ready(slot));
             }
             self.mark(job, PullState::Queued, None)?;
+            if !waited {
+                // Said once: the record reads the same as a job nobody has
+                // come for, and this is what tells them apart.
+                waited = true;
+                self.say(job, "waiting for a free slot")?;
+            }
             if let Some(control) = self.rest(job, SLOT_POLL).await {
                 return Ok(Waited::Stopped(control));
             }
         }
+    }
+
+    /// Put `text` on the record as what the job is doing, and in its history.
+    fn say(&self, job: &PullJobDir, text: &str) -> Result<(), WorkerError> {
+        let now = now_millis();
+        job.append(
+            PullEventKind::Status {
+                text: text.to_owned(),
+            },
+            now,
+        )?;
+        job.update_status(now, |status| status.status_line = Some(text.to_owned()))?;
+        Ok(())
     }
 
     /// One resolve-and-transfer attempt.
@@ -843,23 +871,35 @@ impl PullWorker {
         // as progress.
         let mut baseline: Option<i64> = None;
         let mut moved = false;
+        // Whether a line the provider said this attempt stands on the record.
+        // What a provider says is what it is doing, and once bytes move it is
+        // doing the transfer, so the line comes off with the bytes that moved;
+        // one said during the transfer stays until bytes move again.
+        let mut line_stands = false;
         let mut ticker = tokio::time::interval(CONTROL_POLL);
         loop {
             tokio::select! {
                 event = events.recv() => match event {
                     Some(InstallEvent::Progress(progress)) => {
-                        let base = *baseline.get_or_insert(progress.bytes_downloaded);
-                        moved |= progress.bytes_downloaded > base;
+                        let base = baseline.get_or_insert(progress.bytes_downloaded);
+                        // Only a provider giving up bytes on disk reads below
+                        // the line; what it fetches after that counts from there.
+                        if progress.bytes_downloaded < *base {
+                            *base = progress.bytes_downloaded;
+                        }
+                        let moved_now = progress.bytes_downloaded > *base;
+                        moved |= moved_now;
                         latest = Some(progress);
-                        self.flush(job, &mut latest, &mut written_at, false)?;
+                        let clear_line = moved_now && line_stands;
+                        self.flush(job, &mut latest, &mut written_at, clear_line, clear_line)?;
+                        line_stands &= !clear_line;
                     }
                     Some(InstallEvent::Status(text)) => {
-                        let now = now_millis();
-                        job.append(PullEventKind::Status { text: text.clone() }, now)?;
-                        job.update_status(now, |status| status.status_line = Some(text))?;
+                        self.say(job, &text)?;
+                        line_stands = true;
                     }
                     Some(InstallEvent::Done) => {
-                        self.flush(job, &mut latest, &mut written_at, true)?;
+                        self.flush(job, &mut latest, &mut written_at, true, false)?;
                         return Ok(Outcome::Done { asked });
                     }
                     Some(InstallEvent::Failed { message }) => {
@@ -891,20 +931,23 @@ impl PullWorker {
                             PullControl::Cancel => self.install.cancel(install_id),
                         }
                     }
-                    self.flush(job, &mut latest, &mut written_at, false)?;
+                    self.flush(job, &mut latest, &mut written_at, false, false)?;
                 }
             }
         }
     }
 
     /// Write the pending progress into the record, at most one write per
-    /// [`STATUS_INTERVAL`] unless `force`.
+    /// [`STATUS_INTERVAL`] unless `force`; `clear_line` takes the provider's
+    /// line off in the same write, so a reader never sees the line gone
+    /// before the bytes that justified it.
     fn flush(
         &self,
         job: &PullJobDir,
         latest: &mut Option<InstallProgress>,
         written_at: &mut i64,
         force: bool,
+        clear_line: bool,
     ) -> Result<(), WorkerError> {
         let Some(progress) = latest.take() else {
             return Ok(());
@@ -914,7 +957,12 @@ impl PullWorker {
             *latest = Some(progress);
             return Ok(());
         }
-        job.update_status(now, |status| status.progress = progress)?;
+        job.update_status(now, |status| {
+            status.progress = progress;
+            if clear_line {
+                status.status_line = None;
+            }
+        })?;
         *written_at = now;
         Ok(())
     }
@@ -924,9 +972,19 @@ impl PullWorker {
     /// a failure: the weights are on disk either way.
     async fn finish(&self, job: &PullJobDir) -> Result<PullState, WorkerError> {
         let message = match &self.registrar {
-            Some(registrar) => registrar().await.err(),
+            Some(registrar) => {
+                // Every byte has landed and the record says so; what is left
+                // is a scan of the store, which can take a moment.
+                self.say(job, "registering")?;
+                registrar().await.err()
+            }
             None => None,
         };
+        // An ask written while the store was scanned has nothing left to
+        // stop; left on disk it would stop the next worker on this job.
+        if let Some(control) = job.control() {
+            job.clear_control(control)?;
+        }
         self.settle(job, PullState::Done, message)
     }
 
@@ -975,6 +1033,10 @@ impl PullWorker {
                 true => None,
                 false => Some(std::process::id()),
             };
+            // What the provider was doing is over with the job.
+            if state.is_terminal() {
+                status.status_line = None;
+            }
         })?;
         job.append(PullEventKind::State { state }, now)?;
         Ok(state)
