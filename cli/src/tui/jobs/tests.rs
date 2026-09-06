@@ -29,6 +29,23 @@ fn a_pull_that_has_moved_bytes_reads_as_a_download() {
     assert_eq!(rows[0].job, job.id());
     assert_eq!(rows[0].reference, "Qwen/Qwen3-8B");
     assert!(matches!(rows[0].state, TaskState::Downloading(_)));
+
+    // Every byte landed: the worker is registering, and that is what the row
+    // says rather than a full bar; the strip drops the stop key with it.
+    job.update_status(1_500, |status| {
+        status.progress.bytes_downloaded = 1_024;
+        status.status_line = Some("registering".to_owned());
+    })
+    .expect("write the record");
+    let landed = super::rows(&store, 2_000);
+    assert_eq!(landed[0].state, TaskState::Status("registering".to_owned()));
+    job.update_status(1_600, |status| status.status_line = None)
+        .expect("write the record");
+    let finishing = super::rows(&store, 2_000);
+    assert_eq!(
+        finishing[0].state,
+        TaskState::Status("finishing".to_owned())
+    );
 }
 
 #[test]

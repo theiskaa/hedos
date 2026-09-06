@@ -177,6 +177,20 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_with_every_byte_landed_is_past_stopping() {
+        let mut landed = downloading("x");
+        landed.status.progress = InstallProgress {
+            bytes_downloaded: 9,
+            total_bytes: Some(9),
+            ..InstallProgress::default()
+        };
+        landed.state = TaskState::Status("registering".to_owned());
+        let strip = strip_with(vec![landed.clone()]);
+        assert!(!strip.rows()[0].pull_going());
+        assert!(StopCard::over(&strip.rows()[0]).is_none());
+    }
+
+    #[test]
     fn cancel_never_answers_to_the_key_that_opened_the_card() {
         assert_eq!(
             StopCard::choice(Key::Char('p')),

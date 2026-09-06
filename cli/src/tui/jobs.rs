@@ -96,24 +96,36 @@ pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
 /// from. `Cancelled` is an ending the user chose, so it reads as done rather
 /// than as a failure.
 fn state(pull_state: PullState, status: &PullStatus, reference: &str, note: String) -> TaskState {
+    let landed = status.progress.fraction() == Some(1.0);
     match pull_state {
+        // A bar at the full width says nothing more; what the worker is
+        // doing with the bytes now does, and that is its own line rather
+        // than the note, which would say "attempt 2" over it.
+        PullState::Running if landed => TaskState::Status(
+            status
+                .status_line
+                .clone()
+                .unwrap_or_else(|| "finishing".to_owned()),
+        ),
         PullState::Running if status.progress.bytes_downloaded > 0 => {
             TaskState::Downloading(status.progress.clone())
         }
-        PullState::Running | PullState::Queued => TaskState::Status(match note.is_empty() {
-            true => "queued".to_owned(),
-            false => note,
-        }),
+        PullState::Running | PullState::Queued => TaskState::Status(said(note, "queued")),
         PullState::Done => TaskState::Done(format!("pulled {reference}")),
         PullState::Cancelled => TaskState::Done("cancelled".to_owned()),
-        PullState::Failed => TaskState::Failed(match note.is_empty() {
-            true => "failed".to_owned(),
-            false => note,
-        }),
+        PullState::Failed => TaskState::Failed(said(note, "failed")),
         PullState::Paused | PullState::Interrupted => TaskState::Stopped(match note.is_empty() {
             true => pull_state.to_string(),
             false => format!("{pull_state}, {note}"),
         }),
+    }
+}
+
+/// `note`, or `fallback` when there is none.
+fn said(note: String, fallback: &str) -> String {
+    match note.is_empty() {
+        true => fallback.to_owned(),
+        false => note,
     }
 }
 

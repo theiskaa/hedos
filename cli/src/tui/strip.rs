@@ -67,9 +67,10 @@ impl TaskRow {
     }
 
     /// Whether this row shows a pull that is still going, queued or
-    /// downloading.
+    /// downloading. One with every byte landed is past stopping: the worker
+    /// is registering what it fetched, and an ask now would reach nobody.
     pub fn pull_going(&self) -> bool {
-        self.pull_state.is_some_and(PullState::is_live)
+        self.pull_state.is_some_and(PullState::is_live) && self.progress.fraction() != Some(1.0)
     }
 
     /// The pull job this row shows, if it shows one.
