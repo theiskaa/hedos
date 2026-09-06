@@ -2,9 +2,11 @@
 //! anything to it. Shared by every surface that stops a pull, so the strip's
 //! `c` and the pulls screen's open the same card.
 //!
-//! A cancel is not a stop: the provider tidies the half-download away, so a
-//! mis-keyed cancel throws away whatever had landed. The card offers pause
-//! first, because it keeps the bytes, and cancel second, because it does not.
+//! A cancel is not a pause: nothing resumes from it, so a mis-keyed cancel
+//! ends a pull that may have had gigabytes landed, and only a fresh pull of
+//! the same model, within `pull.partial_age_hours`, finds them again. The
+//! card offers pause first, because it can be resumed, and cancel second,
+//! because it cannot.
 //! Cancel answers to `x`, the shelf's own destroying key, and not to `c`: the
 //! key that opened the card must not also confirm it, or a held key would
 //! cancel through the card on its repeat.
