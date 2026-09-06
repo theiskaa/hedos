@@ -208,7 +208,7 @@ pub struct PullSettings {
     pub retry_window_minutes: i64,
     /// How many ended pulls keep their record, for `hedos pull ls` and the
     /// pulls screen to show; the rest are dropped when hedos next opens the
-    /// store. `hedos pull clean` drops them sooner.
+    /// store. `hedos pull clean --keep n` overrides it for one run.
     pub keep_ended: i64,
 }
 

@@ -116,7 +116,13 @@ fn logs_and_clean_take_their_counts() {
     let Some(PullCommand::Clean(clean)) = &args.command else {
         panic!("clean should parse as a subcommand");
     };
-    assert_eq!(clean.keep, 5);
+    assert_eq!(clean.keep, Some(5));
+
+    let args = parse(&["hedos", "pull", "clean"]);
+    let Some(PullCommand::Clean(clean)) = &args.command else {
+        panic!("clean should parse as a subcommand");
+    };
+    assert_eq!(clean.keep, None, "the settings say what to keep");
 }
 
 #[test]

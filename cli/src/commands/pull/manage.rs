@@ -10,7 +10,7 @@ use kernel::install::pulls::{
     PullControl, PullEvent, PullJobDir, PullStatus, PullStore, START_GRACE_MS,
 };
 use kernel::time::now_millis;
-use runtime::install::{restart, stop};
+use runtime::install::{restart, stop, sweep_claims};
 
 use crate::error::CliError;
 use crate::support::output::Out;
@@ -18,7 +18,7 @@ use crate::support::pulls::event_line;
 
 use super::attach::{self, Attached};
 use super::view;
-use super::{CleanArgs, LogsArgs, ResumeArgs};
+use super::{LogsArgs, ResumeArgs};
 
 /// `hedos pull ls`.
 pub(super) fn list(store: &PullStore, out: &Out) -> Result<(), CliError> {
@@ -172,11 +172,13 @@ pub(super) fn logs(store: &PullStore, args: &LogsArgs, out: &Out) -> Result<(), 
 
 /// `hedos pull clean`.
 ///
-/// Only the records go. The weights a pull fetched belong to the model store,
-/// and a half-downloaded file belongs to whatever will resume it; the
-/// `pull.partial_age` setting is what eventually collects those.
-pub(super) fn clean(store: &PullStore, args: &CleanArgs, out: &Out) -> Result<(), CliError> {
-    let removed = store.sweep(args.keep, now_millis());
+/// Only the records go, and the claim files no worker holds. The weights a
+/// pull fetched belong to the model store, and a half-downloaded file belongs
+/// to whatever will resume it; `pull.partial_age_hours` is what eventually
+/// collects those.
+pub(super) fn clean(store: &PullStore, keep: usize, out: &Out) -> Result<(), CliError> {
+    sweep_claims(store.root());
+    let removed = store.sweep(keep, now_millis());
     out.line(&match removed {
         1 => "removed 1 ended pull".to_owned(),
         count => format!("removed {count} ended pulls"),

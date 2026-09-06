@@ -20,6 +20,7 @@ use clap::{Args, Subcommand};
 use kernel::install::InstallProviderId;
 use kernel::install::reference::{hugging_face_repo, ollama_install_tag};
 use runtime::boot::{self, HedosDirs};
+use runtime::settings::SettingsStore;
 
 use crate::error::CliError;
 use crate::support::output::Out;
@@ -113,9 +114,10 @@ pub(super) struct LogsArgs {
 /// How much of the ended pulls to keep.
 #[derive(Args)]
 pub(super) struct CleanArgs {
-    /// Keep the newest `n` ended pulls, however old they are.
-    #[arg(long, default_value_t = 0)]
-    keep: usize,
+    /// Keep the newest `n` ended pulls, however old they are; `pull.keep_ended`
+    /// from the settings when not given, and 0 drops every ended pull.
+    #[arg(long)]
+    keep: Option<usize>,
 }
 
 /// Run the `pull` command.
@@ -134,7 +136,12 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
         PullCommand::Resume(args) => manage::resume(&store, args, out),
         PullCommand::Cancel(args) => manage::cancel(&store, &args.job, out),
         PullCommand::Logs(args) => manage::logs(&store, args, out),
-        PullCommand::Clean(args) => manage::clean(&store, args, out),
+        PullCommand::Clean(args) => {
+            let keep = args
+                .keep
+                .unwrap_or_else(|| SettingsStore::discover().load().pull.kept_ended());
+            manage::clean(&store, keep, out)
+        }
     }
 }
 

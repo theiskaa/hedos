@@ -188,7 +188,7 @@ fn cleaning_drops_the_ended_pulls_and_keeps_the_rest() {
     let paused = make_job(&store, "Qwen/Qwen3-4B", 2_000);
     stopped(&paused, PullState::Paused);
 
-    clean(&store, &CleanArgs { keep: 0 }, &out()).expect("clean the store");
+    clean(&store, 0, &out()).expect("clean the store");
 
     let left: Vec<String> = store
         .jobs()
@@ -209,7 +209,7 @@ fn cleaning_keeps_the_newest_ended_pulls_when_asked() {
             .expect("write the record");
     }
 
-    clean(&store, &CleanArgs { keep: 1 }, &out()).expect("clean the store");
+    clean(&store, 1, &out()).expect("clean the store");
 
     let left = store.jobs().expect("read the store");
     assert_eq!(left.len(), 1);

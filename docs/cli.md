@@ -106,7 +106,7 @@ hedos pull pause <job>         stop it, keeping what it has downloaded
 hedos pull resume <job>|--all  start a stopped one again
 hedos pull cancel <job>        stop it for good
 hedos pull logs <job> [-n n]   its history
-hedos pull clean [--keep n]    drop the records of pulls that have ended
+hedos pull clean [--keep n]    drop the records of ended pulls past the newest n (pull.keep_ended)
 ```
 
 A job is named by its id, an unambiguous prefix of one, or its reference; a name several pulls answer to means the one still going. Since a bare word is a valid Ollama tag, a model named after a subcommand is written `hedos pull -- ls`.

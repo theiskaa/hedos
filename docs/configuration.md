@@ -50,7 +50,7 @@ partial_age_hours = 24
 retry_window_minutes = 120
 # How many ended pulls keep their record for `hedos pull ls` and the pulls
 # screen. Older ones are dropped when the shelf opens or a pull starts;
-# `hedos pull clean` drops them sooner. 0 keeps none.
+# `hedos pull clean --keep n` overrides it for one run. 0 keeps none.
 keep_ended = 20
 
 [advanced]
