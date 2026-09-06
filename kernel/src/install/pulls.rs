@@ -43,6 +43,10 @@ pub const START_GRACE_MS: i64 = 3_000;
 /// reference in the same millisecond is already unlikely; sixty-four is a
 /// runaway guard, not a working limit.
 const CREATE_ATTEMPTS: u32 = 64;
+/// How many times a lock file swept away between its open and its lock is
+/// opened again. One sweep in that window is rare; several in a row is not
+/// something to wait on.
+const LOCK_REOPENS: u32 = 3;
 
 /// A failure reading or writing a pull's record.
 #[derive(Debug, thiserror::Error)]
@@ -810,18 +814,44 @@ impl PullJobDir {
 
 /// Take an exclusive lock on `path`, creating it if it is not there, or `None`
 /// when someone else holds it. The lock lives with the returned handle.
+///
+/// A lock file may be unlinked by a sweep between this opening it and locking
+/// it; a lock on a file that is no longer at its path is a lock on nothing
+/// anyone else can see, so the path is opened again. After [`LOCK_REOPENS`]
+/// sweeps in a row it is given up on, which reads as held.
 pub fn take_lock(path: &Path) -> Result<Option<PullLock>, PullError> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(PullLock { file })),
-        Err(TryLockError::WouldBlock) => Ok(None),
-        Err(TryLockError::Error(error)) => Err(error.into()),
+    for _ in 0..LOCK_REOPENS {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        match file.try_lock() {
+            Ok(()) if still_at(&file, path) => return Ok(Some(PullLock { file })),
+            Ok(()) => continue,
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
     }
+    Ok(None)
+}
+
+/// Whether `file` is the file at `path`, rather than one unlinked from it.
+#[cfg(unix)]
+fn still_at(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(held), Ok(at_path)) => held.ino() == at_path.ino() && held.dev() == at_path.dev(),
+        _ => false,
+    }
+}
+
+/// Without inode identity there is nothing to compare; the liveness rule this
+/// module rests on is `flock`'s in any case.
+#[cfg(not(unix))]
+fn still_at(_file: &File, _path: &Path) -> bool {
+    true
 }
 
 /// Whether `path` holds bytes that do not end in a newline, so the next append

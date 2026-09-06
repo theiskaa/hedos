@@ -349,7 +349,9 @@ pub fn spawn_start_pull(
     let store = context.pull_store();
     let tx = tx.clone();
     let reference = plan.reference.clone();
-    tokio::spawn(async move {
+    // Starting waits out another client holding the model's claim, so it
+    // runs where blocking is allowed rather than on a thread that paints.
+    tokio::task::spawn_blocking(move || {
         let _ = tx.send(match start_pull(&store, plan) {
             Ok(Started::Created(job)) => Event::PullStarted(job),
             Ok(Started::Joined(_)) => Event::PullRefused(already_downloading(&reference)),

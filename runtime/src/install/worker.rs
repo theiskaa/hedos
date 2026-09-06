@@ -53,6 +53,12 @@ const STATUS_INTERVAL: Duration = Duration::from_millis(500);
 const SLOTS_DIR: &str = "slots";
 /// Where the per-reference claims live, under the pull store's root.
 const LOCKS_DIR: &str = "locks";
+/// How many times a client starting a pull asks for the reference claim
+/// before giving up: long enough for another client that holds it to finish
+/// listing the store and creating its job, which is a few file writes.
+const START_CLAIM_ATTEMPTS: u32 = 20;
+/// How far apart those asks are.
+const START_CLAIM_RETRY: Duration = Duration::from_millis(25);
 /// How much of the reference's hash names its claim file. Sixty-four bits is
 /// past any chance of two references colliding on one machine.
 const CLAIM_NAME_CHARS: usize = 16;
@@ -64,8 +70,9 @@ pub enum WorkerError {
     #[error("this pull is already running")]
     AlreadyRunning,
 
-    /// Another worker is already pulling this reference.
-    #[error("{0} is already being pulled")]
+    /// Another worker is already pulling this reference, or another hedos is
+    /// in the middle of starting a pull of it.
+    #[error("another hedos is already pulling it; ask again in a moment")]
     AlreadyPulling(String),
 
     /// The job has ended, so there is nothing left to run.
@@ -211,6 +218,9 @@ impl SlotPool {
 /// Claim `reference` on `provider` under the pull store rooted at `root`, or
 /// `None` when another worker holds it. Two pulls of one model into one place
 /// would fight over the same half-written files.
+///
+/// The reference is claimed regardless of case, as [`PullStore::under_way`]
+/// matches it: `org/Model` and `org/model` are one repo on the hub.
 pub fn claim_reference(
     root: impl AsRef<Path>,
     provider: &str,
@@ -221,7 +231,7 @@ pub fn claim_reference(
     let mut digest = Sha256::new();
     digest.update(provider.as_bytes());
     digest.update(b"|");
-    digest.update(reference.as_bytes());
+    digest.update(reference.to_ascii_lowercase().as_bytes());
     let name = hex::encode(digest.finalize());
     Ok(pulls::take_lock(
         &directory.join(&name[..CLAIM_NAME_CHARS]),
@@ -310,15 +320,19 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
     if state.is_terminal() {
         return Err(WorkerError::Ended(state));
     }
-    if job.worker_alive() {
+    // The job's own lock is held for the rewrite, so a worker cannot start on
+    // it in between and another restart cannot read this one's half-written
+    // state as a worker that died. The worker spawned below waits out a
+    // holder like this one before concluding the job is taken.
+    let Some(held) = job.claim()? else {
         return Err(WorkerError::AlreadyRunning);
-    }
-    // Read again after the probe, as `stop` does: a worker that finished in
-    // the moment between the two has just written its ending, and a cancel it
-    // never read must not be written over it.
-    let state = job.stored_status().state;
-    if state.is_terminal() {
-        return Err(WorkerError::Ended(state));
+    };
+    // Read again under the lock, as `stop` reads after its probe: a worker
+    // that finished in the moment before has just written its ending, and a
+    // cancel it never read must not be written over it.
+    let stored = job.stored_status();
+    if stored.state.is_terminal() {
+        return Err(WorkerError::Ended(stored.state));
     }
     match job.control() {
         Some(PullControl::Cancel) => {
@@ -328,6 +342,21 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
         Some(control) => job.clear_control(control)?,
         None => {}
     }
+    // `status()` derives `interrupted` at read time and nothing writes it, so
+    // the history is the only place a worker's death gets recorded.
+    let expected_worker = match stored.state {
+        PullState::Running => true,
+        PullState::Queued => stored.pid.is_some(),
+        _ => false,
+    };
+    if expected_worker {
+        job.append(
+            PullEventKind::State {
+                state: PullState::Interrupted,
+            },
+            now_millis(),
+        )?;
+    }
     // The pid belongs to the worker that died; a queued record still holding one
     // reads as a job whose worker vanished rather than one waiting for its next.
     job.update_status(now_millis(), |status| {
@@ -336,6 +365,7 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
         status.message = None;
         status.next_attempt_at_ms = None;
     })?;
+    drop(held);
     spawn_worker(job)
 }
 
@@ -396,9 +426,18 @@ pub enum Started {
 /// Asking for a model is an instruction, so a paused pull of it is resumed
 /// here whatever `pull.auto_resume` says: that setting governs what happens
 /// with nobody asking, which is [`resume_all`].
+///
+/// The reference claim the worker will hold is taken here first, for the
+/// lookup and the create, so two clients asking in the same instant serialise
+/// and the second finds the first's job. It is let go before any worker is
+/// spawned, since the worker takes it for itself. While another client holds
+/// it, this blocks for up to [`START_CLAIM_ATTEMPTS`] times
+/// [`START_CLAIM_RETRY`], half a second, so it is not for a thread that paints.
 #[cfg(unix)]
 pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, WorkerError> {
+    let mut claim = claim_to_start(store, plan)?;
     if let Some(job) = store.under_way(&plan.provider, &plan.reference, now_millis()) {
+        claim = None;
         if !job.status().state.is_resumable() {
             return Ok(Started::Joined(job.id().to_owned()));
         }
@@ -415,10 +454,43 @@ pub fn start_or_join(store: &PullStore, plan: &InstallPlan) -> Result<Started, W
             Err(error) => return Err(error),
         }
     }
+    // Nothing to join. A claim this client does not hold was a worker's, or
+    // another client's, whose pull may have ended in the moment since; one
+    // more ask settles which.
+    let claim = match claim {
+        Some(claim) => claim,
+        None => claim_reference(store.root(), plan.provider.as_str(), &plan.reference)?
+            .ok_or_else(|| WorkerError::AlreadyPulling(plan.reference.clone()))?,
+    };
     fail_abandoned(store, plan)?;
     let job = store.create(plan, now_millis())?;
+    drop(claim);
     spawn_worker(&job)?;
     Ok(Started::Created(job.id().to_owned()))
+}
+
+/// Ask for `plan`'s reference claim on behalf of a client about to start a
+/// pull; `None` when a worker holds it, or when a job of the reference is
+/// there to join, in which case the claim was another client's and is not
+/// needed.
+#[cfg(unix)]
+fn claim_to_start(store: &PullStore, plan: &InstallPlan) -> Result<Option<PullLock>, WorkerError> {
+    for attempt in 0..START_CLAIM_ATTEMPTS {
+        if let Some(claim) = claim_reference(store.root(), plan.provider.as_str(), &plan.reference)?
+        {
+            return Ok(Some(claim));
+        }
+        if store
+            .under_way(&plan.provider, &plan.reference, now_millis())
+            .is_some()
+        {
+            return Ok(None);
+        }
+        if attempt + 1 < START_CLAIM_ATTEMPTS {
+            std::thread::sleep(START_CLAIM_RETRY);
+        }
+    }
+    Ok(None)
 }
 
 /// Settle every job of `plan`'s model that nobody ever took up, since the new
@@ -475,7 +547,33 @@ pub fn fail(job: &PullJobDir, message: String) -> Result<(), WorkerError> {
 /// the store, since nothing else runs on a schedule: the listing would
 /// otherwise grow until someone ran `hedos pull clean`.
 pub fn collect_ended(store: &PullStore, settings: &PullSettings) -> usize {
+    sweep_claims(store.root());
     store.sweep(settings.kept_ended(), now_millis())
+}
+
+/// Remove the reference claim files under `root` that nobody holds, reporting
+/// how many went. A claim is a file that outlives the worker that took it, so
+/// the directory would otherwise grow by one file per model ever pulled.
+///
+/// Each is unlinked while its lock is held here, so a worker claiming the
+/// same reference at that moment finds no file and makes a new one, finds
+/// the old one and, seeing it gone from the path once locked, opens the path
+/// again, or finds it held and asks again a moment later, as it does for a
+/// client holding it.
+pub fn sweep_claims(root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root.join(LOCKS_DIR)) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Ok(Some(_held)) = pulls::take_lock(&path)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Put a worker back on every pull that stopped without anyone choosing to stop
@@ -564,11 +662,21 @@ impl PullWorker {
         _claim: PullLock,
     ) -> Result<PullState, WorkerError> {
         let descriptor = job.job().clone();
-        let held = claim_reference(
-            &self.root,
-            descriptor.provider.as_str(),
-            &descriptor.reference,
-        )?;
+        // A client starting or listing a pull of the reference, or a sweep of
+        // the claim files, holds the claim for a moment; only a worker holds
+        // it for longer than these asks.
+        let mut held = None;
+        for attempt in 0..CLAIM_ATTEMPTS {
+            held = claim_reference(
+                &self.root,
+                descriptor.provider.as_str(),
+                &descriptor.reference,
+            )?;
+            if held.is_some() || attempt + 1 == CLAIM_ATTEMPTS {
+                break;
+            }
+            tokio::time::sleep(CLAIM_RETRY).await;
+        }
         let Some(_reference) = held else {
             // Settled rather than left queued: this job is redundant, and a
             // record that stays live keeps a client joining it instead of the

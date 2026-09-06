@@ -20,7 +20,7 @@ use runtime::install::InstallService;
 use runtime::install::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use runtime::install::worker::{
     PullWorker, RetryPolicy, SlotPool, Started, Stopped, WorkerError, claim_reference,
-    collect_ended, restart, resume_all, start_or_join, stop,
+    collect_ended, restart, resume_all, start_or_join, stop, sweep_claims,
 };
 use runtime::settings::PullSettings;
 use support::TempDir;
@@ -809,6 +809,156 @@ async fn a_cancel_its_worker_never_read_is_honoured_by_a_resume_instead_of_wedgi
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn two_clients_asking_in_the_same_instant_share_one_job() {
+    let dir = TempDir::new();
+    let root = dir.join("pulls");
+    for round in 0..4 {
+        let plan = plan(&format!("org/Model{round}"));
+        // Each client on a blocking thread of the runtime, as the TUI runs
+        // it: a spawn needs the runtime's signal driver to reap the child.
+        let clients: Vec<_> = (0..2)
+            .map(|_| {
+                let root = root.clone();
+                let plan = plan.clone();
+                tokio::task::spawn_blocking(move || {
+                    let store = PullStore::new(root);
+                    start_or_join(&store, &plan).expect("start or join")
+                })
+            })
+            .collect();
+        let mut outcomes = Vec::new();
+        for client in clients {
+            outcomes.push(client.await.expect("a client thread"));
+        }
+        let created: Vec<&Started> = outcomes
+            .iter()
+            .filter(|started| matches!(started, Started::Created(_)))
+            .collect();
+        assert_eq!(created.len(), 1, "round {round}: {outcomes:?}");
+        let joined = outcomes
+            .iter()
+            .find_map(|started| match started {
+                Started::Joined(id) => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("round {round}: one client should join: {outcomes:?}"));
+        assert!(matches!(created[0], Started::Created(id) if *id == joined));
+    }
+    let store = PullStore::new(root);
+    assert_eq!(store.list().len(), 4, "one job per model, never two");
+}
+
+#[test]
+fn a_reference_is_claimed_whatever_its_case() {
+    let dir = TempDir::new();
+    let root = dir.join("pulls");
+    let held = claim_reference(&root, "huggingface", "org/Model")
+        .unwrap()
+        .expect("free");
+    assert!(
+        claim_reference(&root, "huggingface", "ORG/model")
+            .unwrap()
+            .is_none(),
+        "one repo on the hub is one claim here"
+    );
+    drop(held);
+}
+
+#[tokio::test]
+async fn starting_a_pull_lets_the_reference_go_for_its_worker() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let started = start_or_join(&store, &plan("org/Model")).unwrap();
+    assert!(matches!(started, Started::Created(_)));
+    let claim = claim_reference(store.root(), "huggingface", "org/Model")
+        .expect("claim")
+        .expect("the client let the reference go before returning");
+    drop(claim);
+}
+
+#[tokio::test]
+async fn restarting_a_job_whose_worker_died_writes_the_interruption_down() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(4_242);
+    })
+    .unwrap();
+
+    restart(&job).expect("restart");
+    let states: Vec<PullState> = job
+        .events()
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            PullEventKind::State { state } => Some(state),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(states.first(), Some(&PullState::Interrupted));
+    assert_eq!(job.stored_status().state, PullState::Queued);
+
+    // A pull the user paused was not interrupted, and its history does not
+    // say it was.
+    let paused = store.create(&plan("org/Other"), 1_000).unwrap();
+    paused
+        .update_status(1_000, |status| status.state = PullState::Paused)
+        .unwrap();
+    restart(&paused).expect("restart");
+    assert!(paused.events().into_iter().all(|event| {
+        !matches!(
+            event.kind,
+            PullEventKind::State {
+                state: PullState::Interrupted
+            }
+        )
+    }));
+}
+
+#[test]
+fn sweeping_claims_takes_the_free_ones_and_leaves_a_held_one() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let held = claim_reference(store.root(), "huggingface", "org/Held")
+        .unwrap()
+        .expect("free");
+    drop(
+        claim_reference(store.root(), "huggingface", "org/Free")
+            .unwrap()
+            .expect("free"),
+    );
+    drop(
+        claim_reference(store.root(), "ollama", "free:latest")
+            .unwrap()
+            .expect("free"),
+    );
+    assert_eq!(sweep_claims(store.root()), 2);
+    let left: Vec<_> = std::fs::read_dir(store.root().join("locks"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(left.len(), 1);
+    drop(held);
+    assert_eq!(sweep_claims(store.root()), 1);
+    assert_eq!(sweep_claims(store.root()), 0);
+    // Collection does the same on the way past.
+    drop(
+        claim_reference(store.root(), "huggingface", "org/Again")
+            .unwrap()
+            .expect("free"),
+    );
+    collect_ended(&store, &PullSettings::default());
+    assert!(
+        std::fs::read_dir(store.root().join("locks"))
+            .unwrap()
+            .flatten()
+            .next()
+            .is_none()
+    );
 }
 
 #[tokio::test]
