@@ -318,6 +318,91 @@ async fn a_checksum_mismatch_is_reported_and_the_partial_removed() {
 }
 
 #[tokio::test]
+async fn a_resumed_partial_that_was_corrupted_fails_its_checksum() {
+    let root = temp_root();
+    let body = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
+    let sha = sha_hex(&body);
+    let sibling =
+        HFSibling::new("model.bin", Some(body.len() as i64)).with_sha256(Some(sha.clone()));
+    let writer = writer(&root, StreamMock::serving(&body));
+    writer.prepare_skeleton("rev1", None).expect("skeleton");
+    let blobs = writer.layout().repo_directory().join("blobs");
+    // The first 20 bytes were paused on, and two of them changed on disk.
+    let mut kept = body[..20].to_vec();
+    kept[8] = b'!';
+    kept[9] = b'?';
+    let incomplete = blobs.join(format!("{sha}.incomplete"));
+    std::fs::write(&incomplete, &kept).unwrap();
+
+    match download_one(&writer, &sibling, "rev1").await {
+        Err(InstallError::ChecksumMismatch(file)) => assert_eq!(file, "model.bin"),
+        other => panic!("expected checksum mismatch, got {other:?}"),
+    }
+    assert!(!incomplete.exists(), "the corrupted partial is removed");
+    assert!(
+        !blobs.join(&sha).exists(),
+        "nothing lands under the real hash"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn a_partial_saved_before_the_hash_was_read_is_carried_on_from() {
+    let root = temp_root();
+    let body = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
+    let sha = sha_hex(&body);
+    let unnamed = HFSibling::new("model.bin", Some(body.len() as i64));
+    let named = unnamed.clone().with_sha256(Some(sha.clone()));
+    let writer = writer(&root, StreamMock::serving(&body));
+    writer.prepare_skeleton("rev1", None).expect("skeleton");
+    let blobs = writer.layout().repo_directory().join("blobs");
+    let old_name = HFCacheWriter::pending_blob_name(&unnamed, "rev1");
+    let old_partial = blobs.join(format!("{old_name}.incomplete"));
+    std::fs::write(&old_partial, &body[..20]).unwrap();
+
+    let counted = download_one(&writer, &named, "rev1")
+        .await
+        .expect("download");
+    // The 20 bytes on disk count once, and only the rest is fetched.
+    assert_eq!(counted, body.len() as i64);
+    assert!(!old_partial.exists(), "the old partial is taken over");
+    assert_eq!(std::fs::read(blobs.join(&sha)).unwrap(), body);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_directory_that_cannot_be_written_is_a_local_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_root();
+    let sealed = root.join("sealed");
+    std::fs::create_dir_all(&sealed).unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root writes through any mode; there is nothing to test for it.
+    if std::fs::File::create(sealed.join("probe")).is_ok() {
+        std::fs::remove_dir_all(&root).ok();
+        return;
+    }
+    let writer = writer(&sealed, StreamMock::serving(b"bytes"));
+    let outcome = writer.prepare_skeleton("rev1", None);
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    match outcome {
+        Err(InstallError::Local(reason)) => {
+            assert!(
+                reason.contains("ermission denied"),
+                "the machine's own words survive: {reason}"
+            );
+            assert!(
+                reason.contains("sealed"),
+                "the path that refused is named: {reason}"
+            );
+        }
+        other => panic!("expected a local error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_short_download_is_a_size_mismatch() {
     let root = temp_root();
     let body = b"only ten!!".to_vec();

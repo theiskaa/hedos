@@ -18,6 +18,11 @@ pub enum InstallError {
     /// The reference was not found on the platform.
     #[error("{0} was not found on the platform.")]
     ReferenceNotFound(String),
+    /// The platform would not show or serve what was asked, and this says why:
+    /// a repo it will not show an anonymous client, a token it rejected. A fact
+    /// about the account in hand, not about the network.
+    #[error("{0}")]
+    AccessDenied(String),
     /// The model is gated: either no token was supplied, or the token that was
     /// supplied has not been granted access to this repo.
     #[error(
@@ -42,4 +47,9 @@ pub enum InstallError {
     /// The transfer failed with a message.
     #[error("{0}")]
     TransferFailed(String),
+    /// Something on this machine refused: a directory that cannot be written,
+    /// a file that cannot be read. Unlike a transfer failure, trying again
+    /// without changing anything will not help.
+    #[error("{0}")]
+    Local(String),
 }

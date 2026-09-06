@@ -85,7 +85,7 @@ fn temp_root() -> PathBuf {
 fn provider(root: &PathBuf, body: &[u8]) -> HuggingFaceInstallProvider {
     let sha = sha_hex(body);
     let siblings = format!(
-        r#"{{"rfilename":"model.Q4_K_M.gguf","size":{size},"lfs":{{"size":{size},"oid":"{sha}"}}}}"#,
+        r#"{{"rfilename":"model.Q4_K_M.gguf","size":{size},"lfs":{{"size":{size},"sha256":"{sha}","pointerSize":134}}}}"#,
         size = body.len(),
     );
     provider_custom(root, body, false, &siblings, None)

@@ -188,6 +188,18 @@ fn install_errors_render_the_expected_messages() {
         InstallError::ReferenceInvalid("weird".to_owned()).to_string(),
         "weird is not a reference this provider understands."
     );
+    assert_eq!(
+        InstallError::ReferenceNotFound("org/m".to_owned()).to_string(),
+        "org/m was not found on the platform."
+    );
+    assert_eq!(
+        InstallError::AccessDenied("org/m is private".to_owned()).to_string(),
+        "org/m is private"
+    );
+    assert_eq!(
+        InstallError::Local("/x/blobs: Permission denied (os error 13)".to_owned()).to_string(),
+        "/x/blobs: Permission denied (os error 13)"
+    );
     let disk = InstallError::InsufficientDisk {
         required_bytes: 8_000_000_000,
         available_bytes: 1_000_000_000,

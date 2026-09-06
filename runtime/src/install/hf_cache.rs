@@ -120,11 +120,15 @@ impl HFCacheWriter {
     /// The blob name a not-yet-downloaded file will use: its LFS SHA-256 when
     /// known, else a deterministic `tmp-…` name derived from revision + path.
     pub fn pending_blob_name(sibling: &HFSibling, revision: &str) -> String {
-        if let Some(sha) = &sibling.sha256 {
-            return sha.clone();
+        match &sibling.sha256 {
+            Some(sha) => sha.clone(),
+            None => Self::unnamed_blob_name(&sibling.rfilename, revision),
         }
+    }
+
+    fn unnamed_blob_name(rfilename: &str, revision: &str) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(format!("{revision}\n{}", sibling.rfilename).as_bytes());
+        hasher.update(format!("{revision}\n{rfilename}").as_bytes());
         format!("tmp-{}", hex::encode(hasher.finalize()))
     }
 
@@ -156,9 +160,13 @@ impl HFCacheWriter {
         revision: &str,
         first_weight_pending_name: Option<&str>,
     ) -> Result<(), InstallError> {
-        fs::create_dir_all(self.layout.blobs_directory()).map_err(io_err)?;
-        fs::create_dir_all(self.layout.snapshot_directory(revision)).map_err(io_err)?;
-        fs::create_dir_all(self.layout.refs_directory()).map_err(io_err)?;
+        for directory in [
+            self.layout.blobs_directory(),
+            self.layout.snapshot_directory(revision),
+            self.layout.refs_directory(),
+        ] {
+            fs::create_dir_all(&directory).map_err(io_err(&directory))?;
+        }
         let reference = self.layout.refs_directory().join("main");
         if !reference.exists() {
             write_atomic(&reference, revision.as_bytes())?;
@@ -166,7 +174,7 @@ impl HFCacheWriter {
         if let Some(name) = first_weight_pending_name {
             let pending = self.layout.incomplete_url(name);
             if !pending.exists() && !self.layout.blob_url(name).exists() {
-                fs::File::create(&pending).map_err(io_err)?;
+                fs::File::create(&pending).map_err(io_err(&pending))?;
             }
         }
         Ok(())
@@ -195,6 +203,16 @@ impl HFCacheWriter {
         }
 
         let incomplete = self.layout.incomplete_url(&pending_name);
+        if sibling.sha256.is_some() && !incomplete.exists() {
+            // A partial written before the listing's hash was read was named
+            // without it; it is the same bytes, so it is carried on from.
+            let unnamed = self
+                .layout
+                .incomplete_url(&Self::unnamed_blob_name(&sibling.rfilename, revision));
+            if unnamed.exists() {
+                fs::rename(&unnamed, &incomplete).map_err(io_err(&unnamed))?;
+            }
+        }
         let mut hasher = Sha256::new();
         let mut written: i64 = 0;
         if incomplete.exists() {
@@ -203,7 +221,7 @@ impl HFCacheWriter {
                 on_bytes(written);
             }
         } else {
-            fs::File::create(&incomplete).map_err(io_err)?;
+            fs::File::create(&incomplete).map_err(io_err(&incomplete))?;
         }
 
         let base_request = request;
@@ -220,7 +238,7 @@ impl HFCacheWriter {
 
             // The saved partial is past the end — start over from scratch.
             if start.status == 416 && written > 0 {
-                fs::write(&incomplete, b"").map_err(io_err)?;
+                fs::write(&incomplete, b"").map_err(io_err(&incomplete))?;
                 hasher = Sha256::new();
                 on_bytes(-written);
                 written = 0;
@@ -231,7 +249,7 @@ impl HFCacheWriter {
                 200 => {
                     // A full response despite our range — discard the partial.
                     if written > 0 {
-                        fs::write(&incomplete, b"").map_err(io_err)?;
+                        fs::write(&incomplete, b"").map_err(io_err(&incomplete))?;
                         hasher = Sha256::new();
                         on_bytes(-written);
                         written = 0;
@@ -259,7 +277,7 @@ impl HFCacheWriter {
             let mut handle = fs::OpenOptions::new()
                 .append(true)
                 .open(&incomplete)
-                .map_err(io_err)?;
+                .map_err(io_err(&incomplete))?;
             let mut broke = None;
             while let Some(chunk) = start.chunks.recv().await {
                 let chunk = match chunk {
@@ -269,12 +287,12 @@ impl HFCacheWriter {
                         break;
                     }
                 };
-                handle.write_all(&chunk).map_err(io_err)?;
+                handle.write_all(&chunk).map_err(io_err(&incomplete))?;
                 hasher.update(&chunk);
                 written += chunk.len() as i64;
                 on_bytes(chunk.len() as i64);
             }
-            handle.flush().map_err(io_err)?;
+            handle.flush().map_err(io_err(&incomplete))?;
             drop(handle);
 
             // A multi-gigabyte transfer loses its connection now and then; the
@@ -310,9 +328,9 @@ impl HFCacheWriter {
         let final_name = sibling.sha256.clone().unwrap_or(digest);
         let blob = self.layout.blob_url(&final_name);
         if blob.exists() {
-            fs::remove_file(&incomplete).map_err(io_err)?;
+            fs::remove_file(&incomplete).map_err(io_err(&incomplete))?;
         } else {
-            fs::rename(&incomplete, &blob).map_err(io_err)?;
+            fs::rename(&incomplete, &blob).map_err(io_err(&blob))?;
         }
         self.link(&sibling.rfilename, revision, &final_name)?;
         Ok(())
@@ -342,10 +360,11 @@ impl HFCacheWriter {
         keeping: &HashSet<String>,
         cutoff: SystemTime,
     ) -> Result<(), InstallError> {
-        let entries = match fs::read_dir(self.layout.blobs_directory()) {
+        let blobs = self.layout.blobs_directory();
+        let entries = match fs::read_dir(&blobs) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(io_err(error)),
+            Err(error) => return Err(io_err(&blobs)(error)),
         };
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -404,7 +423,7 @@ impl HFCacheWriter {
     fn link(&self, path: &str, revision: &str, blob_name: &str) -> Result<(), InstallError> {
         let destination = self.layout.snapshot_file(revision, path);
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(io_err)?;
+            fs::create_dir_all(parent).map_err(io_err(parent))?;
         }
         // Replace any existing file, (possibly dangling) symlink, or stray dir.
         if fs::symlink_metadata(&destination).is_ok() && fs::remove_file(&destination).is_err() {
@@ -415,11 +434,11 @@ impl HFCacheWriter {
     }
 
     fn hash_existing(&self, path: &Path, hasher: &mut Sha256) -> Result<i64, InstallError> {
-        let mut file = fs::File::open(path).map_err(io_err)?;
+        let mut file = fs::File::open(path).map_err(io_err(path))?;
         let mut buffer = vec![0u8; HASH_CHUNK_BYTES];
         let mut total: i64 = 0;
         loop {
-            let read = file.read(&mut buffer).map_err(io_err)?;
+            let read = file.read(&mut buffer).map_err(io_err(path))?;
             if read == 0 {
                 break;
             }
@@ -430,8 +449,10 @@ impl HFCacheWriter {
     }
 }
 
-fn io_err(error: std::io::Error) -> InstallError {
-    InstallError::TransferFailed(error.to_string())
+/// The error `path` refused with, as the machine's own fact: which file, and
+/// what the OS said.
+fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
+    move |error| InstallError::Local(format!("{}: {error}", path.display()))
 }
 
 /// A per-process counter so concurrent `write_atomic` calls (even for the same
@@ -445,13 +466,13 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), InstallError> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".tmp-{}-{unique}", std::process::id()));
     let temp = path.with_file_name(name);
-    fs::write(&temp, data).map_err(io_err)?;
-    fs::rename(&temp, path).map_err(io_err)
+    fs::write(&temp, data).map_err(io_err(&temp))?;
+    fs::rename(&temp, path).map_err(io_err(path))
 }
 
 #[cfg(unix)]
 fn symlink(target: &str, link: &Path) -> Result<(), InstallError> {
-    std::os::unix::fs::symlink(target, link).map_err(io_err)
+    std::os::unix::fs::symlink(target, link).map_err(io_err(link))
 }
 
 #[cfg(not(unix))]
@@ -461,7 +482,7 @@ fn symlink(target: &str, link: &Path) -> Result<(), InstallError> {
         .parent()
         .map(|parent| parent.join(target))
         .unwrap_or_else(|| PathBuf::from(target));
-    fs::copy(&source, link).map(|_| ()).map_err(io_err)
+    fs::copy(&source, link).map(|_| ()).map_err(io_err(link))
 }
 
 #[cfg(test)]

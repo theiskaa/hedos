@@ -318,6 +318,27 @@ async fn a_gated_repo_is_not_tried_again() {
 }
 
 #[tokio::test]
+async fn a_machine_that_refuses_is_not_tried_again() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let provider = MockProvider::new(vec![Behavior::FailsCold(InstallError::Local(
+        "Permission denied (os error 13)".to_owned(),
+    ))]);
+    let worker = worker(Arc::clone(&provider), &store, 2).with_policy(brisk());
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Failed);
+    assert_eq!(provider.attempts(), 1);
+    assert!(
+        job.status()
+            .message
+            .unwrap_or_default()
+            .contains("Permission denied"),
+        "the reason should survive into the record"
+    );
+}
+
+#[tokio::test]
 async fn a_reference_that_will_not_resolve_ends_the_job() {
     let dir = TempDir::new();
     let store = PullStore::new(dir.join("pulls"));
@@ -732,6 +753,12 @@ fn only_the_network_is_worth_retrying() {
         required_bytes: 10,
         available_bytes: 1
     }));
+    assert!(!RetryPolicy::retryable(&InstallError::Local(
+        "Permission denied (os error 13)".into()
+    )));
+    assert!(!RetryPolicy::retryable(&InstallError::AccessDenied(
+        "org/M was not found on the platform, or is private".into()
+    )));
 }
 
 #[tokio::test]

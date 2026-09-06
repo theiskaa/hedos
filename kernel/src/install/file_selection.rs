@@ -25,7 +25,7 @@ pub struct HFSibling {
     pub rfilename: String,
     /// The file's size in bytes, if the listing reported it.
     pub bytes: Option<i64>,
-    /// The LFS object's SHA-256 (`lfs.oid`), when the file is stored in LFS. The
+    /// The LFS object's SHA-256 (`lfs.sha256`), when the file is stored in LFS. The
     /// download path uses it as the content-addressed blob name and to verify the
     /// bytes; plain (non-LFS) files don't report one.
     pub sha256: Option<String>,

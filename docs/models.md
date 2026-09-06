@@ -22,7 +22,7 @@ Discovery also resolves each model to a runtime. It reads the model's shape (con
 Installs write into each platform's native layout:
 
 - **Ollama** models pull through the daemon's own API.
-- **Hugging Face** models download into the standard hub cache: content-addressed blobs, a snapshot directory of symlinks, and a ref pointing at the revision. Downloads resume with HTTP `Range`, and each file is verified with SHA-256 against its LFS oid.
+- **Hugging Face** models download into the standard hub cache: content-addressed blobs, a snapshot directory of symlinks, and a ref pointing at the revision. Downloads resume with HTTP `Range`, and each file is verified with SHA-256 against the hash its LFS listing names.
 
 hedos owns no weights directory of its own, so the moment an install finishes, every other tool sees the model too. Installs do not touch the registry directly; the follow-up scan discovers the result. Gated repositories authenticate with `HF_TOKEN` from the environment.
 

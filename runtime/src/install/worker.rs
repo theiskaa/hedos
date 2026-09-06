@@ -159,8 +159,8 @@ impl RetryPolicy {
     ///
     /// Everything that is a fact about the model or the machine is final: a repo
     /// or file that is not there, one that needs a token, a file that failed its
-    /// checksum, a disk without room. What is left is the network, and the
-    /// network comes back.
+    /// checksum, a disk without room, a directory that cannot be written. What
+    /// is left is the network, and the network comes back.
     pub fn retryable(error: &InstallError) -> bool {
         match error {
             InstallError::TransferFailed(_) | InstallError::ProviderUnavailable(_) => true,
@@ -169,7 +169,9 @@ impl RetryPolicy {
             | InstallError::ReferenceNotFound(_)
             | InstallError::AuthRequired(_)
             | InstallError::InsufficientDisk { .. }
-            | InstallError::ChecksumMismatch(_) => false,
+            | InstallError::ChecksumMismatch(_)
+            | InstallError::AccessDenied(_)
+            | InstallError::Local(_) => false,
         }
     }
 }

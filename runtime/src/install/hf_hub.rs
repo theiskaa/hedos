@@ -114,7 +114,24 @@ impl HFHubAPI {
             .await?;
         match response.status {
             200 => {}
-            401 | 403 => return Err(InstallError::AuthRequired(repo.to_owned())),
+            // A gated repo lists with 200 and says so in `gated`; its 401
+            // comes at download time. A refused listing is a repo the hub will
+            // not show this client: anonymous, one that is missing or private;
+            // with a token, one the token cannot read (403) or a token the hub
+            // no longer accepts (401).
+            401 if self.token.is_some() => {
+                return Err(InstallError::AccessDenied(format!(
+                    "hugging face rejected the token in hand while listing {repo}; set HF_TOKEN to a valid token, or sign in again with `huggingface-cli login`."
+                )));
+            }
+            403 if self.token.is_some() => {
+                return Err(InstallError::AuthRequired(repo.to_owned()));
+            }
+            401 | 403 => {
+                return Err(InstallError::AccessDenied(format!(
+                    "{repo} was not found on the platform, or is private (a private repo needs a token: set HF_TOKEN, or sign in with `huggingface-cli login`)."
+                )));
+            }
             404 => return Err(InstallError::ReferenceNotFound(repo.to_owned())),
             status => {
                 return Err(InstallError::TransferFailed(format!(
@@ -129,21 +146,26 @@ impl HFHubAPI {
             Some(id) if id.contains('/') => id,
             _ => repo.to_owned(),
         };
-        let siblings = info
-            .siblings
-            .unwrap_or_default()
-            .into_iter()
-            .map(|sibling| {
-                // The listed size, else the LFS pointer's size; the LFS oid is the
-                // content SHA-256 the download path keys blobs on.
-                let (size, oid) = sibling
-                    .lfs
-                    .map(|lfs| (lfs.size, lfs.oid))
-                    .unwrap_or((None, None));
-                let bytes = sibling.size.or(size);
-                HFSibling::new(sibling.rfilename, bytes).with_sha256(oid)
-            })
-            .collect();
+        let mut siblings = Vec::new();
+        for sibling in info.siblings.unwrap_or_default() {
+            // The listed size, else the LFS pointer's size; the LFS hash is
+            // the content SHA-256 the download path keys blobs on.
+            let (size, sha256) = sibling
+                .lfs
+                .map(|lfs| (lfs.size, lfs.sha256.or(lfs.oid)))
+                .unwrap_or((None, None));
+            let sha256 = match sha256 {
+                Some(hash) => Some(safe_hash(&hash).ok_or_else(|| {
+                    InstallError::ReferenceInvalid(format!(
+                        "{repo} (it lists an unsafe hash for {})",
+                        sibling.rfilename
+                    ))
+                })?),
+                None => None,
+            };
+            let bytes = sibling.size.or(size);
+            siblings.push(HFSibling::new(sibling.rfilename, bytes).with_sha256(sha256));
+        }
         Ok(HFModelInfo {
             repo: canonical,
             sha: info.sha,
@@ -221,10 +243,23 @@ struct RawSibling {
     lfs: Option<RawLfs>,
 }
 
+/// The hub lists an LFS file's content hash as `sha256`; `oid` is the Git-LFS
+/// pointer name for the same hash and has appeared in older responses. Two
+/// fields rather than an alias, so a listing carrying both still parses.
 #[derive(Deserialize)]
 struct RawLfs {
     size: Option<i64>,
+    sha256: Option<String>,
     oid: Option<String>,
+}
+
+/// `hash` as a blob name, when it is one: 64 hex digits, lowered to match the
+/// digests computed here. The hub base URL is configurable, and the hash is
+/// used as a path component under `blobs/`, so anything else is refused
+/// before it can name a file outside the cache.
+fn safe_hash(hash: &str) -> Option<String> {
+    (hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| hash.to_ascii_lowercase())
 }
 
 /// The hub reports `gated` as either a bool or a mode string (`"auto"`/`"manual"`/
