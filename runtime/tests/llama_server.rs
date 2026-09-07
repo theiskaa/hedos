@@ -318,7 +318,7 @@ fn honored_params_cover_the_complete_capability() {
 }
 
 #[test]
-fn a_pulled_hugging_face_repo_of_gguf_weights_is_served() {
+fn a_pulled_hugging_face_repo_of_gguf_weights_is_bid_on() {
     // The shape `hedos pull` leaves behind: the record names the repo
     // directory and the weights sit in the snapshot under it.
     let dir = TempDir::new();

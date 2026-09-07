@@ -374,19 +374,14 @@ fn a_missing_snapshot_ref_falls_back_to_the_base_container() {
 fn a_hugging_face_record_resolves_its_snapshot_container() {
     let dir = TempDir::new();
     // The config lives under snapshots/<ref>/, not at the base.
-    let snapshot = dir.path().join("snapshots").join("rev1");
+    let snapshot = snapshot_of(&dir, "rev1");
     write(
         &snapshot.join("config.json"),
         br#"{"architectures":["MistralForCausalLM"]}"#,
     );
     write(&snapshot.join("model.safetensors"), b"weights");
-    let mut rec = record(
-        SourceKind::huggingface_cache(),
-        dir.path().to_str().unwrap(),
-    );
-    rec.source.reference = Some("rev1".to_owned());
 
-    let id = identify(&rec);
+    let id = identify(&hf_record(&dir, "rev1"));
     assert_eq!(id.format, ModelFormat::Safetensors);
     assert_eq!(id.modality, Some(Modality::text()));
 }
@@ -561,9 +556,89 @@ fn weights_the_runtime_would_not_load_are_not_read_as_gguf() {
     let mut rec = hf_record(&dir, "rev1");
     rec.primary_weight_path = Some(elsewhere.to_string_lossy().into_owned());
     assert_eq!(identify(&rec).format, ModelFormat::Unknown);
+}
 
-    // The same when the weights it names are gone, which is what a swept blob
-    // leaves behind: nothing to read is nothing to serve.
+#[test]
+fn weights_that_are_gone_are_not_read_as_gguf() {
+    let dir = TempDir::new();
+    write(&snapshot_of(&dir, "rev1").join("model.gguf"), b"GGUF");
+
+    // What a swept blob leaves behind: nothing to read is nothing to serve.
+    let mut rec = hf_record(&dir, "rev1");
     rec.primary_weight_path = Some(dir.path().join("swept").to_string_lossy().into_owned());
     assert_eq!(identify(&rec).format, ModelFormat::Unknown);
+}
+
+#[test]
+fn equal_weights_are_read_the_same_way_every_time() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    // The same size, so only the name can decide which is read.
+    write(
+        &snapshot.join("b-second.gguf"),
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.context_length", 2048),
+        ]),
+    );
+    write(
+        &snapshot.join("a-first.gguf"),
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.context_length", 4096),
+        ]),
+    );
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.context_length, Some(4096), "the earlier name wins a tie");
+}
+
+#[test]
+fn a_hidden_leftover_is_not_taken_for_the_weights() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    write(
+        &snapshot.join("model.gguf"),
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.context_length", 4096),
+        ]),
+    );
+    // Larger, and hidden, which is how the scanners read a leftover too.
+    write(&snapshot.join(".old-model.gguf"), &b"GGUF".repeat(200));
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.context_length, Some(4096));
+}
+
+#[test]
+fn a_sharded_snapshot_spelled_in_capitals_is_still_a_model() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    write(
+        &snapshot.join("MODEL-00001-of-00002.GGUF"),
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.context_length", 8192),
+        ]),
+    );
+    write(
+        &snapshot.join("MODEL-00002-of-00002.GGUF"),
+        &b"GGUF".repeat(100),
+    );
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.context_length, Some(8192));
+}
+
+#[test]
+fn a_shard_set_whose_first_file_is_a_directory_is_not_a_model() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    std::fs::create_dir_all(snapshot.join("model-00001-of-00002.gguf")).unwrap();
+    write(&snapshot.join("model-00002-of-00002.gguf"), b"GGUF");
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Unknown);
 }

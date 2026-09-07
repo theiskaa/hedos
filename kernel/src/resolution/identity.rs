@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::{is_gguf_name, is_mmproj_name};
-use crate::discovery::gguf_shards::{parse as parse_shard_name, shard_filename};
+use crate::discovery::gguf_shards::{ShardName, parse as parse_shard_name};
 use crate::discovery::modality_hints::{Hint, from_config_json};
 use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
@@ -181,36 +181,39 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
 }
 
 /// The GGUF file a model held in a directory is served from, when it is one:
-/// the largest that is not a projector, ties going to the earlier name, which
-/// is how [`largest_weight`](crate::discovery::hf_scanner) picks a primary
-/// weight among GGUFs. A sharded set answers with its first file, and a set
-/// missing that file answers with nothing, since it is what a server loads the
-/// rest through.
+/// the largest that is not a projector, as `hf_scanner::largest_weight` picks
+/// a primary weight among GGUFs, with a tie going to the earlier name so that
+/// one directory always reads the same way. A sharded set answers with its
+/// first file, and a set missing that file answers with nothing, the way
+/// `discovered_models` skips such a set: the first file is what a server loads
+/// the rest through.
 ///
 /// The file is named through the container rather than through `primary`,
 /// which a Hugging Face record resolves to a blob whose name carries nothing:
 /// the projector checks read both the name and its neighbours.
 ///
 /// `primary` refuses the whole container when it is not itself a GGUF, missing
-/// included: what the runtime would load has the last word on the format.
+/// included: of the formats this branch can answer, what the runtime would
+/// load has the last word.
+///
+/// An architecture [`gguf_architecture_profile`] does not know reads as a text
+/// chat model, which is the answer the same bytes get as a loose file.
 fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<PathBuf> {
     if let Some(primary) = primary
         && !has_gguf_magic(Path::new(primary))
     {
         return None;
     }
-    let mut names = Vec::new();
+    let mut shards: Vec<(PathBuf, ShardName)> = Vec::new();
     let mut largest: Option<(PathBuf, u64)> = None;
     for entry in std::fs::read_dir(container).into_iter().flatten().flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !is_gguf_name(name) {
-            continue;
-        }
-        names.push(name.to_owned());
-        if is_mmproj_name(name) {
+        // Hidden files are leftovers here, as they are to the scanners that
+        // read these same directories.
+        if name.starts_with('.') || !is_gguf_name(name) || is_mmproj_name(name) {
             continue;
         }
         // Read through the symlink a snapshot entry is, so the size is the
@@ -222,11 +225,13 @@ fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<PathBuf> {
         if !metadata.is_file() {
             continue;
         }
+        if let Some(shard) = parse_shard_name(name) {
+            shards.push((path.clone(), shard));
+        }
         let size = metadata.len();
-        if largest
-            .as_ref()
-            .is_none_or(|(best, largest)| size > *largest || (size == *largest && path < *best))
-        {
+        if largest.as_ref().is_none_or(|(best_path, best_size)| {
+            size > *best_size || (size == *best_size && path < *best_path)
+        }) {
             largest = Some((path, size));
         }
     }
@@ -238,8 +243,14 @@ fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<PathBuf> {
     else {
         return Some(path);
     };
-    let first = shard_filename(&shard.base, 1, shard.total);
-    names.contains(&first).then(|| container.join(first))
+    // Found by index among the files that are there, rather than by rebuilding
+    // the name, so a set spelled `.GGUF` is answered like any other.
+    shards
+        .into_iter()
+        .find(|(_, member)| {
+            member.index == 1 && member.total == shard.total && member.base == shard.base
+        })
+        .map(|(first, _)| first)
 }
 
 fn identify_gguf(base: &Path) -> IdentifiedModel {
