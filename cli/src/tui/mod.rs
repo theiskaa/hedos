@@ -30,7 +30,7 @@ mod ui;
 mod wrap;
 
 use std::io::{self, Write};
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -325,13 +325,33 @@ async fn drive(
     }
 }
 
-/// Put `text` on the clipboard through OSC 52, which reaches the terminal the
-/// user sits at even over ssh or inside tmux (with `set-clipboard on`).
+/// Put `text` on the pasteboard both ways, since each reaches one the other
+/// cannot: `pbcopy` this machine's, whatever terminal or multiplexer sits in
+/// between; OSC 52 the terminal's, which over ssh is the one the user sits
+/// at (tmux relays it only with `set-clipboard on`).
 fn copy_to_clipboard(text: &str) {
+    pbcopy(text);
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
     let mut stdout = io::stdout();
     let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
     let _ = stdout.flush();
+}
+
+/// `text` through `pbcopy`; whether it took it.
+fn pbcopy(text: &str) -> bool {
+    let Ok(mut child) = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    written && child.wait().is_ok_and(|status| status.success())
 }
 
 fn terminal_error(error: io::Error) -> CliError {

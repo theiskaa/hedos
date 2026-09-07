@@ -31,6 +31,8 @@ List the shelf: a warm indicator, the name, the runtime, the store, a memory-fit
 
 The FIT column reads `fits`, `tight`, `too big`, or `—` (footprint unknown), judged from the model's estimated footprint against this machine's memory — the same assessment the install recommendations use. `--json` carries it as a `fit` field on each record.
 
+Sizes are decimal, as the hubs state them (`4.9 GB` is 4.9e9 bytes); memory figures are in GiB.
+
 ### `hedos run [model] [prompt]`
 
 Stream a single completion to stdout. Omit the model to pick one interactively, and omit the prompt to type it at a prompt.
@@ -160,7 +162,7 @@ Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the ma
 - `t` opens a chat pane on the selected model, in place of the shelf: type, `enter` sends, the reply streams in with its token rate under it, and the conversation carries on until `esc` closes the pane (while a reply streams, `esc` and Ctrl-C stop it first; idle, Ctrl-C closes the pane too). The transcript scrolls with the wheel, `↑`/`↓`, `PageUp`/`PageDown` and `Home`/`End`; a scrolled view holds still while more text streams in, with its position in the title, and `End` follows the newest text again. The wheel also moves the shelf and the pull list. The model is warm afterwards, like after `hedos run`.
 - `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it in the plain terminal, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
 - Every text field (the chat prompt, the pull search, the filter) edits like a shell line: Ctrl-A / Ctrl-E jump to the ends, Ctrl-U clears back to the start, Ctrl-W or Option+Delete cuts the word before the cursor, the arrows and Option+arrows move by character and word. Cmd+Delete is a macOS binding the terminal keeps to itself; in iTerm, map it to send Ctrl-U (hex `0x15`) if you want it here.
-- `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path and `Y` the id, `r` refreshes, `d` dismisses a failed row, `?` lists every key, `q` or Ctrl-C quits. The selection is remembered between runs.
+- `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path and `Y` the id (through `pbcopy` where there is one, else by OSC 52, which tmux relays only with `set -g set-clipboard on`), `r` refreshes, `d` dismisses a failed row, `?` lists every key, `q` or Ctrl-C quits. The selection and the dismissed rows are remembered between runs.
 
 A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal.
 
