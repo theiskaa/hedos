@@ -100,7 +100,14 @@ pub(super) fn report(out: &Out, job: &PullJobDir, status: &PullStatus) -> Result
             }
         }
         PullState::Cancelled => out.err("cancelled"),
-        PullState::Paused | PullState::Interrupted => out.err(&view::resumable(job, status)),
+        PullState::Paused => out.err(&view::resumable(job, status)),
+        // Nobody chose this one: the worker went away, so the model was not
+        // fetched, and a script that chains onto this command must not carry on
+        // to run weights that are not there.
+        PullState::Interrupted => {
+            out.json(&view::json(job, status));
+            return Err(CliError::new(view::resumable(job, status)));
+        }
         // A failure and a job no worker ever took up both mean the model was not
         // fetched, which a script has to be able to tell from a pull that landed.
         PullState::Failed => {
@@ -122,4 +129,36 @@ pub(super) fn report(out: &Out, job: &PullJobDir, status: &PullStatus) -> Result
     }
     out.json(&view::json(job, status));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::support::pulls::testing::{TempDir, job as make_job};
+
+    fn ended(state: PullState) -> PullStatus {
+        let mut status = PullStatus::queued(1_000);
+        status.state = state;
+        status
+    }
+
+    #[test]
+    fn a_pull_nobody_stopped_is_the_commands_failure() {
+        let directory = TempDir::new("attach-interrupted");
+        let store = directory.store();
+        let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
+        let out = Out::new(false);
+
+        // The worker went away, so the model was not fetched and a script that
+        // chains onto this must not carry on.
+        let error =
+            report(&out, &job, &ended(PullState::Interrupted)).expect_err("the model is not there");
+        assert!(error.message.contains("resume with"), "{error:?}");
+
+        // The user asking for it is a different thing, and stays a success.
+        report(&out, &job, &ended(PullState::Paused)).expect("the user chose this");
+        report(&out, &job, &ended(PullState::Cancelled)).expect("so did they choose this");
+        report(&out, &job, &ended(PullState::Done)).expect("and this is the point");
+    }
 }
