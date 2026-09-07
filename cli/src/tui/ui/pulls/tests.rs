@@ -43,8 +43,8 @@ fn app_with(rows: Vec<JobRow>) -> App {
 fn the_list_has_the_ls_columns_and_marks_the_selection() {
     let mut moving = downloading("Qwen/Qwen3-8B");
     moving.status.progress = InstallProgress {
-        bytes_downloaded: 1 << 30,
-        total_bytes: Some(4 << 30),
+        bytes_downloaded: 1_000_000_000,
+        total_bytes: Some(4_000_000_000),
         ..InstallProgress::default()
     };
     moving.descriptor.created_at_ms = 2;
@@ -131,7 +131,7 @@ fn the_rate_line_shows_once_two_records_were_read() {
         row
     };
     let mut app = app_with(vec![record(0, 1_000)]);
-    let mut later = record(1 << 20, 2_000);
+    let mut later = record(1_000_000, 2_000);
     later.polled_at_ms = 2_000;
     app.pulls.sync(&[later]);
     let row = app.pulls.selected_row().expect("selected").clone();

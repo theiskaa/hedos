@@ -319,11 +319,13 @@ fn record_equality_tracks_param_values() {
 fn byte_format_covers_each_unit() {
     assert_eq!(format_bytes(0), "0 B");
     assert_eq!(format_bytes(512), "512 B");
-    assert_eq!(format_bytes(1024), "1 KB");
-    assert_eq!(format_bytes(1 << 20), "1 MB");
-    assert_eq!(format_bytes(1 << 30), "1 GB");
-    assert_eq!(format_bytes(2 << 30), "2 GB");
-    assert_eq!(format_bytes(3 << 29), "1.5 GB");
+    assert_eq!(format_bytes(1_000), "1 KB");
+    assert_eq!(format_bytes(1_000_000), "1 MB");
+    assert_eq!(format_bytes(1_000_000_000), "1 GB");
+    assert_eq!(format_bytes(2_000_000_000), "2 GB");
+    assert_eq!(format_bytes(1_500_000_000), "1.5 GB");
+    // What the hub calls 4.92 GB is 4.92 GB here, not 4.6 GB.
+    assert_eq!(format_bytes(4_920_000_000), "4.9 GB");
 }
 
 #[test]
@@ -472,8 +474,8 @@ fn stable_id_is_injective_across_field_boundaries() {
 
 #[test]
 fn byte_format_handles_boundaries_and_negatives() {
-    assert_eq!(format_bytes((1 << 20) - 1), "1023 KB");
-    assert_eq!(format_bytes((1 << 10) - 1), "1023 B");
-    assert_eq!(format_bytes((1 << 30) - 1), "1023 MB");
+    assert_eq!(format_bytes(999_999), "999 KB");
+    assert_eq!(format_bytes(999), "999 B");
+    assert_eq!(format_bytes(999_999_999), "999 MB");
     assert_eq!(format_bytes(-5), "-5 B");
 }

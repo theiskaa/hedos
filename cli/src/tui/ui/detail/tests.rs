@@ -154,7 +154,7 @@ fn the_compact_detail_skips_what_the_row_shows() {
         labels_of(&pathless),
         ["fit", "residency", "last 24h", "size"]
     );
-    assert!(text(&pathless[3]).contains("4 GB"));
+    assert!(text(&pathless[3]).contains("4.3 GB"));
 
     let full = full_lines(&record, &facts, false, 80);
     assert!(labels_of(&full).contains(&"runtime".to_owned()));

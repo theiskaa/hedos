@@ -22,8 +22,8 @@ fn the_preview_elides_its_destination() {
     let app = App::new(Vec::new(), facts_with_memory(64));
     let mut long = plan("gemma3");
     long.destination = format!("/var/lib/ollama/models/blobs/{}", "a".repeat(120));
-    long.total_bytes = Some(4 << 30);
-    long.remaining_bytes = Some(1 << 30);
+    long.total_bytes = Some(4_000_000_000);
+    long.remaining_bytes = Some(1_000_000_000);
     let inner = Rect::new(0, 0, 80, 12);
     let lines = texts(&preview(&long, &app, inner));
     let to = lines
@@ -55,7 +55,7 @@ fn the_preview_elides_its_destination() {
             .any(|line| line.starts_with(" after") && line.ends_with("1 GB on disk"))
     );
     let mut fresh = long.clone();
-    fresh.remaining_bytes = Some(4 << 30);
+    fresh.remaining_bytes = Some(4_000_000_000);
     let fresh = texts(&preview(&fresh, &app, inner));
     assert!(
         fresh

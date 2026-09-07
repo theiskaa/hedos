@@ -6,9 +6,9 @@ use crate::support::pulls::testing::{TempDir, job as make_job, moved, status};
 
 #[test]
 fn progress_reads_as_a_percentage_against_a_firm_total() {
-    let gib = 1 << 30;
+    let gb = 1_000_000_000;
     assert_eq!(
-        progress(&moved(3 * gib / 2, Some(6 * gib), false)),
+        progress(&moved(3 * gb / 2, Some(6 * gb), false)),
         "25%  1.5 GB of 6 GB"
     );
 }

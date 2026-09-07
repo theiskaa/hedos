@@ -10,7 +10,7 @@ use kernel::install::provider::InstallProviderId;
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
 use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
-use kernel::records::byte_format::{BYTES_PER_GIB, BYTES_PER_MIB};
+use kernel::records::byte_format::BYTES_PER_MIB;
 
 use super::edit::LineEdit;
 use super::event::Key;
@@ -73,7 +73,8 @@ impl Offer {
 
     fn from_catalog(entry: &InstallCatalogEntry, grouped: bool) -> Self {
         Self {
-            bytes: Some((entry.size_gb * BYTES_PER_GIB as f64) as i64),
+            // The catalog's sizes are the hubs' decimal gigabytes.
+            bytes: Some((entry.size_gb * 1e9) as i64),
             category: grouped.then_some(entry.category),
             ..Self::new(
                 entry.provider.clone(),

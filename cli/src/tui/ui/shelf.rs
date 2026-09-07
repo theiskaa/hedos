@@ -329,15 +329,15 @@ mod tests {
     fn the_size_cell_carries_the_verdict_only_when_it_matters() {
         assert_eq!(
             ShelfRow::new(&sized_record(Some(1024)), false, 16 * GIB).cells[4],
-            "1 GB"
+            "1.1 GB"
         );
         assert_eq!(
             ShelfRow::new(&sized_record(Some(12 * 1024)), false, 16 * GIB).cells[4],
-            "12 GB tight"
+            "12.9 GB tight"
         );
         assert_eq!(
             ShelfRow::new(&sized_record(Some(16 * 1024)), false, 16 * GIB).cells[4],
-            "16 GB too big"
+            "17.2 GB too big"
         );
         assert_eq!(
             ShelfRow::new(&sized_record(None), false, 16 * GIB).cells[4],

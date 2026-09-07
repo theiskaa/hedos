@@ -102,10 +102,25 @@ fn a_failed_row_keeps_the_reason_plain_and_offers_dismiss() {
 }
 
 #[test]
+fn a_long_reason_is_cut_to_the_row_after_the_key_that_dismisses_it() {
+    let row = recorded(TaskState::Failed("x".repeat(200)));
+    let hinted = RowHints {
+        dismissable: true,
+        ..RowHints::default()
+    };
+    let painted = line(&row, 60, hinted);
+    assert!(painted.width() <= 60, "{}", text(&painted));
+    assert!(text(&painted).trim_end().ends_with("…  d dismiss"));
+    let bare = line(&row, 60, RowHints::default());
+    assert!(bare.width() <= 60);
+    assert!(text(&bare).trim_end().ends_with('…'));
+}
+
+#[test]
 fn a_download_offers_stop_from_the_keymap() {
     let progress = InstallProgress {
-        bytes_downloaded: 1 << 30,
-        total_bytes: Some(4 << 30),
+        bytes_downloaded: 1_000_000_000,
+        total_bytes: Some(4_000_000_000),
         ..InstallProgress::default()
     };
     let line = Line::from(download(&progress, 120, hints(&["c"])));
@@ -121,8 +136,8 @@ fn a_download_offers_stop_from_the_keymap() {
 #[test]
 fn the_bar_shrinks_with_the_strip() {
     let progress = InstallProgress {
-        bytes_downloaded: 2 << 30,
-        total_bytes: Some(4 << 30),
+        bytes_downloaded: 2_000_000_000,
+        total_bytes: Some(4_000_000_000),
         ..InstallProgress::default()
     };
     let mut strip = TaskStrip::default();
