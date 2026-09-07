@@ -25,7 +25,7 @@ use std::time::Duration;
 use kernel::install::plan::InstallPlan;
 use kernel::install::pulls::{
     self, PullControl, PullError, PullEventKind, PullJob, PullJobDir, PullLock, PullState,
-    PullStore, START_GRACE_MS,
+    PullStore, REGISTERING_LINE, START_GRACE_MS,
 };
 use kernel::install::{InstallError, InstallEvent, InstallProgress};
 use kernel::time::now_millis;
@@ -82,6 +82,10 @@ pub enum WorkerError {
     /// A cancel is on its way to the job and has not been read yet.
     #[error("cancelled: a cancel was waiting for it")]
     Cancelled,
+
+    /// Every byte has landed, so there is no transfer left to stop.
+    #[error("every byte has landed; it is being registered")]
+    PastStopping,
 
     /// The job's record could not be read or written.
     #[error(transparent)]
@@ -269,13 +273,21 @@ impl Stopped {
 /// Ask the job's worker to stop the way `control` says, and settle the record
 /// here when no worker holds it, because there is nobody left to hear the ask.
 ///
-/// The ask is written whatever the state, and left on disk once the record is
-/// settled: a worker that was still starting reads it and stands down rather
-/// than downloading over a job that is already over.
+/// The ask is written whether or not a worker is there to read it, and left on
+/// disk once the record is settled: a worker that was still starting reads it
+/// and stands down rather than downloading over a job that is already over.
+///
+/// A job past stopping is refused before the ask is written. Its worker is
+/// registering what it fetched and reads no control file until it is done, so
+/// the ask would neither stop this pull nor be reported honestly, and the file
+/// left behind would stop the next worker on the job instead.
 pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerError> {
-    let state = job.status().state;
-    if state.is_terminal() {
-        return Err(WorkerError::Ended(state));
+    let status = job.status();
+    if status.state.is_terminal() {
+        return Err(WorkerError::Ended(status.state));
+    }
+    if status.past_stopping() {
+        return Err(WorkerError::PastStopping);
     }
     job.request(control)?;
     // The record is read again after the liveness probe, never before it: a
@@ -725,9 +737,7 @@ impl PullWorker {
             let (message, error, moved) = match outcome {
                 Outcome::Done { asked } => {
                     if let Some(control) = asked {
-                        // The download landed before the ask could stop it;
-                        // leaving the file would stop the next worker instead.
-                        job.clear_control(control)?;
+                        self.drop_late_ask(job, control)?;
                     }
                     return self.finish(job).await;
                 }
@@ -975,17 +985,33 @@ impl PullWorker {
             Some(registrar) => {
                 // Every byte has landed and the record says so; what is left
                 // is a scan of the store, which can take a moment.
-                self.say(job, "registering")?;
+                self.say(job, REGISTERING_LINE)?;
                 registrar().await.err()
             }
             None => None,
         };
-        // An ask written while the store was scanned has nothing left to
-        // stop; left on disk it would stop the next worker on this job.
         if let Some(control) = job.control() {
-            job.clear_control(control)?;
+            self.drop_late_ask(job, control)?;
         }
         self.settle(job, PullState::Done, message)
+    }
+
+    /// Drop an ask that reached the job after there was anything left to stop,
+    /// and write down that it did. Left on disk the file would stop the next
+    /// worker on this job; dropped silently it would leave the person who asked
+    /// with no account of why the pull finished anyway.
+    fn drop_late_ask(&self, job: &PullJobDir, control: PullControl) -> Result<(), WorkerError> {
+        // Cleared before it is written down: a history line that cannot be
+        // appended is worth less than a cancel left on disk, which the next
+        // worker on this job would honour over a download already complete.
+        job.clear_control(control)?;
+        job.append(
+            PullEventKind::Status {
+                text: format!("{control} arrived after every byte had landed"),
+            },
+            now_millis(),
+        )?;
+        Ok(())
     }
 
     /// Stop the way `control` asked, and take the control file with it.

@@ -48,6 +48,11 @@ pub struct TaskRow {
     /// What a pull has landed, whatever `state` shows; nothing for a task run
     /// here.
     pub progress: InstallProgress,
+    /// Whether the pull had gone past the point an ask could stop it when the
+    /// record was last polled. Kept on the row because the record says it
+    /// through its state, its figures and its status line together, and the
+    /// row keeps none of those whole.
+    past_stopping: bool,
     /// The tick the task finished on, for expiry.
     finished_at: Option<u64>,
 }
@@ -70,7 +75,7 @@ impl TaskRow {
     /// downloading. One with every byte landed is past stopping: the worker
     /// is registering what it fetched, and an ask now would reach nobody.
     pub fn pull_going(&self) -> bool {
-        self.pull_state.is_some_and(PullState::is_live) && self.progress.fraction() != Some(1.0)
+        self.pull_state.is_some_and(PullState::is_live) && !self.past_stopping
     }
 
     /// The pull job this row shows, if it shows one.
@@ -109,6 +114,7 @@ impl TaskStrip {
             state: TaskState::Running,
             pull_state: None,
             progress: InstallProgress::default(),
+            past_stopping: false,
             finished_at: None,
         });
     }
@@ -123,6 +129,7 @@ impl TaskStrip {
             state,
             pull_state: None,
             progress: InstallProgress::default(),
+            past_stopping: false,
             finished_at: Some(now),
         });
     }
@@ -153,6 +160,7 @@ impl TaskStrip {
         self.dismissed
             .retain(|job| jobs.iter().any(|polled| polled.job == *job));
         for job in jobs {
+            let past_stopping = job.status.past_stopping();
             match self.rows.iter_mut().find(|row| row.job() == Some(&job.job)) {
                 Some(row) => {
                     // The record's own state is what a landing is read from,
@@ -168,6 +176,10 @@ impl TaskStrip {
                     }
                     if row.progress != job.status.progress {
                         row.progress = job.status.progress;
+                        changes.moved = true;
+                    }
+                    if row.past_stopping != past_stopping {
+                        row.past_stopping = past_stopping;
                         changes.moved = true;
                     }
                     if row.state == job.state {
@@ -199,6 +211,7 @@ impl TaskStrip {
                         state: job.state,
                         pull_state: Some(job.pull_state),
                         progress: job.status.progress,
+                        past_stopping,
                         finished_at,
                     });
                     changes.moved = true;

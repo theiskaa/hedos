@@ -54,9 +54,10 @@ impl StopCard {
     }
 
     /// The card over the pull the screen's `row` lists; `None` for one that
-    /// is not going.
+    /// is not going, a pull past stopping included, so the card never opens
+    /// over a pull it could not stop.
     pub fn over_job(row: &JobRow) -> Option<Self> {
-        if !row.pull_state.is_live() {
+        if !row.pull_state.is_live() || row.status.past_stopping() {
             return None;
         }
         Some(Self {

@@ -41,6 +41,25 @@ fn pausing_a_running_pull_writes_the_ask_for_its_worker() {
 }
 
 #[test]
+fn pausing_a_pull_whose_bytes_have_all_landed_is_refused_rather_than_promised() {
+    let directory = TempDir::new("pause-landed");
+    let store = directory.store();
+    let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
+    let _worker = worker_on(&job, PullState::Running);
+    // Every byte has landed, so there is no transfer left for an ask to stop.
+    job.update_status(now_millis(), |status| {
+        status.progress.total_bytes = Some(400);
+        status.progress.bytes_downloaded = 400;
+    })
+    .expect("write the record");
+
+    let error = pause(&store, job.id(), &out()).expect_err("nothing is left to pause");
+
+    assert!(error.message.contains("every byte has landed"), "{error:?}");
+    assert_eq!(job.control(), None);
+}
+
+#[test]
 fn pausing_a_pull_that_is_not_running_is_refused() {
     let directory = TempDir::new("pause-stopped");
     let store = directory.store();

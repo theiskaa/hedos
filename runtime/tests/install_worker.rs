@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::{PullControl, PullEvent, PullEventKind, PullState, PullStore};
+use kernel::install::pulls::{
+    PullControl, PullEvent, PullEventKind, PullState, PullStore, REGISTERING_LINE,
+};
 use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProgress, InstallSearchHit,
     InstallStreamEvent,
@@ -258,6 +260,119 @@ async fn a_pull_that_lands_is_recorded_done_and_registered() {
         states,
         vec![PullState::Queued, PullState::Running, PullState::Done]
     );
+}
+
+#[tokio::test]
+async fn a_pause_that_lands_while_the_store_is_scanned_is_written_down_not_swallowed() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let asking = job.clone();
+    // The one stretch of a job that reads no control file: every byte has
+    // landed and the store is being scanned.
+    let worker = worker(MockProvider::new(vec![Behavior::Lands]), &store, 2).with_registrar(
+        Arc::new(move || {
+            let asking = asking.clone();
+            Box::pin(async move {
+                asking.request(PullControl::Pause).unwrap();
+                Ok(())
+            })
+        }),
+    );
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
+    assert_eq!(job.status().state, PullState::Done);
+    assert_eq!(
+        job.control(),
+        None,
+        "the ask is not left for the next worker"
+    );
+    let said: Vec<String> = job
+        .events()
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            kernel::install::pulls::PullEventKind::Status { text } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        said.iter()
+            .any(|line| line == "pause arrived after every byte had landed"),
+        "the history accounts for the ask: {said:?}"
+    );
+}
+
+#[tokio::test]
+async fn stopping_a_pull_past_stopping_is_refused_rather_than_answered_with_a_promise() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let _held = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+    // A worker holding the job while it registers what it fetched, and reading
+    // no control file until it is done. The line alone marks the window: a
+    // provider whose total is only an estimate never reports a full fraction.
+    job.update_status(2_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+        status.status_line = Some(REGISTERING_LINE.to_owned());
+    })
+    .unwrap();
+
+    for control in [PullControl::Pause, PullControl::Cancel] {
+        match stop(&job, control) {
+            Err(WorkerError::PastStopping) => {}
+            other => panic!("a registering pull should refuse a {control:?}, got {other:?}"),
+        }
+    }
+
+    // And the byte count alone marks it too, in the moment before the line is
+    // written.
+    job.update_status(3_000, |status| {
+        status.status_line = None;
+        status.progress.total_bytes = Some(400);
+        status.progress.bytes_downloaded = 400;
+    })
+    .unwrap();
+    match stop(&job, PullControl::Pause) {
+        Err(WorkerError::PastStopping) => {}
+        other => panic!("a landed pull should refuse a pause, got {other:?}"),
+    }
+    assert_eq!(
+        job.control(),
+        None,
+        "and no ask is left behind for the next worker"
+    );
+    assert_eq!(job.status().state, PullState::Running);
+}
+
+#[tokio::test]
+async fn a_resumed_job_carrying_a_finished_attempts_figures_can_still_be_stopped() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    // A worker died with every byte landed, and the job was put back in the
+    // queue carrying those figures. Its new worker reads the control file
+    // before it takes a slot, so an ask still reaches it.
+    let _held = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+    job.update_status(2_000, |status| {
+        status.state = PullState::Queued;
+        status.pid = Some(std::process::id());
+        status.progress.total_bytes = Some(400);
+        status.progress.bytes_downloaded = 400;
+    })
+    .unwrap();
+
+    assert_eq!(
+        stop(&job, PullControl::Cancel).unwrap(),
+        Stopped::Asked(PullState::Queued)
+    );
+    assert_eq!(job.control(), Some(PullControl::Cancel));
 }
 
 #[tokio::test]

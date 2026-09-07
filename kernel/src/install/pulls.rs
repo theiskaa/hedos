@@ -275,6 +275,15 @@ pub struct PullStatus {
 }
 
 impl PullStatus {
+    /// Whether this pull has gone past the point an ask can stop it. Only a
+    /// running one can be: a queued one has no worker in that window yet, and
+    /// its figures may be a stopped attempt's, so an ask reaches its next
+    /// worker before that worker takes a slot. See [`past_stopping`].
+    pub fn past_stopping(&self) -> bool {
+        self.state == PullState::Running
+            && past_stopping(&self.progress, self.status_line.as_deref())
+    }
+
     /// A fresh record for a job that has not started, stamped `now`.
     pub fn queued(now: i64) -> Self {
         Self {
@@ -288,6 +297,19 @@ impl PullStatus {
             updated_at_ms: now,
         }
     }
+}
+
+/// The status line a worker writes while it registers what it fetched. The
+/// scan it names is the one stretch of a job that reads no control file, so the
+/// line doubles as the mark of a job past stopping.
+pub const REGISTERING_LINE: &str = "registering";
+
+/// Whether a pull has gone past the point an ask can stop it: every byte has
+/// landed, or the worker has said it is registering what it fetched. Either way
+/// there is no transfer left to interrupt, and a pause or a cancel written now
+/// would be read by nobody.
+pub fn past_stopping(progress: &InstallProgress, status_line: Option<&str>) -> bool {
+    progress.fraction() == Some(1.0) || status_line == Some(REGISTERING_LINE)
 }
 
 /// One line of a job's history.

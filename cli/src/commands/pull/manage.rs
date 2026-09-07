@@ -54,9 +54,10 @@ pub(super) async fn attach(store: &PullStore, query: &str, out: &Out) -> Result<
 
 /// `hedos pull pause <job>`.
 ///
-/// Only a worker can pause a transfer, so this only ever writes the ask. A job
-/// queued behind a busy slot still gets one: its worker reads the control file
-/// before it takes that slot.
+/// Only a worker can pause a transfer, so this writes the ask rather than
+/// stopping anything itself. A job queued behind a busy slot still gets one:
+/// its worker reads the control file before it takes that slot. A pull whose
+/// bytes have all landed gets none, because there is no transfer left to stop.
 pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
     let job = store.resolve(query)?;
     let status = job.status();
@@ -86,9 +87,10 @@ pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), Cli
 
 /// `hedos pull cancel <job>`.
 ///
-/// The ask is written whatever the state, so a worker that is still starting
-/// stops instead of transferring. With nothing holding the job, the record is
-/// settled here too, because there is nobody left to settle it.
+/// The ask is written whether or not a worker is there to read it, so one that
+/// is still starting stops instead of transferring. With nothing holding the
+/// job, the record is settled here too, because there is nobody left to settle
+/// it. A pull whose bytes have all landed is refused, like a pause.
 pub(super) fn cancel(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
     let job = store.resolve(query)?;
     let stopped = stop(&job, PullControl::Cancel)
