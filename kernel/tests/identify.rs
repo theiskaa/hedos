@@ -23,6 +23,23 @@ fn write(path: &Path, contents: &[u8]) {
     std::fs::write(path, contents).unwrap();
 }
 
+/// The snapshot directory a hub-cache repo keeps its named files in. Writing
+/// into it creates it, as `write` makes the parents.
+fn snapshot_of(dir: &TempDir, revision: &str) -> std::path::PathBuf {
+    dir.path().join("snapshots").join(revision)
+}
+
+/// A record naming a hub-cache repo directory, with the revision naming the
+/// snapshot that is current.
+fn hf_record(dir: &TempDir, revision: &str) -> ModelRecord {
+    let mut rec = record(
+        SourceKind::huggingface_cache(),
+        dir.path().to_str().unwrap(),
+    );
+    rec.source.reference = Some(revision.to_owned());
+    rec
+}
+
 #[test]
 fn a_builtin_model_has_the_builtin_profile() {
     let id = identify(&record(SourceKind::builtin(), "apple"));
@@ -372,4 +389,181 @@ fn a_hugging_face_record_resolves_its_snapshot_container() {
     let id = identify(&rec);
     assert_eq!(id.format, ModelFormat::Safetensors);
     assert_eq!(id.modality, Some(Modality::text()));
+}
+
+#[test]
+fn a_snapshot_of_gguf_weights_is_a_gguf_model() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    let weights = snapshot.join("qwen2.5-0.5b-instruct-q4_k_m.gguf");
+    write(
+        &weights,
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.context_length", 4096),
+        ]),
+    );
+    write(&snapshot.join("LICENSE"), b"terms");
+    let mut rec = hf_record(&dir, "rev1");
+    // The scanner names the weights it would have a runtime load.
+    rec.primary_weight_path = Some(weights.to_string_lossy().into_owned());
+
+    let id = identify(&rec);
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.contains(&Capability::chat()));
+    assert_eq!(id.context_length, Some(4096));
+    assert_eq!(id.execution, ExecutionMode::Stream);
+}
+
+#[cfg(unix)]
+#[test]
+fn weights_are_read_and_measured_through_the_snapshot_symlink() {
+    let dir = TempDir::new();
+    let blob = dir.path().join("blobs").join("9ee3aa1b");
+    let mut bytes = gguf(&[
+        kv_string("general.architecture", "llama"),
+        kv_u32("llama.context_length", 4096),
+    ]);
+    bytes.resize(bytes.len() + 800, 0);
+    write(&blob, &bytes);
+    let snapshot = snapshot_of(&dir, "rev1");
+    // Larger than the link itself, smaller than the weights it points at:
+    // measuring the link rather than its target would pick this one, whose
+    // header says nothing.
+    write(&snapshot.join("decoy.gguf"), &b"GGUF".repeat(50));
+    std::os::unix::fs::symlink("../../blobs/9ee3aa1b", snapshot.join("model.gguf")).unwrap();
+    let mut rec = hf_record(&dir, "rev1");
+    rec.primary_weight_path = Some(blob.to_string_lossy().into_owned());
+
+    let id = identify(&rec);
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(
+        id.context_length,
+        Some(4096),
+        "the linked weights were read"
+    );
+}
+
+#[test]
+fn a_projector_beside_the_weights_adds_sight_but_is_not_the_weights() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    write(&snapshot.join("model.gguf"), b"GGUF");
+    // Larger than the model, and still not the model.
+    write(&snapshot.join("mmproj-model-f16.gguf"), &b"GGUF".repeat(20));
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.contains(&Capability::chat()));
+    assert!(id.capabilities.contains(&Capability::see()));
+}
+
+#[test]
+fn a_snapshot_holding_only_a_projector_is_not_a_model() {
+    let dir = TempDir::new();
+    write(
+        &snapshot_of(&dir, "rev1").join("mmproj-model-f16.gguf"),
+        b"GGUF",
+    );
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Unknown);
+    assert!(id.capabilities.is_empty());
+}
+
+#[test]
+fn a_config_and_safetensors_layout_still_wins_over_gguf_weights_beside_it() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    write(
+        &snapshot.join("config.json"),
+        br#"{"architectures":["LlamaForCausalLM"]}"#,
+    );
+    write(&snapshot.join("model.safetensors"), b"weights");
+    write(&snapshot.join("extra.gguf"), b"GGUF");
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Safetensors);
+}
+
+#[test]
+fn gguf_weights_outrank_a_config_with_nothing_else_to_read() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    // A repo that ships the config of the model it was quantized from: the
+    // header is the better of the two, and the only one a server can load.
+    write(
+        &snapshot.join("config.json"),
+        br#"{"architectures":["LlamaForCausalLM"]}"#,
+    );
+    write(&snapshot.join("model.GGUF"), b"GGUF");
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert!(id.capabilities.contains(&Capability::chat()));
+}
+
+#[test]
+fn a_sharded_snapshot_is_identified_from_its_first_shard() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    // Only the first shard carries the metadata, and it is not the largest.
+    write(
+        &snapshot.join("model-00001-of-00002.gguf"),
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.context_length", 8192),
+        ]),
+    );
+    write(
+        &snapshot.join("model-00002-of-00002.gguf"),
+        &b"GGUF".repeat(100),
+    );
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.context_length, Some(8192));
+}
+
+#[test]
+fn a_shard_set_without_its_first_file_is_not_a_model() {
+    let dir = TempDir::new();
+    // A half-downloaded set: a server loads the rest through the first file,
+    // so without it there is nothing to serve.
+    write(
+        &snapshot_of(&dir, "rev1").join("model-00002-of-00002.gguf"),
+        b"GGUF",
+    );
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Unknown);
+}
+
+#[test]
+fn a_directory_wearing_the_name_of_a_weight_is_not_one() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    std::fs::create_dir_all(snapshot.join("quantized.gguf")).unwrap();
+
+    let id = identify(&hf_record(&dir, "rev1"));
+    assert_eq!(id.format, ModelFormat::Unknown);
+}
+
+#[test]
+fn weights_the_runtime_would_not_load_are_not_read_as_gguf() {
+    let dir = TempDir::new();
+    write(&snapshot_of(&dir, "rev1").join("model.gguf"), b"GGUF");
+    let elsewhere = dir.path().join("elsewhere.bin");
+    write(&elsewhere, b"not-a-gguf");
+
+    let mut rec = hf_record(&dir, "rev1");
+    rec.primary_weight_path = Some(elsewhere.to_string_lossy().into_owned());
+    assert_eq!(identify(&rec).format, ModelFormat::Unknown);
+
+    // The same when the weights it names are gone, which is what a swept blob
+    // leaves behind: nothing to read is nothing to serve.
+    rec.primary_weight_path = Some(dir.path().join("swept").to_string_lossy().into_owned());
+    assert_eq!(identify(&rec).format, ModelFormat::Unknown);
 }

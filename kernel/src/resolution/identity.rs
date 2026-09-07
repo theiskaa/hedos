@@ -5,7 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::discovery::gguf_models::is_mmproj_name;
+use crate::discovery::gguf_models::{is_gguf_name, is_mmproj_name};
+use crate::discovery::gguf_shards::{parse as parse_shard_name, shard_filename};
 use crate::discovery::modality_hints::{Hint, from_config_json};
 use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
@@ -99,7 +100,9 @@ impl RuntimeBid {
 
 /// Identify what a `record` is from its source kind and on-disk files: a fixed
 /// profile for builtin/endpoint/ollama models, else the GGUF/GGML header, a
-/// diffusers `model_index.json`, or a `config.json`+safetensors layout.
+/// diffusers `model_index.json`, a `config.json`+safetensors layout, or the
+/// GGUF weights inside the container when the record names a directory, which
+/// is the shape a Hugging Face cache repo has.
 ///
 /// `record.source.path` is taken as-is (callers pass an absolute path — discovery
 /// does); a leading `~` is not expanded.
@@ -154,6 +157,14 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     if let Some(format) = safetensors_format(&container, &config) {
         return identify_safetensors(format, hint.as_ref(), &container);
     }
+    // A repo whose weights are GGUF names a directory, so the file the header
+    // is read from is inside it. Placed after the diffusers and safetensors
+    // layouts so a directory that resolves as one keeps doing so, and before
+    // the bare config hint below, which it deliberately outranks: a header
+    // read from the weights says more than a sibling config file.
+    if let Some(weights) = gguf_weights(&container, record.primary_weight_path.as_deref()) {
+        return identify_gguf(&weights);
+    }
     match hint {
         Some(hint) => {
             let mut model = IdentifiedModel::new(
@@ -167,6 +178,68 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
         }
         None => IdentifiedModel::new(ModelFormat::Unknown, None, Vec::new(), ExecutionMode::Sync),
     }
+}
+
+/// The GGUF file a model held in a directory is served from, when it is one:
+/// the largest that is not a projector, ties going to the earlier name, which
+/// is how [`largest_weight`](crate::discovery::hf_scanner) picks a primary
+/// weight among GGUFs. A sharded set answers with its first file, and a set
+/// missing that file answers with nothing, since it is what a server loads the
+/// rest through.
+///
+/// The file is named through the container rather than through `primary`,
+/// which a Hugging Face record resolves to a blob whose name carries nothing:
+/// the projector checks read both the name and its neighbours.
+///
+/// `primary` refuses the whole container when it is not itself a GGUF, missing
+/// included: what the runtime would load has the last word on the format.
+fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<PathBuf> {
+    if let Some(primary) = primary
+        && !has_gguf_magic(Path::new(primary))
+    {
+        return None;
+    }
+    let mut names = Vec::new();
+    let mut largest: Option<(PathBuf, u64)> = None;
+    for entry in std::fs::read_dir(container).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !is_gguf_name(name) {
+            continue;
+        }
+        names.push(name.to_owned());
+        if is_mmproj_name(name) {
+            continue;
+        }
+        // Read through the symlink a snapshot entry is, so the size is the
+        // weight's and not the link's, and so a directory wearing the name of
+        // a weight is not taken for one.
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let size = metadata.len();
+        if largest
+            .as_ref()
+            .is_none_or(|(best, largest)| size > *largest || (size == *largest && path < *best))
+        {
+            largest = Some((path, size));
+        }
+    }
+    let (path, _) = largest?;
+    let Some(shard) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(parse_shard_name)
+    else {
+        return Some(path);
+    };
+    let first = shard_filename(&shard.base, 1, shard.total);
+    names.contains(&first).then(|| container.join(first))
 }
 
 fn identify_gguf(base: &Path) -> IdentifiedModel {

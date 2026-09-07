@@ -2,16 +2,20 @@
 //! bid/can_serve/honored surface, and the proxy path through a mock backend +
 //! mock OpenAI server.
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use kernel::capabilities::CapabilityChunk;
 use kernel::records::{
-    Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ModelSource, RuntimeId, SourceKind,
+    Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ModelSource, RunTier, RuntimeId,
+    SourceKind,
 };
-use kernel::resolution::{IdentifiedModel, ModelFormat};
+use kernel::resolution::{IdentifiedModel, ModelFormat, identify};
 use runtime::adapters::{
     BackendFuture, ChunkStream, LlamaBackend, LlamaServerAdapter, RuntimeAdapter, RuntimeError,
 };
+use support::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::AbortHandle;
@@ -311,4 +315,35 @@ fn honored_params_cover_the_complete_capability() {
     let keys = adapter.honored_param_keys(&gguf_record(), &Capability::complete());
     assert!(keys.contains("temperature"));
     assert!(keys.contains("context_length"));
+}
+
+#[test]
+fn a_pulled_hugging_face_repo_of_gguf_weights_is_served() {
+    // The shape `hedos pull` leaves behind: the record names the repo
+    // directory and the weights sit in the snapshot under it.
+    let dir = TempDir::new();
+    let snapshot = dir.join("snapshots").join("rev1");
+    std::fs::create_dir_all(&snapshot).expect("snapshot");
+    let weights = snapshot.join("qwen2.5-0.5b-instruct-q4_k_m.gguf");
+    std::fs::write(&weights, b"GGUF").expect("weights");
+
+    let mut rec = ModelRecord::new(
+        "Qwen2.5-0.5B-Instruct-GGUF",
+        Modality::text(),
+        Vec::new(),
+        ModelSource::new(
+            SourceKind::huggingface_cache(),
+            dir.path().to_str().expect("path"),
+        ),
+    );
+    rec.source.reference = Some("rev1".to_owned());
+    rec.primary_weight_path = Some(weights.to_string_lossy().into_owned());
+
+    let identified = identify(&rec);
+    assert_eq!(identified.format, ModelFormat::Gguf);
+    let (adapter, _) = adapter_over(Ok("http://x".to_owned()));
+    let bid = adapter
+        .bid(&rec, &identified)
+        .expect("a repo of gguf weights is one llama.cpp can serve");
+    assert_eq!(bid.tier, RunTier::Native);
 }

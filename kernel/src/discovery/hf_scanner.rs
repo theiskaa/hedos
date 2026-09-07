@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::discovery::gguf_models::is_mmproj_name;
+use crate::discovery::gguf_models::{is_gguf_name, is_mmproj_name};
 use crate::discovery::gguf_shards::{group, parse, shard_filename};
 use crate::discovery::modality_hints::{self, Hint};
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
@@ -199,7 +199,7 @@ fn resolve_hint(snapshot: &Path, names: &BTreeSet<String>, diagnostics: &mut Vec
     } else if names.contains("config.json") {
         modality_hints::from_config_json(&snapshot.join("config.json"))
             .unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync))
-    } else if names.iter().any(|name| is_gguf(name)) {
+    } else if names.iter().any(|name| is_gguf_name(name)) {
         modality_hints::gguf_hint()
     } else {
         diagnostics.push("no config.json or model_index.json in snapshot".to_owned());
@@ -249,7 +249,7 @@ fn has_incomplete_blobs(blobs: &Path) -> bool {
 fn gguf_shards_incomplete(snapshot: &Path, names: &BTreeSet<String>) -> bool {
     let ggufs: Vec<(PathBuf, i64)> = names
         .iter()
-        .filter(|name| is_gguf(name))
+        .filter(|name| is_gguf_name(name))
         .map(|name| (snapshot.join(name), 0))
         .collect();
     let (groups, _) = group(&ggufs);
@@ -359,10 +359,6 @@ fn is_weight_file(path: &Path) -> bool {
         Some("bin") => has_ggml_magic(path),
         _ => false,
     }
-}
-
-fn is_gguf(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with(".gguf")
 }
 
 /// A path resolved through symlinks (falling back to itself), as a string.

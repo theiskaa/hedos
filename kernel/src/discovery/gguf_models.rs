@@ -13,6 +13,13 @@ use crate::records::{ModelSource, SourceKind};
 
 /// Whether a filename looks like a multimodal projector (never the primary
 /// weight). Case-insensitive `mmproj` substring.
+/// Whether `name` is a GGUF file's, whatever the case of its extension. A
+/// name that is only the extension has no stem and is not one.
+pub fn is_gguf_name(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(stem, extension)| !stem.is_empty() && extension.eq_ignore_ascii_case("gguf"))
+}
+
 pub fn is_mmproj_name(name: &str) -> bool {
     name.to_ascii_lowercase().contains("mmproj")
 }
