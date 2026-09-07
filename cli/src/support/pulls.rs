@@ -34,6 +34,11 @@ pub fn progress(status: &PullStatus) -> String {
 /// `abandoned` is the caller's reading of the job, since it costs a lock probe
 /// the caller has usually just paid for.
 pub fn note(status: &PullStatus, abandoned: bool, now_ms: i64) -> String {
+    clip(&full_note(status, abandoned, now_ms), NOTE_LIMIT)
+}
+
+/// [`note`] uncut, for a surface that cuts it to its own width.
+pub fn full_note(status: &PullStatus, abandoned: bool, now_ms: i64) -> String {
     // A queued job waiting behind `max_concurrent` and one nothing ever came for
     // read the same in the record, and only one of them is going to move.
     if abandoned {
@@ -43,14 +48,14 @@ pub fn note(status: &PullStatus, abandoned: bool, now_ms: i64) -> String {
         return format!("retry in {}", clock::millis(due.saturating_sub(now_ms)));
     }
     if let Some(message) = &status.message {
-        return clip(message);
+        return message.trim().to_owned();
     }
     // A provider's last line is what it was doing, which is worth reading only
     // while it is still doing it.
     if let Some(line) = &status.status_line
         && status.state.is_live()
     {
-        return clip(line);
+        return line.trim().to_owned();
     }
     if status.attempt > 1 {
         return format!("attempt {}", status.attempt);
@@ -76,13 +81,13 @@ pub fn event_line(event: &PullEvent, now_ms: i64) -> String {
     format!("{ago:>5} ago  {what}")
 }
 
-/// `text` at [`NOTE_LIMIT`] characters, with an ellipsis when it was cut.
-fn clip(text: &str) -> String {
+/// `text` at `limit` characters, with an ellipsis when it was cut.
+fn clip(text: &str, limit: usize) -> String {
     let text = text.trim();
-    if text.chars().count() <= NOTE_LIMIT {
+    if text.chars().count() <= limit {
         return text.to_owned();
     }
-    let kept: String = text.chars().take(NOTE_LIMIT - 1).collect();
+    let kept: String = text.chars().take(limit.saturating_sub(1)).collect();
     format!("{}…", kept.trim_end())
 }
 

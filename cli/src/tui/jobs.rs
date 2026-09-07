@@ -13,6 +13,7 @@ use kernel::install::pulls::{PullJob, PullState, PullStatus, PullStore, START_GR
 
 use super::strip::ENDED_LINGER_MS;
 use super::tasks::TaskState;
+use super::text;
 use crate::support::clock;
 use crate::support::pulls;
 
@@ -47,16 +48,22 @@ pub struct JobRow {
     pub aged_out: bool,
 }
 
-/// Every job in the store, oldest first.
-///
-/// A store that cannot be read at all reads as empty. The poll runs twice a
-/// second, so the alternative is the same unactionable notice over and over on
-/// top of whatever the user was reading.
+/// Every job in the store, oldest first; a store that was never made is
+/// empty. A store that cannot be read is `None`, so a poll that saw nothing
+/// is told apart from one that could not look.
+pub fn poll(store: &PullStore, now_ms: i64) -> Option<Vec<JobRow>> {
+    let jobs = store.jobs().ok()?;
+    Some(rows_of(jobs, now_ms))
+}
+
+/// [`poll`] with a store that cannot be read reading as empty.
+#[cfg(test)]
 pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
-    store
-        .jobs()
-        .unwrap_or_default()
-        .into_iter()
+    poll(store, now_ms).unwrap_or_default()
+}
+
+fn rows_of(jobs: Vec<kernel::install::pulls::PullJobDir>, now_ms: i64) -> Vec<JobRow> {
+    jobs.into_iter()
         .map(|job| {
             let status = job.status();
             // A job queued with nobody coming for it is stopped, whatever the
@@ -69,7 +76,9 @@ pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
             };
             let aged_out = pull_state.is_terminal()
                 && now_ms.saturating_sub(status.updated_at_ms) >= ENDED_LINGER_MS;
-            let note = pulls::note(&status, abandoned, now_ms);
+            // The whole note: the painter cuts it to the row it has, where
+            // `ls` cuts it to its column.
+            let note = pulls::full_note(&status, abandoned, now_ms);
             let descriptor = job.job().clone();
             JobRow {
                 job: job.id().to_owned(),
@@ -96,12 +105,12 @@ pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
 /// from. `Cancelled` is an ending the user chose, so it reads as done rather
 /// than as a failure.
 fn state(pull_state: PullState, status: &PullStatus, reference: &str, note: String) -> TaskState {
-    let landed = status.progress.fraction() == Some(1.0);
+    let every_byte_landed = status.progress.fraction() == Some(1.0);
     match pull_state {
         // A bar at the full width says nothing more; what the worker is
         // doing with the bytes now does, and that is its own line rather
         // than the note, which would say "attempt 2" over it.
-        PullState::Running if landed => TaskState::Status(
+        PullState::Running if every_byte_landed => TaskState::Status(
             status
                 .status_line
                 .clone()
@@ -113,11 +122,36 @@ fn state(pull_state: PullState, status: &PullStatus, reference: &str, note: Stri
         PullState::Running | PullState::Queued => TaskState::Status(said(note, "queued")),
         PullState::Done => TaskState::Done(format!("pulled {reference}")),
         PullState::Cancelled => TaskState::Done("cancelled".to_owned()),
-        PullState::Failed => TaskState::Failed(said(note, "failed")),
-        PullState::Paused | PullState::Interrupted => TaskState::Stopped(match note.is_empty() {
-            true => pull_state.to_string(),
-            false => format!("{pull_state}, {note}"),
-        }),
+        // The row names the model already; a reason that opens with it
+        // would name it twice.
+        PullState::Failed => TaskState::Failed(said(without_subject(note, reference), "failed")),
+        // What is on disk is why the row is worth going on from.
+        PullState::Paused | PullState::Interrupted => {
+            let mut how = pull_state.to_string();
+            if let Some(figures) = text::landed(&status.progress) {
+                how.push_str(" · ");
+                how.push_str(&figures);
+            }
+            if !note.is_empty() {
+                how.push_str(", ");
+                how.push_str(&note);
+            }
+            TaskState::Stopped(how)
+        }
+    }
+}
+
+/// `note` without `reference` at its head: the words after it, or the note
+/// as it was when it did not begin with the reference as a whole word.
+fn without_subject(note: String, reference: &str) -> String {
+    let Some(rest) = note.strip_prefix(reference) else {
+        return note;
+    };
+    let joins = |c: char| c.is_whitespace() || matches!(c, ':' | ',' | ';');
+    match rest.chars().next() {
+        None => String::new(),
+        Some(c) if joins(c) => rest.trim_start_matches(joins).to_owned(),
+        Some(_) => note,
     }
 }
 

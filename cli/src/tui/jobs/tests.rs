@@ -89,6 +89,70 @@ fn a_pull_the_user_stopped_and_one_that_was_cut_off_both_offer_to_go_on() {
 }
 
 #[test]
+fn a_stopped_pull_keeps_its_figures_on_its_row() {
+    let directory = TempDir::new("jobs-stopped-figures");
+    let store = directory.store();
+    let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
+    job.update_status(1_000, |status| {
+        status.state = PullState::Paused;
+        status.progress = InstallProgress {
+            bytes_downloaded: 125_000_000,
+            total_bytes: Some(468_000_000),
+            total_is_partial: false,
+            current_file: None,
+        };
+    })
+    .expect("write the record");
+    let rows = rows(&store, 2_000);
+    assert_eq!(
+        rows[0].state,
+        TaskState::Stopped("paused · 125 MB of 468 MB".to_owned())
+    );
+
+    // An estimate only: the bytes speak for themselves; a reason follows.
+    job.update_status(1_100, |status| {
+        status.state = PullState::Interrupted;
+        status.progress.total_is_partial = true;
+        status.message = Some("the network is gone".to_owned());
+    })
+    .expect("write the record");
+    let rows = super::rows(&store, 2_000);
+    assert_eq!(
+        rows[0].state,
+        TaskState::Stopped("interrupted · 125 MB so far, the network is gone".to_owned())
+    );
+}
+
+#[test]
+fn a_failed_row_does_not_name_the_model_twice_or_cut_its_reason() {
+    let directory = TempDir::new("jobs-failed-reason");
+    let store = directory.store();
+    let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
+    let reason = "Qwen/Qwen3-8B is gated. Accept its terms and request access at https://huggingface.co/Qwen/Qwen3-8B, then set HF_TOKEN.";
+    job.update_status(1_000, |status| {
+        status.state = PullState::Failed;
+        status.message = Some(reason.to_owned());
+    })
+    .expect("write the record");
+    let rows = rows(&store, 2_000);
+    assert_eq!(
+        rows[0].state,
+        TaskState::Failed(reason["Qwen/Qwen3-8B ".len()..].to_owned())
+    );
+    assert_eq!(rows[0].note, reason, "the note keeps the whole of it");
+}
+
+#[test]
+fn the_subject_comes_off_a_reason_only_as_a_whole_word() {
+    let strip = |note: &str| without_subject(note.to_owned(), "org/Model");
+    assert_eq!(strip("org/Model is gated"), "is gated");
+    assert_eq!(strip("org/Model: not found"), "not found");
+    assert_eq!(strip("org/Model"), "");
+    assert_eq!(strip("org/Model-8B is gated"), "org/Model-8B is gated");
+    assert_eq!(strip("no worker"), "no worker");
+}
+
+#[test]
 fn a_cancelled_pull_is_an_ending_rather_than_a_failure() {
     let directory = TempDir::new("jobs-cancelled");
     let store = directory.store();

@@ -75,7 +75,7 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
             (ACCENT, spans)
         }
         TaskState::Status(status) => {
-            let mut spans = vec![Span::styled(status.clone(), DIM)];
+            let mut spans = vec![Span::styled(fitted(status, width, head, &stop), DIM)];
             spans.extend(stop);
             (ACCENT, spans)
         }
@@ -90,23 +90,35 @@ fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
             (DIM, spans)
         }
         TaskState::Stopped(how) => {
-            let mut spans = vec![Span::styled(how.clone(), DIM)];
-            if hinted.resumable {
-                spans.extend(hints(&["R"]));
-            }
+            let resume = match hinted.resumable {
+                true => hints(&["R"]),
+                false => Vec::new(),
+            };
+            let mut spans = vec![Span::styled(fitted(how, width, head, &resume), DIM)];
+            spans.extend(resume);
             (DIM, spans)
         }
         TaskState::Failed(reason) => {
-            let mut spans = vec![Span::raw(reason.clone())];
-            if hinted.dismissable {
-                spans.extend(hints(&["d"]));
-            }
+            let dismiss = match hinted.dismissable {
+                true => hints(&["d"]),
+                false => Vec::new(),
+            };
+            let mut spans = vec![Span::raw(fitted(reason, width, head, &dismiss))];
+            spans.extend(dismiss);
             (FAILED, spans)
         }
     };
     let mut spans = vec![Span::styled(verb, verb_style), Span::raw(subject)];
     spans.extend(detail);
     Line::from(spans)
+}
+
+/// `text` cut to what the row has left after its `head` and the `keys` that
+/// follow it, so a line is cut where the row ends rather than at a count that
+/// has nothing to do with the width, and the keys never fall off the edge.
+fn fitted(text: &str, width: usize, head: usize, keys: &[Span<'static>]) -> String {
+    let taken: usize = keys.iter().map(Span::width).sum();
+    text::clip(text, width.saturating_sub(head + taken))
 }
 
 /// A bar and figures when the total is firm, bytes so far when it is not.

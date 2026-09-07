@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use kernel::capabilities::GenerationStats;
+use kernel::install::event::InstallProgress;
 use kernel::profiles::{FitAssessment, FitVerdict};
 use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
 use unicode_segmentation::UnicodeSegmentation;
@@ -99,6 +100,20 @@ pub fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Optio
             Some(required_bytes),
         ),
     }
+}
+
+/// What a pull has on disk: `125 MB of 468 MB` against a firm total, `125 MB
+/// so far` when the total is only an estimate, nothing when nothing has
+/// landed.
+pub fn landed(progress: &InstallProgress) -> Option<String> {
+    if progress.bytes_downloaded <= 0 {
+        return None;
+    }
+    let done = bytes(progress.bytes_downloaded);
+    Some(match (progress.fraction(), progress.total_bytes) {
+        (Some(_), Some(total)) => format!("{done} of {}", bytes(total)),
+        _ => format!("{done} so far"),
+    })
 }
 
 /// `text` cut to `width` cells by dropping its middle, so a path keeps both

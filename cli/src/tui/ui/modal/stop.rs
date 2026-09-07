@@ -38,16 +38,7 @@ pub(super) fn stop(card: &StopCard, inner: Rect) -> Vec<Line<'static>> {
 
 /// What has landed against the total, as far as either is known.
 fn landed(progress: &InstallProgress) -> String {
-    let so_far = progress.bytes_downloaded;
-    if so_far <= 0 {
-        return "nothing yet".to_owned();
-    }
-    match progress.total_bytes {
-        Some(total) if !progress.total_is_partial => {
-            format!("{} of {}", text::bytes(so_far), text::bytes(total))
-        }
-        _ => format!("{} so far", text::bytes(so_far)),
-    }
+    text::landed(progress).unwrap_or_else(|| "nothing yet".to_owned())
 }
 
 #[cfg(test)]
@@ -68,8 +59,8 @@ mod tests {
     fn the_card_names_the_model_and_what_landed() {
         let lines = stop(
             &card(InstallProgress {
-                bytes_downloaded: 3 << 30,
-                total_bytes: Some(4 << 30),
+                bytes_downloaded: 3_000_000_000,
+                total_bytes: Some(4_000_000_000),
                 ..InstallProgress::default()
             }),
             Rect::new(0, 0, 58, 8),
