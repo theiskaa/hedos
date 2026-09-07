@@ -22,3 +22,4 @@ pub mod shelf_table;
 pub mod signals;
 pub mod spinner;
 pub mod table;
+pub mod text;

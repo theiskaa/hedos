@@ -19,6 +19,17 @@ fn an_estimated_total_leaves_the_bytes_to_speak_for_themselves() {
 }
 
 #[test]
+fn a_note_is_cut_to_cells_not_characters() {
+    let mut status = status(PullState::Failed);
+    status.message = Some("中文".repeat(30));
+    // Twenty-one double-width graphemes fill 42 cells, and the ellipsis the
+    // forty-third; a cut by characters would have run to 88.
+    assert_eq!(note(&status, false, 0), format!("{}中…", "中文".repeat(10)));
+    status.message = Some("დიდი მადლობა".to_owned());
+    assert_eq!(note(&status, false, 0), "დიდი მადლობა");
+}
+
+#[test]
 fn a_pull_that_has_not_moved_shows_a_dash() {
     assert_eq!(progress(&status(PullState::Queued)), DASH);
 }

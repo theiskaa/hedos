@@ -9,6 +9,7 @@ use runtime::boot::HedosDirs;
 
 use crate::error::CliError;
 use crate::support::output::Out;
+use crate::support::table::{self, DASH};
 
 /// Arguments for `stats`. The machine-readable form is the global `--json` flag.
 #[derive(Args)]
@@ -48,9 +49,6 @@ fn header(summary: &GatewayStats) -> String {
     )
 }
 
-/// Columns of the per-model table.
-const COLUMNS: usize = 7;
-
 /// The per-model table, columns aligned to their widest cell.
 fn table(models: &[ModelStats]) -> String {
     let headers = [
@@ -62,14 +60,14 @@ fn table(models: &[ModelStats]) -> String {
         "P99",
         "LAST SEEN",
     ];
-    let rows: Vec<[String; COLUMNS]> = models
+    let rows: Vec<Vec<String>> = models
         .iter()
         .map(|model| {
             let [p50, p90, p99] = match &model.latency {
                 Some(latency) => [latency.p50, latency.p90, latency.p99].map(millis),
-                None => ["—"; 3].map(str::to_owned),
+                None => [DASH; 3].map(str::to_owned),
             };
-            [
+            vec![
                 model.model.clone(),
                 model.requests.to_string(),
                 errors_cell(model),
@@ -81,37 +79,7 @@ fn table(models: &[ModelStats]) -> String {
         })
         .collect();
 
-    // Column widths in characters, not bytes, so a multibyte cell like `—` does
-    // not over-pad its column — matching `shelf_table`'s rendering.
-    let mut widths = headers.map(|header| header.chars().count());
-    for row in &rows {
-        for (width, cell) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
-        }
-    }
-
-    let mut lines = vec![render_row(&headers.map(str::to_owned), &widths)];
-    for row in &rows {
-        lines.push(render_row(row, &widths));
-    }
-    lines.join("\n")
-}
-
-/// One padded, space-separated row. Every column is left-aligned; the trailing
-/// column is not padded so there is no dangling whitespace.
-fn render_row(cells: &[String; COLUMNS], widths: &[usize; COLUMNS]) -> String {
-    cells
-        .iter()
-        .enumerate()
-        .map(|(index, cell)| {
-            if index + 1 == cells.len() {
-                cell.clone()
-            } else {
-                format!("{cell:<width$}", width = widths[index])
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("  ")
+    table::render(&headers, &rows)
 }
 
 /// The errors cell, e.g. `3 (12.0%)`.

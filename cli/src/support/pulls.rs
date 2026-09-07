@@ -81,14 +81,9 @@ pub fn event_line(event: &PullEvent, now_ms: i64) -> String {
     format!("{ago:>5} ago  {what}")
 }
 
-/// `text` at `limit` characters, with an ellipsis when it was cut.
+/// `text` trimmed and cut to `limit` cells, with an ellipsis when it was cut.
 fn clip(text: &str, limit: usize) -> String {
-    let text = text.trim();
-    if text.chars().count() <= limit {
-        return text.to_owned();
-    }
-    let kept: String = text.chars().take(limit.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
+    crate::support::text::clip(text.trim(), limit)
 }
 
 #[cfg(test)]

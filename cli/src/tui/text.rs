@@ -7,10 +7,9 @@ use kernel::capabilities::GenerationStats;
 use kernel::install::event::InstallProgress;
 use kernel::profiles::{FitAssessment, FitVerdict};
 use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 use crate::support::shelf_table::verdict_label;
+pub use crate::support::text::{clip, elide_middle};
 
 /// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
@@ -116,34 +115,6 @@ pub fn landed(progress: &InstallProgress) -> Option<String> {
     })
 }
 
-/// `text` cut to `width` cells by dropping its middle, so a path keeps both
-/// its root and its file name.
-pub fn elide_middle(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    let graphemes: Vec<&str> = text.graphemes(true).collect();
-    if width < 5 {
-        return take_cells(graphemes.iter().copied(), width);
-    }
-    let head = take_cells(graphemes.iter().copied(), (width - 1) / 2);
-    let tail = take_cells(graphemes.iter().rev().copied(), width - 1 - head.width());
-    let tail: String = tail.graphemes(true).rev().collect();
-    format!("{head}…{tail}")
-}
-
-/// `text` cut to `width` cells from the tail, with `…` where it was cut, for
-/// a value whose start carries the meaning.
-pub fn clip(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    if width < 2 {
-        return take_cells(text.graphemes(true), width);
-    }
-    format!("{}…", take_cells(text.graphemes(true), width - 1))
-}
-
 /// A count in its shortest readable form: `987`, `1.5k`, `45k`, `1.2M`.
 pub fn compact(count: i64) -> String {
     const THOUSAND: f64 = 1000.0;
@@ -162,20 +133,6 @@ pub fn compact(count: i64) -> String {
     } else {
         count.to_string()
     }
-}
-
-/// The leading graphemes of `graphemes` that fit in `width` cells.
-fn take_cells<'a>(graphemes: impl Iterator<Item = &'a str>, width: usize) -> String {
-    let mut used = 0;
-    graphemes
-        .take_while(|grapheme| {
-            let fits = used + grapheme.width() <= width;
-            if fits {
-                used += grapheme.width();
-            }
-            fits
-        })
-        .collect()
 }
 
 /// `~120 tokens · 40 tok/s · first in 0.4s`, from whatever a reply reported.
@@ -219,6 +176,8 @@ pub fn count(count: usize, noun: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn elide_middle_budgets_cells_not_characters() {
