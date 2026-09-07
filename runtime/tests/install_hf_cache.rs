@@ -13,6 +13,23 @@ use runtime::install::{HFCacheLayout, HFCacheWriter, InstallRequest, InstallTran
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
+/// A transport that refuses every request, so a test can prove none was made.
+struct RefusingTransport;
+
+impl InstallTransport for RefusingTransport {
+    fn fetch(&self, _request: InstallRequest) -> TransportFuture {
+        Box::pin(async { Err(InstallError::TransferFailed("asked for a fetch".to_owned())) })
+    }
+
+    fn stream(&self, _request: InstallRequest) -> StreamFuture {
+        Box::pin(async {
+            Err(InstallError::TransferFailed(
+                "asked for a stream".to_owned(),
+            ))
+        })
+    }
+}
+
 fn sha_hex(data: &[u8]) -> String {
     let mut out = String::new();
     for byte in Sha256::digest(data) {
@@ -230,6 +247,65 @@ async fn a_saved_partial_resumes_via_a_range_request() {
     assert_eq!(counted, body.len() as i64);
     let blob = writer.layout().repo_directory().join("blobs").join(&sha);
     assert_eq!(std::fs::read(&blob).unwrap(), body);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn a_partial_that_is_already_the_whole_file_is_not_asked_for_again() {
+    let root = temp_root();
+    let body = b"every byte of this file is already on disk".to_vec();
+    let sha = sha_hex(&body);
+    let sibling =
+        HFSibling::new("model.bin", Some(body.len() as i64)).with_sha256(Some(sha.clone()));
+    // Any request at all fails this test. A complete partial has nothing left
+    // to ask for, and a range beginning at the end is answered 416, which the
+    // resume path would read as a partial to throw away and fetch again.
+    let writer = writer(&root, Arc::new(RefusingTransport));
+    writer.prepare_skeleton("rev1", None).expect("skeleton");
+    let incomplete = writer
+        .layout()
+        .repo_directory()
+        .join("blobs")
+        .join(format!("{sha}.incomplete"));
+    std::fs::write(&incomplete, &body).unwrap();
+
+    let counted = download_one(&writer, &sibling, "rev1")
+        .await
+        .expect("nothing to fetch");
+    assert_eq!(counted, body.len() as i64, "counted as already on disk");
+    let blob = writer.layout().repo_directory().join("blobs").join(&sha);
+    assert_eq!(std::fs::read(&blob).unwrap(), body);
+    assert!(!incomplete.exists(), "and the partial became the blob");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn an_empty_placeholder_is_removed_rather_than_left_to_read_as_a_download() {
+    let root = temp_root();
+    let writer = writer(&root, StreamMock::serving(b"unused"));
+    // The skeleton lays a placeholder down before a byte moves.
+    writer
+        .prepare_skeleton("rev1", Some("abc123"))
+        .expect("skeleton");
+    let placeholder = writer
+        .layout()
+        .repo_directory()
+        .join("blobs")
+        .join("abc123.incomplete");
+    assert!(placeholder.exists(), "the skeleton laid one down");
+
+    // A partial holding real bytes is not a placeholder and stays.
+    let partial = writer
+        .layout()
+        .repo_directory()
+        .join("blobs")
+        .join("def456.incomplete");
+    std::fs::write(&partial, b"bytes worth keeping").unwrap();
+
+    writer.remove_empty_placeholders();
+
+    assert!(!placeholder.exists(), "the empty one goes");
+    assert!(partial.exists(), "the one with bytes in it stays");
     std::fs::remove_dir_all(&root).ok();
 }
 

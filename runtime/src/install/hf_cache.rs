@@ -235,7 +235,17 @@ impl HFCacheWriter {
 
         let base_request = request;
         let mut resumes = 0;
-        loop {
+        // A partial that is already the whole file has nothing left to ask for.
+        // Asking anyway sends a range beginning at the end, which a server
+        // answers 416, and the handler below would read that as a partial past
+        // the end and throw the finished file away. A stream that errors after
+        // its last chunk arrives here with every byte already written.
+        //
+        // Only for a file the listing gave a hash for. Without one the length
+        // is the only check there is, so a partial of the right length but the
+        // wrong bytes is fetched again rather than trusted.
+        let settled = |written: i64| sibling.sha256.is_some() && sibling.bytes == Some(written);
+        while !settled(written) {
             let request = if written > 0 {
                 base_request
                     .clone()
@@ -311,6 +321,12 @@ impl HFCacheWriter {
                 None => break,
                 Some(InstallError::TransferFailed(_)) if resumes < STREAM_RESUMES => {
                     resumes += 1;
+                    // The break that costs nothing: a stream that failed after
+                    // its last chunk has nothing to come back for, and waiting
+                    // first would only end at the same place.
+                    if settled(written) {
+                        break;
+                    }
                     tokio::time::sleep(RESUME_BACKOFF * resumes as u32).await;
                 }
                 Some(error) => return Err(error),
@@ -351,6 +367,25 @@ impl HFCacheWriter {
             &self.layout.refs_directory().join("main"),
             revision.as_bytes(),
         )
+    }
+
+    /// Remove every empty `.incomplete` blob.
+    ///
+    /// The skeleton lays one down before a byte moves, and a scanner reads any
+    /// `.incomplete` in a repo as a download still under way. Left behind by a
+    /// pull that stopped early, it makes a model that was already installed
+    /// read as though it were still coming down. An empty one holds nothing, so
+    /// dropping it costs a resumed pull nothing either.
+    pub fn remove_empty_placeholders(&self) {
+        let blobs = self.layout.blobs_directory();
+        for entry in fs::read_dir(&blobs).into_iter().flatten().flatten() {
+            if !entry.file_name().to_string_lossy().ends_with(".incomplete") {
+                continue;
+            }
+            if entry.metadata().is_ok_and(|meta| meta.len() == 0) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Remove `.incomplete` blobs that aren't in `keeping` and are older than the
