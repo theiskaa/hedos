@@ -280,9 +280,10 @@ fn download_order(mut selection: Vec<HFSibling>) -> Vec<HFSibling> {
     selection
 }
 
-/// If the repo wasn't there before, drop a half-finished install: remove it
-/// entirely unless a substantial blob landed, in which case keep the blobs but
-/// drop the ref/snapshots until a blob actually completes.
+/// Drop what a half-finished install left that is not worth keeping: always the
+/// empty placeholders, and, if the repo was not there before, the repo itself
+/// unless a substantial blob landed, in which case the blobs stay and the
+/// ref/snapshots go until one actually completes.
 ///
 /// A stop the user asked to be resumable keeps everything: a paused pull that
 /// came back to nothing on disk would make the record's word "paused" a lie.
@@ -291,6 +292,7 @@ fn clean_up_after_interruption(
     repo_existed_before: bool,
     keep: &AtomicBool,
 ) {
+    writer.remove_empty_placeholders();
     if repo_existed_before || keep.load(Ordering::Relaxed) {
         return;
     }
@@ -520,6 +522,36 @@ mod tests {
 
         assert!(writer.layout().repo_directory().exists());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_placeholder_goes_even_where_nothing_else_is_tidied() {
+        // A re-pull of an installed model, stopped early: the skeleton's empty
+        // placeholder is all this pull put there, and a scanner reads any
+        // `.incomplete` as a download still under way. Both the repo that was
+        // there before and the stop the user asked to be resumable take the
+        // early return, so the placeholder has to go before it.
+        for (existed_before, keep) in [(true, false), (false, true)] {
+            let root = temp_dir(&format!("placeholder-{existed_before}-{keep}"));
+            let writer = writer_at(&root);
+            writer
+                .prepare_skeleton("rev1", Some("abc123"))
+                .expect("skeleton");
+            let placeholder = writer
+                .layout()
+                .repo_directory()
+                .join("blobs")
+                .join("abc123.incomplete");
+            assert!(placeholder.exists(), "the skeleton laid one down");
+
+            clean_up_after_interruption(&writer, existed_before, &AtomicBool::new(keep));
+
+            assert!(
+                !placeholder.exists(),
+                "left behind with existed_before={existed_before} keep={keep}"
+            );
+            std::fs::remove_dir_all(&root).ok();
+        }
     }
 
     use super::*;
