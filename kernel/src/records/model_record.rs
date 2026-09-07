@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::records::byte_format;
 use crate::records::identifiers::{
     Capability, ExecutionMode, Modality, ModelState, RunTier, RuntimeId, SourceKind,
 };
@@ -148,9 +149,16 @@ pub struct ModelRecord {
     /// How the runtime delivers output.
     #[serde(default)]
     pub execution: ExecutionMode,
-    /// Estimated memory footprint in megabytes.
+    /// What the model's files take on disk, in bytes, as the store's scanner
+    /// measured them. The memory a run needs is estimated from it, not stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub footprint_mb: Option<i64>,
+    pub footprint_bytes: Option<i64>,
+    /// The whole-mebibyte figure a record written before sizes were exact
+    /// carried. Read so a shelf already on disk keeps its sizes through the
+    /// upgrade, folded into `footprint_bytes` when the registry loads, and
+    /// never written back.
+    #[serde(default, rename = "footprint_mb", skip_serializing)]
+    pub(crate) legacy_footprint_mb: Option<i64>,
     /// The record's lifecycle state.
     #[serde(default)]
     pub state: ModelState,
@@ -201,7 +209,8 @@ impl ModelRecord {
             system_prompt: None,
             alias: None,
             execution: ExecutionMode::Sync,
-            footprint_mb: None,
+            footprint_bytes: None,
+            legacy_footprint_mb: None,
             state: ModelState::Unresolved,
             registered_at: now_millis(),
             primary_weight_path: None,
@@ -231,11 +240,28 @@ impl ModelRecord {
         self.display_name()
     }
 
-    /// The recorded footprint in bytes, when one is recorded and positive.
-    pub fn footprint_bytes(&self) -> Option<i64> {
-        self.footprint_mb
-            .filter(|mb| *mb > 0)
-            .map(|mb| mb * crate::records::byte_format::BYTES_PER_MIB)
+    /// The size on disk, when one is recorded and positive.
+    pub fn size_on_disk(&self) -> Option<i64> {
+        self.footprint_bytes.filter(|bytes| *bytes > 0)
+    }
+
+    /// Fold a size carried in whole mebibytes by a record written before sizes
+    /// were exact into the byte figure, so an upgraded shelf still shows a
+    /// size before its next scan measures one. The mebibyte figure is dropped
+    /// either way, so this runs once per record however often it is called.
+    pub(crate) fn adopt_legacy_footprint(&mut self) {
+        if let Some(mebibytes) = self.legacy_footprint_mb.take()
+            && self.footprint_bytes.is_none()
+        {
+            self.footprint_bytes = Some(mebibytes.saturating_mul(byte_format::BYTES_PER_MIB));
+        }
+    }
+
+    /// The size on disk in whole mebibytes, the unit the memory governor
+    /// budgets in.
+    pub fn footprint_mib(&self) -> Option<i64> {
+        self.size_on_disk()
+            .map(|bytes| bytes / byte_format::BYTES_PER_MIB)
     }
 
     /// Whether the model can perform `capability`.

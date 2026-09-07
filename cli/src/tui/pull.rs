@@ -10,7 +10,6 @@ use kernel::install::provider::InstallProviderId;
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
 use kernel::profiles::FitVerdict;
 use kernel::records::ModelRecord;
-use kernel::records::byte_format::BYTES_PER_MIB;
 
 use super::edit::LineEdit;
 use super::event::Key;
@@ -25,16 +24,6 @@ pub(crate) const SEARCH_DEBOUNCE_TICKS: u64 = 2;
 pub(crate) const MAX_MATCHES: usize = 12;
 /// Hugging Face hits requested per search.
 pub(crate) const SEARCH_LIMIT: usize = 8;
-/// How a model of `bytes` fits in `memory_bytes`, when its size is known.
-pub(crate) fn fit(bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
-    verdict(bytes.map(footprint_mb), memory_bytes)
-}
-
-/// `bytes` as the whole MiB a footprint is measured in.
-pub(crate) fn footprint_mb(bytes: i64) -> i64 {
-    bytes / BYTES_PER_MIB
-}
-
 /// The catalog's groups, in the order the list shows them.
 pub(crate) const CATEGORIES: [InstallCategory; 4] = [
     InstallCategory::Code,
@@ -107,7 +96,7 @@ impl Offer {
 
     /// How the model fits in `memory_bytes`, when its size is known.
     pub fn fit(&self, memory_bytes: u64) -> Option<FitVerdict> {
-        fit(self.bytes, memory_bytes)
+        verdict(self.bytes, memory_bytes)
     }
 }
 

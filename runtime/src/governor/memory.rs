@@ -35,7 +35,7 @@ pub fn noop_unloader() -> RawUnloader {
 /// Tunables for a [`MemoryGovernor`].
 #[derive(Debug, Clone)]
 pub struct GovernorConfig {
-    /// Total system memory in megabytes.
+    /// Total system memory in mebibytes.
     pub total_memory_mb: i64,
     /// Footprint at or above which a model is "heavy" and serialized.
     pub heavy_threshold_mb: i64,

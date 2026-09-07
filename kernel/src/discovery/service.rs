@@ -11,10 +11,9 @@ use crate::discovery::duplicates::{
     DEFAULT_THRESHOLD, DuplicateGroup, content_fingerprint, detect,
 };
 use crate::discovery::scanner::{DiscoveredModel, StoreScanner};
+use crate::records::byte_format::BYTES_PER_MIB;
 use crate::records::{Modality, ModelRecord, ModelState, SourceKind, format_bytes, stable_id};
 use crate::registry::{Registry, RegistryError};
-
-const BYTES_PER_MB: i64 = 1 << 20;
 
 /// The count and byte total of models found for one source kind.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -152,7 +151,7 @@ impl DiscoveryService {
                     record.content_fingerprint = fingerprint(model, Some(existing_record));
                     record.name = model.name.clone();
                     record.source = model.source.clone();
-                    record.footprint_mb = Some(model.footprint_bytes / BYTES_PER_MB);
+                    record.footprint_bytes = Some(model.footprint_bytes);
                     record.primary_weight_path = model.primary_weight_path.clone();
                     if let Some(modality) = &model.modality_hint {
                         record.modality = modality.clone();
@@ -190,7 +189,7 @@ impl DiscoveryService {
                         model.source.clone(),
                     );
                     record.execution = model.execution_hint;
-                    record.footprint_mb = Some(model.footprint_bytes / BYTES_PER_MB);
+                    record.footprint_bytes = Some(model.footprint_bytes);
                     record.state = ModelState::Unresolved;
                     record.context_length = model.context_length_hint;
                     record.has_chat_template = model.has_chat_template_hint;
@@ -285,6 +284,17 @@ fn weights_present(record: &ModelRecord) -> bool {
     Path::new(path).exists() || Path::new(&record.source.path).exists()
 }
 
+/// Two sizes compared as the whole mebibytes they round to.
+///
+/// A record written before sizes were exact carries a rounded figure, and a
+/// scan measures the byte the file actually ends on; compared exactly the two
+/// could never match, and a model that had merely moved would lose the settings
+/// saved against it. Mebibytes are what these comparisons always used.
+fn same_size(recorded: Option<i64>, scanned: Option<i64>) -> bool {
+    let mebibytes = |bytes: Option<i64>| bytes.map(|bytes| bytes / BYTES_PER_MIB);
+    mebibytes(recorded) == mebibytes(scanned)
+}
+
 /// The content fingerprint for a discovered model, reusing the existing record's
 /// fingerprint when the weight path and footprint are unchanged (to avoid
 /// re-hashing), and preserving it when the model has no weight path.
@@ -295,7 +305,7 @@ fn fingerprint(model: &DiscoveredModel, existing: Option<&ModelRecord>) -> Optio
     if let Some(existing) = existing
         && let Some(known) = &existing.content_fingerprint
         && existing.primary_weight_path.as_deref() == Some(path.as_str())
-        && existing.footprint_mb == Some(model.footprint_bytes / BYTES_PER_MB)
+        && same_size(existing.footprint_bytes, Some(model.footprint_bytes))
     {
         return Some(known.clone());
     }
@@ -318,13 +328,13 @@ fn migrate_moved_config(
         let Some(fingerprint) = record.content_fingerprint.clone() else {
             continue;
         };
-        let footprint = record.footprint_mb;
+        let footprint = record.footprint_bytes;
         // Extract the unique orphan's config as owned values, then drop the
         // iterator (it borrows `claimed`) before mutating `claimed` below.
         let orphan = {
             let mut matches = missing_candidates.iter().filter(|candidate| {
                 candidate.content_fingerprint.as_deref() == Some(fingerprint.as_str())
-                    && candidate.footprint_mb == footprint
+                    && same_size(candidate.footprint_bytes, footprint)
                     && !claimed.contains(&candidate.id)
             });
             match (matches.next(), matches.next()) {

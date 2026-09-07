@@ -15,6 +15,7 @@
 use kernel::install::provider::InstallProviderId;
 use kernel::install::pulls::{PullJobDir, PullStore};
 use kernel::install::{InstallError, InstallPlan};
+use kernel::records::format_bytes;
 use kernel::time::now_millis;
 use runtime::boot::{self, HedosDirs};
 use runtime::install::{Started, WorkerError, collect_ended, restart, start_or_join};
@@ -137,7 +138,7 @@ fn confirmed(out: &Out, plan: &InstallPlan) -> Result<bool, CliError> {
     let size = plan
         .remaining_bytes
         .or(plan.total_bytes)
-        .map(|bytes| format!(", ~{} MB", bytes / 1_000_000))
+        .map(|bytes| format!(", ~{}", format_bytes(bytes)))
         .unwrap_or_default();
     out.line(&format!(
         "{} → {}{size}",

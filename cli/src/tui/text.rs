@@ -74,13 +74,13 @@ pub fn at_home(path: &str) -> String {
 
 /// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
 /// footprint is unknown: the shape the detail and the pull preview share.
-pub fn fit_summary(footprint_mb: Option<i64>, memory_bytes: u64) -> String {
-    fit_parts(footprint_mb, memory_bytes).0
+pub fn fit_summary(footprint_bytes: Option<i64>, memory_bytes: u64) -> String {
+    fit_parts(footprint_bytes, memory_bytes).0
 }
 
 /// [`fit_summary`] and, when the model fits at all, the bytes it needs.
-pub fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
-    match FitVerdict::assess(footprint_mb, memory_bytes) {
+pub fn fit_parts(footprint_bytes: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
+    match FitVerdict::assess(footprint_bytes, memory_bytes) {
         None => ("unknown footprint".to_owned(), None),
         Some(FitAssessment {
             verdict: FitVerdict::TooLarge,

@@ -95,7 +95,13 @@ impl Registry {
                 Ok(envelope
                     .models
                     .into_iter()
-                    .map(|record| (record.id.clone(), record))
+                    .map(|mut record| {
+                        // A shelf written before sizes were exact carries whole
+                        // mebibytes; folded in here rather than at every reader,
+                        // so a size shows before the next scan measures one.
+                        record.adopt_legacy_footprint();
+                        (record.id.clone(), record)
+                    })
                     .collect())
             }
             Ok(None) => Ok(BTreeMap::new()),

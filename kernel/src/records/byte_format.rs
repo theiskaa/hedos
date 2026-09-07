@@ -8,7 +8,7 @@ const GB: i64 = 1_000_000_000;
 const MB: i64 = 1_000_000;
 const KB: i64 = 1_000;
 
-/// Bytes in one mebibyte, for footprints recorded in MiB.
+/// Bytes in one mebibyte, for the memory figures budgeted in them.
 pub const BYTES_PER_MIB: i64 = 1 << 20;
 /// Bytes in one gibibyte, for memory figures.
 pub const BYTES_PER_GIB: i64 = 1 << 30;

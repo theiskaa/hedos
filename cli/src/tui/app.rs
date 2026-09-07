@@ -278,7 +278,7 @@ impl App {
             Err(Refusal::Because(format!("{name} is already warm")))
         } else if record.state == ModelState::Missing {
             Err(Refusal::Because(format!("{name}'s weights are gone")))
-        } else if verdict(record.footprint_mb, self.facts.memory_bytes)
+        } else if verdict(record.footprint_bytes, self.facts.memory_bytes)
             == Some(FitVerdict::TooLarge)
         {
             Err(Refusal::Because(format!(

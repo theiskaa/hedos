@@ -114,11 +114,7 @@ pub fn preview(record: &ModelRecord) -> ModelDeletionPreview {
     let bytes_estimate = if missing {
         on_disk_bytes(&paths)
     } else {
-        record
-            .footprint_mb
-            .unwrap_or(0)
-            .max(0)
-            .saturating_mul(1 << 20)
+        record.size_on_disk().unwrap_or(0)
     };
     ModelDeletionPreview {
         model_id: record.id.clone(),
@@ -222,7 +218,7 @@ mod tests {
     #[test]
     fn an_ollama_model_previews_a_daemon_delete_with_no_paths() {
         let mut rec = record(SourceKind::ollama(), "");
-        rec.footprint_mb = Some(2048);
+        rec.footprint_bytes = Some(2048 * (1 << 20));
         let preview = preview(&rec);
         assert!(preview.via_daemon);
         assert!(preview.paths.is_empty());
@@ -245,7 +241,7 @@ mod tests {
             std::env::temp_dir().join(format!("hedos-removal-{:?}", std::thread::current().id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut rec = record(SourceKind::folder(), dir.to_str().unwrap());
-        rec.footprint_mb = Some(10);
+        rec.footprint_bytes = Some(10 * (1 << 20));
         let preview = preview(&rec);
         assert_eq!(preview.paths, vec![dir.to_string_lossy().into_owned()]);
         assert_eq!(preview.bytes_estimate, 10i64 << 20);

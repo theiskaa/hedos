@@ -65,7 +65,7 @@ pub struct ModelsSettings {
     pub keep_warm: KeepWarmPolicy,
     /// How the governor makes room.
     pub eviction: EvictionPolicy,
-    /// An explicit RAM budget in MB for the budgeted policy (`0` = unset).
+    /// An explicit RAM budget in MiB for the budgeted policy (`0` = unset).
     pub ram_budget_mb: i64,
 }
 

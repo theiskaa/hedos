@@ -86,7 +86,7 @@ pub struct ResidentEntry {
     pub model_id: Option<String>,
     /// The model's display name.
     pub name: String,
-    /// The footprint in megabytes.
+    /// The footprint in mebibytes.
     pub footprint_mb: i64,
     /// When the idle unload fires, in Unix milliseconds, if a timer is armed.
     pub expires_at_millis: Option<i64>,

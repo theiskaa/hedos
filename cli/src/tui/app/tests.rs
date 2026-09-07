@@ -567,8 +567,8 @@ fn the_filter_narrows_the_shelf_and_escape_clears_it() {
 #[test]
 fn sort_cycles_and_keeps_the_selection() {
     let mut app = app(3);
-    app.records[0].footprint_mb = Some(1);
-    app.records[2].footprint_mb = Some(9);
+    app.records[0].footprint_bytes = Some(1 << 20);
+    app.records[2].footprint_bytes = Some(9 << 20);
     press(&mut app, Key::Char('o'));
     assert_eq!(app.sort, Sort::Size);
     assert_eq!(app.order[0], 2);

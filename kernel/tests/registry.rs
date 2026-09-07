@@ -238,12 +238,61 @@ fn register_replaces_existing_content_and_persists() {
 }
 
 #[test]
+fn a_shelf_written_in_mebibytes_keeps_its_sizes_after_the_upgrade() {
+    let dir = TempDir::new();
+    // A store from before sizes were exact: the size is whole mebibytes under
+    // the old key, and there is no byte figure at all.
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"schema_version":1,"models":[{
+            "id":"old","name":"Model","modality":"text","capabilities":["chat"],
+            "source":{"kind":"file","path":"/m.gguf"},
+            "footprint_mb":4096,"registered_at":1
+        }]}"#,
+    )
+    .unwrap();
+
+    let mut registry = Registry::open(dir.path()).expect("open the old store");
+    let record = registry.get("old").expect("the record survives").clone();
+    assert_eq!(record.footprint_bytes, Some(4096 * (1 << 20)));
+
+    // And once anything about the record is written, the old key is gone with
+    // it, so the fold has nothing left to do.
+    let mut renamed = record;
+    renamed.alias = Some("nick".to_owned());
+    registry.register(renamed).unwrap();
+    let written = std::fs::read_to_string(dir.path().join("models.json")).unwrap();
+    assert!(!written.contains("footprint_mb"), "{written}");
+    assert!(written.contains("footprint_bytes"));
+}
+
+#[test]
+fn an_exact_size_is_not_overwritten_by_a_leftover_mebibyte_figure() {
+    let dir = TempDir::new();
+    std::fs::write(
+        dir.path().join("models.json"),
+        r#"{"schema_version":1,"models":[{
+            "id":"both","name":"Model","modality":"text","capabilities":["chat"],
+            "source":{"kind":"file","path":"/m.gguf"},
+            "footprint_mb":4096,"footprint_bytes":491400032,"registered_at":1
+        }]}"#,
+    )
+    .unwrap();
+
+    let registry = Registry::open(dir.path()).expect("open the store");
+    assert_eq!(
+        registry.get("both").expect("the record").footprint_bytes,
+        Some(491_400_032)
+    );
+}
+
+#[test]
 fn reopen_preserves_full_record_fidelity() {
     let dir = TempDir::new();
     let mut rec = record("Model", "/m.gguf");
     rec.alias = Some("Nick".into());
     rec.system_prompt = Some("be terse".into());
-    rec.footprint_mb = Some(4096);
+    rec.footprint_bytes = Some(4096 * (1 << 20));
     rec.content_fingerprint = Some("abcd".into());
     rec.params.push(ParamSpec {
         key: "temperature".into(),

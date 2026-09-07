@@ -20,7 +20,7 @@ fn a_blank_query_offers_recommendations() {
     let modal = PullModal::open(&[], MEMORY, &[]);
     assert!(!modal.matches.is_empty());
     assert!(modal.matches.iter().all(|m| m.bytes.is_some()));
-    assert_eq!(fit(Some(4 << 30), MEMORY), Some(FitVerdict::RunsWell));
+    assert_eq!(verdict(Some(4 << 30), MEMORY), Some(FitVerdict::RunsWell));
 }
 
 #[test]

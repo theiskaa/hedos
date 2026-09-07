@@ -45,7 +45,7 @@ fn every_label_is_listed() {
 #[test]
 fn a_gone_record_says_so_on_path_and_fit() {
     let mut record = record_with("m", vec![Capability::chat()]);
-    record.footprint_mb = Some(4 * 1024);
+    record.footprint_bytes = Some(4 * (1 << 30));
     record.primary_weight_path = Some("/models/m.gguf".to_owned());
     record.state = ModelState::Missing;
     let facts = facts_with_memory(64);
@@ -81,7 +81,7 @@ fn long_values_are_clipped_to_the_pane() {
         "tools",
     ];
     let mut record = record_with("m", caps.into_iter().map(Capability::from).collect());
-    record.footprint_mb = Some(4 * 1024);
+    record.footprint_bytes = Some(4 * (1 << 30));
     record.primary_weight_path = Some(format!("/models/{}.gguf", "x".repeat(80)));
     let mut gateway = resident_with_bytes(&record.id, Holder::Gateway, 4 << 30);
     gateway.expires_at_millis = Some(i64::MAX / 2);
@@ -114,7 +114,7 @@ fn long_values_are_clipped_to_the_pane() {
 #[test]
 fn the_compact_detail_skips_what_the_row_shows() {
     let mut record = record_with("m", vec![Capability::chat()]);
-    record.footprint_mb = Some(4 * 1024);
+    record.footprint_bytes = Some(4 * (1 << 30));
     record.primary_weight_path = Some("/models/m.gguf".to_owned());
     let mut facts = Facts {
         collected_at_millis: 1_000_000,

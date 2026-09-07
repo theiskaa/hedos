@@ -204,7 +204,7 @@ fn path_line(record: &ModelRecord, value_width: usize) -> Option<Line<'static>> 
 
 /// `size   4.7 GB · ctx 32k`, whichever of the two the record knows.
 fn size_line(record: &ModelRecord, value_width: usize) -> Line<'static> {
-    let size = match (record.footprint_bytes(), record.context_length) {
+    let size = match (record.size_on_disk(), record.context_length) {
         (Some(bytes), Some(context)) => {
             format!("{} · ctx {}", text::bytes(bytes), text::tokens(context))
         }
@@ -302,7 +302,7 @@ fn last_used(activity: &ModelActivity, now: i64) -> String {
 /// [`text::fit_summary`], then how much would be free with the rest of what
 /// is loaded still in memory; a record whose weights are gone says so first.
 fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
-    let (summary, required_bytes) = text::fit_parts(record.footprint_mb, facts.memory_bytes);
+    let (summary, required_bytes) = text::fit_parts(record.footprint_bytes, facts.memory_bytes);
     let summary = if record.state == ModelState::Missing {
         format!("weights are gone · {summary}")
     } else {
