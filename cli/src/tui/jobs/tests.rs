@@ -1,7 +1,7 @@
 use super::*;
 
 use kernel::install::event::InstallProgress;
-use kernel::install::pulls::START_GRACE_MS;
+use kernel::install::pulls::{REGISTERING_LINE, START_GRACE_MS};
 
 use crate::support::pulls::testing::{TempDir, job as make_job};
 
@@ -30,22 +30,54 @@ fn a_pull_that_has_moved_bytes_reads_as_a_download() {
     assert_eq!(rows[0].reference, "Qwen/Qwen3-8B");
     assert!(matches!(rows[0].state, TaskState::Downloading(_)));
 
-    // Every byte landed: the worker is registering, and that is what the row
-    // says rather than a full bar; the strip drops the stop key with it.
-    job.update_status(1_500, |status| {
-        status.progress.bytes_downloaded = 1_024;
-        status.status_line = Some("registering".to_owned());
+    // Every byte landed but the worker has not said what it is doing yet: the
+    // transfer is over, an ask would still reach it, and the row keeps its bar.
+    job.update_status(1_500, |status| status.progress.bytes_downloaded = 1_024)
+        .expect("write the record");
+    let full = super::rows(&store, 2_000);
+    assert!(matches!(full[0].state, TaskState::Downloading(_)));
+
+    // Registering: that is what the row says rather than a full bar, and the
+    // strip drops the stop key with it.
+    job.update_status(1_600, |status| {
+        status.status_line = Some(REGISTERING_LINE.to_owned())
     })
     .expect("write the record");
-    let landed = super::rows(&store, 2_000);
-    assert_eq!(landed[0].state, TaskState::Status("registering".to_owned()));
-    job.update_status(1_600, |status| status.status_line = None)
-        .expect("write the record");
-    let finishing = super::rows(&store, 2_000);
+    let registering = super::rows(&store, 2_000);
     assert_eq!(
-        finishing[0].state,
-        TaskState::Status("finishing".to_owned())
+        registering[0].state,
+        TaskState::Status(REGISTERING_LINE.to_owned())
     );
+}
+
+#[test]
+fn a_provider_that_only_estimates_its_total_still_reads_as_registering() {
+    // An Ollama pull never reports a full fraction, because its total is an
+    // estimate. The row is read from what the worker said, not from the bytes,
+    // so it says so anyway.
+    let directory = TempDir::new("jobs-partial-total");
+    let store = directory.store();
+    let job = make_job(&store, "gemma3:4b", 1_000);
+    let _worker = job.claim().expect("claim").expect("the lock is free");
+    job.update_status(1_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+        status.progress = InstallProgress {
+            bytes_downloaded: 3_000,
+            total_bytes: Some(3_000),
+            total_is_partial: true,
+            current_file: None,
+        };
+        status.status_line = Some(REGISTERING_LINE.to_owned());
+    })
+    .expect("write the record");
+
+    let rows = rows(&store, 2_000);
+    assert_eq!(
+        rows[0].state,
+        TaskState::Status(REGISTERING_LINE.to_owned())
+    );
+    assert!(rows[0].status.past_stopping(), "and it is past stopping");
 }
 
 #[test]

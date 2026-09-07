@@ -56,8 +56,9 @@ pub(super) async fn attach(store: &PullStore, query: &str, out: &Out) -> Result<
 ///
 /// Only a worker can pause a transfer, so this writes the ask rather than
 /// stopping anything itself. A job queued behind a busy slot still gets one:
-/// its worker reads the control file before it takes that slot. A pull whose
-/// bytes have all landed gets none, because there is no transfer left to stop.
+/// its worker reads the control file before it takes that slot. A pull being
+/// registered gets none, because that is the one stretch its worker spends not
+/// reading the file.
 pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
     let job = store.resolve(query)?;
     let status = job.status();
@@ -90,7 +91,7 @@ pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), Cli
 /// The ask is written whether or not a worker is there to read it, so one that
 /// is still starting stops instead of transferring. With nothing holding the
 /// job, the record is settled here too, because there is nobody left to settle
-/// it. A pull whose bytes have all landed is refused, like a pause.
+/// it. A pull being registered is refused, like a pause.
 pub(super) fn cancel(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
     let job = store.resolve(query)?;
     let stopped = stop(&job, PullControl::Cancel)

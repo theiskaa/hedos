@@ -9,7 +9,9 @@
 //! poll feeds two surfaces: the task strip, which wants only the newest work,
 //! and the pulls screen, which wants every job the store still holds.
 
-use kernel::install::pulls::{PullJob, PullState, PullStatus, PullStore, START_GRACE_MS};
+use kernel::install::pulls::{
+    PullJob, PullState, PullStatus, PullStore, REGISTERING_LINE, START_GRACE_MS,
+};
 
 use super::strip::ENDED_LINGER_MS;
 use super::tasks::TaskState;
@@ -105,17 +107,15 @@ fn rows_of(jobs: Vec<kernel::install::pulls::PullJobDir>, now_ms: i64) -> Vec<Jo
 /// from. `Cancelled` is an ending the user chose, so it reads as done rather
 /// than as a failure.
 fn state(pull_state: PullState, status: &PullStatus, reference: &str, note: String) -> TaskState {
-    let every_byte_landed = status.progress.fraction() == Some(1.0);
     match pull_state {
-        // A bar at the full width says nothing more; what the worker is
-        // doing with the bytes now does, and that is its own line rather
-        // than the note, which would say "attempt 2" over it.
-        PullState::Running if every_byte_landed => TaskState::Status(
-            status
-                .status_line
-                .clone()
-                .unwrap_or_else(|| "finishing".to_owned()),
-        ),
+        // Registering is the one stretch where a bar says nothing more and what
+        // the worker is doing does, and it is its own line rather than the note,
+        // which would say "attempt 2" over it. Asked of the record rather than
+        // worked out from the byte count, which for a provider that only
+        // estimates its total never reaches the end.
+        PullState::Running if status.past_stopping() => {
+            TaskState::Status(REGISTERING_LINE.to_owned())
+        }
         PullState::Running if status.progress.bytes_downloaded > 0 => {
             TaskState::Downloading(status.progress.clone())
         }

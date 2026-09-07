@@ -1,6 +1,6 @@
 use super::*;
 
-use kernel::install::pulls::{self, PullEventKind, PullLock, PullState};
+use kernel::install::pulls::{self, PullEventKind, PullLock, PullState, REGISTERING_LINE};
 
 use crate::support::pulls::testing::{TempDir, job as make_job};
 
@@ -41,15 +41,16 @@ fn pausing_a_running_pull_writes_the_ask_for_its_worker() {
 }
 
 #[test]
-fn pausing_a_pull_whose_bytes_have_all_landed_is_refused_rather_than_promised() {
-    let directory = TempDir::new("pause-landed");
+fn pausing_a_pull_being_registered_is_refused_rather_than_promised() {
+    let directory = TempDir::new("pause-registering");
     let store = directory.store();
     let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
     let _worker = worker_on(&job, PullState::Running);
-    // Every byte has landed, so there is no transfer left for an ask to stop.
+    // The worker has said it is scanning the store, which it does without
+    // reading the control file, so an ask reaches nobody. The byte count is
+    // left alone: the line is the whole of the signal.
     job.update_status(now_millis(), |status| {
-        status.progress.total_bytes = Some(400);
-        status.progress.bytes_downloaded = 400;
+        status.status_line = Some(REGISTERING_LINE.to_owned())
     })
     .expect("write the record");
 
@@ -57,6 +58,26 @@ fn pausing_a_pull_whose_bytes_have_all_landed_is_refused_rather_than_promised() 
 
     assert!(error.message.contains("every byte has landed"), "{error:?}");
     assert_eq!(job.control(), None);
+}
+
+#[test]
+fn a_full_byte_count_alone_does_not_put_a_pull_past_stopping() {
+    let directory = TempDir::new("pause-full-bar");
+    let store = directory.store();
+    let job = make_job(&store, "Qwen/Qwen3-8B", 1_000);
+    let _worker = worker_on(&job, PullState::Running);
+    // The transfer is over but the worker has not said so: it is still reading
+    // the control file, so the ask is written for it. The figures alone are not
+    // to be trusted here, being a previous attempt's or a partial sum.
+    job.update_status(now_millis(), |status| {
+        status.progress.total_bytes = Some(400);
+        status.progress.bytes_downloaded = 400;
+    })
+    .expect("write the record");
+
+    pause(&store, job.id(), &out()).expect("the worker is still listening");
+
+    assert_eq!(job.control(), Some(PullControl::Pause));
 }
 
 #[test]

@@ -14,6 +14,7 @@ use ratatui::widgets::Paragraph;
 use super::{BOLD, DIM, key_spans, keys};
 use crate::tui::app::{App, Screen};
 use crate::tui::keymap::{self, Pair};
+use crate::tui::stop::StopCard;
 
 /// The keys that apply whatever is selected and are worth the room before
 /// any action; the first is the floor.
@@ -80,7 +81,9 @@ fn pulls_actions(app: &App) -> Vec<&'static str> {
         return Vec::new();
     };
     let mut actions = Vec::new();
-    if row.pull_state.is_live() {
+    // The one rule the key itself uses, so the footer never offers a stop the
+    // screen would refuse.
+    if StopCard::can_stop(row) {
         actions.push("c");
     }
     if row.pull_state.is_resumable() {
@@ -206,6 +209,14 @@ mod tests {
         app.pulls.select_newest_live();
         let live = text(&pulls_line(&app, 100));
         assert!(live.contains("│ c stop  Y copy id") && !live.contains("R resume"));
+        // A pull being registered reads no control file, so the key that would
+        // reach it is not offered rather than offered and then refused.
+        let mut registering = downloading("registering");
+        registering.status.status_line = Some(kernel::install::pulls::REGISTERING_LINE.to_owned());
+        app.pulls.sync(&[registering]);
+        let deaf = text(&pulls_line(&app, 100));
+        assert!(!deaf.contains("c stop"), "{deaf}");
+
         app.pulls.sync(&[job_row(
             "paused",
             PullState::Paused,

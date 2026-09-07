@@ -53,11 +53,18 @@ impl StopCard {
         })
     }
 
+    /// Whether a card would open over `row`. The footer asks this on every
+    /// frame, and only to decide whether to offer the key, so it does not build
+    /// one to find out.
+    pub fn can_stop(row: &JobRow) -> bool {
+        row.pull_state.is_live() && !row.status.past_stopping()
+    }
+
     /// The card over the pull the screen's `row` lists; `None` for one that
     /// is not going, a pull past stopping included, so the card never opens
     /// over a pull it could not stop.
     pub fn over_job(row: &JobRow) -> Option<Self> {
-        if !row.pull_state.is_live() || row.status.past_stopping() {
+        if !Self::can_stop(row) {
             return None;
         }
         Some(Self {
@@ -92,7 +99,7 @@ impl StopCard {
 mod tests {
     use super::*;
 
-    use kernel::install::pulls::PullState;
+    use kernel::install::pulls::{PullState, REGISTERING_LINE};
 
     use crate::tui::jobs::JobRow;
     use crate::tui::strip::TaskStrip;
@@ -178,17 +185,34 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_with_every_byte_landed_is_past_stopping() {
-        let mut landed = downloading("x");
-        landed.status.progress = InstallProgress {
+    fn a_pull_being_registered_is_past_stopping() {
+        // The line alone, with no byte count to lean on.
+        let mut registering = downloading("x");
+        registering.status.status_line = Some(REGISTERING_LINE.to_owned());
+        registering.state = TaskState::Status(REGISTERING_LINE.to_owned());
+        let strip = strip_with(vec![registering.clone()]);
+        assert!(!strip.rows()[0].pull_going());
+        assert!(StopCard::over(&strip.rows()[0]).is_none());
+        assert!(
+            StopCard::over_job(&registering).is_none(),
+            "and on the screen"
+        );
+    }
+
+    #[test]
+    fn a_full_bar_alone_leaves_a_pull_stoppable() {
+        // The transfer is over but the worker has not said so, so it is still
+        // reading the control file and the card still opens.
+        let mut full = downloading("x");
+        full.status.progress = InstallProgress {
             bytes_downloaded: 9,
             total_bytes: Some(9),
             ..InstallProgress::default()
         };
-        landed.state = TaskState::Status("registering".to_owned());
-        let strip = strip_with(vec![landed.clone()]);
-        assert!(!strip.rows()[0].pull_going());
-        assert!(StopCard::over(&strip.rows()[0]).is_none());
+        let strip = strip_with(vec![full.clone()]);
+        assert!(strip.rows()[0].pull_going());
+        assert!(StopCard::over(&strip.rows()[0]).is_some());
+        assert!(StopCard::over_job(&full).is_some());
     }
 
     #[test]

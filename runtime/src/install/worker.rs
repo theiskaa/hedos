@@ -376,6 +376,10 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
         status.pid = None;
         status.message = None;
         status.next_attempt_at_ms = None;
+        // Whatever its last worker was doing, this one has not started: a line
+        // left over from a death mid-registration would read as a job past
+        // stopping and refuse the next ask.
+        status.status_line = None;
     })?;
     drop(held);
     spawn_worker(job)

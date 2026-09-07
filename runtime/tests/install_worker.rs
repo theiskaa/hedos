@@ -328,22 +328,23 @@ async fn stopping_a_pull_past_stopping_is_refused_rather_than_answered_with_a_pr
         }
     }
 
-    // And the byte count alone marks it too, in the moment before the line is
-    // written.
+    // A full byte count on its own does not: the transfer being over is not the
+    // worker being deaf, and the figure can be a previous attempt's or a total
+    // summed from a listing that left a file's size out. The ask is written.
     job.update_status(3_000, |status| {
         status.status_line = None;
         status.progress.total_bytes = Some(400);
         status.progress.bytes_downloaded = 400;
     })
     .unwrap();
-    match stop(&job, PullControl::Pause) {
-        Err(WorkerError::PastStopping) => {}
-        other => panic!("a landed pull should refuse a pause, got {other:?}"),
-    }
+    assert_eq!(
+        stop(&job, PullControl::Pause).unwrap(),
+        Stopped::Asked(PullState::Running)
+    );
     assert_eq!(
         job.control(),
-        None,
-        "and no ask is left behind for the next worker"
+        Some(PullControl::Pause),
+        "the ask is left for the worker that is still reading it"
     );
     assert_eq!(job.status().state, PullState::Running);
 }

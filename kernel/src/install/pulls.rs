@@ -275,13 +275,19 @@ pub struct PullStatus {
 }
 
 impl PullStatus {
-    /// Whether this pull has gone past the point an ask can stop it. Only a
-    /// running one can be: a queued one has no worker in that window yet, and
-    /// its figures may be a stopped attempt's, so an ask reaches its next
-    /// worker before that worker takes a slot. See [`past_stopping`].
+    /// Whether this pull has gone past the point an ask can stop it: a running
+    /// worker that has said it is registering what it fetched, and so will read
+    /// no control file until it is done.
+    ///
+    /// The byte count is deliberately not the signal. Bytes reaching the total
+    /// says the transfer is over, not that nothing is listening: the worker
+    /// polls the control file until the install reports itself done, and an ask
+    /// in that window is read and can still take effect. It is also a figure the
+    /// record can be wrong about, being carried over from a previous attempt or
+    /// summed from a listing that left a file's size out, and a wrong full bar
+    /// would make a pull unstoppable for the rest of its life.
     pub fn past_stopping(&self) -> bool {
-        self.state == PullState::Running
-            && past_stopping(&self.progress, self.status_line.as_deref())
+        self.state == PullState::Running && self.status_line.as_deref() == Some(REGISTERING_LINE)
     }
 
     /// A fresh record for a job that has not started, stamped `now`.
@@ -303,14 +309,6 @@ impl PullStatus {
 /// scan it names is the one stretch of a job that reads no control file, so the
 /// line doubles as the mark of a job past stopping.
 pub const REGISTERING_LINE: &str = "registering";
-
-/// Whether a pull has gone past the point an ask can stop it: every byte has
-/// landed, or the worker has said it is registering what it fetched. Either way
-/// there is no transfer left to interrupt, and a pause or a cancel written now
-/// would be read by nobody.
-pub fn past_stopping(progress: &InstallProgress, status_line: Option<&str>) -> bool {
-    progress.fraction() == Some(1.0) || status_line == Some(REGISTERING_LINE)
-}
 
 /// One line of a job's history.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
