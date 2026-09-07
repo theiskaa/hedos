@@ -4,8 +4,10 @@
 use crate::profiles::configuration::normalized_param_values;
 use crate::records::{JsonValue, ModelRecord, RuntimeId, SourceKind};
 
-/// The minimum number of tokens reserved for the completion when deciding if a
-/// prompt fits the window.
+/// The number of tokens reserved for the completion when deciding if a prompt
+/// fits the window, wherever the window can afford it. A window too small for
+/// it reserves half of itself instead, so a model declaring fewer than twice
+/// this is still usable.
 pub const COMPLETION_FLOOR: i64 = 256;
 
 /// The outcome of assessing a prompt against a context window.
@@ -32,11 +34,22 @@ pub fn estimated_tokens(characters: i64) -> i64 {
     (characters + 3) / 4
 }
 
+/// The tokens held back for the reply out of a window of `window`: the
+/// [`COMPLETION_FLOOR`], or half the window when the window cannot afford the
+/// floor. A model declaring fewer than twice the floor would otherwise be
+/// refused every prompt it was ever given, however short.
+///
+/// At least one token is always held back, so a prompt only ever fits a window
+/// that has room to answer it.
+fn reserved_for_completion(window: i64) -> i64 {
+    COMPLETION_FLOOR.min(window / 2).max(1)
+}
+
 /// Decide whether a prompt of `prompt_characters` fits `window`, and clamp the
 /// completion length to the space that remains.
 pub fn assess(prompt_characters: i64, window: i64, requested_max_tokens: Option<i64>) -> Verdict {
     let estimated = estimated_tokens(prompt_characters);
-    if estimated + COMPLETION_FLOOR > window {
+    if window <= 0 || estimated + reserved_for_completion(window) > window {
         return Verdict::Exceeds { estimated, window };
     }
     let available = window - estimated;

@@ -335,7 +335,8 @@ async fn complete_requests_are_budget_clamped() {
         vec![RegisteredAdapter::streaming(fake)],
     );
 
-    let long = "x".repeat(400);
+    // Longer than the window can hold beside the tokens held back for a reply.
+    let long = "x".repeat(1_000);
     let payload = object([("prompt", text(&long))]);
     let error = kernel
         .invoke("m", Capability::complete(), payload)
@@ -487,7 +488,8 @@ async fn invoke_rejects_a_prompt_that_exceeds_the_window() {
         vec![RegisteredAdapter::streaming(fake)],
     );
 
-    let long = "x".repeat(400);
+    // Longer than the window can hold beside the tokens held back for a reply.
+    let long = "x".repeat(1_000);
     let error = kernel
         .invoke("m", Capability::chat(), chat_payload(&long))
         .await
