@@ -209,8 +209,8 @@ fn install_errors_render_the_expected_messages() {
         "org/m is private"
     );
     assert_eq!(
-        InstallError::Local("/x/blobs: Permission denied (os error 13)".to_owned()).to_string(),
-        "/x/blobs: Permission denied (os error 13)"
+        InstallError::Local("Permission denied (os error 13), at /x/blobs".to_owned()).to_string(),
+        "Permission denied (os error 13), at /x/blobs"
     );
     let disk = InstallError::InsufficientDisk {
         required_bytes: 8_000_000_000,

@@ -9,7 +9,7 @@ use std::time::Duration;
 use kernel::install::InstallError;
 use kernel::install::file_selection::HFSibling;
 use runtime::install::transport::{StreamFuture, StreamStart, TransportFuture};
-use runtime::install::{HFCacheLayout, HFCacheWriter, InstallRequest, InstallTransport};
+use runtime::install::{HFCacheLayout, HFCacheWriter, InstallRequest, InstallTransport, Landed};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
@@ -112,7 +112,12 @@ async fn download_one(
             sibling,
             revision,
             InstallRequest::get("http://hf.test/file"),
-            &mut |delta| total += delta.bytes(),
+            &mut |delta| {
+                total += match delta {
+                    Landed::OnDisk(bytes) | Landed::Fetched(bytes) => bytes,
+                    Landed::Discarded(bytes) => -bytes,
+                }
+            },
         )
         .await?;
     Ok(total)
@@ -354,7 +359,12 @@ async fn a_partial_saved_before_the_hash_was_read_is_carried_on_from() {
     let unnamed = HFSibling::new("model.bin", Some(body.len() as i64));
     let named = unnamed.clone().with_sha256(Some(sha.clone()));
     let writer = writer(&root, StreamMock::serving(&body));
-    writer.prepare_skeleton("rev1", None).expect("skeleton");
+    // The skeleton lays down the hash-named placeholder first, as an install
+    // does; the older partial must be taken over regardless.
+    let pending = HFCacheWriter::pending_blob_name(&named, "rev1");
+    writer
+        .prepare_skeleton("rev1", Some(&pending))
+        .expect("skeleton");
     let blobs = writer.layout().repo_directory().join("blobs");
     let old_name = HFCacheWriter::pending_blob_name(&unnamed, "rev1");
     let old_partial = blobs.join(format!("{old_name}.incomplete"));
@@ -396,6 +406,10 @@ async fn a_directory_that_cannot_be_written_is_a_local_error() {
             assert!(
                 reason.contains("sealed"),
                 "the path that refused is named: {reason}"
+            );
+            assert!(
+                reason.find("ermission denied") < reason.find("sealed"),
+                "the reason comes first, so a cut column keeps it: {reason}"
             );
         }
         other => panic!("expected a local error, got {other:?}"),

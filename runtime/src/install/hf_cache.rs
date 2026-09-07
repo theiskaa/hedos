@@ -145,9 +145,12 @@ impl HFCacheWriter {
             let pending = self
                 .layout
                 .incomplete_url(&Self::pending_blob_name(sibling, revision));
+            // A partial longer than its file is one the server will not
+            // resume from; counting it whole would read as the file landed.
             let size = fs::metadata(&pending)
                 .map(|meta| meta.len() as i64)
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .min(sibling.bytes.unwrap_or(i64::MAX));
             present.saturating_add(size.max(0))
         })
     }
@@ -204,9 +207,14 @@ impl HFCacheWriter {
         }
 
         let incomplete = self.layout.incomplete_url(&pending_name);
-        if sibling.sha256.is_some() && !incomplete.exists() {
-            // A partial written before the listing's hash was read was named
-            // without it; it is the same bytes, so it is carried on from.
+        // A partial written before the listing's hash was read was named
+        // without it; it is the same bytes, so it is carried on from. The
+        // hash-named file may already be there as the empty placeholder the
+        // skeleton lays down, which is nothing to keep.
+        let nothing_saved = fs::metadata(&incomplete)
+            .ok()
+            .is_none_or(|meta| meta.len() == 0);
+        if sibling.sha256.is_some() && nothing_saved {
             let unnamed = self
                 .layout
                 .incomplete_url(&Self::unnamed_blob_name(&sibling.rfilename, revision));
@@ -450,10 +458,10 @@ impl HFCacheWriter {
     }
 }
 
-/// The error `path` refused with, as the machine's own fact: which file, and
-/// what the OS said.
+/// The error `path` refused with, as the machine's own fact: what the OS
+/// said, then which file, so the reason survives a cut column.
 fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
-    move |error| InstallError::Local(format!("{}: {error}", path.display()))
+    move |error| InstallError::Local(format!("{error}, at {}", path.display()))
 }
 
 /// Bytes a download counts as it goes, told apart by where they came from:
@@ -468,16 +476,6 @@ pub enum Landed {
     Fetched(i64),
     /// Bytes on disk given up, because the server would not resume from them.
     Discarded(i64),
-}
-
-impl Landed {
-    /// The change to the byte count: negative for bytes given up.
-    pub fn bytes(self) -> i64 {
-        match self {
-            Self::OnDisk(bytes) | Self::Fetched(bytes) => bytes,
-            Self::Discarded(bytes) => -bytes,
-        }
-    }
 }
 
 /// A per-process counter so concurrent `write_atomic` calls (even for the same
@@ -649,7 +647,12 @@ mod tests {
                 &sibling,
                 "rev",
                 InstallRequest::get("https://x/w.bin"),
-                &mut |delta| seen += delta.bytes(),
+                &mut |delta| {
+                    seen += match delta {
+                        Landed::OnDisk(bytes) | Landed::Fetched(bytes) => bytes,
+                        Landed::Discarded(bytes) => -bytes,
+                    }
+                },
             )
             .await
             .expect("resumed");

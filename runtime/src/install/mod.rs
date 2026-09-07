@@ -11,7 +11,7 @@ pub mod service;
 pub mod transport;
 pub mod worker;
 
-pub use hf_cache::{HFCacheLayout, HFCacheWriter};
+pub use hf_cache::{HFCacheLayout, HFCacheWriter, Landed};
 pub use hf_hub::{HFHubAPI, HFModelInfo};
 pub use huggingface::HuggingFaceInstallProvider;
 pub use ollama::OllamaInstallProvider;

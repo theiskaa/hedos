@@ -233,7 +233,11 @@ async fn run_install(
         .collect();
     writer.remove_stray_incompletes(&keeping)?;
 
-    let meter = Arc::new(InstallProgressMeter::new(summed_bytes(&ordered)));
+    // Counted after the stray partials went, so none of them is in the count.
+    let meter = Arc::new(InstallProgressMeter::new(
+        summed_bytes(&ordered),
+        writer.present_bytes(&ordered, &revision),
+    ));
     for sibling in &ordered {
         meter.begin(&sibling.rfilename);
         let request = api.resolve_request(&plan.reference, &revision, &sibling.rfilename);
@@ -336,7 +340,20 @@ struct InstallProgressMeter {
 }
 
 struct MeterState {
-    downloaded: i64,
+    /// Bytes on disk before the transfer began, over every file, as the
+    /// writer counted them: what the count starts from, so the first
+    /// snapshot of a resumed pull is never lower than the record already
+    /// says.
+    present: i64,
+    /// Bytes the writer has reported on disk so far, file by file. These are
+    /// the same bytes `present` counted, so they replace it rather than add
+    /// to it; they pass it only when the writer found more than its count
+    /// saw, such as a partial saved under an older name.
+    on_disk: i64,
+    /// Bytes from the wire, less bytes on disk given up: those come off here,
+    /// since `present` is a fixed starting point and `on_disk` only ever
+    /// moves the count up.
+    fetched: i64,
     current_file: Option<String>,
     last_emitted_bytes: i64,
     last_emitted_at: Instant,
@@ -345,15 +362,26 @@ struct MeterState {
     fresh: bool,
 }
 
+impl MeterState {
+    /// What has landed: at least what the writer counted on disk at the
+    /// start, or its running count when that found more, plus what has come
+    /// over the wire since.
+    fn downloaded(&self) -> i64 {
+        self.present.max(self.on_disk) + self.fetched
+    }
+}
+
 impl InstallProgressMeter {
     const EMIT_BYTES: i64 = 8 << 20;
     const EMIT_INTERVAL: Duration = Duration::from_millis(300);
 
-    fn new(total_bytes: Option<i64>) -> Self {
+    fn new(total_bytes: Option<i64>, present_bytes: i64) -> Self {
         Self {
             total_bytes,
             state: Mutex::new(MeterState {
-                downloaded: 0,
+                present: present_bytes.max(0),
+                on_disk: 0,
+                fetched: 0,
                 current_file: None,
                 last_emitted_bytes: 0,
                 last_emitted_at: Instant::now(),
@@ -374,16 +402,22 @@ impl InstallProgressMeter {
 
     fn add(&self, landed: Landed) -> Option<InstallProgress> {
         let mut state = self.lock();
-        state.downloaded += landed.bytes();
         let now = Instant::now();
         let due = match landed {
-            Landed::OnDisk(_) => false,
+            Landed::OnDisk(bytes) => {
+                state.on_disk += bytes;
+                false
+            }
             // Bytes given up read lower at once, rather than a snapshot later
             // that would look like a transfer going backwards on its own.
-            Landed::Discarded(_) => true,
-            Landed::Fetched(_) => {
+            Landed::Discarded(bytes) => {
+                state.fetched -= bytes;
+                true
+            }
+            Landed::Fetched(bytes) => {
+                state.fetched += bytes;
                 state.fresh
-                    || state.downloaded - state.last_emitted_bytes >= Self::EMIT_BYTES
+                    || state.downloaded() - state.last_emitted_bytes >= Self::EMIT_BYTES
                     || now.duration_since(state.last_emitted_at) >= Self::EMIT_INTERVAL
             }
         };
@@ -391,7 +425,7 @@ impl InstallProgressMeter {
             return None;
         }
         state.fresh = false;
-        state.last_emitted_bytes = state.downloaded;
+        state.last_emitted_bytes = state.downloaded();
         state.last_emitted_at = now;
         Some(self.snapshot(&state))
     }
@@ -404,7 +438,7 @@ impl InstallProgressMeter {
 
     fn snapshot(&self, state: &MeterState) -> InstallProgress {
         InstallProgress {
-            bytes_downloaded: state.downloaded.max(0),
+            bytes_downloaded: state.downloaded().max(0),
             total_bytes: self.total_bytes,
             total_is_partial: false,
             current_file: state.current_file.clone(),
@@ -517,7 +551,7 @@ mod tests {
 
     #[test]
     fn the_meter_throttles_small_frequent_updates() {
-        let meter = InstallProgressMeter::new(Some(100 << 20));
+        let meter = InstallProgressMeter::new(Some(100 << 20), 0);
         meter.begin("w.bin");
         // The first chunk of a file emits whatever its size, naming the file.
         let first = meter
@@ -538,7 +572,7 @@ mod tests {
 
     #[test]
     fn bytes_on_disk_are_counted_but_never_reported_as_a_transfer() {
-        let meter = InstallProgressMeter::new(Some(1_000));
+        let meter = InstallProgressMeter::new(Some(1_000), 620);
         meter.begin("config.json");
         assert!(
             meter.add(Landed::OnDisk(20)).is_none(),
@@ -556,9 +590,36 @@ mod tests {
         // A server that would not resume: the partial is given up, and the
         // count reads lower at once.
         let dropped = meter
-            .add(Landed::Discarded(601))
+            .add(Landed::Discarded(600))
             .expect("bytes given up are reported at once");
-        assert_eq!(dropped.bytes_downloaded, 20);
+        assert_eq!(dropped.bytes_downloaded, 21);
+    }
+
+    #[test]
+    fn the_count_starts_from_what_is_on_disk_over_every_file() {
+        // A resumed pull: LICENSE (no hash, fetched again) goes before the
+        // weights, whose partial holds 600 of the 1000 bytes.
+        let meter = InstallProgressMeter::new(Some(1_000), 600);
+        meter.begin("LICENSE");
+        let first = meter
+            .add(Landed::Fetched(10))
+            .expect("the first chunk emits");
+        assert_eq!(first.bytes_downloaded, 610, "never below the partial");
+        meter.begin("w.bin");
+        assert!(meter.add(Landed::OnDisk(600)).is_none());
+        let next = meter.add(Landed::Fetched(1)).expect("a new file emits");
+        assert_eq!(
+            next.bytes_downloaded, 611,
+            "the partial is not counted twice"
+        );
+
+        // A partial saved under an older name is more than the plan counted;
+        // once found, the count moves up to it.
+        let meter = InstallProgressMeter::new(Some(1_000), 0);
+        meter.begin("w.bin");
+        assert!(meter.add(Landed::OnDisk(700)).is_none());
+        let found = meter.add(Landed::Fetched(1)).expect("emits");
+        assert_eq!(found.bytes_downloaded, 701);
     }
 
     #[test]
