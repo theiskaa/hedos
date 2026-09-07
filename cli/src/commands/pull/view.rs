@@ -35,11 +35,19 @@ pub(super) fn table(jobs: &[(PullJobDir, PullStatus)], now_ms: i64) -> String {
 
 /// What a client prints when it leaves a worker running.
 pub(super) fn detached(job: &PullJobDir) -> String {
-    let id = job.id();
     format!(
-        "pulling {} in the background as {id}\n  watch:  hedos pull attach {id}\n  stop:   hedos pull cancel {id}",
-        job.job().reference
+        "pulling {} in the background as {}\n{}",
+        job.job().reference,
+        job.id(),
+        reach(job)
     )
+}
+
+/// The commands that reach a pull left in the background, for a notice that
+/// has already said which pull.
+pub(super) fn reach(job: &PullJobDir) -> String {
+    let id = job.id();
+    format!("  watch:  hedos pull attach {id}\n  stop:   hedos pull cancel {id}")
 }
 
 /// The line a pull that stopped but could go on leaves behind, naming what

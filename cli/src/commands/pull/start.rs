@@ -60,20 +60,20 @@ pub(super) async fn run(args: &PullArgs, out: &Out) -> Result<(), CliError> {
         .map_err(|error| CliError::new(format!("{}: {error}", plan.reference)))?;
     // A pull of this model can turn up between the lookup and the start; the
     // runtime names the job either way.
-    let job = match &started {
-        Started::Created(id) => store.open(id)?,
+    let (job, named) = match &started {
+        Started::Created(id) => (store.open(id)?, Named::NotYet),
         Started::Joined(id) => {
             let job = store.open(id)?;
             announce_joined(out, &job);
-            job
+            (job, Named::Already)
         }
         Started::Resumed(id) => {
             let job = store.open(id)?;
             announce_resumed(out, &job);
-            job
+            (job, Named::Already)
         }
     };
-    hand_off(out, &job, args.detach).await
+    hand_off(out, &job, args.detach, named).await
 }
 
 /// Join the pull of `reference` already under way, if there is one; whether
@@ -116,7 +116,7 @@ async fn rejoin(out: &Out, job: &PullJobDir, detach: bool) -> Result<bool, CliEr
     } else {
         announce_joined(out, job);
     }
-    hand_off(out, job, detach).await?;
+    hand_off(out, job, detach, Named::Already).await?;
     Ok(true)
 }
 
@@ -146,20 +146,32 @@ fn confirmed(out: &Out, plan: &InstallPlan) -> Result<bool, CliError> {
     interactive::confirm("Download now?", true)
 }
 
-/// Watch the worker, or leave it to itself.
-async fn hand_off(out: &Out, job: &PullJobDir, detach: bool) -> Result<(), CliError> {
+/// Whether a line has already named the pull, so leaving it in the
+/// background does not name it a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Named {
+    Already,
+    NotYet,
+}
+
+/// Follow the pull, or leave it to its worker.
+async fn hand_off(out: &Out, job: &PullJobDir, detach: bool, named: Named) -> Result<(), CliError> {
     if detach {
-        return detached(out, job);
+        return detached(out, job, named);
     }
     match attach::follow(out, job).await {
         Attached::Ended(status) => attach::report(out, job, &status),
-        Attached::Detached => detached(out, job),
+        Attached::Detached => detached(out, job, Named::NotYet),
     }
 }
 
-/// Say where the download went and what commands reach it there.
-fn detached(out: &Out, job: &PullJobDir) -> Result<(), CliError> {
-    out.line(&view::detached(job));
+/// Say where the download went, unless that was just said, and what
+/// commands reach it there.
+fn detached(out: &Out, job: &PullJobDir, named: Named) -> Result<(), CliError> {
+    out.line(&match named {
+        Named::Already => view::reach(job),
+        Named::NotYet => view::detached(job),
+    });
     out.json(&view::json(job, &job.status()));
     Ok(())
 }

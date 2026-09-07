@@ -54,3 +54,13 @@ fn json_carries_the_descriptor_and_the_record_in_one_object() {
     assert_eq!(value["progress"]["bytes_downloaded"], 64);
     assert_eq!(value["id"], held.job.id());
 }
+
+#[test]
+fn the_commands_that_reach_a_pull_stand_on_their_own_after_a_line_that_named_it() {
+    let held = held("view-reach");
+    let reach = reach(&held.job);
+    assert!(reach.starts_with("  watch:  hedos pull attach "));
+    assert!(reach.contains(&format!("stop:   hedos pull cancel {}", held.job.id())));
+    assert!(!reach.contains("pulling"), "the pull was named already");
+    assert!(detached(&held.job).ends_with(&reach));
+}
