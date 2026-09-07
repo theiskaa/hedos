@@ -322,7 +322,11 @@ async fn drain_stderr(stderr: Option<tokio::process::ChildStderr>) -> Vec<u8> {
 }
 
 fn tail_string(bytes: &[u8], max: usize) -> String {
-    let start = bytes.len().saturating_sub(max);
+    let mut start = bytes.len().saturating_sub(max);
+    // A cut inside a character would open the tail with a replacement mark.
+    while bytes.get(start).is_some_and(|byte| byte & 0xC0 == 0x80) {
+        start += 1;
+    }
     String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
@@ -392,6 +396,14 @@ fn uv_builder(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tail_never_opens_inside_a_character() {
+        assert_eq!(tail_string("aé".as_bytes(), 1), "");
+        assert_eq!(tail_string("aé".as_bytes(), 2), "é");
+        assert_eq!(tail_string("abc".as_bytes(), 2), "bc");
+        assert_eq!(tail_string("abc".as_bytes(), 0), "");
+    }
 
     fn base(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs
