@@ -265,6 +265,78 @@ fn incomplete_gguf_shards_mark_the_model_downloading() {
 }
 
 #[test]
+fn a_repo_keeping_a_directory_per_quantization_still_has_weights() {
+    let dir = TempDir::new();
+    let repo = model_dir(dir.path(), "org", "quantized");
+    refs_main(&repo, "r1");
+    let snapshot = snapshot_dir(&repo, "r1");
+    // Nothing at the snapshot root: every weight is a level down, which is how
+    // a repo shipping several quantizations lays them out.
+    write(&snapshot.join("Q4_K_M").join("model.gguf"), b"GGUF");
+    write(
+        &snapshot.join("Q8_0").join("model.gguf"),
+        &b"GGUF".repeat(50),
+    );
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "quantized");
+    assert_eq!(model.modality_hint, Some(Modality::text()));
+    assert!(!model.downloading);
+    assert!(
+        model
+            .primary_weight_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("Q8_0/model.gguf")),
+        "the largest weight, wherever it sits: {:?}",
+        model.primary_weight_path
+    );
+    assert!(
+        !model
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("no config.json")),
+        "weights below the root are still weights: {:?}",
+        model.diagnostics
+    );
+}
+
+#[test]
+fn incomplete_gguf_shards_below_the_snapshot_mark_the_model_downloading() {
+    let dir = TempDir::new();
+    let repo = model_dir(dir.path(), "org", "deepshard");
+    refs_main(&repo, "r1");
+    // Shard 1 of 2 inside a quantization directory, but not shard 2.
+    write(
+        &snapshot_dir(&repo, "r1")
+            .join("Q4_K_M")
+            .join("model-00001-of-00002.gguf"),
+        b"GGUF",
+    );
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    assert!(find(&result, "deepshard").downloading);
+}
+
+#[test]
+fn a_directory_named_like_a_weight_is_not_the_primary_weight() {
+    let dir = TempDir::new();
+    let repo = model_dir(dir.path(), "org", "trap");
+    refs_main(&repo, "r1");
+    let snapshot = snapshot_dir(&repo, "r1");
+    // A directory wearing a weight's name, holding the real one.
+    write(&snapshot.join("model.gguf").join("real.gguf"), b"GGUF");
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    assert!(
+        find(&result, "trap")
+            .primary_weight_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("model.gguf/real.gguf")),
+        "a server is handed a file, never a directory"
+    );
+}
+
+#[test]
 fn an_mmproj_file_is_not_the_primary_weight() {
     let dir = TempDir::new();
     let repo = model_dir(dir.path(), "org", "vlm");

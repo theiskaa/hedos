@@ -54,19 +54,28 @@ pub struct GgufFacts {
 }
 
 /// The known-architecture profile for a GGUF `general.architecture` value.
+///
+/// The table names the architectures that are *not* a text chat model, which is
+/// what an architecture missing from it is taken to be: the great majority of
+/// them are, and a name nobody has taught this table is far more likely to be
+/// another text model than a component. What is listed here is the exceptions:
+/// the encoders that only embed, the models that can also see, and the pieces
+/// that are half of a pipeline and serve nothing on their own.
 pub fn gguf_architecture_profile(architecture: &str) -> Option<GgufArchitectureProfile> {
     let profile = |modality, capabilities, execution| GgufArchitectureProfile {
         modality,
         capabilities,
         execution,
     };
-    match architecture {
-        "whisper" => Some(profile(
-            Modality::audio(),
-            vec![Capability::transcribe()],
+    let embedding = || {
+        Some(profile(
+            Modality::embedding(),
+            vec![Capability::embed()],
             ExecutionMode::Stream,
-        )),
-        "qwen2vl" | "mllama" => Some(profile(
+        ))
+    };
+    let sees = || {
+        Some(profile(
             Modality::text(),
             vec![
                 Capability::chat(),
@@ -74,13 +83,27 @@ pub fn gguf_architecture_profile(architecture: &str) -> Option<GgufArchitectureP
                 Capability::see(),
             ],
             ExecutionMode::Stream,
-        )),
-        "clip" => Some(profile(Modality::vision(), vec![], ExecutionMode::Sync)),
-        "bert" | "nomic-bert" => Some(profile(
-            Modality::embedding(),
-            vec![Capability::embed()],
+        ))
+    };
+    // A piece of a pipeline: it has a modality but nothing can be asked of it
+    // directly, so no runtime offers to serve it and it is never mistaken for a
+    // model that answers.
+    let component = |modality| Some(profile(modality, vec![], ExecutionMode::Sync));
+    match architecture {
+        "whisper" => Some(profile(
+            Modality::audio(),
+            vec![Capability::transcribe()],
             ExecutionMode::Stream,
         )),
+        "qwen2vl" | "qwen3vl" | "qwen3vlmoe" | "mllama" | "cogvlm" | "hunyuan-vl" => sees(),
+        "bert" | "nomic-bert" | "nomic-bert-moe" | "jina-bert-v2" | "jina-bert-v3" | "neo-bert"
+        | "modern-bert" | "eurobert" | "gemma-embedding" | "llama-embed" | "t5encoder" => {
+            embedding()
+        }
+        "clip" => component(Modality::vision()),
+        // The vocoder half of a text-to-speech pair: it turns another model's
+        // tokens into audio and cannot be prompted.
+        "wavtokenizer-dec" => component(Modality::audio()),
         _ => None,
     }
 }

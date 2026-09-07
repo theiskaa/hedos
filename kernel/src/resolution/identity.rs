@@ -5,9 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::discovery::gguf_models::{is_gguf_name, is_mmproj_name};
-use crate::discovery::gguf_shards::{ShardName, parse as parse_shard_name};
+use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::modality_hints::{Hint, from_config_json};
+use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
     RuntimeId, SourceKind,
@@ -144,7 +144,7 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     }
 
     if extension.as_deref() == Some("gguf") || has_gguf_magic(base) {
-        return identify_gguf(base);
+        return identify_gguf(base, has_mmproj_companion(base));
     }
 
     let model_index = container.join("model_index.json");
@@ -162,8 +162,10 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     // layouts so a directory that resolves as one keeps doing so, and before
     // the bare config hint below, which it deliberately outranks: a header
     // read from the weights says more than a sibling config file.
-    if let Some(weights) = gguf_weights(&container, record.primary_weight_path.as_deref()) {
-        return identify_gguf(&weights);
+    if let Some((weights, has_projector)) =
+        gguf_weights(&container, record.primary_weight_path.as_deref())
+    {
+        return identify_gguf(&weights, has_projector);
     }
     match hint {
         Some(hint) => {
@@ -180,13 +182,12 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     }
 }
 
-/// The GGUF file a model held in a directory is served from, when it is one:
-/// the largest that is not a projector, as `hf_scanner::largest_weight` picks
-/// a primary weight among GGUFs, with a tie going to the earlier name so that
-/// one directory always reads the same way. A sharded set answers with its
-/// first file, and a set missing that file answers with nothing, the way
-/// `discovered_models` skips such a set: the first file is what a server loads
-/// the rest through.
+/// The GGUF file a model held in a directory is served from, when it is one,
+/// and whether a projector sits with it. Which file that is comes from
+/// [`primary_of`], the rule the store scanners pick a primary weight by, so the
+/// header read here belongs to the file a server will load. Weights kept in a
+/// subdirectory, as a repo with one folder per quantization keeps them, are
+/// reached the same way, and so is a projector left at the root beside them.
 ///
 /// The file is named through the container rather than through `primary`,
 /// which a Hugging Face record resolves to a blob whose name carries nothing:
@@ -198,62 +199,21 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
 ///
 /// An architecture [`gguf_architecture_profile`] does not know reads as a text
 /// chat model, which is the answer the same bytes get as a loose file.
-fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<PathBuf> {
+fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<(PathBuf, bool)> {
     if let Some(primary) = primary
         && !has_gguf_magic(Path::new(primary))
     {
         return None;
     }
-    let mut shards: Vec<(PathBuf, ShardName)> = Vec::new();
-    let mut largest: Option<(PathBuf, u64)> = None;
-    for entry in std::fs::read_dir(container).into_iter().flatten().flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        // Hidden files are leftovers here, as they are to the scanners that
-        // read these same directories.
-        if name.starts_with('.') || !is_gguf_name(name) || is_mmproj_name(name) {
-            continue;
-        }
-        // Read through the symlink a snapshot entry is, so the size is the
-        // weight's and not the link's, and so a directory wearing the name of
-        // a weight is not taken for one.
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if !metadata.is_file() {
-            continue;
-        }
-        if let Some(shard) = parse_shard_name(name) {
-            shards.push((path.clone(), shard));
-        }
-        let size = metadata.len();
-        if largest.as_ref().is_none_or(|(best_path, best_size)| {
-            size > *best_size || (size == *best_size && path < *best_path)
-        }) {
-            largest = Some((path, size));
-        }
-    }
-    let (path, _) = largest?;
-    let Some(shard) = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(parse_shard_name)
-    else {
-        return Some(path);
-    };
-    // Found by index among the files that are there, rather than by rebuilding
-    // the name, so a set spelled `.GGUF` is answered like any other.
-    shards
-        .into_iter()
-        .find(|(_, member)| {
-            member.index == 1 && member.total == shard.total && member.base == shard.base
-        })
-        .map(|(first, _)| first)
+    let tree = gguf_tree(container);
+    let weights = primary_of(&tree.weights)?;
+    Some((weights, tree.has_projector))
 }
 
-fn identify_gguf(base: &Path) -> IdentifiedModel {
+/// What a GGUF is, from its header. `has_projector` says whether a multimodal
+/// projector accompanies it, which is what makes sight real: an architecture
+/// that can see cannot without one.
+fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
     let name = base
         .file_name()
         .and_then(|name| name.to_str())
@@ -273,17 +233,24 @@ fn identify_gguf(base: &Path) -> IdentifiedModel {
         .and_then(|facts| facts.architecture.as_deref())
         && let Some(profile) = gguf_architecture_profile(architecture)
     {
+        let mut capabilities = profile.capabilities;
+        if !has_projector {
+            // The architecture can see, but no image encoder came with these
+            // weights, so nothing here can read a picture. Sight is the
+            // pairing, not the architecture.
+            capabilities.retain(|capability| *capability != Capability::see());
+        }
         let mut model = IdentifiedModel::new(
             ModelFormat::Gguf,
             Some(profile.modality),
-            profile.capabilities,
+            capabilities,
             profile.execution,
         );
         model.context_length = facts.as_ref().and_then(|facts| facts.context_length);
         model.has_chat_template = facts.as_ref().map(|facts| facts.has_chat_template);
         return model;
     }
-    let capabilities = if has_mmproj_companion(base) {
+    let capabilities = if has_projector {
         vec![
             Capability::chat(),
             Capability::complete(),
