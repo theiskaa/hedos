@@ -264,11 +264,11 @@ fn diffusers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
                 return false;
             }
             let ext = file_extension(path);
-            if ["bin", "ckpt", "pt", "pth"].contains(&ext.as_str()) {
-                let stem = &path[..path.len() - (ext.len() + 1)];
-                if paths.contains(format!("{stem}.safetensors").as_str()) {
-                    return false;
-                }
+            if ["bin", "ckpt", "pt", "pth"].contains(&ext.as_str())
+                && let Some(stem) = path.get(..path.len().saturating_sub(ext.len() + 1))
+                && paths.contains(format!("{stem}.safetensors").as_str())
+            {
+                return false;
             }
             for variant in [".fp16.", ".non_ema."] {
                 if path.contains(variant) && paths.contains(path.replace(variant, ".").as_str()) {

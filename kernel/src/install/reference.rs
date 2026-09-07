@@ -46,8 +46,9 @@ pub fn is_ollama_link(raw: &str) -> bool {
 
 fn matches_host(raw: &str, hosts: &[&str]) -> bool {
     cleaned(raw).is_some_and(|text| {
-        let lower = text.to_lowercase();
-        hosts.iter().any(|host| lower.starts_with(host))
+        hosts
+            .iter()
+            .any(|host| after_ascii_prefix(&text, host).is_some())
     })
 }
 
@@ -114,8 +115,9 @@ pub fn ollama_direct_tag(query: &str) -> Option<String> {
 
 fn tag(raw: &str, require_explicit_tag_for_namespaced: bool) -> Option<String> {
     let text = cleaned(raw)?;
-    let lower = text.to_lowercase();
-    let is_link = OLLAMA_HOSTS.iter().any(|host| lower.starts_with(host));
+    let is_link = OLLAMA_HOSTS
+        .iter()
+        .any(|host| after_ascii_prefix(&text, host).is_some());
     let mut text = stripped(&text, &OLLAMA_HOSTS);
     if text.contains("://") {
         return None;
@@ -136,8 +138,8 @@ fn tag(raw: &str, require_explicit_tag_for_namespaced: bool) -> Option<String> {
         let joined = selected.join("/");
         return shaped(&joined, false).then_some(joined);
     }
-    if lower.starts_with("library/") {
-        text = text["library/".len()..].to_string();
+    if let Some(rest) = after_ascii_prefix(&text, "library/") {
+        text = rest.to_owned();
     }
     shaped(&text, require_explicit_tag_for_namespaced).then_some(text)
 }
@@ -204,8 +206,8 @@ fn cleaned(raw: &str) -> Option<String> {
     // No `break`: the remaining text is re-tested against each scheme, so a
     // stacked `https://http://…` prefix is fully stripped.
     for scheme in ["https://", "http://"] {
-        if text.to_lowercase().starts_with(scheme) {
-            text = text[scheme.len()..].to_owned();
+        if let Some(rest) = after_ascii_prefix(&text, scheme) {
+            text = rest.to_owned();
         }
     }
     if let Some(stop) = text.find(['?', '#']) {
@@ -219,18 +221,36 @@ fn cleaned(raw: &str) -> Option<String> {
 
 /// Drop a leading known host prefix from `text` (case-insensitive), if present.
 fn stripped(text: &str, hosts: &[&str]) -> String {
-    let lower = text.to_lowercase();
-    for host in hosts {
-        if lower.starts_with(host) {
-            return text[host.len()..].to_owned();
-        }
-    }
-    text.to_owned()
+    hosts
+        .iter()
+        .find_map(|host| after_ascii_prefix(text, host))
+        .unwrap_or(text)
+        .to_owned()
+}
+
+/// `text` after `prefix`, matched without regard to ASCII case, or `None`
+/// when it does not begin so. Compared over the prefix's own bytes, so the
+/// cut is a character boundary whatever `text` holds.
+fn after_ascii_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    text.split_at_checked(prefix.len())
+        .filter(|(head, _)| head.eq_ignore_ascii_case(prefix))
+        .map(|(_, rest)| rest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prefix_is_matched_over_its_own_bytes() {
+        assert_eq!(after_ascii_prefix("HTTPS://a", "https://"), Some("a"));
+        assert_eq!(after_ascii_prefix("https://", "https://"), Some(""));
+        assert_eq!(after_ascii_prefix("http://a", "https://"), None);
+        // A Kelvin sign is three bytes that fold to one ASCII `k`; over its
+        // own bytes it is not a `k`, and the cut it would force is refused.
+        assert_eq!(after_ascii_prefix("\u{212A}x", "kx"), None);
+        assert_eq!(after_ascii_prefix("\u{212A}", "k"), None);
+    }
 
     #[test]
     fn tag_shape_requires_a_version_when_namespaced() {

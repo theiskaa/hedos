@@ -179,6 +179,18 @@ fn ollama_tag_link_and_shape_edge_cases() {
 }
 
 #[test]
+fn a_link_is_read_whatever_the_case_of_its_scheme_and_host() {
+    assert_eq!(
+        hugging_face_repo("HTTPS://HuggingFace.co/org/model"),
+        Some("org/model".to_owned())
+    );
+    assert_eq!(
+        ollama_direct_tag("HTTPS://Ollama.com/library/llama3"),
+        Some("llama3".to_owned())
+    );
+}
+
+#[test]
 fn install_errors_render_the_expected_messages() {
     assert_eq!(
         InstallError::ProviderUnknown(InstallProviderId::huggingface()).to_string(),
