@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use kernel::fs::expand_tilde_env;
 use kernel::install::reference::{hugging_face_repo, is_hugging_face_link, ollama_direct_tag};
 use kernel::install::{
     ActiveInstall, InstallAvailability, InstallBrowseResult, InstallError, InstallEvent,
@@ -362,6 +363,32 @@ impl Inner {
         format!("in-{:012}", self.id_counter.fetch_add(1, Ordering::Relaxed))
     }
 
+    /// The path to measure free space on for `plan`: the nearest directory that
+    /// exists at or above where the model will be written.
+    ///
+    /// The destination is what matters, not this process's working directory: a
+    /// cache on one volume and a shell open on another are the ordinary case,
+    /// and measuring the wrong one either refuses a pull that would fit or lets
+    /// one fill the volume it lands on.
+    ///
+    /// A destination is written for a person to read, so the home directory
+    /// comes back collapsed to `~` and has to be expanded before any of it can
+    /// be found on disk. Nothing below it exists yet on a first pull either, so
+    /// the walk climbs to the part that does.
+    fn probe_root(&self, plan: &InstallPlan) -> PathBuf {
+        let expanded = expand_tilde_env(&plan.destination);
+        let mut candidate = expanded.as_path();
+        loop {
+            if candidate.exists() {
+                return candidate.to_path_buf();
+            }
+            match candidate.parent() {
+                Some(parent) => candidate = parent,
+                None => return self.disk_probe_root.clone(),
+            }
+        }
+    }
+
     fn check_disk(&self, plan: &InstallPlan) -> Result<(), InstallError> {
         let Some(pending) = plan.remaining_bytes.or(plan.total_bytes) else {
             return Ok(());
@@ -372,7 +399,7 @@ impl Inner {
         } else {
             scaled as i64
         };
-        let available = (self.free_disk_bytes)(&self.disk_probe_root).unwrap_or(i64::MAX);
+        let available = (self.free_disk_bytes)(&self.probe_root(plan)).unwrap_or(i64::MAX);
         if available < required {
             return Err(InstallError::InsufficientDisk {
                 required_bytes: required,
