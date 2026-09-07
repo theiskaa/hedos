@@ -196,12 +196,15 @@ impl App {
     /// the shelf.
     pub fn restore(&mut self, state: &UiState) {
         self.reorder(state.selected_id.clone());
+        self.tasks
+            .remember_dismissed(state.dismissed.iter().cloned());
     }
 
     /// What to remember for the next run.
     pub fn remembered(&self) -> UiState {
         UiState {
             selected_id: self.selected_record().map(|record| record.id.clone()),
+            dismissed: self.tasks.dismissed_jobs(),
         }
     }
 

@@ -89,6 +89,9 @@ pub struct TaskStrip {
     /// The pull jobs whose rows have expired, so the next poll, which still
     /// lists them, does not put them back.
     expired: HashSet<String>,
+    /// The part of `expired` the user asked for with `d`, which the next run
+    /// honours too; a row that merely aged off is left to age off again.
+    dismissed: HashSet<String>,
 }
 
 impl TaskStrip {
@@ -143,6 +146,12 @@ impl TaskStrip {
     /// swept away is not a reason to make a finished download vanish mid-glance.
     pub fn sync_pulls(&mut self, jobs: Vec<JobRow>, now: u64) -> PullChanges {
         let mut changes = PullChanges::default();
+        // A job the store no longer has cannot come back, so nothing needs
+        // to remember that it was dismissed.
+        self.expired
+            .retain(|job| jobs.iter().any(|polled| polled.job == *job));
+        self.dismissed
+            .retain(|job| jobs.iter().any(|polled| polled.job == *job));
         for job in jobs {
             match self.rows.iter_mut().find(|row| row.job() == Some(&job.job)) {
                 Some(row) => {
@@ -226,6 +235,22 @@ impl TaskStrip {
         self.rows.len() != before
     }
 
+    /// The pull jobs whose rows the user dismissed, which the next run should
+    /// not put back.
+    pub fn dismissed_jobs(&self) -> Vec<String> {
+        let mut jobs: Vec<String> = self.dismissed.iter().cloned().collect();
+        jobs.sort();
+        jobs
+    }
+
+    /// Take the jobs an earlier run dismissed, so the polls leave them out.
+    pub fn remember_dismissed(&mut self, jobs: impl IntoIterator<Item = String>) {
+        for job in jobs {
+            self.expired.insert(job.clone());
+            self.dismissed.insert(job);
+        }
+    }
+
     /// Drop the newest failed row; whether there was one.
     pub fn dismiss_newest_failure(&mut self) -> bool {
         let Some(id) = self.newest_failure() else {
@@ -233,8 +258,9 @@ impl TaskStrip {
         };
         // A dismissed pull is still in the store, and the next poll would put
         // it back as if it were news.
-        if let Some(job) = self.row(id).and_then(TaskRow::job) {
-            self.expired.insert(job.to_owned());
+        if let Some(job) = self.row(id).and_then(TaskRow::job).map(str::to_owned) {
+            self.expired.insert(job.clone());
+            self.dismissed.insert(job);
         }
         self.rows.retain(|row| row.id != id);
         true
@@ -687,6 +713,33 @@ mod tests {
         );
 
         assert_eq!(strip.rows()[0].pull_state, Some(PullState::Running));
+    }
+
+    #[test]
+    fn a_dismissal_remembered_from_an_earlier_run_holds_until_the_record_is_gone() {
+        let failed = job_row(
+            "gemma3",
+            PullState::Failed,
+            TaskState::Failed("failed".to_owned()),
+        );
+        let mut strip = TaskStrip::default();
+        strip.remember_dismissed([failed.job.clone(), "gone-job".to_owned()]);
+        assert!(!strip.sync_pulls(vec![failed.clone()], 1).moved);
+        assert!(strip.rows().is_empty());
+        // A job the poll no longer lists is forgotten with it.
+        assert_eq!(strip.dismissed_jobs(), vec![failed.job.clone()]);
+        strip.sync_pulls(Vec::new(), 2);
+        assert!(strip.dismissed_jobs().is_empty());
+
+        // A row that merely aged off is not a dismissal: the next run shows
+        // it again if it is still young enough for the strip.
+        let mut strip = strip_pulling(
+            "gemma3",
+            PullState::Done,
+            TaskState::Done("pulled gemma3".to_owned()),
+        );
+        assert!(strip.expire(DONE_LINGER_TICKS + 1));
+        assert!(strip.dismissed_jobs().is_empty());
     }
 
     #[test]

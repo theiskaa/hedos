@@ -315,7 +315,9 @@ pub fn spawn_pulls(context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>
     let store = context.pull_store();
     let tx = tx.clone();
     tokio::task::spawn_blocking(move || {
-        let _ = tx.send(Event::Pulls(jobs::rows(&store, now_millis())));
+        if let Some(rows) = jobs::poll(&store, now_millis()) {
+            let _ = tx.send(Event::Pulls(rows));
+        }
     });
 }
 
@@ -397,7 +399,9 @@ pub enum PullAction {
 /// Send the rows as they read right now, so a key that changed one shows its
 /// effect without waiting for the next poll.
 fn spawn_pulls_into(store: &PullStore, tx: &mpsc::UnboundedSender<Event>) {
-    let _ = tx.send(Event::Pulls(jobs::rows(store, now_millis())));
+    if let Some(rows) = jobs::poll(store, now_millis()) {
+        let _ = tx.send(Event::Pulls(rows));
+    }
 }
 
 /// Start a pull, or join the one already fetching that model.
