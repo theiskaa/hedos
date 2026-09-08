@@ -75,38 +75,41 @@ fn ollama_models_env_overrides_the_default_with_tilde_expansion() {
     assert!(!contains(&roots, &SourceKind::ollama(), ".ollama/models"));
 }
 
+fn hf_roots(roots: &[(SourceKind, PathBuf)]) -> Vec<&PathBuf> {
+    roots
+        .iter()
+        .filter(|(kind, _)| kind == &SourceKind::huggingface_cache())
+        .map(|(_, path)| path)
+        .collect()
+}
+
 #[test]
-fn hf_env_roots_are_added_and_deduplicated() {
+fn the_hub_cache_env_replaces_the_default_rather_than_adding_to_it() {
     let home = Path::new("/home/user");
     let habitat = ModelHabitat::new(
         home,
         env(&[("HF_HUB_CACHE", "/data/hub"), ("HF_HOME", "/data/hf")]),
     );
     let roots = roots_of(&habitat, &ModelsSettings::default());
-    assert!(contains(
-        &roots,
-        &SourceKind::huggingface_cache(),
-        "/data/hub"
-    ));
-    // HF_HOME contributes `<HF_HOME>/hub`.
-    assert!(contains(
-        &roots,
-        &SourceKind::huggingface_cache(),
-        "/data/hf/hub"
-    ));
+    // HF_HUB_CACHE wins outright: neither HF_HOME's hub nor the default is
+    // swept, because a machine has exactly one hub cache.
+    assert_eq!(hf_roots(&roots), vec![&PathBuf::from("/data/hub")]);
+}
 
-    // An HF_HUB_CACHE equal to the default cache path is not duplicated.
-    let dup = ModelHabitat::new(
-        home,
-        env(&[("HF_HUB_CACHE", "/home/user/.cache/huggingface/hub")]),
+#[test]
+fn a_tilde_in_either_hub_cache_variable_expands_against_home() {
+    let from_home = ModelHabitat::new("/home/user", env(&[("HF_HOME", "~/models/hf")]));
+    assert_eq!(
+        hf_roots(&roots_of(&from_home, &ModelsSettings::default())),
+        vec![&PathBuf::from("/home/user/models/hf/hub")]
     );
-    let hf_count = roots_of(&dup, &ModelsSettings::default())
-        .iter()
-        .filter(|(k, path)| {
-            k == &SourceKind::huggingface_cache() && path.ends_with(".cache/huggingface/hub")
-        })
-        .count();
-    assert_eq!(hf_count, 1, "the default hub path appears once");
+
+    // The install side reads this one too, and used not to expand it at all.
+    let from_cache = ModelHabitat::new("/home/user", env(&[("HF_HUB_CACHE", "~/models/hub")]));
+    assert_eq!(
+        hf_roots(&roots_of(&from_cache, &ModelsSettings::default())),
+        vec![&PathBuf::from("/home/user/models/hub")]
+    );
 }
 
 #[test]
@@ -205,14 +208,10 @@ fn the_assembled_hf_scanner_does_not_scan_a_user_root_twice() {
 }
 
 #[test]
-fn hf_home_alone_contributes_its_hub() {
+fn hf_home_alone_names_the_only_hub() {
     let habitat = ModelHabitat::new("/home/user", env(&[("HF_HOME", "/data/hf")]));
     let roots = roots_of(&habitat, &ModelsSettings::default());
-    assert!(contains(
-        &roots,
-        &SourceKind::huggingface_cache(),
-        "/data/hf/hub"
-    ));
+    assert_eq!(hf_roots(&roots), vec![&PathBuf::from("/data/hf/hub")]);
 }
 
 #[test]
@@ -228,12 +227,8 @@ fn empty_env_values_are_ignored() {
         &SourceKind::ollama(),
         "/home/user/.ollama/models"
     ));
-    // The empty HF vars contribute nothing beyond the default cache.
-    let hf: Vec<&PathBuf> = roots
-        .iter()
-        .filter(|(k, _)| k == &SourceKind::huggingface_cache())
-        .map(|(_, path)| path)
-        .collect();
+    // The empty HF vars leave the default cache standing.
+    let hf = hf_roots(&roots);
     assert_eq!(hf.len(), 1);
     assert!(hf[0].ends_with(".cache/huggingface/hub"));
 }

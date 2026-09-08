@@ -14,8 +14,10 @@ use super::{
     ACCENT, BOLD, BORDER_COLUMNS, COOL, DIM, EYEBROW, WARM, field_line, label, label_width, pane,
     styled_field, value_width,
 };
+use crate::support::clock;
 use crate::support::residency::Holder;
-use crate::support::shelf_table::{DASH, runtime_label};
+use crate::support::shelf_table::runtime_label;
+use crate::support::table::DASH;
 use crate::tui::app::App;
 use crate::tui::facts::{Facts, HOURS, ModelActivity};
 use crate::tui::layout::STACKED_DETAIL_ROWS;
@@ -202,7 +204,7 @@ fn path_line(record: &ModelRecord, value_width: usize) -> Option<Line<'static>> 
 
 /// `size   4.7 GB · ctx 32k`, whichever of the two the record knows.
 fn size_line(record: &ModelRecord, value_width: usize) -> Line<'static> {
-    let size = match (record.footprint_bytes(), record.context_length) {
+    let size = match (record.size_on_disk(), record.context_length) {
         (Some(bytes), Some(context)) => {
             format!("{} · ctx {}", text::bytes(bytes), text::tokens(context))
         }
@@ -294,13 +296,13 @@ fn served(activity: &ModelActivity) -> String {
 
 /// `4m ago`, measured from `now`.
 fn last_used(activity: &ModelActivity, now: i64) -> String {
-    text::duration((now - activity.last_seen_millis) / 1000) + " ago"
+    clock::duration((now - activity.last_seen_millis) / 1000) + " ago"
 }
 
 /// [`text::fit_summary`], then how much would be free with the rest of what
 /// is loaded still in memory; a record whose weights are gone says so first.
 fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
-    let (summary, required_bytes) = text::fit_parts(record.footprint_mb, facts.memory_bytes);
+    let (summary, required_bytes) = text::fit_parts(record.footprint_bytes, facts.memory_bytes);
     let summary = if record.state == ModelState::Missing {
         format!("weights are gone · {summary}")
     } else {
@@ -343,7 +345,7 @@ fn residency_line(record: &ModelRecord, facts: &Facts, value_width: usize) -> Li
                 },
             };
             if let Some(seconds) = resident.expires_in_seconds_at(facts.collected_at_millis) {
-                holder.push_str(&format!(" · unloads in {}", text::duration(seconds)));
+                holder.push_str(&format!(" · unloads in {}", clock::duration(seconds)));
             }
             spans.push(Span::styled(
                 text::clip(&holder, value_width.saturating_sub(WARM_LABEL.width())),

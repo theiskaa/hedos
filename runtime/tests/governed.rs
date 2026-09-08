@@ -18,14 +18,14 @@ use tokio::time::timeout;
 const SHORT: Duration = Duration::from_millis(50);
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn record(footprint_mb: Option<i64>) -> ModelRecord {
+fn record(footprint_mib: Option<i64>) -> ModelRecord {
     let mut record = ModelRecord::new(
         "Test Model",
         Modality::text(),
         vec![Capability::chat()],
         ModelSource::new(SourceKind::file(), "/tmp/test-model"),
     );
-    record.footprint_mb = footprint_mb;
+    record.footprint_bytes = footprint_mib.map(|mib| mib * (1 << 20));
     record
 }
 

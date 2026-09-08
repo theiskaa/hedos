@@ -1,10 +1,11 @@
 use super::*;
 
+use kernel::install::pulls::PullState;
 use ratatui::style::Style;
 
 use crate::tui::strip::{HintTargets, TaskStrip};
 use crate::tui::tasks::{TaskEvent, TaskId, TaskLabel};
-use crate::tui::testing::{plan, text};
+use crate::tui::testing::{downloading, job_row, text};
 
 fn recorded(state: TaskState) -> TaskRow {
     let mut strip = TaskStrip::default();
@@ -42,7 +43,6 @@ fn every_task_verb_is_listed() {
             id: "m".to_owned(),
             name: "m".to_owned(),
         },
-        TaskKind::Pull(plan("gemma3")),
         TaskKind::Remove {
             id: "m".to_owned(),
             name: "m".to_owned(),
@@ -66,7 +66,6 @@ fn every_task_verb_is_listed() {
             | TaskKind::Warm { .. }
             | TaskKind::WarmViaGateway { .. }
             | TaskKind::Unload { .. }
-            | TaskKind::Pull(_)
             | TaskKind::Remove { .. } => {}
         }
         let verb = kind.verb();
@@ -103,10 +102,25 @@ fn a_failed_row_keeps_the_reason_plain_and_offers_dismiss() {
 }
 
 #[test]
-fn a_download_offers_cancel_from_the_keymap() {
+fn a_long_reason_is_cut_to_the_row_after_the_key_that_dismisses_it() {
+    let row = recorded(TaskState::Failed("x".repeat(200)));
+    let hinted = RowHints {
+        dismissable: true,
+        ..RowHints::default()
+    };
+    let painted = line(&row, 60, hinted);
+    assert!(painted.width() <= 60, "{}", text(&painted));
+    assert!(text(&painted).trim_end().ends_with("…  d dismiss"));
+    let bare = line(&row, 60, RowHints::default());
+    assert!(bare.width() <= 60);
+    assert!(text(&bare).trim_end().ends_with('…'));
+}
+
+#[test]
+fn a_download_offers_stop_from_the_keymap() {
     let progress = InstallProgress {
-        bytes_downloaded: 1 << 30,
-        total_bytes: Some(4 << 30),
+        bytes_downloaded: 1_000_000_000,
+        total_bytes: Some(4_000_000_000),
         ..InstallProgress::default()
     };
     let line = Line::from(download(&progress, 120, hints(&["c"])));
@@ -122,29 +136,26 @@ fn a_download_offers_cancel_from_the_keymap() {
 #[test]
 fn the_bar_shrinks_with_the_strip() {
     let progress = InstallProgress {
-        bytes_downloaded: 2 << 30,
-        total_bytes: Some(4 << 30),
+        bytes_downloaded: 2_000_000_000,
+        total_bytes: Some(4_000_000_000),
         ..InstallProgress::default()
     };
     let mut strip = TaskStrip::default();
-    let id = TaskId::next();
-    strip.start(id, TaskKind::Pull(plan("gemma3")));
-    let row = strip
-        .moved(
-            TaskEvent {
-                id,
-                state: TaskState::Downloading(progress),
-            },
-            0,
-        )
-        .cloned()
-        .unwrap();
-    let cancellable = RowHints {
-        cancellable: true,
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Running,
+            TaskState::Downloading(progress),
+        )],
+        0,
+    );
+    let row = strip.rows()[0].clone();
+    let stoppable = RowHints {
+        stoppable: true,
         ..RowHints::default()
     };
     let bar_cells = |width| {
-        let line = line(&row, width, cancellable);
+        let line = line(&row, width, stoppable);
         assert!(line.width() <= width, "{:?} runs past {width}", text(&line));
         text(&line)
             .chars()
@@ -152,36 +163,67 @@ fn the_bar_shrinks_with_the_strip() {
             .count()
     };
     // The row's fixed cells: the verb column, the subject, the percent,
-    // the figures, the cancel hint, and the gaps between them.
+    // the figures, the stop hint, and the gaps between them.
     let head = 1 + label_width(&TaskKind::VERBS, 0) + 1 + row.label.subject.width() + 2;
     let figures = "2 GB of 4 GB";
-    let cancel: usize = hints(&["c"]).iter().map(Span::width).sum();
-    let fixed = PERCENT_WIDTH + 2 + figures.len() + 2 + cancel;
+    let stop: usize = hints(&["c"]).iter().map(Span::width).sum();
+    let fixed = PERCENT_WIDTH + 2 + figures.len() + 2 + stop;
     let floor = head + fixed + MIN_BAR_WIDTH as usize;
     assert_eq!(bar_cells(120), MAX_BAR_WIDTH as usize);
-    assert!(text(&line(&row, 120, cancellable)).contains(&format!("  50%  {figures}")));
+    assert!(text(&line(&row, 120, stoppable)).contains(&format!("  50%  {figures}")));
     let medium = bar_cells(floor + 4);
     let bounds = MIN_BAR_WIDTH as usize..MAX_BAR_WIDTH as usize;
     assert!(bounds.contains(&medium), "{medium}");
     assert_eq!(bar_cells(floor), MIN_BAR_WIDTH as usize);
     assert_eq!(bar_cells(floor - 1), 0);
-    let compact = text(&line(&row, floor - 1, cancellable));
-    assert!(compact.contains(&format!("50% · {figures}  c cancel")));
+    let compact = text(&line(&row, floor - 1, stoppable));
+    assert!(compact.contains(&format!("50% · {figures}  c stop")));
     let bare = format!("50% · {figures}").width();
-    let shed = text(&line(&row, head + bare + cancel - 1, cancellable));
-    assert!(shed.contains(&format!("50% · {figures}")) && !shed.contains("c cancel"));
+    let shed = text(&line(&row, head + bare + stop - 1, stoppable));
+    assert!(shed.contains(&format!("50% · {figures}")) && !shed.contains("c stop"));
+}
+
+#[test]
+fn a_stopped_pull_says_how_it_stopped_with_or_without_the_key() {
+    let mut strip = TaskStrip::default();
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Paused,
+            TaskState::Stopped("paused".to_owned()),
+        )],
+        0,
+    );
+    let row = &strip.rows()[0];
+
+    let offered = text(&line(
+        row,
+        120,
+        RowHints {
+            resumable: true,
+            ..RowHints::default()
+        },
+    ));
+    assert!(
+        offered.trim_end().ends_with("paused  R resume"),
+        "{offered:?}"
+    );
+
+    // Off screen, or under a newer stopped pull, the row still says what it is.
+    let quiet = text(&line(row, 120, RowHints::default()));
+    assert!(quiet.trim_end().ends_with("paused"), "{quiet:?}");
+    assert!(!quiet.contains("resume"));
 }
 
 #[test]
 fn a_done_pull_hints_only_while_it_is_selected() {
     let mut strip = TaskStrip::default();
-    let id = TaskId::next();
-    strip.start(id, TaskKind::Pull(plan("gemma3")));
-    strip.moved(
-        TaskEvent {
-            id,
-            state: TaskState::Done("pulled gemma3".to_owned()),
-        },
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Done,
+            TaskState::Done("pulled gemma3".to_owned()),
+        )],
         0,
     );
     let shown = strip.shown(10);
@@ -222,17 +264,10 @@ fn strip_of(failed: usize, done: usize, running: usize) -> TaskStrip {
             0,
         );
     }
-    for index in 0..running {
-        let id = TaskId::next();
-        strip.start(id, TaskKind::Pull(plan(&format!("pull-{index}"))));
-        strip.moved(
-            TaskEvent {
-                id,
-                state: TaskState::Downloading(InstallProgress::default()),
-            },
-            0,
-        );
-    }
+    let pulls = (0..running)
+        .map(|index| downloading(&format!("pull-{index}")))
+        .collect();
+    strip.sync_pulls(pulls, 0);
     strip
 }
 
@@ -250,34 +285,34 @@ fn rendered(strip: &TaskStrip, height: usize) -> Vec<String> {
 }
 
 #[test]
-fn cancel_sits_on_the_newest_pull_even_while_it_resolves() {
+fn stop_sits_on_the_newest_pull_even_while_it_is_only_queued() {
     let mut strip = strip_of(0, 0, 1);
-    let id = TaskId::next();
-    strip.start(id, TaskKind::Pull(plan("pull-b")));
+    let queued = |note: &str| {
+        job_row(
+            "pull-b",
+            PullState::Queued,
+            TaskState::Status(note.to_owned()),
+        )
+    };
+    strip.sync_pulls(vec![queued("queued")], 0);
     let lines = rendered(&strip, 10);
     assert_eq!(lines.len(), 2);
-    assert!(lines[0].contains("pull-0") && !lines[0].contains("cancel"));
+    assert!(lines[0].contains("pull-0") && !lines[0].contains("stop"));
     assert!(
-        lines[1].ends_with("pull-b  starting  c cancel"),
+        lines[1].ends_with("pull-b  queued  c stop"),
         "{:?}",
         lines[1]
     );
-    strip.moved(
-        TaskEvent {
-            id,
-            state: TaskState::Status("resolving on hf".to_owned()),
-        },
-        0,
-    );
+    strip.sync_pulls(vec![queued("resolving on hf")], 0);
     let lines = rendered(&strip, 10);
     assert!(
-        lines[1].ends_with("resolving on hf  c cancel"),
+        lines[1].ends_with("resolving on hf  c stop"),
         "{:?}",
         lines[1]
     );
     let mut strip = TaskStrip::default();
     strip.start(TaskId::next(), TaskKind::Scan);
-    assert!(!rendered(&strip, 10)[0].contains("cancel"));
+    assert!(!rendered(&strip, 10)[0].contains("stop"));
 }
 
 #[test]
@@ -298,8 +333,8 @@ fn only_the_newest_failure_offers_dismiss() {
     assert_eq!(lines.len(), 4);
     assert!(lines[0].ends_with("failed 0") && !lines[0].contains("dismiss"));
     assert!(lines[1].ends_with("failed 1  d dismiss"));
-    assert!(lines[2].contains("so far") && !lines[2].contains("cancel"));
-    assert!(lines[3].ends_with("so far  c cancel"), "{:?}", lines[3]);
+    assert!(lines[2].contains("so far") && !lines[2].contains("stop"));
+    assert!(lines[3].ends_with("so far  c stop"), "{:?}", lines[3]);
 }
 
 #[test]
@@ -318,7 +353,7 @@ fn a_running_download_survives_the_cap() {
     }
     let lines = rendered(&strip, 4);
     assert_eq!(lines.len(), 4);
-    assert!(lines[0].starts_with(" pull") && lines[0].ends_with("c cancel"));
+    assert!(lines[0].starts_with(" pull") && lines[0].ends_with("c stop"));
     assert!(lines[1].ends_with("done 2"));
     assert!(lines[3].ends_with("done 4"));
     let all = rendered(&strip, 10);

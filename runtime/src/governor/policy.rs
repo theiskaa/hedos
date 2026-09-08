@@ -53,7 +53,7 @@ pub struct ResidentModel {
     pub model_id: String,
     /// Its display name.
     pub name: String,
-    /// Its estimated footprint in megabytes.
+    /// Its estimated footprint in mebibytes.
     pub footprint_mb: i64,
     /// A monotonic tick recording load order (lower is older), used to evict the
     /// oldest under the budgeted policy.
@@ -105,7 +105,7 @@ pub struct ResidencyPolicy {
     pub keep_warm: KeepWarmPolicy,
     /// The eviction strategy.
     pub eviction: EvictionPolicy,
-    /// An explicit RAM budget in megabytes for `Budgeted`; defaults to the
+    /// An explicit RAM budget in mebibytes for `Budgeted`; defaults to the
     /// governor's ceiling when `None`.
     pub ram_budget_mb: Option<i64>,
 }

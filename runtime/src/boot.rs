@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use kernel::artifacts::ArtifactStore;
-use kernel::discovery::StoreScanner;
+use kernel::discovery::{ModelHabitat, StoreScanner};
+use kernel::install::pulls::PullStore;
 use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
 
@@ -103,15 +104,44 @@ pub fn build_kernel(dirs: &HedosDirs, settings: &Settings) -> Result<Kernel, Boo
 
 /// The default install service: the Ollama and Hugging Face providers.
 pub fn default_install_service() -> InstallService {
+    install_service(&Settings::default())
+}
+
+/// The install service the `settings` describe: the same providers, with the
+/// Hugging Face one keeping a half-downloaded file another pull left behind
+/// as long as `pull.partial_age_hours` says.
+pub fn install_service(settings: &Settings) -> InstallService {
     let home = home_dir();
     let transport: Arc<dyn InstallTransport> = Arc::new(ReqwestTransport::new());
     let api = HFHubAPI::new(Arc::clone(&transport)).with_token(hf_token(&home));
-    let hugging_face = HuggingFaceInstallProvider::new(api, transport, hf_cache_root(&home), home);
+    let hugging_face = HuggingFaceInstallProvider::new(api, transport, hf_cache_root(&home), home)
+        .with_incomplete_age(settings.pull.partial_age());
     let providers: Vec<Arc<dyn InstallProvider>> = vec![
         Arc::new(OllamaInstallProvider::new()),
         Arc::new(hugging_face),
     ];
     InstallService::new(providers)
+}
+
+/// Where the pull job directories live under `dirs`. The workers, the CLI, and
+/// the screen all coordinate through this one directory.
+pub fn pull_root(dirs: &HedosDirs) -> PathBuf {
+    dirs.sub("pulls")
+}
+
+/// The store of pull jobs under `dirs`.
+pub fn pull_store(dirs: &HedosDirs) -> PullStore {
+    PullStore::new(pull_root(dirs))
+}
+
+/// The scanners a discovery pass runs: every store the machine's habitat offers,
+/// plus Apple's on-device model. Every front end and the pull worker share this
+/// one list, so what a background pull adds to the shelf is what a foreground
+/// scan would have.
+pub fn discovery_scanners(settings: &Settings) -> Vec<Box<dyn StoreScanner>> {
+    let mut scanners = ModelHabitat::detect().scanners(None, &discovery_settings(settings));
+    scanners.push(apple_foundation_scanner());
+    scanners
 }
 
 /// Translate the runtime settings' discovery inputs into the kernel's discovery
@@ -233,21 +263,25 @@ fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-/// The Hugging Face home directory: `$HF_HOME`, else `~/.cache/huggingface`. Both
-/// the hub cache and the login token file hang off it.
+/// The Hugging Face home directory this process sees, resolved by the same rule
+/// discovery uses so that what a pull writes is what a scan reads.
 fn hf_home(home: &std::path::Path) -> PathBuf {
-    std::env::var_os("HF_HOME")
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| home.join(".cache/huggingface"), PathBuf::from)
+    kernel::discovery::hf_home(&readable_env(), home)
 }
 
-/// The Hugging Face hub cache root: `$HF_HUB_CACHE`, else `$HF_HOME/hub`, else
-/// `~/.cache/huggingface/hub`.
+/// The Hugging Face hub cache this process installs into, resolved by the same
+/// rule discovery uses.
 fn hf_cache_root(home: &std::path::Path) -> PathBuf {
-    if let Some(cache) = std::env::var_os("HF_HUB_CACHE").filter(|value| !value.is_empty()) {
-        return PathBuf::from(cache);
-    }
-    hf_home(home).join("hub")
+    kernel::discovery::hf_cache_root(&readable_env(), home)
+}
+
+/// The environment, less any variable this process cannot read as text.
+/// `std::env::vars` panics on one of those; a path Hugging Face could use is
+/// never among them.
+fn readable_env() -> std::collections::HashMap<String, String> {
+    std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
 }
 
 /// The Hugging Face access token for gated repositories: `$HF_TOKEN` (or the

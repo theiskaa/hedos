@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 
 use dialoguer::theme::ColorfulTheme;
 use dialoguer::{Confirm, FuzzySelect, Input};
-use kernel::records::{Capability, ModelRecord};
+use kernel::records::{Capability, ModelRecord, ModelState};
 
 use crate::error::CliError;
 use crate::support::machine;
@@ -27,9 +27,34 @@ pub fn is_interactive(out: &Out) -> bool {
 /// Resolve `arg` to a model, or — when it is absent and the session is
 /// interactive — let the user pick from the capability-eligible models.
 ///
+/// A model whose weights are gone is refused here rather than further down,
+/// where the failure would be about whatever the missing files broke instead of
+/// about the files being missing.
+///
 /// With no `arg` and no terminal, this is a hard error, so a missing positional
 /// never silently blocks a pipe.
 pub fn choose_model<'a>(
+    out: &Out,
+    arg: Option<&str>,
+    shelf: &'a [ModelRecord],
+    capability: Option<&Capability>,
+    prompt: &str,
+    warm: &HashSet<String>,
+) -> Result<&'a ModelRecord, CliError> {
+    let record = choose_any_model(out, arg, shelf, capability, prompt, warm)?;
+    if record.state == ModelState::Missing {
+        let name = record.display_name();
+        return Err(CliError::new(format!(
+            "{name}'s weights are gone — pull it again, or drop the record with `hedos rm {name}`"
+        )));
+    }
+    Ok(record)
+}
+
+/// [`choose_model`] without the refusal, for the one command that acts on the
+/// record rather than on the model it names: a shelf entry whose weights are
+/// gone is exactly what removal is for.
+pub fn choose_any_model<'a>(
     out: &Out,
     arg: Option<&str>,
     shelf: &'a [ModelRecord],
@@ -138,4 +163,67 @@ fn cancelled() -> CliError {
 /// Map a `dialoguer` error into a CLI error.
 fn to_error(error: dialoguer::Error) -> CliError {
     CliError::new(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kernel::records::{Modality, ModelSource, SourceKind};
+
+    fn shelf(state: ModelState) -> Vec<ModelRecord> {
+        let mut record = ModelRecord::new(
+            "gemma",
+            Modality::text(),
+            vec![Capability::chat()],
+            ModelSource::new(SourceKind::file(), "/models/gemma.gguf"),
+        );
+        record.state = state;
+        vec![record]
+    }
+
+    /// A named model resolves without touching the terminal, so these run the
+    /// refusal and nothing else.
+    fn chosen(state: ModelState) -> Result<String, CliError> {
+        let shelf = shelf(state);
+        choose_model(
+            &Out::new(false),
+            Some("gemma"),
+            &shelf,
+            None,
+            "run",
+            &HashSet::new(),
+        )
+        .map(|record| record.id.clone())
+    }
+
+    #[test]
+    fn a_model_whose_weights_are_gone_is_refused_with_the_reason() {
+        let error = chosen(ModelState::Missing).expect_err("the weights are gone");
+        assert!(error.message.contains("weights are gone"), "{error:?}");
+        assert!(
+            error.message.contains("hedos rm gemma"),
+            "and says what to do: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_model_still_on_disk_is_chosen() {
+        assert!(chosen(ModelState::Ready).is_ok());
+        assert!(chosen(ModelState::Unresolved).is_ok());
+    }
+
+    #[test]
+    fn removal_reaches_a_model_whose_weights_are_gone() {
+        let shelf = shelf(ModelState::Missing);
+        let record = choose_any_model(
+            &Out::new(false),
+            Some("gemma"),
+            &shelf,
+            None,
+            "remove",
+            &HashSet::new(),
+        )
+        .expect("a gone record is exactly what removal is for");
+        assert_eq!(record.display_name(), "gemma");
+    }
 }

@@ -72,10 +72,11 @@ impl InstallCatalogEntry {
         format!("{}|{}", self.provider.as_str(), self.reference)
     }
 
-    /// How well this model fits in `total_memory_bytes` (footprint = `size_gb`
-    /// gigabytes, passed to the assessor as MiB), or `None` if the size is unusable.
+    /// How well this model fits in `total_memory_bytes`, its footprint being
+    /// `size_gb` decimal gigabytes as the hubs state them, or `None` if the
+    /// size is unusable.
     pub fn fit(&self, total_memory_bytes: u64) -> Option<FitAssessment> {
-        FitVerdict::assess(Some((self.size_gb * 1024.0) as i64), total_memory_bytes)
+        FitVerdict::assess(Some((self.size_gb * 1e9) as i64), total_memory_bytes)
     }
 }
 

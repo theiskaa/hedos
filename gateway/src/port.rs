@@ -27,7 +27,7 @@ pub struct GatewayResident {
     pub model_id: String,
     /// Its display name.
     pub name: String,
-    /// Its footprint in megabytes.
+    /// Its footprint in mebibytes.
     pub footprint_mb: i64,
     /// When its idle unload fires, in Unix milliseconds, if a timer is armed.
     pub expires_at_millis: Option<i64>,
@@ -103,7 +103,7 @@ pub async fn require_admission(
     kind: GatewayWorkKind,
 ) -> Result<(), GatewayError> {
     let state = port
-        .admission_state(&record.id, record.footprint_mb, kind)
+        .admission_state(&record.id, record.footprint_mib(), kind)
         .await;
     if let GatewayAdmissionState::Saturated {
         retry_after_seconds,

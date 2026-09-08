@@ -411,16 +411,81 @@ fn refreshed_writes_the_schema_onto_the_record() {
 #[test]
 fn assess_boundary_between_fit_and_exceed() {
     assert_eq!(
-        assess(1_000, 506, None),
+        assess(4_000, 1_256, None),
         Verdict::Fits {
             clamped_max_tokens: Some(256)
         }
     );
     assert_eq!(
-        assess(1_000, 505, None),
+        assess(4_000, 1_255, None),
         Verdict::Exceeds {
-            estimated: 250,
-            window: 505
+            estimated: 1_000,
+            window: 1_255
+        }
+    );
+}
+
+#[test]
+fn a_window_too_small_for_the_floor_keeps_half_of_itself_for_the_reply() {
+    // 64 prompt tokens and 64 held back is the whole 128-token window, which a
+    // flat 256-token floor would have refused however short the prompt was.
+    assert_eq!(
+        assess(256, 128, None),
+        Verdict::Fits {
+            clamped_max_tokens: Some(64)
+        }
+    );
+    assert_eq!(
+        assess(260, 128, None),
+        Verdict::Exceeds {
+            estimated: 65,
+            window: 128
+        }
+    );
+}
+
+#[test]
+fn the_floor_still_stands_over_a_window_that_can_afford_it() {
+    // At twice the floor and above, the reserve is the floor itself, so a
+    // 512-token window holds back the same 256 tokens a 32k one does.
+    assert_eq!(
+        assess(1_024, 512, None),
+        Verdict::Fits {
+            clamped_max_tokens: Some(256)
+        }
+    );
+    assert_eq!(
+        assess(1_028, 512, None),
+        Verdict::Exceeds {
+            estimated: 257,
+            window: 512
+        }
+    );
+}
+
+#[test]
+fn a_prompt_never_fits_a_window_with_no_room_to_answer_it() {
+    // Half of a zero window is nothing held back, so without the guards an
+    // empty prompt would "fit" a model that could not answer at all.
+    assert_eq!(
+        assess(0, 0, None),
+        Verdict::Exceeds {
+            estimated: 0,
+            window: 0
+        }
+    );
+    assert_eq!(
+        assess(4, 1, None),
+        Verdict::Exceeds {
+            estimated: 1,
+            window: 1
+        }
+    );
+    // One token of window, and nothing asked of it: a single token to answer.
+    assert_eq!(
+        assess(0, 1, None),
+        Verdict::Fits {
+            clamped_max_tokens: Some(1)
         }
     );
 }

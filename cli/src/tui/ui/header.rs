@@ -102,7 +102,7 @@ fn shelf_line(app: &App, wont_run: bool) -> String {
         .iter()
         .filter(|record| {
             !gone(record)
-                && verdict(record.footprint_mb, app.facts.memory_bytes)
+                && verdict(record.footprint_bytes, app.facts.memory_bytes)
                     == Some(FitVerdict::TooLarge)
         })
         .count();
@@ -154,10 +154,10 @@ mod tests {
     #[test]
     fn a_gone_record_counts_once_as_gone() {
         let mut gone = record("m");
-        gone.footprint_mb = Some(200 * 1024);
+        gone.footprint_bytes = Some(200 * (1 << 30));
         gone.state = ModelState::Missing;
         let mut too_big = record("n");
-        too_big.footprint_mb = Some(200 * 1024);
+        too_big.footprint_bytes = Some(200 * (1 << 30));
         let app = App::new(vec![gone, too_big, record("o")], facts());
         assert_eq!(
             shelf_line(&app, true),
@@ -176,7 +176,7 @@ mod tests {
         let mut gone = record("m");
         gone.state = ModelState::Missing;
         let mut too_big = record("n");
-        too_big.footprint_mb = Some(200 * 1024);
+        too_big.footprint_bytes = Some(200 * (1 << 30));
         let mut records = vec![gone, too_big];
         records.extend((0..10).map(|index| record(&format!("model-{index}"))));
         let facts = Facts {

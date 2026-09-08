@@ -84,7 +84,7 @@ fn side_by_side(body: Rect, shelf_rows: usize, machine_block: u16) -> (Rect, Rec
         .unwrap_or(u16::MAX)
         .saturating_add(SHELF_CHROME_ROWS)
         .max(MIN_SHELF_ROWS);
-    let with_machine = body.height >= MIN_SHELF_ROWS + machine_block;
+    let with_machine = machine_block > 0 && body.height >= MIN_SHELF_ROWS + machine_block;
     let machine_rows = if with_machine { machine_block } else { 0 };
     let [left, right] =
         Layout::horizontal([Constraint::Percentage(SHELF_PERCENT), Constraint::Min(0)]).areas(body);
@@ -120,7 +120,32 @@ impl Panes {
         task_rows: usize,
         expanded: bool,
     ) -> Self {
-        let machine_block = machine_lines + BORDER_ROWS;
+        Self::split(
+            area,
+            shelf_rows,
+            machine_lines + BORDER_ROWS,
+            task_rows,
+            expanded,
+        )
+    }
+
+    /// Split `area` for the pulls screen: the list of `pull_rows` jobs where
+    /// the shelf goes and the selected pull's detail where the model's goes,
+    /// with no machine or gateway block, since the screen is about the pulls
+    /// and the header carries the machine's one line.
+    pub fn pulls(area: Rect, pull_rows: usize, task_rows: usize) -> Self {
+        Self::split(area, pull_rows, 0, task_rows, false)
+    }
+
+    /// The layout behind both screens; a `machine_block` of zero rows means
+    /// no block at all.
+    fn split(
+        area: Rect,
+        shelf_rows: usize,
+        machine_block: u16,
+        task_rows: usize,
+        expanded: bool,
+    ) -> Self {
         let header_rows = if Self::tall(area) {
             TALL_HEADER_ROWS
         } else {
@@ -169,6 +194,24 @@ mod tests {
 
     fn panes(width: u16, height: u16) -> Panes {
         Panes::compute(Rect::new(0, 0, width, height), 14, 3, 0, false)
+    }
+
+    #[test]
+    fn the_pulls_screen_has_no_machine_or_gateway_block() {
+        let wide = Panes::pulls(Rect::new(0, 0, 110, 32), 3, 0);
+        assert_eq!(wide.machine.height, 0);
+        assert_eq!(wide.gateway.height, 0);
+        assert_eq!(wide.shelf.y, wide.detail.y);
+        // With nothing under it, the list takes the whole column.
+        assert_eq!(wide.shelf.height, wide.detail.height);
+        assert_eq!(wide.detail.height, wide.footer.y - wide.detail.y);
+        let narrow = Panes::pulls(Rect::new(0, 0, 80, 30), 3, 0);
+        assert_eq!(narrow.machine.height, 0);
+        assert_eq!(narrow.detail.height, STACKED_DETAIL_ROWS);
+        assert_eq!(
+            narrow.shelf.height + narrow.detail.height,
+            narrow.footer.y - narrow.shelf.y
+        );
     }
 
     #[test]

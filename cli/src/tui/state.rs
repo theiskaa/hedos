@@ -1,6 +1,7 @@
-//! What the UI remembers between runs: where the selection was, and nothing
-//! else; a remembered filter surprised more than it helped. State, not
-//! settings, so it lives in the data dir.
+//! What the UI remembers between runs: where the selection was, and which
+//! failed pulls were dismissed, so they do not come back on the next launch;
+//! a remembered filter surprised more than it helped. State, not settings, so
+//! it lives in the data dir.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,8 @@ const FILE: &str = "ui.toml";
 pub struct UiState {
     /// The id of the model that was selected.
     pub selected_id: Option<String>,
+    /// The pull jobs whose rows were dismissed from the strip.
+    pub dismissed: Vec<String>,
 }
 
 impl UiState {
@@ -77,6 +80,7 @@ mod tests {
         let dir = TempDir::new();
         let state = UiState {
             selected_id: Some("abc".to_owned()),
+            dismissed: vec!["1000-x".to_owned()],
         };
         state.save(&dir.0);
         assert_eq!(UiState::load(&dir.0), state);

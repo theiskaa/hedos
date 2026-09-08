@@ -9,8 +9,9 @@ pub mod ollama;
 pub mod provider;
 pub mod service;
 pub mod transport;
+pub mod worker;
 
-pub use hf_cache::{HFCacheLayout, HFCacheWriter};
+pub use hf_cache::{HFCacheLayout, HFCacheWriter, Landed};
 pub use hf_hub::{HFHubAPI, HFModelInfo};
 pub use huggingface::HuggingFaceInstallProvider;
 pub use ollama::OllamaInstallProvider;
@@ -20,3 +21,8 @@ pub use transport::{
     InstallRequest, InstallResponse, InstallTransport, ReqwestTransport, StreamFuture, StreamStart,
     TransportFuture,
 };
+pub use worker::{
+    PullWorker, Registrar, RetryPolicy, Stopped, WorkerError, collect_ended, stop, sweep_claims,
+};
+#[cfg(unix)]
+pub use worker::{Started, fail, hold, ignore_hangup, restart, resume_all, start_or_join};

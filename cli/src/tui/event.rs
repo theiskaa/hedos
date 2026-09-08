@@ -14,6 +14,7 @@ use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers, MouseEven
 use tokio::sync::mpsc;
 
 use super::facts::Facts;
+use super::jobs::JobRow;
 use super::tasks::TaskEvent;
 
 /// One wake-up of the loop.
@@ -27,6 +28,14 @@ pub enum Event {
     Tick,
     /// A background task moved.
     Task(TaskEvent),
+    /// The pull jobs, as the job directory reads right now.
+    Pulls(Vec<JobRow>),
+    /// One job's history, as lines already phrased against the clock.
+    History { job: String, lines: Vec<String> },
+    /// A pull was started from here, as this job.
+    PullStarted(String),
+    /// A pull could not be started, stopped, or resumed, and why.
+    PullRefused(String),
     /// The shelf and facts were re-read.
     Refreshed(Refreshed),
     /// A provider search came back.

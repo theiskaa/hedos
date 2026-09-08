@@ -1,6 +1,7 @@
 //! Tests for the install orchestrator, driven by scriptable mock providers.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use kernel::install::{
     InstallAvailability, InstallError, InstallEvent, InstallPlan, InstallProgress,
@@ -236,6 +237,53 @@ async fn an_over_budget_disk_check_rejects_begin() {
 }
 
 #[tokio::test]
+async fn the_disk_check_measures_where_the_model_will_be_written() {
+    // A cache on one volume and a shell open on another is the ordinary case,
+    // so the figure has to come from the destination, not this process's
+    // working directory.
+    let seen: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let recorder = Arc::clone(&seen);
+    let service = InstallService::builder(vec![MockProvider::hf(Behavior::Events(vec![]))])
+        .clock(|| 100)
+        .disk_probe("/never-measured", move |path| {
+            *recorder.lock().unwrap() = Some(path.to_path_buf());
+            Some(10)
+        })
+        .build();
+
+    // The shape the Hugging Face provider really produces: written for a person
+    // to read, so the home is collapsed and nothing below it exists yet.
+    let mut collapsed = plan();
+    collapsed.destination = "~/.cache/huggingface/hub".to_owned();
+    let _ = service.begin(collapsed);
+
+    let home = PathBuf::from(std::env::var("HOME").expect("a home directory"));
+    let measured = seen.lock().unwrap().clone().expect("the probe was asked");
+    assert!(
+        measured.starts_with(&home),
+        "measured {measured:?}, which is not under {home:?}"
+    );
+    assert_ne!(
+        measured,
+        PathBuf::from("."),
+        "the working directory is the wrong filesystem to ask about"
+    );
+
+    // And an absolute destination outside the home is measured where it points.
+    let temporary = std::env::temp_dir();
+    let mut elsewhere = plan();
+    elsewhere.destination = temporary
+        .join("hedos-not-made-yet/models--org--Model")
+        .to_string_lossy()
+        .into_owned();
+    let _ = service.begin(elsewhere);
+    assert_eq!(
+        seen.lock().unwrap().clone().expect("the probe was asked"),
+        temporary
+    );
+}
+
+#[tokio::test]
 async fn dedup_wins_over_a_failing_disk_check() {
     // A hanging install already in flight; a failing probe would reject a *new*
     // install, but the duplicate must dedup to the existing id without re-probing.
@@ -356,4 +404,28 @@ async fn begin_rejects_an_unknown_provider() {
         Err(InstallError::ProviderUnknown(_)) => {}
         other => panic!("expected ProviderUnknown, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_failed_install_remembers_why_until_its_history_rolls_over() {
+    let provider = MockProvider::hf(Behavior::Fail(
+        Vec::new(),
+        "the connection was reset".to_owned(),
+    ));
+    let service = InstallService::new(vec![provider]);
+    let id = service.begin(plan()).expect("begin");
+    let mut events = service.events(&id);
+    while let Some(event) = events.recv().await {
+        if event.is_terminal() {
+            break;
+        }
+    }
+
+    match service.failure(&id) {
+        Some(InstallError::TransferFailed(message)) => {
+            assert_eq!(message, "the connection was reset");
+        }
+        other => panic!("expected the typed error back, got {other:?}"),
+    }
+    assert!(service.failure("no-such-install").is_none());
 }

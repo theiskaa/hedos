@@ -10,9 +10,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::is_mmproj_name;
-use crate::discovery::gguf_shards::{group, parse, shard_filename};
+use crate::discovery::gguf_shards::group;
 use crate::discovery::modality_hints::{self, Hint};
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
+use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{ExecutionMode, JsonValue, Modality, ModelSource, SourceKind};
 use crate::resolution::has_ggml_magic;
 
@@ -76,12 +77,17 @@ impl HFCacheScanner {
             };
 
             let names = snapshot_file_names(&snapshot);
+            // Walked once and shared: a repo that keeps a directory per
+            // quantization has no weights at the snapshot root, so the hint,
+            // the completeness check and the primary weight all have to look
+            // below it.
+            let ggufs = gguf_tree(&snapshot).weights;
             let mut diagnostics = Vec::new();
-            let hint = resolve_hint(&snapshot, &names, &mut diagnostics);
+            let hint = resolve_hint(&snapshot, &names, &ggufs, &mut diagnostics);
 
             let downloading = has_incomplete_blobs(&dir.join("blobs"))
                 || index_references_missing_shard(&snapshot, &names)
-                || gguf_shards_incomplete(&snapshot, &names);
+                || gguf_shards_incomplete(&ggufs);
 
             // Last non-empty path segment (empty segments are skipped, so a
             // trailing slash doesn't yield an empty name).
@@ -99,7 +105,7 @@ impl HFCacheScanner {
             discovered.capabilities_hint = hint.capabilities;
             discovered.execution_hint = hint.execution;
             discovered.footprint_bytes = directory_bytes(&dir.join("blobs"));
-            discovered.primary_weight_path = largest_weight(&snapshot);
+            discovered.primary_weight_path = largest_weight(&snapshot, &ggufs);
             discovered.diagnostics = diagnostics;
             discovered.context_length_hint = hint.context_length;
             discovered.downloading = downloading;
@@ -193,13 +199,18 @@ fn snapshot_file_names(snapshot: &Path) -> BTreeSet<String> {
 
 /// Determine the modality hint for a snapshot from its files, then apply the
 /// sentence-transformers and missing-tokenizer refinements.
-fn resolve_hint(snapshot: &Path, names: &BTreeSet<String>, diagnostics: &mut Vec<String>) -> Hint {
+fn resolve_hint(
+    snapshot: &Path,
+    names: &BTreeSet<String>,
+    ggufs: &[(PathBuf, u64)],
+    diagnostics: &mut Vec<String>,
+) -> Hint {
     let mut hint = if names.contains("model_index.json") {
         modality_hints::from_model_index(&snapshot.join("model_index.json"))
     } else if names.contains("config.json") {
         modality_hints::from_config_json(&snapshot.join("config.json"))
             .unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync))
-    } else if names.iter().any(|name| is_gguf(name)) {
+    } else if !ggufs.is_empty() {
         modality_hints::gguf_hint()
     } else {
         diagnostics.push("no config.json or model_index.json in snapshot".to_owned());
@@ -246,13 +257,11 @@ fn has_incomplete_blobs(blobs: &Path) -> bool {
     false
 }
 
-fn gguf_shards_incomplete(snapshot: &Path, names: &BTreeSet<String>) -> bool {
-    let ggufs: Vec<(PathBuf, i64)> = names
-        .iter()
-        .filter(|name| is_gguf(name))
-        .map(|name| (snapshot.join(name), 0))
-        .collect();
-    let (groups, _) = group(&ggufs);
+fn gguf_shards_incomplete(ggufs: &[(PathBuf, u64)]) -> bool {
+    // Sizes are irrelevant to completeness, which counts members against the
+    // total each name declares.
+    let sized: Vec<(PathBuf, i64)> = ggufs.iter().map(|(path, _)| (path.clone(), 0)).collect();
+    let (groups, _) = group(&sized);
     groups.iter().any(|shard_group| !shard_group.complete())
 }
 
@@ -307,41 +316,58 @@ fn walk_bytes(dir: &Path, total: &mut i64) {
     }
 }
 
-/// The largest weight file in a snapshot, resolved through its symlink. For a
-/// GGUF shard set, the first shard's path is returned instead.
-fn largest_weight(snapshot: &Path) -> Option<String> {
-    let mut names = Vec::new();
-    let mut best: Option<(PathBuf, i64)> = None;
-    for entry in std::fs::read_dir(snapshot).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-            names.push(name.to_owned());
-        }
-        if is_weight_file(&path) {
-            let size = std::fs::metadata(&path)
-                .map(|meta| meta.len() as i64)
-                .unwrap_or(0);
-            if best.as_ref().is_none_or(|(_, best_size)| size > *best_size) {
-                best = Some((path, size));
-            }
-        }
-    }
-
-    let (best_path, _) = best?;
-    if let Some(shard) = best_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(parse)
-    {
-        let first = shard_filename(&shard.base, 1, shard.total);
-        if names.contains(&first) {
-            return Some(resolve(&snapshot.join(first)));
-        }
-    }
-    Some(resolve(&best_path))
+/// The weight file a runtime would load, resolved through its symlink: the
+/// largest weight in the snapshot, where a GGUF is chosen by the rule
+/// identification reads the header by, and every other format is measured at
+/// the snapshot root, which is where those formats put their weights.
+///
+/// A shard set is weighed by its largest member but answers with its first
+/// file, which is what a server loads the rest through.
+fn largest_weight(snapshot: &Path, ggufs: &[(PathBuf, u64)]) -> Option<String> {
+    let gguf = primary_of(ggufs).map(|path| {
+        let largest = ggufs.iter().map(|(_, size)| *size).max().unwrap_or(0);
+        (path, largest)
+    });
+    let best = match (gguf, largest_other_weight(snapshot)) {
+        (Some(gguf), Some(other)) if other.1 > gguf.1 => other,
+        (Some(gguf), _) => gguf,
+        (None, other) => other?,
+    };
+    Some(resolve(&best.0))
 }
 
-fn is_weight_file(path: &Path) -> bool {
+/// The largest safetensors or GGML weight at the snapshot root, with a tie
+/// going to the earlier path so one snapshot always reads the same way.
+fn largest_other_weight(snapshot: &Path) -> Option<(PathBuf, u64)> {
+    let mut best: Option<(PathBuf, u64)> = None;
+    for entry in std::fs::read_dir(snapshot).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') || !is_other_weight_file(&path) {
+            continue;
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let size = metadata.len();
+        let better = best.as_ref().is_none_or(|(best_path, best_size)| {
+            size > *best_size || (size == *best_size && path < *best_path)
+        });
+        if better {
+            best = Some((path, size));
+        }
+    }
+    best
+}
+
+/// Whether `path` is a weight file in a format other than GGUF, which
+/// [`primary_of`] answers for.
+fn is_other_weight_file(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -355,14 +381,10 @@ fn is_weight_file(path: &Path) -> bool {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("safetensors" | "gguf") => true,
+        Some("safetensors") => true,
         Some("bin") => has_ggml_magic(path),
         _ => false,
     }
-}
-
-fn is_gguf(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with(".gguf")
 }
 
 /// A path resolved through symlinks (falling back to itself), as a string.

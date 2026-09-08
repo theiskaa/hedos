@@ -4,7 +4,7 @@
 
 use clap::Args;
 use kernel::profiles::FitVerdict;
-use kernel::records::{Capability, ModelRecord};
+use kernel::records::{Capability, ModelRecord, ModelState};
 
 use crate::error::CliError;
 use crate::support::machine;
@@ -57,14 +57,21 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
 }
 
 /// The shelf as a JSON array: every record's own fields plus a `fit` slug
-/// (`runs_well`/`tight_fit`/`too_large`, or `null` when the footprint is unknown),
-/// judged against `total_memory_bytes`.
+/// (`runs_well`/`tight_fit`/`too_large`, or `null` when the footprint is
+/// unknown or the weights are gone), judged against `total_memory_bytes`.
+///
+/// A model whose weights are gone has no fit for the same reason the table
+/// reads `gone` in that column: there is nothing left to fit, and a verdict
+/// would be the row's one healthy-looking claim about a model that cannot run.
+/// The record's own `state` field says which it is.
 fn shelf_json(shelf: &[ModelRecord], total_memory_bytes: u64) -> serde_json::Value {
     let models: Vec<serde_json::Value> = shelf
         .iter()
         .map(|record| {
             let mut value = serde_json::to_value(record).unwrap_or_default();
-            let fit = FitVerdict::assess(record.footprint_mb, total_memory_bytes)
+            let fit = (record.state != ModelState::Missing)
+                .then(|| FitVerdict::assess(record.footprint_bytes, total_memory_bytes))
+                .flatten()
                 .map(|assessment| assessment.verdict.as_str());
             if let Some(object) = value.as_object_mut() {
                 // serde_json maps `None` to JSON `null`, `Some(slug)` to a string.
@@ -83,20 +90,20 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
 
-    fn model(name: &str, footprint_mb: Option<i64>) -> ModelRecord {
+    fn model(name: &str, footprint_bytes: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(
             name,
             Modality::text(),
             vec![Capability::chat()],
             ModelSource::new(SourceKind::ollama(), name),
         );
-        record.footprint_mb = footprint_mb;
+        record.footprint_bytes = footprint_bytes;
         record
     }
 
     #[test]
     fn json_injects_a_fit_slug_and_keeps_every_record_field() {
-        let record = model("gemma", Some(1024));
+        let record = model("gemma", Some(GIB as i64));
         let value = shelf_json(std::slice::from_ref(&record), 16 * GIB);
         let enriched = value[0].as_object().expect("record object");
         assert_eq!(
@@ -115,6 +122,15 @@ mod tests {
                 "field {key} changed or dropped"
             );
         }
+    }
+
+    #[test]
+    fn json_withholds_a_fit_from_a_model_whose_weights_are_gone() {
+        let mut record = model("tiny", Some(GIB as i64));
+        record.state = ModelState::Missing;
+        let value = shelf_json(&[record], 16 * GIB);
+        assert!(value[0]["fit"].is_null());
+        assert_eq!(value[0]["state"], "missing", "and says why");
     }
 
     #[test]

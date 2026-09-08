@@ -25,7 +25,7 @@ pub struct HFSibling {
     pub rfilename: String,
     /// The file's size in bytes, if the listing reported it.
     pub bytes: Option<i64>,
-    /// The LFS object's SHA-256 (`lfs.oid`), when the file is stored in LFS. The
+    /// The LFS object's SHA-256 (`lfs.sha256`), when the file is stored in LFS. The
     /// download path uses it as the content-addressed blob name and to verify the
     /// bytes; plain (non-LFS) files don't report one.
     pub sha256: Option<String>,
@@ -264,11 +264,11 @@ fn diffusers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
                 return false;
             }
             let ext = file_extension(path);
-            if ["bin", "ckpt", "pt", "pth"].contains(&ext.as_str()) {
-                let stem = &path[..path.len() - (ext.len() + 1)];
-                if paths.contains(format!("{stem}.safetensors").as_str()) {
-                    return false;
-                }
+            if ["bin", "ckpt", "pt", "pth"].contains(&ext.as_str())
+                && let Some(stem) = path.get(..path.len().saturating_sub(ext.len() + 1))
+                && paths.contains(format!("{stem}.safetensors").as_str())
+            {
+                return false;
             }
             for variant in [".fp16.", ".non_ema."] {
                 if path.contains(variant) && paths.contains(path.replace(variant, ".").as_str()) {

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::modality_hints::{Hint, from_config_json};
+use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
     RuntimeId, SourceKind,
@@ -99,7 +100,9 @@ impl RuntimeBid {
 
 /// Identify what a `record` is from its source kind and on-disk files: a fixed
 /// profile for builtin/endpoint/ollama models, else the GGUF/GGML header, a
-/// diffusers `model_index.json`, or a `config.json`+safetensors layout.
+/// diffusers `model_index.json`, a `config.json`+safetensors layout, or the
+/// GGUF weights inside the container when the record names a directory, which
+/// is the shape a Hugging Face cache repo has.
 ///
 /// `record.source.path` is taken as-is (callers pass an absolute path — discovery
 /// does); a leading `~` is not expanded.
@@ -141,7 +144,7 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     }
 
     if extension.as_deref() == Some("gguf") || has_gguf_magic(base) {
-        return identify_gguf(base);
+        return identify_gguf(base, has_mmproj_companion(base));
     }
 
     let model_index = container.join("model_index.json");
@@ -153,6 +156,16 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     let hint = from_config_json(&config);
     if let Some(format) = safetensors_format(&container, &config) {
         return identify_safetensors(format, hint.as_ref(), &container);
+    }
+    // A repo whose weights are GGUF names a directory, so the file the header
+    // is read from is inside it. Placed after the diffusers and safetensors
+    // layouts so a directory that resolves as one keeps doing so, and before
+    // the bare config hint below, which it deliberately outranks: a header
+    // read from the weights says more than a sibling config file.
+    if let Some((weights, has_projector)) =
+        gguf_weights(&container, record.primary_weight_path.as_deref())
+    {
+        return identify_gguf(&weights, has_projector);
     }
     match hint {
         Some(hint) => {
@@ -169,7 +182,38 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     }
 }
 
-fn identify_gguf(base: &Path) -> IdentifiedModel {
+/// The GGUF file a model held in a directory is served from, when it is one,
+/// and whether a projector sits with it. Which file that is comes from
+/// [`primary_of`], the rule the store scanners pick a primary weight by, so the
+/// header read here belongs to the file a server will load. Weights kept in a
+/// subdirectory, as a repo with one folder per quantization keeps them, are
+/// reached the same way, and so is a projector left at the root beside them.
+///
+/// The file is named through the container rather than through `primary`,
+/// which a Hugging Face record resolves to a blob whose name carries nothing:
+/// the projector checks read both the name and its neighbours.
+///
+/// `primary` refuses the whole container when it is not itself a GGUF, missing
+/// included: of the formats this branch can answer, what the runtime would
+/// load has the last word.
+///
+/// An architecture [`gguf_architecture_profile`] does not know reads as a text
+/// chat model, which is the answer the same bytes get as a loose file.
+fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<(PathBuf, bool)> {
+    if let Some(primary) = primary
+        && !has_gguf_magic(Path::new(primary))
+    {
+        return None;
+    }
+    let tree = gguf_tree(container);
+    let weights = primary_of(&tree.weights)?;
+    Some((weights, tree.has_projector))
+}
+
+/// What a GGUF is, from its header. `has_projector` says whether a multimodal
+/// projector accompanies it, which is what makes sight real: an architecture
+/// that can see cannot without one.
+fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
     let name = base
         .file_name()
         .and_then(|name| name.to_str())
@@ -189,17 +233,24 @@ fn identify_gguf(base: &Path) -> IdentifiedModel {
         .and_then(|facts| facts.architecture.as_deref())
         && let Some(profile) = gguf_architecture_profile(architecture)
     {
+        let mut capabilities = profile.capabilities;
+        if !has_projector {
+            // The architecture can see, but no image encoder came with these
+            // weights, so nothing here can read a picture. Sight is the
+            // pairing, not the architecture.
+            capabilities.retain(|capability| *capability != Capability::see());
+        }
         let mut model = IdentifiedModel::new(
             ModelFormat::Gguf,
             Some(profile.modality),
-            profile.capabilities,
+            capabilities,
             profile.execution,
         );
         model.context_length = facts.as_ref().and_then(|facts| facts.context_length);
         model.has_chat_template = facts.as_ref().map(|facts| facts.has_chat_template);
         return model;
     }
-    let capabilities = if has_mmproj_companion(base) {
+    let capabilities = if has_projector {
         vec![
             Capability::chat(),
             Capability::complete(),

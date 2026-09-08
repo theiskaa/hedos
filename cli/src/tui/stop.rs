@@ -1,0 +1,234 @@
+//! The stop card: what stopping a pull costs each way, asked before a key does
+//! anything to it. Shared by every surface that stops a pull, so the strip's
+//! `c` and the pulls screen's open the same card.
+//!
+//! A cancel is not a pause: nothing resumes from it, so a mis-keyed cancel
+//! ends a pull that may have had gigabytes landed, and only a fresh pull of
+//! the same model, within `pull.partial_age_hours`, finds them again. The
+//! card offers pause first, because it can be resumed, and cancel second,
+//! because it cannot.
+//! Cancel answers to `x`, the shelf's own destroying key, and not to `c`: the
+//! key that opened the card must not also confirm it, or a held key would
+//! cancel through the card on its repeat.
+
+use kernel::install::event::InstallProgress;
+
+use super::event::Key;
+use super::jobs::JobRow;
+use super::strip::TaskRow;
+use super::tasks::PullAction;
+
+/// The pull the card is about, and what it has landed so far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopCard {
+    /// The job a stop is addressed to.
+    pub job: String,
+    /// The model being fetched.
+    pub reference: String,
+    /// Bytes landed so far, and the total when it is known.
+    pub progress: InstallProgress,
+}
+
+/// What a key on the card asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopChoice {
+    /// Stop the pull one of the two ways.
+    Stop(PullAction),
+    /// Leave it going.
+    Keep,
+}
+
+impl StopCard {
+    /// The card over the pull `row` shows; `None` for a row that is not a
+    /// pull still going.
+    pub fn over(row: &TaskRow) -> Option<Self> {
+        let job = row.job()?;
+        if !row.pull_going() {
+            return None;
+        }
+        Some(Self {
+            job: job.to_owned(),
+            reference: row.label.subject.clone(),
+            progress: row.progress.clone(),
+        })
+    }
+
+    /// Whether a card would open over `row`. The footer asks this on every
+    /// frame, and only to decide whether to offer the key, so it does not build
+    /// one to find out.
+    pub fn can_stop(row: &JobRow) -> bool {
+        row.pull_state.is_live() && !row.status.past_stopping()
+    }
+
+    /// The card over the pull the screen's `row` lists; `None` for one that
+    /// is not going, a pull past stopping included, so the card never opens
+    /// over a pull it could not stop.
+    pub fn over_job(row: &JobRow) -> Option<Self> {
+        if !Self::can_stop(row) {
+            return None;
+        }
+        Some(Self {
+            job: row.job.clone(),
+            reference: row.reference.clone(),
+            progress: row.status.progress.clone(),
+        })
+    }
+
+    /// Take the figures from `row` again, and say whether the pull is still
+    /// going; `None` is a pull that is no longer on the strip.
+    pub fn follow(&mut self, row: Option<&TaskRow>) -> bool {
+        let Some(row) = row.filter(|row| row.pull_going()) else {
+            return false;
+        };
+        self.progress = row.progress.clone();
+        true
+    }
+
+    /// What `key` asks; `None` for a key the card ignores.
+    pub fn choice(key: Key) -> Option<StopChoice> {
+        match key {
+            Key::Char('p') => Some(StopChoice::Stop(PullAction::Pause)),
+            Key::Char('x') => Some(StopChoice::Stop(PullAction::Cancel)),
+            Key::Escape | Key::Char('n') => Some(StopChoice::Keep),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use kernel::install::pulls::{PullState, REGISTERING_LINE};
+
+    use crate::tui::jobs::JobRow;
+    use crate::tui::strip::TaskStrip;
+    use crate::tui::tasks::{TaskId, TaskKind, TaskState};
+    use crate::tui::testing::{downloading, job_row};
+
+    fn strip_with(rows: Vec<JobRow>) -> TaskStrip {
+        let mut strip = TaskStrip::default();
+        strip.sync_pulls(rows, 0);
+        strip
+    }
+
+    #[test]
+    fn the_card_is_over_a_pull_still_going_and_nothing_else() {
+        let strip = strip_with(vec![
+            job_row(
+                "q",
+                PullState::Queued,
+                TaskState::Status("queued".to_owned()),
+            ),
+            job_row(
+                "s",
+                PullState::Paused,
+                TaskState::Stopped("paused".to_owned()),
+            ),
+        ]);
+        let queued = StopCard::over(&strip.rows()[0]).expect("queued is going");
+        assert_eq!(queued.job, "1000-q");
+        assert_eq!(queued.reference, "q");
+        assert_eq!(queued.progress, InstallProgress::default());
+        assert!(StopCard::over(&strip.rows()[1]).is_none());
+
+        // A pull queued for a retry keeps its bytes, and the card must say so
+        // whatever its row reads: those are what a cancel would throw away.
+        let mut retrying = job_row(
+            "r",
+            PullState::Queued,
+            TaskState::Status("retrying in 4s".to_owned()),
+        );
+        retrying.status.progress.bytes_downloaded = 1 << 30;
+        let strip = strip_with(vec![retrying.clone()]);
+        let card = StopCard::over(&strip.rows()[0]).expect("a retry is going");
+        assert_eq!(card.progress.bytes_downloaded, 1 << 30);
+        let from_screen = StopCard::over_job(&retrying).expect("a retry is going");
+        assert_eq!(from_screen, card);
+        assert!(
+            StopCard::over_job(&job_row(
+                "s",
+                PullState::Paused,
+                TaskState::Stopped("paused".to_owned())
+            ))
+            .is_none()
+        );
+
+        let mut strip = TaskStrip::default();
+        strip.start(TaskId::next(), TaskKind::Scan);
+        assert!(StopCard::over(&strip.rows()[0]).is_none());
+    }
+
+    #[test]
+    fn following_takes_the_new_figures_until_the_pull_stops() {
+        let strip = strip_with(vec![downloading("x")]);
+        let mut card = StopCard::over(&strip.rows()[0]).expect("downloading is going");
+        let mut moved = downloading("x");
+        moved.status.progress = InstallProgress {
+            bytes_downloaded: 7,
+            total_bytes: Some(9),
+            ..InstallProgress::default()
+        };
+        moved.state = TaskState::Downloading(moved.status.progress.clone());
+        let strip = strip_with(vec![moved]);
+        assert!(card.follow(strip.rows().first()));
+        assert_eq!(card.progress.bytes_downloaded, 7);
+
+        let strip = strip_with(vec![job_row(
+            "x",
+            PullState::Done,
+            TaskState::Done("pulled x".to_owned()),
+        )]);
+        assert!(!card.follow(strip.rows().first()));
+        assert!(!card.follow(None));
+        assert_eq!(card.progress.bytes_downloaded, 7);
+    }
+
+    #[test]
+    fn a_pull_being_registered_is_past_stopping() {
+        // The line alone, with no byte count to lean on.
+        let mut registering = downloading("x");
+        registering.status.status_line = Some(REGISTERING_LINE.to_owned());
+        registering.state = TaskState::Status(REGISTERING_LINE.to_owned());
+        let strip = strip_with(vec![registering.clone()]);
+        assert!(!strip.rows()[0].pull_going());
+        assert!(StopCard::over(&strip.rows()[0]).is_none());
+        assert!(
+            StopCard::over_job(&registering).is_none(),
+            "and on the screen"
+        );
+    }
+
+    #[test]
+    fn a_full_bar_alone_leaves_a_pull_stoppable() {
+        // The transfer is over but the worker has not said so, so it is still
+        // reading the control file and the card still opens.
+        let mut full = downloading("x");
+        full.status.progress = InstallProgress {
+            bytes_downloaded: 9,
+            total_bytes: Some(9),
+            ..InstallProgress::default()
+        };
+        let strip = strip_with(vec![full.clone()]);
+        assert!(strip.rows()[0].pull_going());
+        assert!(StopCard::over(&strip.rows()[0]).is_some());
+        assert!(StopCard::over_job(&full).is_some());
+    }
+
+    #[test]
+    fn cancel_never_answers_to_the_key_that_opened_the_card() {
+        assert_eq!(
+            StopCard::choice(Key::Char('p')),
+            Some(StopChoice::Stop(PullAction::Pause))
+        );
+        assert_eq!(
+            StopCard::choice(Key::Char('x')),
+            Some(StopChoice::Stop(PullAction::Cancel))
+        );
+        assert_eq!(StopCard::choice(Key::Char('c')), None);
+        assert_eq!(StopCard::choice(Key::Escape), Some(StopChoice::Keep));
+        assert_eq!(StopCard::choice(Key::Char('n')), Some(StopChoice::Keep));
+        assert_eq!(StopCard::choice(Key::Char('y')), None);
+        assert_eq!(StopCard::choice(Key::Enter), None);
+    }
+}

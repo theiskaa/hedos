@@ -11,13 +11,16 @@ mod edit;
 mod effect;
 mod event;
 mod facts;
+mod jobs;
 mod keymap;
 mod launch;
 mod layout;
 mod markup;
 mod order;
 mod pull;
+mod pulls;
 mod state;
+mod stop;
 mod strip;
 mod tasks;
 #[cfg(test)]
@@ -27,7 +30,7 @@ mod ui;
 mod wrap;
 
 use std::io::{self, Write};
-use std::process::ExitStatus;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -45,6 +48,7 @@ use self::state::UiState;
 use self::tasks::{TaskContext, TaskLabel, TaskState};
 use crate::commands;
 use crate::error::CliError;
+use crate::support::clock;
 use crate::support::output::Out;
 use crate::support::session::Session;
 use crate::support::signals;
@@ -65,6 +69,14 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         Arc::new(session),
         runtime::boot::default_install_service(),
     ));
+    let pull_settings = &context.session().settings.pull;
+    runtime::install::collect_ended(&context.pull_store(), pull_settings);
+    // A pull whose worker died while the machine slept is the common way one
+    // stops, and the screen is where the user finds out. With auto-resume on,
+    // they find it going again rather than waiting to be told to carry on.
+    if pull_settings.auto_resume {
+        runtime::install::resume_all(&context.pull_store());
+    }
     let tasks::Snapshot { records, facts } = context.snapshot().await;
     let mut app = App::new(records, facts);
     app.restore(&UiState::load(&state_dir));
@@ -87,6 +99,10 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     // burst of them would age the strip and fire a refresh per 10 s away.
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    // The job directory is read before the first frame rather than on the
+    // first cadence, so a download under way is on the strip when the screen
+    // appears, which is the point of it surviving the terminal.
+    tasks::spawn_pulls(&context, &tx);
     let terminal_modes = TerminalModes::capture();
     let outcome = loop {
         match on_terminal(
@@ -111,8 +127,9 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         }
     };
     app.remembered().save(&state_dir);
-    // A pull or removal is finished rather than cut mid-way; a scan runs to
-    // completion inside one poll anyway. Either way, say why the prompt is late.
+    // A removal is finished rather than cut between deleting and forgetting; a
+    // scan runs to completion inside one poll anyway. A download is not waited
+    // for at all: it belongs to a worker that outlives this process.
     if context.busy() || app.busy() {
         out.line("finishing background work…");
     }
@@ -237,7 +254,7 @@ async fn run_hand_off(
             .await
             .map(|()| None),
     };
-    let ran = text::duration(started.elapsed().as_secs() as i64);
+    let ran = clock::duration(started.elapsed().as_secs() as i64);
     let state = match result {
         Ok(None) => TaskState::Done(format!("ran {ran}")),
         Ok(Some(status)) => match status.code() {
@@ -286,11 +303,16 @@ async fn drive(
                     app.started(id, kind);
                 }
                 Effect::Refresh => tasks::spawn_refresh(context, tx),
+                Effect::PollPulls => tasks::spawn_pulls(context, tx),
+                Effect::PollHistory(job) => tasks::spawn_history(job, context, tx),
+                Effect::StartPull(plan) => tasks::spawn_start_pull(*plan, context, tx),
+                Effect::ControlPull(action, job) => {
+                    tasks::spawn_pull_control(action, job, context, tx);
+                }
                 Effect::Search(query) => tasks::spawn_search(query, context, tx),
                 Effect::Plan(provider, reference, ask) => {
                     tasks::spawn_plan(provider, reference, ask, context, tx);
                 }
-                Effect::Cancel(id) => context.cancel(id),
                 Effect::Copy(text) => copy_to_clipboard(&text),
                 Effect::Ask {
                     record_id,
@@ -303,13 +325,33 @@ async fn drive(
     }
 }
 
-/// Put `text` on the clipboard through OSC 52, which reaches the terminal the
-/// user sits at even over ssh or inside tmux (with `set-clipboard on`).
+/// Put `text` on the pasteboard both ways, since each reaches one the other
+/// cannot: `pbcopy` this machine's, whatever terminal or multiplexer sits in
+/// between; OSC 52 the terminal's, which over ssh is the one the user sits
+/// at (tmux relays it only with `set-clipboard on`).
 fn copy_to_clipboard(text: &str) {
+    pbcopy(text);
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
     let mut stdout = io::stdout();
     let _ = write!(stdout, "\x1b]52;c;{encoded}\x07");
     let _ = stdout.flush();
+}
+
+/// `text` through `pbcopy`; whether it took it.
+fn pbcopy(text: &str) -> bool {
+    let Ok(mut child) = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    written && child.wait().is_ok_and(|status| status.success())
 }
 
 fn terminal_error(error: io::Error) -> CliError {

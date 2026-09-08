@@ -1,6 +1,7 @@
 //! The shelf table: the `hedos ls` columns with a size instead of a fit
 //! verdict, since the verdict only matters when it is not `fits`. A record
-//! whose weights are gone is dim and says `gone` where its size would be.
+//! whose weights are gone is marked in the gutter, drawn dim, and says `gone`
+//! where its size would be.
 
 use kernel::profiles::FitVerdict;
 use kernel::records::{ModelRecord, ModelState};
@@ -16,7 +17,8 @@ use super::{
     centered, edited, keys, pane,
 };
 use crate::support::banner::{KOALA, KOALA_WIDTH};
-use crate::support::shelf_table::{DASH, runtime_label, verdict, verdict_label};
+use crate::support::shelf_table::{marker, runtime_label, verdict, verdict_label};
+use crate::support::table::DASH;
 use crate::tui::app::App;
 use crate::tui::keymap;
 use crate::tui::order::Sort;
@@ -128,7 +130,7 @@ fn draw_no_match(frame: &mut Frame, body: Rect) {
 
 /// One row of the shelf: its cells and the fit verdict they were built from.
 struct ShelfRow {
-    /// The warm marker, the name, the runtime and store as short labels, and
+    /// The state marker, the name, the runtime and store as short labels, and
     /// the size with the verdict when it is not `fits`.
     cells: [String; 5],
     verdict: Option<FitVerdict>,
@@ -145,21 +147,19 @@ impl ShelfRow {
         let verdict = if gone {
             None
         } else {
-            verdict(record.footprint_mb, budget)
+            verdict(record.footprint_bytes, budget)
         };
         let mut size = if gone {
             "gone".to_owned()
         } else {
-            record
-                .footprint_bytes()
-                .map_or(DASH.to_owned(), text::bytes)
+            record.size_on_disk().map_or(DASH.to_owned(), text::bytes)
         };
         if matches!(verdict, Some(FitVerdict::TightFit | FitVerdict::TooLarge)) {
             size = format!("{size} {}", verdict_label(verdict));
         }
         Self {
             cells: [
-                if warm { "●" } else { "○" }.to_owned(),
+                marker(record, warm).to_owned(),
                 record.display_name().to_owned(),
                 text::short_runtime(runtime_label(record)).to_owned(),
                 text::short_store(record.source.kind.as_str()).to_owned(),
@@ -312,31 +312,31 @@ mod tests {
     const WIDTHS: [usize; 5] = [2, 20, 10, 8, 7];
     const GIB: u64 = kernel::records::byte_format::BYTES_PER_GIB as u64;
 
-    /// A Hugging Face chat model `footprint_mb` large.
-    fn sized_record(footprint_mb: Option<i64>) -> ModelRecord {
+    /// A Hugging Face chat model `footprint_bytes` large.
+    fn sized_record(footprint_bytes: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(
             "m",
             Modality::text(),
             vec![Capability::chat()],
             ModelSource::new(SourceKind::huggingface_cache(), "m"),
         );
-        record.footprint_mb = footprint_mb;
+        record.footprint_bytes = footprint_bytes;
         record
     }
 
     #[test]
     fn the_size_cell_carries_the_verdict_only_when_it_matters() {
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(1024)), false, 16 * GIB).cells[4],
-            "1 GB"
+            ShelfRow::new(&sized_record(Some(GIB as i64)), false, 16 * GIB).cells[4],
+            "1.1 GB"
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(12 * 1024)), false, 16 * GIB).cells[4],
-            "12 GB tight"
+            ShelfRow::new(&sized_record(Some(12 * GIB as i64)), false, 16 * GIB).cells[4],
+            "12.9 GB tight"
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(16 * 1024)), false, 16 * GIB).cells[4],
-            "16 GB too big"
+            ShelfRow::new(&sized_record(Some(16 * GIB as i64)), false, 16 * GIB).cells[4],
+            "17.2 GB too big"
         );
         assert_eq!(
             ShelfRow::new(&sized_record(None), false, 16 * GIB).cells[4],
@@ -354,14 +354,15 @@ mod tests {
 
     #[test]
     fn a_gone_row_is_dim_and_says_gone() {
-        let mut gone = sized_record(Some(16 * 1024));
+        let mut gone = sized_record(Some(16 * GIB as i64));
         gone.state = ModelState::Missing;
         let row = ShelfRow::new(&gone, false, 16 * GIB);
         assert!(row.dim());
         assert_eq!(row.cells[SIZE], "gone");
+        assert_eq!(row.cells[0], "✕", "and the gutter marks it");
         assert_eq!(row.verdict, None);
-        assert!(!ShelfRow::new(&sized_record(Some(1024)), false, 16 * GIB).dim());
-        assert!(ShelfRow::new(&sized_record(Some(16 * 1024)), false, 16 * GIB).dim());
+        assert!(!ShelfRow::new(&sized_record(Some(GIB as i64)), false, 16 * GIB).dim());
+        assert!(ShelfRow::new(&sized_record(Some(16 * GIB as i64)), false, 16 * GIB).dim());
     }
 
     #[test]
@@ -376,7 +377,7 @@ mod tests {
 
     #[test]
     fn the_gutter_stays_two_wide() {
-        let rows = [ShelfRow::new(&sized_record(Some(1)), true, 16 * GIB)];
+        let rows = [ShelfRow::new(&sized_record(Some(1 << 20)), true, 16 * GIB)];
         assert_eq!(widths(&rows)[0], 2);
     }
 

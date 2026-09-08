@@ -202,6 +202,68 @@ fn architecture_profiles_map_known_names() {
 }
 
 #[test]
+fn every_encoder_the_table_knows_embeds_rather_than_chats() {
+    // The names llama.cpp gives its encoder-only architectures. Read as chat
+    // they would draw a bid from a server that cannot answer with them.
+    for architecture in [
+        "bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "neo-bert",
+        "modern-bert",
+        "eurobert",
+        "gemma-embedding",
+        "llama-embed",
+        "t5encoder",
+    ] {
+        let profile = gguf_architecture_profile(architecture)
+            .unwrap_or_else(|| panic!("{architecture} should be known"));
+        assert_eq!(profile.modality, Modality::embedding(), "{architecture}");
+        assert_eq!(
+            profile.capabilities,
+            vec![Capability::embed()],
+            "{architecture}"
+        );
+    }
+}
+
+#[test]
+fn a_model_that_can_see_says_so_whichever_generation_it_is() {
+    for architecture in [
+        "qwen2vl",
+        "qwen3vl",
+        "qwen3vlmoe",
+        "mllama",
+        "cogvlm",
+        "hunyuan-vl",
+    ] {
+        let profile = gguf_architecture_profile(architecture)
+            .unwrap_or_else(|| panic!("{architecture} should be known"));
+        assert_eq!(profile.modality, Modality::text(), "{architecture}");
+        assert!(
+            profile.capabilities.contains(&Capability::see()),
+            "{architecture}"
+        );
+        assert!(
+            profile.capabilities.contains(&Capability::chat()),
+            "{architecture}"
+        );
+    }
+}
+
+#[test]
+fn half_of_a_speech_pipeline_serves_nothing_on_its_own() {
+    // The vocoder turns another model's tokens into audio; nothing can be
+    // asked of it, so it offers no capability, the way a projector does not.
+    let vocoder = gguf_architecture_profile("wavtokenizer-dec").unwrap();
+    assert_eq!(vocoder.modality, Modality::audio());
+    assert!(vocoder.capabilities.is_empty());
+    assert_eq!(vocoder.execution, ExecutionMode::Sync);
+}
+
+#[test]
 fn ollama_default_profiles() {
     assert_eq!(
         ollama_chat_profile().capabilities,

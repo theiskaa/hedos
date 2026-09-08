@@ -85,7 +85,7 @@ fn temp_root() -> PathBuf {
 fn provider(root: &PathBuf, body: &[u8]) -> HuggingFaceInstallProvider {
     let sha = sha_hex(body);
     let siblings = format!(
-        r#"{{"rfilename":"model.Q4_K_M.gguf","size":{size},"lfs":{{"size":{size},"oid":"{sha}"}}}}"#,
+        r#"{{"rfilename":"model.Q4_K_M.gguf","size":{size},"lfs":{{"size":{size},"sha256":"{sha}","pointerSize":134}}}}"#,
         size = body.len(),
     );
     provider_custom(root, body, false, &siblings, None)
@@ -169,6 +169,33 @@ async fn install_downloads_into_the_hub_cache_and_streams_progress() {
     assert_eq!(
         std::fs::read_to_string(repo.join("refs/main")).unwrap(),
         "rev1"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn a_resumed_install_never_reports_less_than_what_is_on_disk() {
+    let root = temp_root();
+    let body = vec![7u8; 8192];
+    let sha = sha_hex(&body);
+    let provider = provider(&root, &body);
+    let plan = provider.plan("org/Model").await.expect("plan");
+    // A pull was paused at 5000 bytes.
+    let blobs = root.join("models--org--Model").join("blobs");
+    std::fs::create_dir_all(&blobs).unwrap();
+    std::fs::write(blobs.join(format!("{sha}.incomplete")), &body[..5000]).unwrap();
+
+    let events = drain(provider.install(plan)).await.expect("install");
+    let first = events
+        .iter()
+        .find_map(|event| match event {
+            InstallStreamEvent::Progress(progress) => Some(progress.bytes_downloaded),
+            _ => None,
+        })
+        .expect("a progress event");
+    assert!(
+        first >= 5000,
+        "the first snapshot read {first}, below the partial"
     );
     std::fs::remove_dir_all(&root).ok();
 }

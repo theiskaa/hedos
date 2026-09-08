@@ -79,7 +79,7 @@ pub fn order(records: &[ModelRecord], facts: &Facts, query: &str, sort: Sort) ->
     match sort {
         Sort::Name => {}
         Sort::Size => indices
-            .sort_by_key(|&index| std::cmp::Reverse(records[index].footprint_mb.unwrap_or(0))),
+            .sort_by_key(|&index| std::cmp::Reverse(records[index].footprint_bytes.unwrap_or(0))),
         Sort::LastUsed => indices.sort_by_key(|&index| {
             std::cmp::Reverse(
                 facts
@@ -99,14 +99,14 @@ mod tests {
     use crate::support::residency::{Holder, Resident};
     use kernel::records::{Modality, ModelSource, SourceKind};
 
-    fn record(name: &str, footprint_mb: Option<i64>) -> ModelRecord {
+    fn record(name: &str, footprint_bytes: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(
             name,
             Modality::text(),
             vec![Capability::chat()],
             ModelSource::new(SourceKind::ollama(), name),
         );
-        record.footprint_mb = footprint_mb;
+        record.footprint_bytes = footprint_bytes;
         record
     }
 

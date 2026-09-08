@@ -4,16 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use kernel::capabilities::GenerationStats;
+use kernel::install::event::InstallProgress;
 use kernel::profiles::{FitAssessment, FitVerdict};
 use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 use crate::support::shelf_table::verdict_label;
-
-const MINUTE: i64 = 60;
-const HOUR: i64 = 60 * MINUTE;
-const DAY: i64 = 24 * HOUR;
+pub use crate::support::text::{clip, elide_middle};
 
 /// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
@@ -24,20 +20,6 @@ pub fn bytes(bytes: i64) -> String {
 /// machine total: `14.2`. Negative counts read as zero.
 pub fn gib(bytes: i64) -> String {
     one_decimal(bytes.max(0) as f64 / BYTES_PER_GIB as f64)
-}
-
-/// A duration in seconds as its largest whole unit: `45s`, `26m`, `3h`, `2d`.
-pub fn duration(seconds: i64) -> String {
-    let seconds = seconds.max(0);
-    if seconds >= DAY {
-        format!("{}d", seconds / DAY)
-    } else if seconds >= HOUR {
-        format!("{}h", seconds / HOUR)
-    } else if seconds >= MINUTE {
-        format!("{}m", seconds / MINUTE)
-    } else {
-        format!("{seconds}s")
-    }
 }
 
 /// `buckets` as one bar per bucket, scaled to the largest; a flat line when
@@ -92,13 +74,13 @@ pub fn at_home(path: &str) -> String {
 
 /// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
 /// footprint is unknown: the shape the detail and the pull preview share.
-pub fn fit_summary(footprint_mb: Option<i64>, memory_bytes: u64) -> String {
-    fit_parts(footprint_mb, memory_bytes).0
+pub fn fit_summary(footprint_bytes: Option<i64>, memory_bytes: u64) -> String {
+    fit_parts(footprint_bytes, memory_bytes).0
 }
 
 /// [`fit_summary`] and, when the model fits at all, the bytes it needs.
-pub fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
-    match FitVerdict::assess(footprint_mb, memory_bytes) {
+pub fn fit_parts(footprint_bytes: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
+    match FitVerdict::assess(footprint_bytes, memory_bytes) {
         None => ("unknown footprint".to_owned(), None),
         Some(FitAssessment {
             verdict: FitVerdict::TooLarge,
@@ -119,32 +101,18 @@ pub fn fit_parts(footprint_mb: Option<i64>, memory_bytes: u64) -> (String, Optio
     }
 }
 
-/// `text` cut to `width` cells by dropping its middle, so a path keeps both
-/// its root and its file name.
-pub fn elide_middle(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_owned();
+/// What a pull has on disk: `125 MB of 468 MB` against a firm total, `125 MB
+/// so far` when the total is only an estimate, nothing when nothing has
+/// landed.
+pub fn landed(progress: &InstallProgress) -> Option<String> {
+    if progress.bytes_downloaded <= 0 {
+        return None;
     }
-    let graphemes: Vec<&str> = text.graphemes(true).collect();
-    if width < 5 {
-        return take_cells(graphemes.iter().copied(), width);
-    }
-    let head = take_cells(graphemes.iter().copied(), (width - 1) / 2);
-    let tail = take_cells(graphemes.iter().rev().copied(), width - 1 - head.width());
-    let tail: String = tail.graphemes(true).rev().collect();
-    format!("{head}…{tail}")
-}
-
-/// `text` cut to `width` cells from the tail, with `…` where it was cut, for
-/// a value whose start carries the meaning.
-pub fn clip(text: &str, width: usize) -> String {
-    if text.width() <= width {
-        return text.to_owned();
-    }
-    if width < 2 {
-        return take_cells(text.graphemes(true), width);
-    }
-    format!("{}…", take_cells(text.graphemes(true), width - 1))
+    let done = bytes(progress.bytes_downloaded);
+    Some(match (progress.fraction(), progress.total_bytes) {
+        (Some(_), Some(total)) => format!("{done} of {}", bytes(total)),
+        _ => format!("{done} so far"),
+    })
 }
 
 /// A count in its shortest readable form: `987`, `1.5k`, `45k`, `1.2M`.
@@ -165,20 +133,6 @@ pub fn compact(count: i64) -> String {
     } else {
         count.to_string()
     }
-}
-
-/// The leading graphemes of `graphemes` that fit in `width` cells.
-fn take_cells<'a>(graphemes: impl Iterator<Item = &'a str>, width: usize) -> String {
-    let mut used = 0;
-    graphemes
-        .take_while(|grapheme| {
-            let fits = used + grapheme.width() <= width;
-            if fits {
-                used += grapheme.width();
-            }
-            fits
-        })
-        .collect()
 }
 
 /// `~120 tokens · 40 tok/s · first in 0.4s`, from whatever a reply reported.
@@ -222,6 +176,8 @@ pub fn count(count: usize, noun: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn elide_middle_budgets_cells_not_characters() {
@@ -268,15 +224,6 @@ mod tests {
         assert_eq!(gib(14_200_000_000), "13.2");
         assert_eq!(gib(0), "0");
         assert_eq!(gib(-1), "0");
-    }
-
-    #[test]
-    fn durations_pick_the_largest_whole_unit() {
-        assert_eq!(duration(45), "45s");
-        assert_eq!(duration(26 * 60 + 30), "26m");
-        assert_eq!(duration(3 * 3600), "3h");
-        assert_eq!(duration(2 * 86_400 + 5), "2d");
-        assert_eq!(duration(-5), "0s");
     }
 
     #[test]

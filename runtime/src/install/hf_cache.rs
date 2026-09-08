@@ -25,9 +25,10 @@ const HASH_CHUNK_BYTES: usize = 1 << 20;
 const STREAM_RESUMES: usize = 5;
 /// The wait before the first reopen; each further one waits a step longer.
 const RESUME_BACKOFF: Duration = Duration::from_secs(2);
-/// Stray `.incomplete` blobs younger than this are left alone (another install
-/// may still be writing them); older ones are reaped.
-const STALE_INCOMPLETE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long a stray `.incomplete` blob is kept by default. A younger one may
+/// belong to an install still writing it, and a paused pull's bytes are worth
+/// keeping for a while; `hedos.toml`'s `pull.partial_age_hours` overrides it.
+pub const DEFAULT_INCOMPLETE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The on-disk paths of one repo's hub-cache directory.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -92,12 +93,23 @@ impl HFCacheLayout {
 pub struct HFCacheWriter {
     layout: HFCacheLayout,
     transport: Arc<dyn InstallTransport>,
+    incomplete_age: Duration,
 }
 
 impl HFCacheWriter {
     /// A writer for `layout`, fetching over `transport`.
     pub fn new(layout: HFCacheLayout, transport: Arc<dyn InstallTransport>) -> Self {
-        Self { layout, transport }
+        Self {
+            layout,
+            transport,
+            incomplete_age: DEFAULT_INCOMPLETE_AGE,
+        }
+    }
+
+    /// This writer keeping a stray partial for `age` instead of the default day.
+    pub fn with_incomplete_age(mut self, age: Duration) -> Self {
+        self.incomplete_age = age;
+        self
     }
 
     /// The layout this writer targets.
@@ -108,11 +120,15 @@ impl HFCacheWriter {
     /// The blob name a not-yet-downloaded file will use: its LFS SHA-256 when
     /// known, else a deterministic `tmp-…` name derived from revision + path.
     pub fn pending_blob_name(sibling: &HFSibling, revision: &str) -> String {
-        if let Some(sha) = &sibling.sha256 {
-            return sha.clone();
+        match &sibling.sha256 {
+            Some(sha) => sha.clone(),
+            None => Self::unnamed_blob_name(&sibling.rfilename, revision),
         }
+    }
+
+    fn unnamed_blob_name(rfilename: &str, revision: &str) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(format!("{revision}\n{}", sibling.rfilename).as_bytes());
+        hasher.update(format!("{revision}\n{rfilename}").as_bytes());
         format!("tmp-{}", hex::encode(hasher.finalize()))
     }
 
@@ -129,9 +145,12 @@ impl HFCacheWriter {
             let pending = self
                 .layout
                 .incomplete_url(&Self::pending_blob_name(sibling, revision));
+            // A partial longer than its file is one the server will not
+            // resume from; counting it whole would read as the file landed.
             let size = fs::metadata(&pending)
                 .map(|meta| meta.len() as i64)
-                .unwrap_or(0);
+                .unwrap_or(0)
+                .min(sibling.bytes.unwrap_or(i64::MAX));
             present.saturating_add(size.max(0))
         })
     }
@@ -144,9 +163,13 @@ impl HFCacheWriter {
         revision: &str,
         first_weight_pending_name: Option<&str>,
     ) -> Result<(), InstallError> {
-        fs::create_dir_all(self.layout.blobs_directory()).map_err(io_err)?;
-        fs::create_dir_all(self.layout.snapshot_directory(revision)).map_err(io_err)?;
-        fs::create_dir_all(self.layout.refs_directory()).map_err(io_err)?;
+        for directory in [
+            self.layout.blobs_directory(),
+            self.layout.snapshot_directory(revision),
+            self.layout.refs_directory(),
+        ] {
+            fs::create_dir_all(&directory).map_err(io_err(&directory))?;
+        }
         let reference = self.layout.refs_directory().join("main");
         if !reference.exists() {
             write_atomic(&reference, revision.as_bytes())?;
@@ -154,7 +177,7 @@ impl HFCacheWriter {
         if let Some(name) = first_weight_pending_name {
             let pending = self.layout.incomplete_url(name);
             if !pending.exists() && !self.layout.blob_url(name).exists() {
-                fs::File::create(&pending).map_err(io_err)?;
+                fs::File::create(&pending).map_err(io_err(&pending))?;
             }
         }
         Ok(())
@@ -162,13 +185,14 @@ impl HFCacheWriter {
 
     /// Download `sibling`, resuming from any saved `.incomplete`, verifying the
     /// hash, moving it into `blobs/`, and symlinking it under `snapshots/<rev>`.
-    /// `on_bytes` receives each byte delta (negative when a partial is discarded).
+    /// `on_bytes` hears of every byte as it is counted: found on disk, fetched,
+    /// or given up.
     pub async fn download(
         &self,
         sibling: &HFSibling,
         revision: &str,
         request: InstallRequest,
-        on_bytes: &mut (dyn FnMut(i64) + Send),
+        on_bytes: &mut (dyn FnMut(Landed) + Send),
     ) -> Result<(), InstallError> {
         let pending_name = Self::pending_blob_name(sibling, revision);
 
@@ -178,25 +202,50 @@ impl HFCacheWriter {
         {
             let _ = fs::remove_file(self.layout.incomplete_url(&pending_name));
             self.link(&sibling.rfilename, revision, sha)?;
-            on_bytes(sibling.bytes.unwrap_or(0));
+            on_bytes(Landed::OnDisk(sibling.bytes.unwrap_or(0)));
             return Ok(());
         }
 
         let incomplete = self.layout.incomplete_url(&pending_name);
+        // A partial written before the listing's hash was read was named
+        // without it; it is the same bytes, so it is carried on from. The
+        // hash-named file may already be there as the empty placeholder the
+        // skeleton lays down, which is nothing to keep.
+        let nothing_saved = fs::metadata(&incomplete)
+            .ok()
+            .is_none_or(|meta| meta.len() == 0);
+        if sibling.sha256.is_some() && nothing_saved {
+            let unnamed = self
+                .layout
+                .incomplete_url(&Self::unnamed_blob_name(&sibling.rfilename, revision));
+            if unnamed.exists() {
+                fs::rename(&unnamed, &incomplete).map_err(io_err(&unnamed))?;
+            }
+        }
         let mut hasher = Sha256::new();
         let mut written: i64 = 0;
         if incomplete.exists() {
             written = self.hash_existing(&incomplete, &mut hasher)?;
             if written > 0 {
-                on_bytes(written);
+                on_bytes(Landed::OnDisk(written));
             }
         } else {
-            fs::File::create(&incomplete).map_err(io_err)?;
+            fs::File::create(&incomplete).map_err(io_err(&incomplete))?;
         }
 
         let base_request = request;
         let mut resumes = 0;
-        loop {
+        // A partial that is already the whole file has nothing left to ask for.
+        // Asking anyway sends a range beginning at the end, which a server
+        // answers 416, and the handler below would read that as a partial past
+        // the end and throw the finished file away. A stream that errors after
+        // its last chunk arrives here with every byte already written.
+        //
+        // Only for a file the listing gave a hash for. Without one the length
+        // is the only check there is, so a partial of the right length but the
+        // wrong bytes is fetched again rather than trusted.
+        let settled = |written: i64| sibling.sha256.is_some() && sibling.bytes == Some(written);
+        while !settled(written) {
             let request = if written > 0 {
                 base_request
                     .clone()
@@ -208,9 +257,9 @@ impl HFCacheWriter {
 
             // The saved partial is past the end — start over from scratch.
             if start.status == 416 && written > 0 {
-                fs::write(&incomplete, b"").map_err(io_err)?;
+                fs::write(&incomplete, b"").map_err(io_err(&incomplete))?;
                 hasher = Sha256::new();
-                on_bytes(-written);
+                on_bytes(Landed::Discarded(written));
                 written = 0;
                 start = self.transport.stream(base_request.clone()).await?;
             }
@@ -219,17 +268,20 @@ impl HFCacheWriter {
                 200 => {
                     // A full response despite our range — discard the partial.
                     if written > 0 {
-                        fs::write(&incomplete, b"").map_err(io_err)?;
+                        fs::write(&incomplete, b"").map_err(io_err(&incomplete))?;
                         hasher = Sha256::new();
-                        on_bytes(-written);
+                        on_bytes(Landed::Discarded(written));
                         written = 0;
                     }
                 }
                 206 => {}
                 401 | 403 => return Err(InstallError::AuthRequired(self.layout.repo.clone())),
+                // A file the plan named that the repo no longer serves is a
+                // fact about the repo, not a bad connection: retrying it would
+                // ask forever for something that is not there.
                 404 => {
-                    return Err(InstallError::TransferFailed(format!(
-                        "{} is missing from {}",
+                    return Err(InstallError::ReferenceNotFound(format!(
+                        "{} in {}",
                         sibling.rfilename, self.layout.repo
                     )));
                 }
@@ -244,7 +296,7 @@ impl HFCacheWriter {
             let mut handle = fs::OpenOptions::new()
                 .append(true)
                 .open(&incomplete)
-                .map_err(io_err)?;
+                .map_err(io_err(&incomplete))?;
             let mut broke = None;
             while let Some(chunk) = start.chunks.recv().await {
                 let chunk = match chunk {
@@ -254,12 +306,12 @@ impl HFCacheWriter {
                         break;
                     }
                 };
-                handle.write_all(&chunk).map_err(io_err)?;
+                handle.write_all(&chunk).map_err(io_err(&incomplete))?;
                 hasher.update(&chunk);
                 written += chunk.len() as i64;
-                on_bytes(chunk.len() as i64);
+                on_bytes(Landed::Fetched(chunk.len() as i64));
             }
-            handle.flush().map_err(io_err)?;
+            handle.flush().map_err(io_err(&incomplete))?;
             drop(handle);
 
             // A multi-gigabyte transfer loses its connection now and then; the
@@ -269,6 +321,12 @@ impl HFCacheWriter {
                 None => break,
                 Some(InstallError::TransferFailed(_)) if resumes < STREAM_RESUMES => {
                     resumes += 1;
+                    // The break that costs nothing: a stream that failed after
+                    // its last chunk has nothing to come back for, and waiting
+                    // first would only end at the same place.
+                    if settled(written) {
+                        break;
+                    }
                     tokio::time::sleep(RESUME_BACKOFF * resumes as u32).await;
                 }
                 Some(error) => return Err(error),
@@ -295,9 +353,9 @@ impl HFCacheWriter {
         let final_name = sibling.sha256.clone().unwrap_or(digest);
         let blob = self.layout.blob_url(&final_name);
         if blob.exists() {
-            fs::remove_file(&incomplete).map_err(io_err)?;
+            fs::remove_file(&incomplete).map_err(io_err(&incomplete))?;
         } else {
-            fs::rename(&incomplete, &blob).map_err(io_err)?;
+            fs::rename(&incomplete, &blob).map_err(io_err(&blob))?;
         }
         self.link(&sibling.rfilename, revision, &final_name)?;
         Ok(())
@@ -311,11 +369,30 @@ impl HFCacheWriter {
         )
     }
 
+    /// Remove every empty `.incomplete` blob.
+    ///
+    /// The skeleton lays one down before a byte moves, and a scanner reads any
+    /// `.incomplete` in a repo as a download still under way. Left behind by a
+    /// pull that stopped early, it makes a model that was already installed
+    /// read as though it were still coming down. An empty one holds nothing, so
+    /// dropping it costs a resumed pull nothing either.
+    pub fn remove_empty_placeholders(&self) {
+        let blobs = self.layout.blobs_directory();
+        for entry in fs::read_dir(&blobs).into_iter().flatten().flatten() {
+            if !entry.file_name().to_string_lossy().ends_with(".incomplete") {
+                continue;
+            }
+            if entry.metadata().is_ok_and(|meta| meta.len() == 0) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
     /// Remove `.incomplete` blobs that aren't in `keeping` and are older than the
     /// stale cutoff (a fresh one may belong to a concurrent install).
     pub fn remove_stray_incompletes(&self, keeping: &HashSet<String>) -> Result<(), InstallError> {
         let cutoff = SystemTime::now()
-            .checked_sub(STALE_INCOMPLETE_AGE)
+            .checked_sub(self.incomplete_age)
             .unwrap_or(SystemTime::UNIX_EPOCH);
         self.reap_incompletes(keeping, cutoff)
     }
@@ -327,10 +404,11 @@ impl HFCacheWriter {
         keeping: &HashSet<String>,
         cutoff: SystemTime,
     ) -> Result<(), InstallError> {
-        let entries = match fs::read_dir(self.layout.blobs_directory()) {
+        let blobs = self.layout.blobs_directory();
+        let entries = match fs::read_dir(&blobs) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(io_err(error)),
+            Err(error) => return Err(io_err(&blobs)(error)),
         };
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -389,7 +467,7 @@ impl HFCacheWriter {
     fn link(&self, path: &str, revision: &str, blob_name: &str) -> Result<(), InstallError> {
         let destination = self.layout.snapshot_file(revision, path);
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(io_err)?;
+            fs::create_dir_all(parent).map_err(io_err(parent))?;
         }
         // Replace any existing file, (possibly dangling) symlink, or stray dir.
         if fs::symlink_metadata(&destination).is_ok() && fs::remove_file(&destination).is_err() {
@@ -400,11 +478,11 @@ impl HFCacheWriter {
     }
 
     fn hash_existing(&self, path: &Path, hasher: &mut Sha256) -> Result<i64, InstallError> {
-        let mut file = fs::File::open(path).map_err(io_err)?;
+        let mut file = fs::File::open(path).map_err(io_err(path))?;
         let mut buffer = vec![0u8; HASH_CHUNK_BYTES];
         let mut total: i64 = 0;
         loop {
-            let read = file.read(&mut buffer).map_err(io_err)?;
+            let read = file.read(&mut buffer).map_err(io_err(path))?;
             if read == 0 {
                 break;
             }
@@ -415,8 +493,24 @@ impl HFCacheWriter {
     }
 }
 
-fn io_err(error: std::io::Error) -> InstallError {
-    InstallError::TransferFailed(error.to_string())
+/// The error `path` refused with, as the machine's own fact: what the OS
+/// said, then which file, so the reason survives a cut column.
+fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
+    move |error| InstallError::Local(format!("{error}, at {}", path.display()))
+}
+
+/// Bytes a download counts as it goes, told apart by where they came from:
+/// what was on disk is known before anything is fetched, and a snapshot that
+/// reports it as fetched would read as a transfer that moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Landed {
+    /// Bytes already on disk when the download began: a saved partial, or a
+    /// whole blob from an earlier pull.
+    OnDisk(i64),
+    /// Bytes fetched from the wire.
+    Fetched(i64),
+    /// Bytes on disk given up, because the server would not resume from them.
+    Discarded(i64),
 }
 
 /// A per-process counter so concurrent `write_atomic` calls (even for the same
@@ -430,13 +524,13 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), InstallError> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".tmp-{}-{unique}", std::process::id()));
     let temp = path.with_file_name(name);
-    fs::write(&temp, data).map_err(io_err)?;
-    fs::rename(&temp, path).map_err(io_err)
+    fs::write(&temp, data).map_err(io_err(&temp))?;
+    fs::rename(&temp, path).map_err(io_err(path))
 }
 
 #[cfg(unix)]
 fn symlink(target: &str, link: &Path) -> Result<(), InstallError> {
-    std::os::unix::fs::symlink(target, link).map_err(io_err)
+    std::os::unix::fs::symlink(target, link).map_err(io_err(link))
 }
 
 #[cfg(not(unix))]
@@ -446,7 +540,7 @@ fn symlink(target: &str, link: &Path) -> Result<(), InstallError> {
         .parent()
         .map(|parent| parent.join(target))
         .unwrap_or_else(|| PathBuf::from(target));
-    fs::copy(&source, link).map(|_| ()).map_err(io_err)
+    fs::copy(&source, link).map(|_| ()).map_err(io_err(link))
 }
 
 #[cfg(test)]
@@ -588,7 +682,12 @@ mod tests {
                 &sibling,
                 "rev",
                 InstallRequest::get("https://x/w.bin"),
-                &mut |delta| seen += delta,
+                &mut |delta| {
+                    seen += match delta {
+                        Landed::OnDisk(bytes) | Landed::Fetched(bytes) => bytes,
+                        Landed::Discarded(bytes) => -bytes,
+                    }
+                },
             )
             .await
             .expect("resumed");

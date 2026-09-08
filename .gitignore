@@ -20,3 +20,6 @@ internal/
 .build/
 dist/
 packaging/
+
+# Coverage artifacts from an instrumented run.
+*.profraw

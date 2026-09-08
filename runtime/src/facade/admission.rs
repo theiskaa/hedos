@@ -35,7 +35,7 @@ impl JobAdmission for GovernorAdmission {
             let (name, footprint) = {
                 let registry = registry.lock().await;
                 match registry.get(&job.model_id) {
-                    Some(record) => (record.name.clone(), record.footprint_mb),
+                    Some(record) => (record.name.clone(), record.footprint_mib()),
                     None => (job.model_id.clone(), None),
                 }
             };

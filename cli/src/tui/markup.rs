@@ -58,9 +58,13 @@ fn prose(paragraph: &str) -> Vec<Cell<Emphasis>> {
             bold = !bold;
             rest = after;
         } else {
-            let end = rest[1..]
-                .find(['`', '*'])
-                .map_or(rest.len(), |index| index + 1);
+            // A lone `*`, or `**` inside code, is text: the run takes its
+            // first character before the next marker is looked for.
+            let end = rest
+                .char_indices()
+                .skip(1)
+                .find(|(_, c)| matches!(c, '`' | '*'))
+                .map_or(rest.len(), |(index, _)| index);
             let emphasis = if code {
                 Emphasis::Code
             } else if bold {
@@ -138,6 +142,34 @@ mod tests {
             flat(&lines("**open\nplain", 10))[1],
             [("plain", Emphasis::Plain)]
         );
+    }
+
+    #[test]
+    fn text_in_any_script_is_read_without_a_panic() {
+        // A run that opens on a character wider than one byte, at the start
+        // of the paragraph and right after a marker.
+        let georgian = "დიდი **მადლობა** `კოდი` ჩინური 中文 and emoji 🙂";
+        let wrapped = lines(georgian, 12);
+        let joined: String = wrapped
+            .iter()
+            .flat_map(|line| line.iter().map(|run| run.text.as_str()))
+            .collect();
+        assert_eq!(
+            joined.replace(' ', ""),
+            georgian.replace(['*', '`', ' '], "")
+        );
+        assert!(flat(&wrapped).iter().flatten().any(|(text, emphasis)| {
+            *text == "მადლობა" && *emphasis == Emphasis::Bold
+        }));
+        assert!(
+            flat(&wrapped)
+                .iter()
+                .flatten()
+                .any(|(text, emphasis)| { *text == "კოდი" && *emphasis == Emphasis::Code })
+        );
+        assert_eq!(flat(&lines("*", 5)), [vec![("*", Emphasis::Plain)]]);
+        assert_eq!(flat(&lines("დ*", 5)), [vec![("დ*", Emphasis::Plain)]]);
+        assert_eq!(flat(&lines("# დ", 5)), [vec![("დ", Emphasis::Bold)]]);
     }
 
     #[test]

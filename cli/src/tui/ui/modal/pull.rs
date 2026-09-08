@@ -11,9 +11,7 @@ use ratatui::text::{Line, Span};
 use super::label_column;
 use crate::support::shelf_table::verdict_label;
 use crate::tui::app::App;
-use crate::tui::pull::{
-    CATEGORIES, ListingRow, MAX_MATCHES, Offer, PullModal, Stage, footprint_mb,
-};
+use crate::tui::pull::{CATEGORIES, ListingRow, MAX_MATCHES, Offer, PullModal, Stage};
 use crate::tui::text;
 use crate::tui::ui::{
     ACCENT, BORDER_ROWS, CAUTION, DIM, EYEBROW, edited, field_line, keys, padded, right_aligned,
@@ -125,7 +123,7 @@ pub(super) fn preview(plan: &InstallPlan, app: &App, inner: Rect) -> Vec<Line<'s
         ),
         row(
             "fit",
-            text::fit_summary(plan.total_bytes.map(footprint_mb), app.facts.memory_bytes),
+            text::fit_summary(plan.total_bytes, app.facts.memory_bytes),
         ),
         row("download", download),
         Line::from(styled_field(

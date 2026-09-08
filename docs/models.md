@@ -17,12 +17,12 @@ Discovery also resolves each model to a runtime. It reads the model's shape (con
 
 ## Installing
 
-`hedos pull <reference>` resolves a reference and plans the install before anything downloads. The reference can be a Hugging Face repo (`org/model`), an Ollama tag (`gemma3:4b`), or a link to either. hedos infers the provider from the shape, and `--from ollama` or `--from hf` forces it. Run `hedos pull` with no reference in a terminal to search Hugging Face by keyword or to pick from a short list of models that fit your machine's RAM.
+`hedos pull <reference>` resolves a reference and plans the install before anything downloads. The download itself runs in a worker process of its own, so closing the terminal does not stop it; `hedos pull ls` shows what is running and `hedos pull pause`/`resume` stop and restart it without losing the bytes already fetched. The reference can be a Hugging Face repo (`org/model`), an Ollama tag (`gemma3:4b`), or a link to either. hedos infers the provider from the shape, and `--from ollama` or `--from hf` forces it. Run `hedos pull` with no reference in a terminal to search Hugging Face by keyword or to pick from a short list of models that fit your machine's RAM.
 
 Installs write into each platform's native layout:
 
 - **Ollama** models pull through the daemon's own API.
-- **Hugging Face** models download into the standard hub cache: content-addressed blobs, a snapshot directory of symlinks, and a ref pointing at the revision. Downloads resume with HTTP `Range`, and each file is verified with SHA-256 against its LFS oid.
+- **Hugging Face** models download into the standard hub cache: content-addressed blobs, a snapshot directory of symlinks, and a ref pointing at the revision. Downloads resume with HTTP `Range`, and each file is verified with SHA-256 against the hash its LFS listing names.
 
 hedos owns no weights directory of its own, so the moment an install finishes, every other tool sees the model too. Installs do not touch the registry directly; the follow-up scan discovers the result. Gated repositories authenticate with `HF_TOKEN` from the environment.
 

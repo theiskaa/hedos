@@ -2,7 +2,6 @@
 //! event channel, so the loop never blocks on the kernel. This is the only
 //! module in the UI that awaits kernel calls.
 
-use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
@@ -13,19 +12,24 @@ use std::time::{Duration, SystemTime};
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
 use kernel::discovery::service::DiscoverySummary;
-use kernel::install::event::{InstallEvent, InstallProgress};
+use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
+use kernel::install::pulls::{PullControl, PullError, PullStore};
 use kernel::records::{Capability, JsonValue, ModelRecord};
+use kernel::time::now_millis;
 use runtime::install::service::InstallService;
+use runtime::install::{Started, WorkerError, restart, start_or_join, stop};
 use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::event::{Event, Planned, Refreshed, Reply, ReplyStep, Searched};
 use super::facts::Facts;
-use super::pull::SEARCH_LIMIT;
+use super::jobs;
+use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
+use crate::support::pulls::event_line;
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{is_resident, unload_anywhere, warm_request};
 use crate::support::session::Session;
@@ -52,16 +56,12 @@ impl Snapshot {
     }
 }
 
-/// What tasks run against: the kernel session, the install service, and the
-/// install ids of the pulls in flight, so a row in the strip can be cancelled.
+/// What tasks run against: the kernel session, the install service the pull
+/// modal plans through, and the audit log the machine facts are read from.
 pub struct TaskContext {
     session: Arc<Session>,
     install: InstallService,
     audit: AuditReader,
-    installs: Mutex<HashMap<TaskId, String>>,
-    /// Pulls cancelled before their download had an id to cancel by; the
-    /// pull honours it the moment it has one.
-    cancelled: Mutex<HashSet<TaskId>>,
     /// Tasks that change the shelf or the disk; the loop waits for them on
     /// quit, so a removal is never cut between deleting and forgetting.
     mutating: Mutex<Vec<JoinHandle<()>>>,
@@ -78,8 +78,6 @@ impl TaskContext {
             session,
             install,
             audit,
-            installs: Mutex::new(HashMap::new()),
-            cancelled: Mutex::new(HashSet::new()),
             mutating: Mutex::new(Vec::new()),
             ask: Mutex::new(None),
         }
@@ -121,6 +119,11 @@ impl TaskContext {
             .any(|handle| !handle.is_finished())
     }
 
+    /// The pull jobs on this machine, whoever started them.
+    pub fn pull_store(&self) -> PullStore {
+        runtime::boot::pull_store(&self.session.dirs)
+    }
+
     /// The shelf and facts as they are now. The audit log is parsed on a
     /// blocking thread so a busy gateway's log never stalls the loop.
     pub async fn snapshot(self: &Arc<Self>) -> Snapshot {
@@ -131,27 +134,6 @@ impl TaskContext {
             .unwrap_or_else(|_| Vec::new().into());
         let facts = Facts::collect(&self.session, &records, &entries).await;
         Snapshot { records, facts }
-    }
-
-    /// Cancel the pull running as task `id`; one that has not begun
-    /// downloading yet is cancelled as soon as it does.
-    pub fn cancel(&self, id: TaskId) {
-        match self.installs().get(&id) {
-            Some(install_id) => self.install.cancel(install_id),
-            None => {
-                self.cancelled().insert(id);
-            }
-        }
-    }
-
-    fn cancelled(&self) -> MutexGuard<'_, HashSet<TaskId>> {
-        self.cancelled
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn installs(&self) -> MutexGuard<'_, HashMap<TaskId, String>> {
-        self.installs.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -180,8 +162,6 @@ pub enum TaskKind {
     WarmViaGateway { id: String, name: String, port: u16 },
     /// Evict a model from this process, or from the Ollama daemon if it holds it.
     Unload { id: String, name: String },
-    /// Download a model along a resolved plan.
-    Pull(InstallPlan),
     /// Delete a model's weights and forget its record.
     Remove { id: String, name: String },
 }
@@ -214,7 +194,6 @@ impl TaskKind {
             TaskKind::Scan => "scan",
             TaskKind::Warm { .. } | TaskKind::WarmViaGateway { .. } => "warm",
             TaskKind::Unload { .. } => "unload",
-            TaskKind::Pull(_) => "pull",
             TaskKind::Remove { .. } => "remove",
         }
     }
@@ -227,14 +206,13 @@ impl TaskKind {
             | TaskKind::WarmViaGateway { name, .. }
             | TaskKind::Unload { name, .. }
             | TaskKind::Remove { name, .. } => name,
-            TaskKind::Pull(plan) => &plan.reference,
         }
     }
 
     /// The model this task concerns, if it concerns one.
     pub fn model_id(&self) -> Option<&str> {
         match self {
-            TaskKind::Scan | TaskKind::Pull(_) => None,
+            TaskKind::Scan => None,
             TaskKind::Warm { id, .. }
             | TaskKind::WarmViaGateway { id, .. }
             | TaskKind::Unload { id, .. }
@@ -249,7 +227,6 @@ impl TaskKind {
             TaskKind::Warm { .. } => "loading in this process",
             TaskKind::WarmViaGateway { .. } => "loading on the gateway",
             TaskKind::Unload { .. } => "evicting",
-            TaskKind::Pull(_) => "starting",
             TaskKind::Remove { .. } => "deleting",
         }
     }
@@ -266,6 +243,8 @@ pub enum TaskState {
     Downloading(InstallProgress),
     /// Finished, with a one-line result.
     Done(String),
+    /// Stopped with work worth going on from, and how it stopped.
+    Stopped(String),
     /// Gave up, with the reason.
     Failed(String),
 }
@@ -273,7 +252,10 @@ pub enum TaskState {
 impl TaskState {
     /// Whether the task is still going.
     pub fn running(&self) -> bool {
-        !matches!(self, TaskState::Done(_) | TaskState::Failed(_))
+        !matches!(
+            self,
+            TaskState::Done(_) | TaskState::Stopped(_) | TaskState::Failed(_)
+        )
     }
 }
 
@@ -293,7 +275,7 @@ pub fn spawn(
 ) -> TaskId {
     let id = TaskId::next();
     let tx = tx.clone();
-    let mutating = matches!(kind, TaskKind::Pull(_) | TaskKind::Remove { .. });
+    let mutating = matches!(kind, TaskKind::Remove { .. });
     let runner = Arc::clone(context);
     let kind = kind.clone();
     let handle = tokio::spawn(async move {
@@ -307,11 +289,6 @@ pub fn spawn(
             TaskKind::Warm { id, .. } => warm(session, &id).await,
             TaskKind::WarmViaGateway { id, port, .. } => warm_via_gateway(&id, port).await,
             TaskKind::Unload { id, .. } => unload(session, &id).await,
-            TaskKind::Pull(plan) => {
-                let outcome = pull(&context, id, plan, &report).await;
-                context.installs().remove(&id);
-                outcome
-            }
             TaskKind::Remove { id, .. } => remove(session, &id).await,
         };
         report(match outcome {
@@ -328,6 +305,129 @@ pub fn spawn(
         handles.push(handle);
     }
     id
+}
+
+/// Read the pull jobs and hand the rows to the loop.
+///
+/// The read is filesystem work, so it happens off the loop's thread; the rows
+/// come back as an event like any other answer.
+pub fn spawn_pulls(context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>) {
+    let store = context.pull_store();
+    let tx = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(rows) = jobs::poll(&store, now_millis()) {
+            let _ = tx.send(Event::Pulls(rows));
+        }
+    });
+}
+
+/// Read the history of job `id` and hand it to the loop as lines. A job that
+/// is gone has no history, which the screen shows as none.
+pub fn spawn_history(id: String, context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>) {
+    let store = context.pull_store();
+    let tx = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let now = now_millis();
+        let lines = store
+            .open(&id)
+            .map(|job| {
+                job.events()
+                    .iter()
+                    .map(|event| event_line(event, now))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let _ = tx.send(Event::History { job: id, lines });
+    });
+}
+
+/// Create a job for `plan` and start a worker on it, or join the pull of that
+/// model already under way. The strip picks the job up on its next poll.
+pub fn spawn_start_pull(
+    plan: InstallPlan,
+    context: &Arc<TaskContext>,
+    tx: &mpsc::UnboundedSender<Event>,
+) {
+    let store = context.pull_store();
+    let tx = tx.clone();
+    let reference = plan.reference.clone();
+    // Starting waits out another client holding the model's claim, so it
+    // runs where blocking is allowed rather than on a thread that paints.
+    tokio::task::spawn_blocking(move || {
+        let _ = tx.send(match start_pull(&store, plan) {
+            Ok(Started::Created(job)) => Event::PullStarted(job),
+            Ok(Started::Joined(_)) => Event::PullRefused(already_downloading(&reference)),
+            Ok(Started::Resumed(_)) => {
+                Event::PullRefused(format!("carrying on the pull of {reference}"))
+            }
+            Err(error) => Event::PullRefused(format!("{reference}: {error}")),
+        });
+        spawn_pulls_into(&store, &tx);
+    });
+}
+
+/// Ask the job named by `id` to stop, or put a worker back on it.
+pub fn spawn_pull_control(
+    action: PullAction,
+    id: String,
+    context: &Arc<TaskContext>,
+    tx: &mpsc::UnboundedSender<Event>,
+) {
+    let store = context.pull_store();
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        if let Err(reason) = act_on_pull(&store, action, &id) {
+            let _ = tx.send(Event::PullRefused(reason));
+        }
+        spawn_pulls_into(&store, &tx);
+    });
+}
+
+/// What a key on a pull row asks of its job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullAction {
+    /// Stop it, keeping what landed for a resume.
+    Pause,
+    /// Stop it for good.
+    Cancel,
+    /// Put a worker back on it.
+    Resume,
+    /// Take its record away once it has ended.
+    Forget,
+}
+
+/// Send the rows as they read right now, so a key that changed one shows its
+/// effect without waiting for the next poll.
+fn spawn_pulls_into(store: &PullStore, tx: &mpsc::UnboundedSender<Event>) {
+    if let Some(rows) = jobs::poll(store, now_millis()) {
+        let _ = tx.send(Event::Pulls(rows));
+    }
+}
+
+/// Start a pull, or join the one already fetching that model.
+fn start_pull(store: &PullStore, plan: InstallPlan) -> Result<Started, WorkerError> {
+    start_or_join(store, &plan)
+}
+
+/// Act on the job `id` names; the reason, phrased for the footer, when the
+/// job refuses.
+fn act_on_pull(store: &PullStore, action: PullAction, id: &str) -> Result<(), String> {
+    let job = store.open(id).map_err(|error| error.to_string())?;
+    let refused = |error: WorkerError| error.to_string();
+    match action {
+        PullAction::Pause => stop(&job, PullControl::Pause).map(|_| ()).map_err(refused),
+        PullAction::Cancel => stop(&job, PullControl::Cancel).map(|_| ()).map_err(refused),
+        PullAction::Resume => restart(&job).map(|_| ()).map_err(refused),
+        PullAction::Forget => job.forget().map_err(|error| match error {
+            // The worker holds the lock until it exits, a moment after the
+            // record reads done; the id it holds means nothing on screen.
+            PullError::Held(_) => format!(
+                "{} is still being finished by its worker; try again",
+                job.job().reference
+            ),
+            error => error.to_string(),
+        }),
+    }
 }
 
 /// Run `work` against the context and hand its answer to the loop; for the
@@ -430,6 +530,11 @@ pub fn next_refresh_sequence() -> u64 {
 pub fn spawn_refresh(context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Event>) {
     let sequence = next_refresh_sequence();
     fire(context, tx, move |context| async move {
+        // The registry is re-read from disk first. A pull worker registers what
+        // it fetched in a process of its own, and so does anything else on the
+        // machine, so a shelf read only from memory goes stale without ever
+        // saying so.
+        let _ = context.session.kernel.reload_registry().await;
         Event::Refreshed(context.snapshot().await.stamped(sequence))
     });
 }
@@ -532,43 +637,6 @@ async fn unload(session: &Session, id: &str) -> Result<String, String> {
     } else {
         Ok("unloaded".to_owned())
     }
-}
-
-/// Begin `plan` and follow the download to its end, then rescan so the new
-/// model lands on the shelf.
-async fn pull(
-    context: &TaskContext,
-    task: TaskId,
-    plan: InstallPlan,
-    report: &impl Fn(TaskState),
-) -> Result<String, String> {
-    let reference = plan.reference.clone();
-    let install_id = context
-        .install
-        .begin(plan)
-        .map_err(|error| error.to_string())?;
-    context.installs().insert(task, install_id.clone());
-    if context.cancelled().remove(&task) {
-        context.install.cancel(&install_id);
-    }
-    let mut events = context.install.events(&install_id);
-    while let Some(event) = events.recv().await {
-        match event {
-            InstallEvent::Progress(progress) => report(TaskState::Downloading(progress)),
-            InstallEvent::Status(status) => report(TaskState::Status(status)),
-            InstallEvent::Failed { message } => return Err(message),
-            InstallEvent::Cancelled => return Err("cancelled".to_owned()),
-            InstallEvent::Done => break,
-            InstallEvent::Queued | InstallEvent::Preparing => {}
-        }
-    }
-    report(TaskState::Status("adding to the shelf".to_owned()));
-    context
-        .session
-        .discover()
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(format!("pulled {reference}"))
 }
 
 /// Delete the weights the way `hedos rm` does, then forget the record so the

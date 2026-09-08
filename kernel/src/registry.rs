@@ -95,7 +95,13 @@ impl Registry {
                 Ok(envelope
                     .models
                     .into_iter()
-                    .map(|record| (record.id.clone(), record))
+                    .map(|mut record| {
+                        // A shelf written before sizes were exact carries whole
+                        // mebibytes; folded in here rather than at every reader,
+                        // so a size shows before the next scan measures one.
+                        record.adopt_legacy_footprint();
+                        (record.id.clone(), record)
+                    })
                     .collect())
             }
             Ok(None) => Ok(BTreeMap::new()),
@@ -111,6 +117,25 @@ impl Registry {
     fn reload(&mut self) -> Result<(), RegistryError> {
         self.models = Self::load_models(&self.directory)?;
         Ok(())
+    }
+
+    /// Re-read the store, picking up what another process has committed since
+    /// this one loaded it. Returns whether anything changed.
+    ///
+    /// The in-memory view is otherwise only reloaded under a mutation, which is
+    /// enough while one process owns the shelf. A pull worker registering what
+    /// it fetched is another process, and a screen that never re-read would show
+    /// a download as landed with the model nowhere on its shelf.
+    pub fn refresh(&mut self) -> Result<bool, RegistryError> {
+        let models = Self::load_models(&self.directory)?;
+        if models == self.models {
+            return Ok(false);
+        }
+        self.models = models;
+        // Whatever was cached against the old generation was derived from
+        // records that have just been replaced.
+        self.generation += 1;
+        Ok(true)
     }
 
     /// Acquire an exclusive OS advisory lock on a `models.json.lock` sibling,

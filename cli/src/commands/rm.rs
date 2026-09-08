@@ -2,6 +2,7 @@
 //! asks for confirmation; non-interactively it only previews unless `-y` is given.
 
 use clap::Args;
+use kernel::records::format_bytes;
 
 use crate::error::CliError;
 use crate::support::interactive;
@@ -25,14 +26,14 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
     let shelf = session.shelf().await;
     let warm = session.warm_set_anywhere(&shelf).await;
     let record =
-        interactive::choose_model(out, args.model.as_deref(), &shelf, None, "remove", &warm)?;
+        interactive::choose_any_model(out, args.model.as_deref(), &shelf, None, "remove", &warm)?;
 
     let preview = kernel::removal::preview(record);
     let summary = format!(
-        "{} — {} item(s), ~{} MB",
+        "{} — {} item(s), ~{}",
         preview.name,
         preview.paths.len(),
-        preview.bytes_estimate / 1_000_000,
+        format_bytes(preview.bytes_estimate),
     );
 
     if !args.yes {
@@ -62,10 +63,10 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
 
     let report = remove_and_forget(&session, record).await?;
     out.line(&format!(
-        "Deleted {} — {} item(s), ~{} MB freed{}",
+        "Deleted {} — {} item(s), ~{} freed{}",
         report.name,
         report.trashed_paths.len(),
-        report.freed_bytes_estimate / 1_000_000,
+        format_bytes(report.freed_bytes_estimate),
         if report.daemon_deleted {
             " (via the Ollama daemon)"
         } else {

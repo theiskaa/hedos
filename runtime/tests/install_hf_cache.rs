@@ -4,13 +4,31 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use kernel::install::InstallError;
 use kernel::install::file_selection::HFSibling;
 use runtime::install::transport::{StreamFuture, StreamStart, TransportFuture};
-use runtime::install::{HFCacheLayout, HFCacheWriter, InstallRequest, InstallTransport};
+use runtime::install::{HFCacheLayout, HFCacheWriter, InstallRequest, InstallTransport, Landed};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+
+/// A transport that refuses every request, so a test can prove none was made.
+struct RefusingTransport;
+
+impl InstallTransport for RefusingTransport {
+    fn fetch(&self, _request: InstallRequest) -> TransportFuture {
+        Box::pin(async { Err(InstallError::TransferFailed("asked for a fetch".to_owned())) })
+    }
+
+    fn stream(&self, _request: InstallRequest) -> StreamFuture {
+        Box::pin(async {
+            Err(InstallError::TransferFailed(
+                "asked for a stream".to_owned(),
+            ))
+        })
+    }
+}
 
 fn sha_hex(data: &[u8]) -> String {
     let mut out = String::new();
@@ -111,7 +129,12 @@ async fn download_one(
             sibling,
             revision,
             InstallRequest::get("http://hf.test/file"),
-            &mut |delta| total += delta,
+            &mut |delta| {
+                total += match delta {
+                    Landed::OnDisk(bytes) | Landed::Fetched(bytes) => bytes,
+                    Landed::Discarded(bytes) => -bytes,
+                }
+            },
         )
         .await?;
     Ok(total)
@@ -228,6 +251,65 @@ async fn a_saved_partial_resumes_via_a_range_request() {
 }
 
 #[tokio::test]
+async fn a_partial_that_is_already_the_whole_file_is_not_asked_for_again() {
+    let root = temp_root();
+    let body = b"every byte of this file is already on disk".to_vec();
+    let sha = sha_hex(&body);
+    let sibling =
+        HFSibling::new("model.bin", Some(body.len() as i64)).with_sha256(Some(sha.clone()));
+    // Any request at all fails this test. A complete partial has nothing left
+    // to ask for, and a range beginning at the end is answered 416, which the
+    // resume path would read as a partial to throw away and fetch again.
+    let writer = writer(&root, Arc::new(RefusingTransport));
+    writer.prepare_skeleton("rev1", None).expect("skeleton");
+    let incomplete = writer
+        .layout()
+        .repo_directory()
+        .join("blobs")
+        .join(format!("{sha}.incomplete"));
+    std::fs::write(&incomplete, &body).unwrap();
+
+    let counted = download_one(&writer, &sibling, "rev1")
+        .await
+        .expect("nothing to fetch");
+    assert_eq!(counted, body.len() as i64, "counted as already on disk");
+    let blob = writer.layout().repo_directory().join("blobs").join(&sha);
+    assert_eq!(std::fs::read(&blob).unwrap(), body);
+    assert!(!incomplete.exists(), "and the partial became the blob");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn an_empty_placeholder_is_removed_rather_than_left_to_read_as_a_download() {
+    let root = temp_root();
+    let writer = writer(&root, StreamMock::serving(b"unused"));
+    // The skeleton lays a placeholder down before a byte moves.
+    writer
+        .prepare_skeleton("rev1", Some("abc123"))
+        .expect("skeleton");
+    let placeholder = writer
+        .layout()
+        .repo_directory()
+        .join("blobs")
+        .join("abc123.incomplete");
+    assert!(placeholder.exists(), "the skeleton laid one down");
+
+    // A partial holding real bytes is not a placeholder and stays.
+    let partial = writer
+        .layout()
+        .repo_directory()
+        .join("blobs")
+        .join("def456.incomplete");
+    std::fs::write(&partial, b"bytes worth keeping").unwrap();
+
+    writer.remove_empty_placeholders();
+
+    assert!(!placeholder.exists(), "the empty one goes");
+    assert!(partial.exists(), "the one with bytes in it stays");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
 async fn a_range_not_satisfiable_restarts_the_download() {
     let root = temp_root();
     let body = b"restart from zero".to_vec();
@@ -317,6 +399,100 @@ async fn a_checksum_mismatch_is_reported_and_the_partial_removed() {
 }
 
 #[tokio::test]
+async fn a_resumed_partial_that_was_corrupted_fails_its_checksum() {
+    let root = temp_root();
+    let body = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
+    let sha = sha_hex(&body);
+    let sibling =
+        HFSibling::new("model.bin", Some(body.len() as i64)).with_sha256(Some(sha.clone()));
+    let writer = writer(&root, StreamMock::serving(&body));
+    writer.prepare_skeleton("rev1", None).expect("skeleton");
+    let blobs = writer.layout().repo_directory().join("blobs");
+    // The first 20 bytes were paused on, and two of them changed on disk.
+    let mut kept = body[..20].to_vec();
+    kept[8] = b'!';
+    kept[9] = b'?';
+    let incomplete = blobs.join(format!("{sha}.incomplete"));
+    std::fs::write(&incomplete, &kept).unwrap();
+
+    match download_one(&writer, &sibling, "rev1").await {
+        Err(InstallError::ChecksumMismatch(file)) => assert_eq!(file, "model.bin"),
+        other => panic!("expected checksum mismatch, got {other:?}"),
+    }
+    assert!(!incomplete.exists(), "the corrupted partial is removed");
+    assert!(
+        !blobs.join(&sha).exists(),
+        "nothing lands under the real hash"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn a_partial_saved_before_the_hash_was_read_is_carried_on_from() {
+    let root = temp_root();
+    let body = b"0123456789abcdefghijklmnopqrstuvwxyz".to_vec();
+    let sha = sha_hex(&body);
+    let unnamed = HFSibling::new("model.bin", Some(body.len() as i64));
+    let named = unnamed.clone().with_sha256(Some(sha.clone()));
+    let writer = writer(&root, StreamMock::serving(&body));
+    // The skeleton lays down the hash-named placeholder first, as an install
+    // does; the older partial must be taken over regardless.
+    let pending = HFCacheWriter::pending_blob_name(&named, "rev1");
+    writer
+        .prepare_skeleton("rev1", Some(&pending))
+        .expect("skeleton");
+    let blobs = writer.layout().repo_directory().join("blobs");
+    let old_name = HFCacheWriter::pending_blob_name(&unnamed, "rev1");
+    let old_partial = blobs.join(format!("{old_name}.incomplete"));
+    std::fs::write(&old_partial, &body[..20]).unwrap();
+
+    let counted = download_one(&writer, &named, "rev1")
+        .await
+        .expect("download");
+    // The 20 bytes on disk count once, and only the rest is fetched.
+    assert_eq!(counted, body.len() as i64);
+    assert!(!old_partial.exists(), "the old partial is taken over");
+    assert_eq!(std::fs::read(blobs.join(&sha)).unwrap(), body);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_directory_that_cannot_be_written_is_a_local_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = temp_root();
+    let sealed = root.join("sealed");
+    std::fs::create_dir_all(&sealed).unwrap();
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Root writes through any mode; there is nothing to test for it.
+    if std::fs::File::create(sealed.join("probe")).is_ok() {
+        std::fs::remove_dir_all(&root).ok();
+        return;
+    }
+    let writer = writer(&sealed, StreamMock::serving(b"bytes"));
+    let outcome = writer.prepare_skeleton("rev1", None);
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::remove_dir_all(&root).ok();
+    match outcome {
+        Err(InstallError::Local(reason)) => {
+            assert!(
+                reason.contains("ermission denied"),
+                "the machine's own words survive: {reason}"
+            );
+            assert!(
+                reason.contains("sealed"),
+                "the path that refused is named: {reason}"
+            );
+            assert!(
+                reason.find("ermission denied") < reason.find("sealed"),
+                "the reason comes first, so a cut column keeps it: {reason}"
+            );
+        }
+        other => panic!("expected a local error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn a_short_download_is_a_size_mismatch() {
     let root = temp_root();
     let body = b"only ten!!".to_vec();
@@ -346,7 +522,9 @@ async fn http_errors_map_to_auth_and_missing() {
         let result = download_one(&writer, &sibling, "rev1").await;
         match (check, result) {
             ("auth", Err(InstallError::AuthRequired(_))) => {}
-            ("missing", Err(InstallError::TransferFailed(m))) if m.contains("missing") => {}
+            // A file the repo does not serve is a fact, not a bad connection:
+            // a background pull must not keep asking for it.
+            ("missing", Err(InstallError::ReferenceNotFound(m))) if m.contains("model.bin") => {}
             ("other", Err(InstallError::TransferFailed(m))) if m.contains("HTTP 500") => {}
             other => panic!("unexpected for {status}: {other:?}"),
         }
@@ -399,5 +577,28 @@ async fn interruption_recovery_helpers_behave() {
 
     writer.remove_repo();
     assert!(!writer.layout().repo_directory().exists());
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn how_long_a_partial_is_kept_is_a_setting() {
+    let root = temp_root();
+    let patient = writer(&root, StreamMock::serving(b""));
+    patient.prepare_skeleton("revX", None).expect("skeleton");
+    let blobs = patient.layout().repo_directory().join("blobs");
+    std::fs::write(blobs.join("stray.incomplete"), vec![1u8; 8]).unwrap();
+
+    // The default keeps a fresh stray: another install may still be writing it.
+    patient
+        .remove_stray_incompletes(&HashSet::new())
+        .expect("reap");
+    assert!(blobs.join("stray.incomplete").exists());
+
+    // A cache told to keep nothing reaps the same file.
+    let impatient = writer(&root, StreamMock::serving(b"")).with_incomplete_age(Duration::ZERO);
+    impatient
+        .remove_stray_incompletes(&HashSet::new())
+        .expect("reap");
+    assert!(!blobs.join("stray.incomplete").exists());
     std::fs::remove_dir_all(&root).ok();
 }

@@ -1,4 +1,4 @@
-//! The cards (pull, remove, help, launch), drawn over a dimmed screen; the
+//! The cards (pull, remove, stop, help, launch), drawn over a dimmed screen; the
 //! chat pane, though it sits in the same slot, is drawn by `chat` instead.
 //! This module owns the frame around a card: the backdrop, the margin that
 //! clamps a card to a narrow terminal, the border, and the title. Each card
@@ -8,6 +8,7 @@ mod help;
 mod launch;
 mod pull;
 mod remove;
+mod stop;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -20,10 +21,10 @@ use crate::tui::app::{App, Modal};
 /// Cells kept clear on either side of a card when the terminal is narrower
 /// than it wants.
 const MARGIN: u16 = 2;
-/// The labels of the preview and remove bodies; the column is as wide as
-/// the widest, plus a gap.
-const LABELS: [&str; 9] = [
-    "store", "on disk", "path", "after", "from", "to", "size", "fit", "download",
+/// The labels of the preview, remove and stop bodies; the column is as wide
+/// as the widest, plus a gap.
+const LABELS: [&str; 10] = [
+    "store", "on disk", "path", "after", "from", "to", "size", "fit", "download", "model",
 ];
 
 /// Draw the open card over `area`, if there is one; whether the screen
@@ -46,6 +47,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) -> bool {
             remove::REMOVE_HEIGHT,
             format!(" remove {} ", preview.name),
             Box::new(move |inner| remove::remove(preview, &app.facts, inner)),
+        ),
+        Modal::Stop(card) => (
+            stop::STOP_WIDTH,
+            stop::STOP_HEIGHT,
+            " stop pull ".to_owned(),
+            Box::new(move |inner| stop::stop(card, inner)),
         ),
         Modal::Help => {
             let help = help::HelpLayout::at(area.width);
@@ -93,9 +100,12 @@ mod tests {
 
     use unicode_width::UnicodeWidthStr;
 
+    use kernel::install::event::InstallProgress;
+
     use crate::tui::facts::Facts;
     use crate::tui::launch::LaunchModal;
     use crate::tui::pull::{PullModal, Stage};
+    use crate::tui::stop::StopCard;
     use crate::tui::testing::{deletion_preview, leading_label, plan, record_with, text, texts};
     use crate::tui::ui::{BORDER_COLUMNS, BORDER_ROWS, DIM};
 
@@ -105,9 +115,15 @@ mod tests {
         let app = App::new(Vec::new(), Facts::default());
         let inner = Rect::new(0, 0, 80, 9);
         let mut seen = Vec::new();
+        let card = StopCard {
+            job: "1000-gemma3".to_owned(),
+            reference: "gemma3".to_owned(),
+            progress: InstallProgress::default(),
+        };
         for line in remove::remove(&preview, &Facts::default(), inner)
             .iter()
             .chain(&pull::preview(&plan("gemma3"), &app, inner))
+            .chain(&stop::stop(&card, inner))
         {
             let is_label = line.spans.first().is_some_and(|span| {
                 span.style == DIM && span.content.width() == label_column() + 1

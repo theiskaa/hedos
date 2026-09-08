@@ -43,6 +43,9 @@ enum Command {
     Launch(commands::launch::LaunchArgs),
     /// Fetch a model from Ollama or Hugging Face.
     Pull(commands::pull::PullArgs),
+    /// Run one pull, as the process `hedos pull` spawns for it.
+    #[command(hide = true)]
+    PullWorker(commands::pull::worker::PullWorkerArgs),
     /// Remove an installed model.
     Rm(commands::rm::RmArgs),
     /// Discover models on this machine and refresh the shelf.
@@ -74,6 +77,7 @@ async fn main() {
         Command::Serve(args) => commands::serve::run(args, &out).await,
         Command::Launch(args) => commands::launch::run(args, &out).await,
         Command::Pull(args) => commands::pull::run(args, &out).await,
+        Command::PullWorker(args) => commands::pull::worker::run(args).await,
         Command::Rm(args) => commands::rm::run(args, &out).await,
         Command::Scan(args) => commands::scan::run(args, &out).await,
         Command::Speak(args) => commands::speak::run(args, &out).await,

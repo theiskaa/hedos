@@ -320,11 +320,11 @@ fn normalized_base(raw: &str) -> String {
     while base.ends_with('/') {
         base.pop();
     }
-    if base.to_lowercase().ends_with("/v1") {
-        base.truncate(base.len() - 3);
-        while base.ends_with('/') {
-            base.pop();
-        }
+    if let Some(stripped) = base
+        .strip_suffix("/v1")
+        .or_else(|| base.strip_suffix("/V1"))
+    {
+        base = stripped.trim_end_matches('/').to_owned();
     }
     base
 }

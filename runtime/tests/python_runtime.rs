@@ -25,7 +25,7 @@ fn record() -> ModelRecord {
         vec![Capability::chat()],
         ModelSource::new(SourceKind::file(), "/tmp/test-model"),
     );
-    record.footprint_mb = Some(2048);
+    record.footprint_bytes = Some(2048 * (1 << 20));
     record
 }
 

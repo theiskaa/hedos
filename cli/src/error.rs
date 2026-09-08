@@ -56,6 +56,8 @@ from_error!(
     runtime::facade::KernelError,
     runtime::adapters::RuntimeError,
     kernel::install::InstallError,
+    kernel::install::pulls::PullError,
     kernel::removal::RemovalError,
+    runtime::install::WorkerError,
     std::io::Error,
 );

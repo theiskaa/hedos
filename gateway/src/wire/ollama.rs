@@ -448,7 +448,7 @@ pub fn tags(records: &[ModelRecord]) -> Value {
                 "name": name,
                 "model": name,
                 "modified_at": timestamp::iso8601(record.registered_at),
-                "size": record.footprint_mb.unwrap_or(0) * BYTES_PER_MIB,
+                "size": record.size_on_disk().unwrap_or(0),
                 "digest": "",
                 "details": details(record),
             })
@@ -849,7 +849,7 @@ mod tests {
     #[test]
     fn tags_lists_a_record_with_a_size_and_iso_modified_at() {
         let mut rec = record("llama3", Some("/models/llama3-8b-q4_k_m.gguf"));
-        rec.footprint_mb = Some(4096);
+        rec.footprint_bytes = Some(4096 * BYTES_PER_MIB);
         rec.registered_at = 1_600_000_000_000;
         let value = tags(std::slice::from_ref(&rec));
         let entry = &value["models"][0];

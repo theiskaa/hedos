@@ -21,7 +21,10 @@ use kernel::install::{
 use kernel::records::SourceKind;
 use tokio::sync::mpsc;
 
-use super::hf_cache::{HFCacheLayout, HFCacheWriter};
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::hf_cache::{DEFAULT_INCOMPLETE_AGE, HFCacheLayout, HFCacheWriter, Landed};
 use super::hf_hub::HFHubAPI;
 use super::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use super::transport::InstallTransport;
@@ -35,6 +38,7 @@ pub struct HuggingFaceInstallProvider {
     transport: Arc<dyn InstallTransport>,
     root: PathBuf,
     home: PathBuf,
+    incomplete_age: Duration,
 }
 
 impl HuggingFaceInstallProvider {
@@ -51,7 +55,14 @@ impl HuggingFaceInstallProvider {
             transport,
             root: root.into(),
             home: home.into(),
+            incomplete_age: DEFAULT_INCOMPLETE_AGE,
         }
+    }
+
+    /// This provider keeping a paused pull's partial files for `age`.
+    pub fn with_incomplete_age(mut self, age: Duration) -> Self {
+        self.incomplete_age = age;
+        self
     }
 
     fn display_path(&self) -> String {
@@ -104,7 +115,8 @@ impl InstallProvider for HuggingFaceInstallProvider {
             }
 
             let layout = HFCacheLayout::new(&self.root, &repo);
-            let writer = HFCacheWriter::new(layout, Arc::clone(&self.transport));
+            let writer = HFCacheWriter::new(layout, Arc::clone(&self.transport))
+                .with_incomplete_age(self.incomplete_age);
             let total = summed_bytes(&selection);
             let present = writer.present_bytes(&selection, info.sha.as_deref().unwrap_or(""));
             let remaining = total.map(|total| (total - present).max(0));
@@ -128,27 +140,32 @@ impl InstallProvider for HuggingFaceInstallProvider {
     }
 
     fn install(&self, plan: InstallPlan) -> InstallEventStream {
+        self.install_keeping(plan, StdArc::new(AtomicBool::new(false)))
+    }
+
+    fn install_keeping(&self, plan: InstallPlan, keep: StdArc<AtomicBool>) -> InstallEventStream {
         let (tx, rx) = mpsc::channel(32);
         let api = self.api.clone();
         let transport = Arc::clone(&self.transport);
         let root = self.root.clone();
+        let incomplete_age = self.incomplete_age;
         tokio::spawn(async move {
             let layout = HFCacheLayout::new(&root, &plan.reference);
-            let writer = HFCacheWriter::new(layout, transport);
+            let writer = HFCacheWriter::new(layout, transport).with_incomplete_age(incomplete_age);
             let repo_existed_before = writer.layout().repo_directory().exists();
 
             let outcome = tokio::select! {
                 biased;
                 _ = tx.closed() => {
                     // Cancelled: the receiver is gone, so just clean up.
-                    clean_up_after_interruption(&writer, repo_existed_before);
+                    clean_up_after_interruption(&writer, repo_existed_before, &keep);
                     return;
                 }
                 outcome = run_install(&api, &writer, &plan, &tx) => outcome,
             };
 
             if let Err(error) = outcome {
-                clean_up_after_interruption(&writer, repo_existed_before);
+                clean_up_after_interruption(&writer, repo_existed_before, &keep);
                 let _ = tx.send(Err(error)).await;
             }
         });
@@ -216,21 +233,21 @@ async fn run_install(
         .collect();
     writer.remove_stray_incompletes(&keeping)?;
 
-    let meter = Arc::new(InstallProgressMeter::new(summed_bytes(&ordered)));
+    // Counted after the stray partials went, so none of them is in the count.
+    let meter = Arc::new(InstallProgressMeter::new(
+        summed_bytes(&ordered),
+        writer.present_bytes(&ordered, &revision),
+    ));
     for sibling in &ordered {
-        let _ = tx
-            .send(Ok(InstallStreamEvent::Progress(
-                meter.begin(&sibling.rfilename),
-            )))
-            .await;
+        meter.begin(&sibling.rfilename);
         let request = api.resolve_request(&plan.reference, &revision, &sibling.rfilename);
         let meter = Arc::clone(&meter);
         // A sender clone for the sync progress callback. `closed()` tracks the
         // receiver, not the sender count, so this clone doesn't defeat the outer
         // cancel arm; it's dropped when the closure drops at the iteration's end.
         let tx = tx.clone();
-        let mut on_bytes = move |delta: i64| {
-            if let Some(progress) = meter.add(delta) {
+        let mut on_bytes = move |landed: Landed| {
+            if let Some(progress) = meter.add(landed) {
                 // Progress is throttled and lossy-tolerant; a full channel just
                 // means the consumer will catch up on the next emit.
                 let _ = tx.try_send(Ok(InstallStreamEvent::Progress(progress)));
@@ -263,11 +280,20 @@ fn download_order(mut selection: Vec<HFSibling>) -> Vec<HFSibling> {
     selection
 }
 
-/// If the repo wasn't there before, drop a half-finished install: remove it
-/// entirely unless a substantial blob landed, in which case keep the blobs but
-/// drop the ref/snapshots until a blob actually completes.
-fn clean_up_after_interruption(writer: &HFCacheWriter, repo_existed_before: bool) {
-    if repo_existed_before {
+/// Drop what a half-finished install left that is not worth keeping: always the
+/// empty placeholders, and, if the repo was not there before, the repo itself
+/// unless a substantial blob landed, in which case the blobs stay and the
+/// ref/snapshots go until one actually completes.
+///
+/// A stop the user asked to be resumable keeps everything: a paused pull that
+/// came back to nothing on disk would make the record's word "paused" a lie.
+fn clean_up_after_interruption(
+    writer: &HFCacheWriter,
+    repo_existed_before: bool,
+    keep: &AtomicBool,
+) {
+    writer.remove_empty_placeholders();
+    if repo_existed_before || keep.load(Ordering::Relaxed) {
         return;
     }
     if !writer.has_substantial_progress(WEIGHT_KEEP_THRESHOLD) {
@@ -316,46 +342,92 @@ struct InstallProgressMeter {
 }
 
 struct MeterState {
-    downloaded: i64,
+    /// Bytes on disk before the transfer began, over every file, as the
+    /// writer counted them: what the count starts from, so the first
+    /// snapshot of a resumed pull is never lower than the record already
+    /// says.
+    present: i64,
+    /// Bytes the writer has reported on disk so far, file by file. These are
+    /// the same bytes `present` counted, so they replace it rather than add
+    /// to it; they pass it only when the writer found more than its count
+    /// saw, such as a partial saved under an older name.
+    on_disk: i64,
+    /// Bytes from the wire, less bytes on disk given up: those come off here,
+    /// since `present` is a fixed starting point and `on_disk` only ever
+    /// moves the count up.
+    fetched: i64,
     current_file: Option<String>,
     last_emitted_bytes: i64,
     last_emitted_at: Instant,
+    /// Whether a file has begun since the last emit, so the next delta emits
+    /// at once and carries the file's name.
+    fresh: bool,
+}
+
+impl MeterState {
+    /// What has landed: at least what the writer counted on disk at the
+    /// start, or its running count when that found more, plus what has come
+    /// over the wire since.
+    fn downloaded(&self) -> i64 {
+        self.present.max(self.on_disk) + self.fetched
+    }
 }
 
 impl InstallProgressMeter {
     const EMIT_BYTES: i64 = 8 << 20;
     const EMIT_INTERVAL: Duration = Duration::from_millis(300);
 
-    fn new(total_bytes: Option<i64>) -> Self {
+    fn new(total_bytes: Option<i64>, present_bytes: i64) -> Self {
         Self {
             total_bytes,
             state: Mutex::new(MeterState {
-                downloaded: 0,
+                present: present_bytes.max(0),
+                on_disk: 0,
+                fetched: 0,
                 current_file: None,
                 last_emitted_bytes: 0,
                 last_emitted_at: Instant::now(),
+                fresh: false,
             }),
         }
     }
 
-    fn begin(&self, file: &str) -> InstallProgress {
+    /// Start on `file`. Nothing is emitted here, and nothing is for the bytes
+    /// the file already has on disk: the first chunk from the wire is the
+    /// first snapshot, counted on top of them, so no snapshot ever reads lower
+    /// than what is on disk and none reads bytes on disk as bytes that moved.
+    fn begin(&self, file: &str) {
         let mut state = self.lock();
         state.current_file = Some(file.to_owned());
-        state.last_emitted_bytes = state.downloaded;
-        state.last_emitted_at = Instant::now();
-        self.snapshot(&state)
+        state.fresh = true;
     }
 
-    fn add(&self, delta: i64) -> Option<InstallProgress> {
+    fn add(&self, landed: Landed) -> Option<InstallProgress> {
         let mut state = self.lock();
-        state.downloaded += delta;
         let now = Instant::now();
-        if state.downloaded - state.last_emitted_bytes < Self::EMIT_BYTES
-            && now.duration_since(state.last_emitted_at) < Self::EMIT_INTERVAL
-        {
+        let due = match landed {
+            Landed::OnDisk(bytes) => {
+                state.on_disk += bytes;
+                false
+            }
+            // Bytes given up read lower at once, rather than a snapshot later
+            // that would look like a transfer going backwards on its own.
+            Landed::Discarded(bytes) => {
+                state.fetched -= bytes;
+                true
+            }
+            Landed::Fetched(bytes) => {
+                state.fetched += bytes;
+                state.fresh
+                    || state.downloaded() - state.last_emitted_bytes >= Self::EMIT_BYTES
+                    || now.duration_since(state.last_emitted_at) >= Self::EMIT_INTERVAL
+            }
+        };
+        if !due {
             return None;
         }
-        state.last_emitted_bytes = state.downloaded;
+        state.fresh = false;
+        state.last_emitted_bytes = state.downloaded();
         state.last_emitted_at = now;
         Some(self.snapshot(&state))
     }
@@ -368,7 +440,7 @@ impl InstallProgressMeter {
 
     fn snapshot(&self, state: &MeterState) -> InstallProgress {
         InstallProgress {
-            bytes_downloaded: state.downloaded.max(0),
+            bytes_downloaded: state.downloaded().max(0),
             total_bytes: self.total_bytes,
             total_is_partial: false,
             current_file: state.current_file.clone(),
@@ -385,6 +457,103 @@ impl InstallProgressMeter {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::install::transport::ReqwestTransport;
+
+    fn writer_at(root: &Path) -> HFCacheWriter {
+        let transport: Arc<dyn InstallTransport> = Arc::new(ReqwestTransport::new());
+        HFCacheWriter::new(HFCacheLayout::new(root, "org/Model"), transport)
+    }
+
+    /// A repo directory with one small blob in it, as a first-time pull that was
+    /// stopped early leaves behind.
+    fn half_pulled(root: &Path) -> HFCacheWriter {
+        let writer = writer_at(root);
+        writer.prepare_skeleton("rev1", None).expect("skeleton");
+        std::fs::write(
+            writer.layout().repo_directory().join("blobs").join("part"),
+            vec![1u8; 16],
+        )
+        .expect("blob");
+        writer
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("hedos-hfclean-{name}-{stamp}"));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn a_stop_the_user_asked_to_resume_keeps_what_landed() {
+        let root = temp_dir("keep");
+        let writer = half_pulled(&root);
+
+        clean_up_after_interruption(&writer, false, &AtomicBool::new(true));
+
+        assert!(
+            writer.layout().repo_directory().exists(),
+            "a paused pull kept nothing on disk"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_cancelled_first_pull_leaves_no_stub_behind() {
+        let root = temp_dir("drop");
+        let writer = half_pulled(&root);
+
+        clean_up_after_interruption(&writer, false, &AtomicBool::new(false));
+
+        assert!(!writer.layout().repo_directory().exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_repo_that_was_already_there_is_never_tidied() {
+        let root = temp_dir("existing");
+        let writer = half_pulled(&root);
+
+        clean_up_after_interruption(&writer, true, &AtomicBool::new(false));
+
+        assert!(writer.layout().repo_directory().exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_placeholder_goes_even_where_nothing_else_is_tidied() {
+        // A re-pull of an installed model, stopped early: the skeleton's empty
+        // placeholder is all this pull put there, and a scanner reads any
+        // `.incomplete` as a download still under way. Both the repo that was
+        // there before and the stop the user asked to be resumable take the
+        // early return, so the placeholder has to go before it.
+        for (existed_before, keep) in [(true, false), (false, true)] {
+            let root = temp_dir(&format!("placeholder-{existed_before}-{keep}"));
+            let writer = writer_at(&root);
+            writer
+                .prepare_skeleton("rev1", Some("abc123"))
+                .expect("skeleton");
+            let placeholder = writer
+                .layout()
+                .repo_directory()
+                .join("blobs")
+                .join("abc123.incomplete");
+            assert!(placeholder.exists(), "the skeleton laid one down");
+
+            clean_up_after_interruption(&writer, existed_before, &AtomicBool::new(keep));
+
+            assert!(
+                !placeholder.exists(),
+                "left behind with existed_before={existed_before} keep={keep}"
+            );
+            std::fs::remove_dir_all(&root).ok();
+        }
+    }
+
     use super::*;
 
     fn weight(name: &str, bytes: i64) -> HFSibling {
@@ -414,15 +583,75 @@ mod tests {
 
     #[test]
     fn the_meter_throttles_small_frequent_updates() {
-        let meter = InstallProgressMeter::new(Some(100 << 20));
+        let meter = InstallProgressMeter::new(Some(100 << 20), 0);
         meter.begin("w.bin");
-        // A tiny delta right after begin: under both the 8 MiB and 300 ms thresholds.
-        assert!(meter.add(16).is_none());
+        // The first chunk of a file emits whatever its size, naming the file.
+        let first = meter
+            .add(Landed::Fetched(16))
+            .expect("the first chunk emits");
+        assert_eq!(first.bytes_downloaded, 16);
+        assert_eq!(first.current_file.as_deref(), Some("w.bin"));
+        // A tiny delta after that: under both the 8 MiB and 300 ms thresholds.
+        assert!(meter.add(Landed::Fetched(16)).is_none());
         // A delta over the byte threshold emits.
-        let emitted = meter.add(9 << 20).expect("a large delta emits");
-        assert_eq!(emitted.bytes_downloaded, (9 << 20) + 16);
+        let emitted = meter
+            .add(Landed::Fetched(9 << 20))
+            .expect("a large delta emits");
+        assert_eq!(emitted.bytes_downloaded, (9 << 20) + 32);
         assert_eq!(emitted.total_bytes, Some(100 << 20));
         assert!(!emitted.total_is_partial); // HF totals are exact → a fraction shows
+    }
+
+    #[test]
+    fn bytes_on_disk_are_counted_but_never_reported_as_a_transfer() {
+        let meter = InstallProgressMeter::new(Some(1_000), 620);
+        meter.begin("config.json");
+        assert!(
+            meter.add(Landed::OnDisk(20)).is_none(),
+            "a whole blob from before"
+        );
+        meter.begin("w.bin");
+        assert!(meter.add(Landed::OnDisk(600)).is_none(), "a saved partial");
+        // The first chunk is the first snapshot anyone sees: on top of what
+        // was there, never a zero, and never the partial alone as if it moved.
+        let first = meter
+            .add(Landed::Fetched(1))
+            .expect("the first chunk emits");
+        assert_eq!(first.bytes_downloaded, 621);
+        assert_eq!(first.current_file.as_deref(), Some("w.bin"));
+        // A server that would not resume: the partial is given up, and the
+        // count reads lower at once.
+        let dropped = meter
+            .add(Landed::Discarded(600))
+            .expect("bytes given up are reported at once");
+        assert_eq!(dropped.bytes_downloaded, 21);
+    }
+
+    #[test]
+    fn the_count_starts_from_what_is_on_disk_over_every_file() {
+        // A resumed pull: LICENSE (no hash, fetched again) goes before the
+        // weights, whose partial holds 600 of the 1000 bytes.
+        let meter = InstallProgressMeter::new(Some(1_000), 600);
+        meter.begin("LICENSE");
+        let first = meter
+            .add(Landed::Fetched(10))
+            .expect("the first chunk emits");
+        assert_eq!(first.bytes_downloaded, 610, "never below the partial");
+        meter.begin("w.bin");
+        assert!(meter.add(Landed::OnDisk(600)).is_none());
+        let next = meter.add(Landed::Fetched(1)).expect("a new file emits");
+        assert_eq!(
+            next.bytes_downloaded, 611,
+            "the partial is not counted twice"
+        );
+
+        // A partial saved under an older name is more than the plan counted;
+        // once found, the count moves up to it.
+        let meter = InstallProgressMeter::new(Some(1_000), 0);
+        meter.begin("w.bin");
+        assert!(meter.add(Landed::OnDisk(700)).is_none());
+        let found = meter.add(Landed::Fetched(1)).expect("emits");
+        assert_eq!(found.bytes_downloaded, 701);
     }
 
     #[test]

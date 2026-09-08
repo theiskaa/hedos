@@ -139,11 +139,16 @@ async fn model_info_maps_http_errors() {
         Err(InstallError::ReferenceNotFound(_))
     ));
 
-    let (transport, _) = MockTransport::new(401, "no");
-    assert!(matches!(
-        hub(transport).model_info("org/gated").await,
-        Err(InstallError::AuthRequired(_))
-    ));
+    // The hub refuses an anonymous listing of a missing repo with a 401, the
+    // same answer a private one gets; neither is "gated".
+    let (transport, _) = MockTransport::new(401, r#"{"error":"Invalid username or password."}"#);
+    match hub(transport).model_info("org/missing").await {
+        Err(InstallError::AccessDenied(reason)) => {
+            assert!(reason.starts_with("org/missing was not found on the platform, or is private"));
+            assert!(reason.contains("HF_TOKEN"));
+        }
+        other => panic!("expected access denied, got {other:?}"),
+    }
 
     let (transport, _) = MockTransport::new(500, "boom");
     assert!(matches!(
@@ -180,17 +185,21 @@ fn resolve_url_percent_encodes_special_characters() {
 }
 
 #[tokio::test]
-async fn an_lfs_oid_becomes_the_sibling_sha256() {
+async fn the_lfs_hash_becomes_the_sibling_sha256() {
+    // The first sibling is the shape the hub sends today, verbatim; the
+    // second is the Git-LFS pointer vocabulary, kept as an alias.
     let body = r#"{"siblings":[
-        {"rfilename":"model.safetensors","lfs":{"size":900,"oid":"deadbeef"}},
+        {"rfilename":"model.safetensors","size":900,"lfs":{"sha256":"9ee3aa1b9ee3aa1b9ee3aa1b9ee3aa1b9ee3aa1b9ee3aa1b9ee3aa1b9ee3aa1b","size":900,"pointerSize":134}},
+        {"rfilename":"older.bin","lfs":{"size":10,"oid":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}},
         {"rfilename":"config.json","size":10}
     ]}"#;
     let (transport, _) = MockTransport::new(200, body);
     let info = hub(transport).model_info("org/m").await.unwrap();
-    // The LFS file carries its content hash; the plain file has none.
-    assert_eq!(info.siblings[0].sha256, Some("deadbeef".to_owned()));
+    assert_eq!(info.siblings[0].sha256, Some("9ee3aa1b".repeat(8)));
     assert_eq!(info.siblings[0].bytes, Some(900));
-    assert_eq!(info.siblings[1].sha256, None);
+    assert_eq!(info.siblings[1].sha256, Some("deadbeef".repeat(8)));
+    assert_eq!(info.siblings[1].bytes, Some(10));
+    assert_eq!(info.siblings[2].sha256, None);
 }
 
 #[tokio::test]
@@ -237,12 +246,79 @@ async fn malformed_json_is_a_transfer_failure_not_a_panic() {
 }
 
 #[tokio::test]
-async fn a_forbidden_status_is_auth_required() {
+async fn a_refused_listing_is_a_token_problem_only_when_a_token_was_sent() {
     let (transport, _) = MockTransport::new(403, "no");
     assert!(matches!(
-        hub(transport).model_info("org/gated").await,
+        hub(transport).model_info("org/private").await,
+        Err(InstallError::AccessDenied(_))
+    ));
+    // With a token, a 403 is a repo the token cannot read; a 401 is the token
+    // itself being refused, which no amount of accepting terms would fix.
+    let (transport, _) = MockTransport::new(403, "no");
+    assert!(matches!(
+        hub(transport)
+            .with_token(Some("hf_abc".to_owned()))
+            .model_info("org/private")
+            .await,
         Err(InstallError::AuthRequired(_))
     ));
+    let (transport, _) = MockTransport::new(401, "no");
+    match hub(transport)
+        .with_token(Some("hf_abc".to_owned()))
+        .model_info("org/public")
+        .await
+    {
+        Err(InstallError::AccessDenied(reason)) => {
+            assert!(reason.contains("rejected the token"), "{reason}");
+            assert!(!reason.contains("gated"));
+        }
+        other => panic!("expected access denied, got {other:?}"),
+    }
+    let (transport, _) = MockTransport::new(404, "no");
+    assert!(matches!(
+        hub(transport)
+            .with_token(Some("hf_abc".to_owned()))
+            .model_info("org/missing")
+            .await,
+        Err(InstallError::ReferenceNotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_hash_that_is_not_one_is_refused_before_it_can_name_a_file() {
+    for hash in ["../../../../home/me/.ssh/id_rsa", "abc", "zz"] {
+        let body = format!(
+            r#"{{"siblings":[{{"rfilename":"w.bin","lfs":{{"size":1,"sha256":"{hash}"}}}}]}}"#
+        );
+        let body: &'static str = Box::leak(body.into_boxed_str());
+        let (transport, _) = MockTransport::new(200, body);
+        assert!(
+            matches!(
+                hub(transport).model_info("org/m").await,
+                Err(InstallError::ReferenceInvalid(_))
+            ),
+            "{hash} should be refused"
+        );
+    }
+    // An uppercase hash is the same hash, lowered to match the digests
+    // computed on this side.
+    let upper = "9EE3AA1B".repeat(8);
+    let body = format!(
+        r#"{{"siblings":[{{"rfilename":"w.bin","lfs":{{"size":1,"sha256":"{upper}","oid":"{upper}"}}}}]}}"#
+    );
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let (transport, _) = MockTransport::new(200, body);
+    let info = hub(transport).model_info("org/m").await.unwrap();
+    assert_eq!(info.siblings[0].sha256, Some("9ee3aa1b".repeat(8)));
+}
+
+#[tokio::test]
+async fn a_gated_repo_is_read_from_its_listing_not_from_a_status() {
+    let body = r#"{"id":"org/gated","gated":"manual","siblings":[{"rfilename":"w.bin","lfs":{"sha256":"abababababababababababababababababababababababababababababababab","size":1}}]}"#;
+    let (transport, _) = MockTransport::new(200, body);
+    let info = hub(transport).model_info("org/gated").await.unwrap();
+    assert!(info.gated);
+    assert_eq!(info.siblings[0].sha256, Some("ab".repeat(32)));
 }
 
 #[tokio::test]

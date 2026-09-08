@@ -1,20 +1,23 @@
 //! The builders every test module under `tui` needs: a record, a resident,
-//! a plan, a deletion preview, the machine's facts, and ways to read a
-//! rendered line back as text.
+//! a plan, a pull job, a deletion preview, the machine's facts, and ways to
+//! read a rendered line back as text.
 //!
 //! The tripwire policy: a test derives its expectations from the constants
 //! the code is built from, so a layout change moves the test with it. At
 //! most one literal pin per layout is kept, marked as such, to trip when
 //! the constants themselves drift.
 
+use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::records::SourceKind;
-use kernel::records::{Capability, Modality, ModelRecord, ModelSource};
+use kernel::install::pulls::{PullJob, PullState, PullStatus};
+use kernel::records::{Capability, Modality, ModelRecord, ModelSource, SourceKind};
 use kernel::removal::ModelDeletionPreview;
 use ratatui::text::Line;
 
 use super::facts::Facts;
+use super::jobs::JobRow;
+use super::tasks::TaskState;
 use crate::support::residency::{Holder, Resident};
 
 /// An Ollama-sourced chat model called `name`.
@@ -109,4 +112,48 @@ pub fn leading_label(line: &Line, width: usize) -> String {
         .collect::<String>()
         .trim_end()
         .to_owned()
+}
+
+/// A pull job as a poll of the job directory reports it, named after
+/// `reference` so a row and the job behind it are easy to tell apart.
+pub fn job_row(reference: &str, pull_state: PullState, state: TaskState) -> JobRow {
+    let progress = match &state {
+        TaskState::Downloading(progress) => progress.clone(),
+        _ => InstallProgress::default(),
+    };
+    JobRow {
+        job: format!("1000-{reference}"),
+        reference: reference.to_owned(),
+        state,
+        pull_state,
+        status: PullStatus {
+            state: pull_state,
+            progress,
+            ..PullStatus::queued(0)
+        },
+        descriptor: PullJob {
+            id: format!("1000-{reference}"),
+            provider: InstallProviderId::ollama(),
+            reference: reference.to_owned(),
+            display_name: reference.to_owned(),
+            destination: format!("/models/{reference}"),
+            revision: None,
+            total_bytes: None,
+            created_at_ms: 0,
+        },
+        note: String::new(),
+        started_ago: "0s".to_owned(),
+        updated_ago: "0s".to_owned(),
+        polled_at_ms: 0,
+        aged_out: false,
+    }
+}
+
+/// A pull of `reference` that is downloading, with nothing transferred yet.
+pub fn downloading(reference: &str) -> JobRow {
+    job_row(
+        reference,
+        PullState::Running,
+        TaskState::Downloading(InstallProgress::default()),
+    )
 }

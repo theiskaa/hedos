@@ -73,7 +73,11 @@ fn registers_new_discovered_models() {
         .find(|r| r.name == "alpha")
         .expect("alpha registered");
     assert_eq!(alpha.state, ModelState::Unresolved);
-    assert_eq!(alpha.footprint_mb, Some(0));
+    assert_eq!(
+        alpha.footprint_bytes,
+        Some(5),
+        "the exact bytes, not a truncated unit"
+    );
 }
 
 #[test]
@@ -180,7 +184,7 @@ fn migrates_saved_config_from_a_moved_model() {
     let mut old = record("mymodel", SourceKind::file(), "/old/location.gguf");
     old.state = ModelState::Missing;
     old.content_fingerprint = Some(print);
-    old.footprint_mb = Some(0);
+    old.footprint_bytes = Some(5);
     old.system_prompt = Some("be terse".to_owned());
     old.alias = Some("myfav".to_owned());
     let old_id = old.id.clone();
@@ -348,7 +352,7 @@ fn ambiguous_migration_candidates_are_not_claimed() {
         let mut old = record(tag, SourceKind::file(), &format!("/old/{tag}"));
         old.state = ModelState::Missing;
         old.content_fingerprint = Some(print.clone());
-        old.footprint_mb = Some(0);
+        old.footprint_bytes = Some(5);
         registry.register(old).unwrap();
     }
 
@@ -400,14 +404,14 @@ fn an_unchanged_weight_reuses_the_stored_fingerprint_without_rehashing() {
     let mut existing = record("m", SourceKind::ollama(), "same");
     existing.content_fingerprint = Some("BOGUS".to_owned());
     existing.primary_weight_path = Some("/nonexistent.gguf".to_owned());
-    existing.footprint_mb = Some(0);
+    existing.footprint_bytes = Some(5);
     let id = existing.id.clone();
     registry.register(existing).unwrap();
 
     // Re-discover the same source, weight path, and footprint.
     let mut model = discovered("m", SourceKind::ollama(), "same");
     model.primary_weight_path = Some("/nonexistent.gguf".to_owned());
-    model.footprint_bytes = 5; // → 0 MiB, matching
+    model.footprint_bytes = 5; // the same five bytes, so the print still matches
     let result = ScanResult {
         discovered: vec![model],
         ..Default::default()

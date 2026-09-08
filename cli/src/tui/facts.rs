@@ -181,7 +181,7 @@ fn disk_by_store(records: &[ModelRecord]) -> Vec<(String, i64)> {
             continue;
         }
         *totals.entry(record.source.kind.as_str()).or_default() +=
-            record.footprint_bytes().unwrap_or(0);
+            record.size_on_disk().unwrap_or(0);
     }
     let mut stores: Vec<(String, i64)> = totals
         .into_iter()
@@ -195,17 +195,16 @@ fn disk_by_store(records: &[ModelRecord]) -> Vec<(String, i64)> {
 mod tests {
     use super::*;
     use crate::support::residency::Holder;
-    use kernel::records::byte_format::BYTES_PER_MIB;
     use kernel::records::{Capability, Modality, ModelSource, SourceKind};
 
-    fn record(name: &str, kind: SourceKind, footprint_mb: Option<i64>) -> ModelRecord {
+    fn record(name: &str, kind: SourceKind, footprint_bytes: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(
             name,
             Modality::text(),
             vec![Capability::chat()],
             ModelSource::new(kind, name),
         );
-        record.footprint_mb = footprint_mb;
+        record.footprint_bytes = footprint_bytes;
         record
     }
 
@@ -228,8 +227,8 @@ mod tests {
         ];
         let stores = disk_by_store(&records);
         assert_eq!(stores[0].0, "huggingface-cache");
-        assert_eq!(stores[0].1, 5 * BYTES_PER_MIB);
-        assert_eq!(stores[1], ("ollama".to_owned(), 3 * BYTES_PER_MIB));
+        assert_eq!(stores[0].1, 5);
+        assert_eq!(stores[1], ("ollama".to_owned(), 3));
         assert_eq!(stores[2], ("file".to_owned(), 0));
     }
 

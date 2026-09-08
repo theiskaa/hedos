@@ -39,7 +39,12 @@ where
         model_id: &record.id,
     };
     let _ = governor
-        .admit(&record.id, &record.name, record.footprint_mb, Some(status))
+        .admit(
+            &record.id,
+            &record.name,
+            record.footprint_mib(),
+            Some(status),
+        )
         .await;
     let _gate = governor.gate().acquire(producer).await;
     body.await
@@ -64,7 +69,12 @@ pub async fn warm_load_acquire(
     loop {
         if !supervisor.is_running(&spec.runtime_id) {
             let verdict = governor
-                .admit(&record.id, &record.name, record.footprint_mb, Some(status))
+                .admit(
+                    &record.id,
+                    &record.name,
+                    record.footprint_mib(),
+                    Some(status),
+                )
                 .await;
             // `admit` reserves the model. If the future is dropped (cancelled) or
             // the spawn fails before `mark_loaded` swaps in the real resident, the
@@ -92,7 +102,7 @@ pub async fn warm_load_acquire(
             governor.mark_loaded(
                 &record.id,
                 &record.name,
-                record.footprint_mb,
+                record.footprint_mib(),
                 warm_window,
                 shutdown_unloader(supervisor, &spec.runtime_id),
             );

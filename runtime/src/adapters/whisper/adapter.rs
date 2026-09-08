@@ -102,7 +102,7 @@ impl RuntimeAdapter for WhisperCppAdapter {
                 model_id: record.id.clone(),
                 model_name: record.name.clone(),
                 path,
-                footprint_mb: record.footprint_mb,
+                footprint_mb: record.footprint_mib(),
                 samples,
                 options: Self::options(&payload),
             },

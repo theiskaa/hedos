@@ -38,15 +38,15 @@ impl FitVerdict {
     /// Below this share it's a tight fit; at or above it's too large.
     const TIGHT_FIT_FRACTION: f64 = 0.95;
 
-    /// Assess a `footprint_mb` model against `total_memory_bytes`. Returns `None`
-    /// when the footprint is unknown/non-positive or the memory total is zero.
-    pub fn assess(footprint_mb: Option<i64>, total_memory_bytes: u64) -> Option<FitAssessment> {
-        let footprint_mb = footprint_mb.filter(|&mb| mb > 0)?;
+    /// Assess a model of `footprint_bytes` on disk against `total_memory_bytes`.
+    /// Returns `None` when the footprint is unknown/non-positive or the memory
+    /// total is zero.
+    pub fn assess(footprint_bytes: Option<i64>, total_memory_bytes: u64) -> Option<FitAssessment> {
+        let footprint_bytes = footprint_bytes.filter(|&bytes| bytes > 0)?;
         if total_memory_bytes == 0 {
             return None;
         }
-        let required_bytes =
-            (footprint_mb as f64 * (1i64 << 20) as f64 * Self::MEMORY_OVERHEAD_FACTOR) as i64;
+        let required_bytes = (footprint_bytes as f64 * Self::MEMORY_OVERHEAD_FACTOR) as i64;
         let share = required_bytes as f64 / total_memory_bytes as f64;
         let verdict = if share < Self::RUNS_WELL_FRACTION {
             FitVerdict::RunsWell
@@ -66,28 +66,29 @@ impl FitVerdict {
 mod tests {
     use super::*;
 
-    const GIB: u64 = 1 << 30;
+    const GIB: i64 = 1 << 30;
+    const MEMORY: u64 = 16 * (1 << 30);
 
     #[test]
     fn an_unknown_or_empty_footprint_is_unassessable() {
-        assert!(FitVerdict::assess(None, 16 * GIB).is_none());
-        assert!(FitVerdict::assess(Some(0), 16 * GIB).is_none());
-        assert!(FitVerdict::assess(Some(-5), 16 * GIB).is_none());
-        assert!(FitVerdict::assess(Some(1000), 0).is_none());
+        assert!(FitVerdict::assess(None, MEMORY).is_none());
+        assert!(FitVerdict::assess(Some(0), MEMORY).is_none());
+        assert!(FitVerdict::assess(Some(-5), MEMORY).is_none());
+        assert!(FitVerdict::assess(Some(GIB), 0).is_none());
     }
 
     #[test]
     fn the_verdict_tracks_the_memory_share() {
-        // ~1 GiB footprint × 1.25 = ~1.25 GiB of 16 GiB → well under 0.75 → runs well.
-        let assessment = FitVerdict::assess(Some(1024), 16 * GIB).unwrap();
+        // 1 GiB footprint × 1.25 = 1.25 GiB of 16 GiB → well under 0.75 → runs well.
+        let assessment = FitVerdict::assess(Some(GIB), MEMORY).unwrap();
         assert_eq!(assessment.verdict, FitVerdict::RunsWell);
 
         // 12 GiB × 1.25 = 15 GiB of 16 GiB → share 0.9375 → tight fit.
-        let tight = FitVerdict::assess(Some(12 * 1024), 16 * GIB).unwrap();
+        let tight = FitVerdict::assess(Some(12 * GIB), MEMORY).unwrap();
         assert_eq!(tight.verdict, FitVerdict::TightFit);
 
         // 16 GiB × 1.25 = 20 GiB of 16 GiB → share 1.25 → too large.
-        let too_large = FitVerdict::assess(Some(16 * 1024), 16 * GIB).unwrap();
+        let too_large = FitVerdict::assess(Some(16 * GIB), MEMORY).unwrap();
         assert_eq!(too_large.verdict, FitVerdict::TooLarge);
     }
 
@@ -100,8 +101,8 @@ mod tests {
 
     #[test]
     fn required_bytes_includes_the_overhead_factor() {
-        let assessment = FitVerdict::assess(Some(1024), 64 * GIB).unwrap();
-        // 1024 MiB × 1.25 = 1280 MiB.
+        let assessment = FitVerdict::assess(Some(GIB), 64 * (1 << 30)).unwrap();
+        // 1 GiB × 1.25 = 1.25 GiB.
         assert_eq!(assessment.required_bytes, 1280 * (1 << 20));
     }
 }

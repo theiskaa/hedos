@@ -33,6 +33,26 @@ port = 43367
 # The number of inference requests served at once.
 max_concurrent_inference = 4
 
+[pull]
+# How many pulls transfer at once; the rest queue for a free slot, and say
+# `waiting for a free slot` in `hedos pull ls`. The cap holds across terminals.
+max_concurrent = 2
+# Whether a pull whose worker died (a closed laptop, a killed terminal) is
+# started again when the shelf next opens. A pull you paused stays paused
+# until you resume it or pull the model again, whatever this says.
+auto_resume = true
+# How long a half-downloaded file another pull left behind is kept, in hours,
+# before an install of the same repo tidies it. A paused pull's own bytes are
+# kept for as long as it is paused.
+partial_age_hours = 24
+# How long a failing transfer keeps retrying, in minutes, before it is left
+# interrupted for you to resume.
+retry_window_minutes = 120
+# How many ended pulls keep their record for `hedos pull ls` and the pulls
+# screen. Older ones are dropped when the shelf opens or a pull starts;
+# `hedos pull clean --keep n` overrides it for one run. 0 keeps none.
+keep_ended = 20
+
 [advanced]
 # How many finished jobs to keep in history.
 job_history_limit = 50

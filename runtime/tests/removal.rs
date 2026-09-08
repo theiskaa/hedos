@@ -89,7 +89,7 @@ async fn an_ollama_model_deletes_through_the_daemon() {
     let (trasher, log) = recording_trasher();
     let remover = ModelRemover::new(trasher, ollama(&server.base_url));
     let mut rec = record(SourceKind::ollama(), "");
-    rec.footprint_mb = Some(2048);
+    rec.footprint_bytes = Some(2048 * (1 << 20));
 
     let report = remover.remove(&rec).await.expect("remove");
     assert!(report.daemon_deleted);
@@ -142,7 +142,7 @@ async fn a_folder_model_is_trashed_by_path() {
     // The ollama remover is unused for a folder model.
     let remover = ModelRemover::new(trasher, ollama("http://127.0.0.1:1"));
     let mut rec = record(SourceKind::folder(), dir.to_str().unwrap());
-    rec.footprint_mb = Some(100);
+    rec.footprint_bytes = Some(100 * (1 << 20));
 
     let report = remover.remove(&rec).await.expect("remove");
     assert!(!report.daemon_deleted);

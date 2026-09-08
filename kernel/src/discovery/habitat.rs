@@ -44,12 +44,17 @@ impl ModelHabitat {
         }
     }
 
-    /// A habitat detected from the process: `$HOME` and the current environment.
+    /// A habitat detected from the process: `$HOME` and the current
+    /// environment, less any variable this process cannot read as text.
+    /// `std::env::vars` panics on one of those, and a store path is never
+    /// among them.
     pub fn detect() -> Self {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        let environment = std::env::vars().collect();
+        let environment = std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .collect();
         Self { home, environment }
     }
 
@@ -116,21 +121,10 @@ impl ModelHabitat {
         }
     }
 
-    /// The standard Hugging Face roots (env + the default cache) plus the user's
-    /// configured roots, de-duplicated in order.
+    /// The machine's one hub cache, plus the user's configured roots,
+    /// de-duplicated in order.
     fn hf_default_roots(&self, user: &[String]) -> Vec<PathBuf> {
-        let mut candidates = Vec::new();
-        if let Some(cache) = self.environment.get("HF_HUB_CACHE")
-            && !cache.is_empty()
-        {
-            candidates.push(expand_tilde(cache, &self.home));
-        }
-        if let Some(hf_home) = self.environment.get("HF_HOME")
-            && !hf_home.is_empty()
-        {
-            candidates.push(expand_tilde(hf_home, &self.home).join("hub"));
-        }
-        candidates.push(self.home.join(".cache/huggingface/hub"));
+        let mut candidates = vec![hf_cache_root(&self.environment, &self.home)];
         candidates.extend(self.hf_user_roots(user));
         dedup(candidates)
     }
@@ -154,6 +148,37 @@ impl ModelHabitat {
         }
         dedup(roots)
     }
+}
+
+/// The Hugging Face home directory: `$HF_HOME`, else `~/.cache/huggingface`.
+/// Both the hub cache and the login token file hang off it.
+pub fn hf_home(environment: &HashMap<String, String>, home: &Path) -> PathBuf {
+    match non_empty(environment, "HF_HOME") {
+        Some(value) => expand_tilde(value, home),
+        None => home.join(".cache/huggingface"),
+    }
+}
+
+/// The machine's Hugging Face hub cache: `$HF_HUB_CACHE`, else `$HF_HOME/hub`,
+/// else `~/.cache/huggingface/hub`.
+///
+/// There is exactly one, because that is the rule the hub's own tooling
+/// follows: the environment says where the cache *is*, replacing the default
+/// rather than adding to it. A cache elsewhere that should also be swept is a
+/// setting (`hf_cache_roots`), not an environment variable, so what a pull
+/// writes and what discovery reads can never come apart.
+pub fn hf_cache_root(environment: &HashMap<String, String>, home: &Path) -> PathBuf {
+    match non_empty(environment, "HF_HUB_CACHE") {
+        Some(value) => expand_tilde(value, home),
+        None => hf_home(environment, home).join("hub"),
+    }
+}
+
+fn non_empty<'a>(environment: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    environment
+        .get(key)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
 }
 
 fn lm_studio_roots(home: &Path) -> Vec<PathBuf> {

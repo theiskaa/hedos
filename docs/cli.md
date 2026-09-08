@@ -31,6 +31,8 @@ List the shelf: a warm indicator, the name, the runtime, the store, a memory-fit
 
 The FIT column reads `fits`, `tight`, `too big`, or `—` (footprint unknown), judged from the model's estimated footprint against this machine's memory — the same assessment the install recommendations use. `--json` carries it as a `fit` field on each record.
 
+Sizes are decimal, as the hubs state them (`4.9 GB` is 4.9e9 bytes); memory figures are in GiB.
+
 ### `hedos run [model] [prompt]`
 
 Stream a single completion to stdout. Omit the model to pick one interactively, and omit the prompt to type it at a prompt.
@@ -93,7 +95,23 @@ Codex is not supported: it speaks the OpenAI Responses API, which this gateway d
 
 ### `hedos pull [reference]`
 
-Fetch a model from Ollama or Hugging Face, with a download progress bar. Ctrl-C cancels. When it finishes it runs a scan so the model appears on the shelf.
+Fetch a model from Ollama or Hugging Face. The download runs in a worker process of its own, so it outlives the terminal that started it; `hedos pull` follows that worker's progress, and Ctrl-C detaches from it rather than cancelling. `-d` starts the download and returns straight away. The worker scans when it finishes, so the model reaches the shelf whether anything is watching or not.
+
+Pulling a model that is already being fetched joins that download instead of starting a second one, and pulling one that stopped part-way carries on from the bytes on disk.
+
+The pulls under way are managed under the same verb:
+
+```
+hedos pull ls                  every pull, its state, progress, and what it is waiting for
+hedos pull attach <job>        follow one again
+hedos pull pause <job>         stop it, keeping what it has downloaded
+hedos pull resume <job>|--all  start a stopped one again
+hedos pull cancel <job>        stop it for good
+hedos pull logs <job> [-n n]   its history
+hedos pull clean [--keep n]    drop the records of ended pulls past the newest n (pull.keep_ended)
+```
+
+A job is named by its id, an unambiguous prefix of one, or its reference; a name several pulls answer to means the one still going. Since a bare word is a valid Ollama tag, a model named after a subcommand is written `hedos pull -- ls`.
 
 - The reference is a Hugging Face repo (`org/model`) or an Ollama tag (`gemma3:4b`). hedos infers the provider from the shape.
 - Omit the reference in a terminal to search: type a query to search Hugging Face (results show download and like counts), or leave it blank for a short list of models that fit this machine's RAM. A "search again" entry in the list returns to the prompt, so you can move between recommendations and a search — or try another query — without restarting the command.
@@ -138,12 +156,13 @@ Generate an image and write a PNG file. This runs as a job, with progress on std
 
 Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the machine's memory, what is loaded and by whom, disk per store, and the gateway's state kept on screen. Every key is a subcommand, and the footer shows only the ones that apply to the selected model.
 
-- `p` pulls: a catalog grouped by what you'd use a model for, a search over Hugging Face as you type, and a plan (size, destination, fit) before a byte moves. Downloads run in a task strip with progress; `c` cancels. A finished pull lands on the model it added.
+- `p` pulls: a catalog grouped by what you'd use a model for, a search over Hugging Face as you type, and a plan (size, destination, fit) before a byte moves. Downloads run in a task strip with progress; `c` opens a stop card that offers to pause, keeping what landed, or cancel. A finished pull lands on the model it added.
+- `P` opens the pulls screen in the shelf's place: every pull the store still holds, newest first, with the selected one's record, rate, estimate, and history beside it. `c`, `R`, and `Y` there stop, resume, and copy the id of the selected pull. `x` forgets an ended one's record, which is what `hedos pull clean` does to all of them; `p` starts a new pull as it does on the shelf; `esc` goes back.
 - `w` / `u` warm and unload, through the Ollama daemon when the daemon holds the model. `x` removes, showing exactly what leaves the disk and asking first.
 - `t` opens a chat pane on the selected model, in place of the shelf: type, `enter` sends, the reply streams in with its token rate under it, and the conversation carries on until `esc` closes the pane (while a reply streams, `esc` and Ctrl-C stop it first; idle, Ctrl-C closes the pane too). The transcript scrolls with the wheel, `↑`/`↓`, `PageUp`/`PageDown` and `Home`/`End`; a scrolled view holds still while more text streams in, with its position in the title, and `End` follows the newest text again. The wheel also moves the shelf and the pull list. The model is warm afterwards, like after `hedos run`.
 - `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it in the plain terminal, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
 - Every text field (the chat prompt, the pull search, the filter) edits like a shell line: Ctrl-A / Ctrl-E jump to the ends, Ctrl-U clears back to the start, Ctrl-W or Option+Delete cuts the word before the cursor, the arrows and Option+arrows move by character and word. Cmd+Delete is a macOS binding the terminal keeps to itself; in iTerm, map it to send Ctrl-U (hex `0x15`) if you want it here.
-- `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path and `Y` the id, `r` refreshes, `d` dismisses a failed row, `?` lists every key, `q` or Ctrl-C quits. The selection is remembered between runs.
+- `/` filters, `o` sorts, `enter` expands the detail with the model's gateway activity, `y` copies the weights path and `Y` the id (through `pbcopy` where there is one, else by OSC 52, which tmux relays only with `set -g set-clipboard on`), `r` refreshes, `d` dismisses a failed row, `?` lists every key, `q` or Ctrl-C quits. The selection and the dismissed rows are remembered between runs.
 
 A running `hedos serve` on the configured port is detected and its loaded models count as warm; warming through the UI then loads the model where it will be served. Needs a terminal.
 

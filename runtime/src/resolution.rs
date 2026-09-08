@@ -23,7 +23,7 @@ use kernel::records::{
     Capability, ModelRecord, ModelState, Resolution, RunTier, RuntimeId, RuntimeRef, SourceKind,
 };
 use kernel::registry::{Registry, RegistryError};
-use kernel::resolution::{IdentificationCache, IdentifiedModel, identify};
+use kernel::resolution::{IdentificationCache, IdentifiedModel, ModelFormat, identify};
 
 use crate::adapters::RuntimeAdapter;
 
@@ -345,7 +345,14 @@ fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_
     if let Some(modality) = &identified.modality {
         updated.modality = modality.clone();
     }
-    if !identified.capabilities.is_empty() {
+    // A format read out of the weights themselves has the last word, an empty
+    // list included: a GGUF that serves nothing is a piece of a pipeline (a
+    // projector, or the vocoder half of a speech pair), and must not fall back
+    // to what a scanner guessed from the file's name. Every other format's
+    // empty list means "nothing learned", so the scanner's hint stands.
+    let read_from_the_weights =
+        matches!(identified.format, ModelFormat::Gguf | ModelFormat::GgmlBin);
+    if read_from_the_weights || !identified.capabilities.is_empty() {
         updated.capabilities = identified.capabilities.clone();
     }
     if !identified.params.is_empty() {
@@ -394,8 +401,51 @@ fn fold_tool_capability(
 
 #[cfg(test)]
 mod tests {
-    use super::fold_tool_capability;
-    use kernel::records::Capability;
+    use super::{fold_tool_capability, merge};
+    use kernel::records::{
+        Capability, ExecutionMode, Modality, ModelRecord, ModelSource, SourceKind,
+    };
+    use kernel::resolution::{IdentifiedModel, ModelFormat};
+
+    /// A record carrying the capabilities a scanner guessed from the file's
+    /// name, which is what a GGUF gets before its header is read.
+    fn guessed(capabilities: Vec<Capability>) -> ModelRecord {
+        ModelRecord::new(
+            "m",
+            Modality::text(),
+            capabilities,
+            ModelSource::new(SourceKind::file(), "/models/m.gguf"),
+        )
+    }
+
+    #[test]
+    fn a_gguf_that_serves_nothing_keeps_the_scanners_guess_off_the_record() {
+        // The vocoder half of a speech pair, or a projector: the header says it
+        // answers nothing, and the name said "chat" only because it is a GGUF.
+        let mut record = guessed(vec![Capability::chat(), Capability::complete()]);
+        let component = IdentifiedModel::new(
+            ModelFormat::Gguf,
+            Some(Modality::audio()),
+            Vec::new(),
+            ExecutionMode::Sync,
+        );
+        merge(&component, &mut record, true);
+        assert!(record.capabilities.is_empty(), "{:?}", record.capabilities);
+        assert_eq!(record.modality, Modality::audio());
+    }
+
+    #[test]
+    fn a_format_that_learned_nothing_leaves_the_scanners_guess_standing() {
+        // An unrecognized layout says nothing about capabilities, so what the
+        // scanner read from the files beside it is still the best answer.
+        let mut record = guessed(vec![Capability::chat()]);
+        let unknown =
+            IdentifiedModel::new(ModelFormat::Unknown, None, Vec::new(), ExecutionMode::Sync);
+        // A runtime that does not wire tools, so the fold below adds nothing
+        // and the list is the merge's own answer.
+        merge(&unknown, &mut record, false);
+        assert_eq!(record.capabilities, vec![Capability::chat()]);
+    }
 
     /// Fold assuming a tool-wiring runtime, isolating the template logic.
     fn fold(caps: Vec<Capability>, tool_capable: Option<bool>) -> Vec<Capability> {
