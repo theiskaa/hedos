@@ -31,7 +31,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App, machine_shown: bool
     }
 }
 
-/// ` hedos v1.3.0  12 models · 3 warm · 1 too big`, plus the free memory
+/// ` hedos v1.4.0  12 models · 3 warm · 1 too big`, plus the free memory
 /// and the gateway state when no machine block shows them, held to `width`
 /// cells: the counts of what won't run go first, then the line is clipped,
 /// so the gateway state survives a narrow terminal.
