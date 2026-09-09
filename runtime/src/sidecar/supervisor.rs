@@ -974,13 +974,20 @@ fn int_field(object: ControlObject<'_>, key: &str) -> Option<i64> {
 }
 
 fn done_stats(object: ControlObject<'_>) -> GenerationStats {
-    let seconds = object
-        .and_then(|obj| obj.get("seconds"))
-        .and_then(JsonValue::as_f64);
+    // Rounded, not truncated: a phase under half a millisecond would otherwise
+    // report zero, which reads as a runtime that measured nothing at all.
+    let millis = |key: &str| {
+        object
+            .and_then(|obj| obj.get(key))
+            .and_then(JsonValue::as_f64)
+            .map(|seconds| (seconds * 1000.0).round() as i64)
+    };
     GenerationStats {
         prompt_tokens: int_field(object, "prompt_tokens"),
         completion_tokens: int_field(object, "completion_tokens"),
-        duration_ms: seconds.map(|value| (value * 1000.0) as i64),
+        duration_ms: millis("seconds"),
+        prompt_ms: millis("prompt_seconds"),
+        eval_ms: millis("generation_seconds"),
         ..Default::default()
     }
 }

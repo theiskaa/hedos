@@ -148,7 +148,7 @@ async fn streams_a_chat_completion() {
             concat!(
                 "{\"message\":{\"content\":\"Hello\"}}\n",
                 "{\"message\":{\"content\":\" world\"}}\n",
-                "{\"done\":true,\"prompt_eval_count\":5,\"eval_count\":2,\"total_duration\":2000000,\"done_reason\":\"stop\"}\n"
+                "{\"done\":true,\"prompt_eval_count\":5,\"eval_count\":2,\"total_duration\":2000000,\"prompt_eval_duration\":500000000,\"eval_duration\":1500000000,\"done_reason\":\"stop\"}\n"
             )
             .to_owned(),
         )
@@ -176,6 +176,8 @@ async fn streams_a_chat_completion() {
     assert_eq!(stats.prompt_tokens, Some(5));
     assert_eq!(stats.completion_tokens, Some(2));
     assert_eq!(stats.duration_ms, Some(2));
+    assert_eq!(stats.prompt_ms, Some(500));
+    assert_eq!(stats.eval_ms, Some(1500));
     assert_eq!(stats.finish_reason.as_deref(), Some("stop"));
 
     // The request body carried the streaming flag, the model, and the messages.
@@ -198,6 +200,34 @@ async fn streams_a_chat_completion() {
             .and_then(JsonValue::as_array)
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn a_phase_under_a_millisecond_is_rounded_rather_than_lost() {
+    // Truncating 0.8 ms to 0 would read as a backend that measured nothing.
+    let server = mock(|_path, _body| {
+        (
+            200,
+            "{\"done\":true,\"prompt_eval_duration\":800000,\"eval_duration\":1400000}\n"
+                .to_owned(),
+        )
+    })
+    .await;
+    let adapter = OllamaAdapter::with_base_url(&server.base_url);
+
+    let stream = adapter.invoke(&record(), Capability::chat(), chat_payload("hi"));
+    let (chunks, error) = collect(stream).await;
+    assert!(error.is_none(), "no error: {error:?}");
+    let stats = chunks
+        .iter()
+        .rev()
+        .find_map(|chunk| match chunk {
+            CapabilityChunk::Done(stats) => stats.clone(),
+            _ => None,
+        })
+        .expect("done stats");
+    assert_eq!(stats.prompt_ms, Some(1));
+    assert_eq!(stats.eval_ms, Some(1));
 }
 
 #[tokio::test]

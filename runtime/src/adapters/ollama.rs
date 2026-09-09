@@ -281,17 +281,21 @@ fn tool_calls(object: &BTreeMap<String, JsonValue>) -> Vec<ToolCall> {
 }
 
 fn done_stats(object: &BTreeMap<String, JsonValue>) -> GenerationStats {
+    // Rounded, not truncated: a phase under half a millisecond would otherwise
+    // report zero, which reads as a backend that measured nothing at all.
     let millis = |key: &str| {
         object
             .get(key)
             .and_then(JsonValue::as_i64)
-            .map(|ns| ns / 1_000_000)
+            .map(|ns| (ns as f64 / 1_000_000.0).round() as i64)
     };
     GenerationStats {
         prompt_tokens: object.get("prompt_eval_count").and_then(JsonValue::as_i64),
         completion_tokens: object.get("eval_count").and_then(JsonValue::as_i64),
         duration_ms: millis("total_duration"),
         load_ms: millis("load_duration"),
+        prompt_ms: millis("prompt_eval_duration"),
+        eval_ms: millis("eval_duration"),
         finish_reason: object
             .get("done_reason")
             .and_then(JsonValue::as_str)

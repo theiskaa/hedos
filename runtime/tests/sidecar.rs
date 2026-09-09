@@ -169,6 +169,8 @@ async fn parses_token_counts_from_the_chat_done_event() {
     assert_eq!(stats.prompt_tokens, Some(1));
     assert_eq!(stats.completion_tokens, Some(3));
     assert_eq!(stats.duration_ms, Some(200));
+    assert_eq!(stats.prompt_ms, Some(50));
+    assert_eq!(stats.eval_ms, Some(150));
     supervisor.shutdown_all().await;
 }
 

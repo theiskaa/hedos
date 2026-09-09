@@ -196,6 +196,88 @@ async fn streams_text_and_final_usage() {
 }
 
 #[tokio::test]
+async fn reads_the_two_phases_from_a_llama_server_timings_chunk() {
+    // llama-server puts its counts and the prompt/decode split on a `timings`
+    // object of the final chunk, with no `usage` beside it.
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+               data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"timings\":{\"prompt_n\":7,\"prompt_ms\":41.6,\"predicted_n\":3,\"predicted_ms\":120.2}}\n\n\
+               data: [DONE]\n\n";
+    let server = mock(move |_path, _body| (200, sse.to_owned())).await;
+    let adapter = OpenAiEndpointAdapter::new();
+
+    let stream = adapter.invoke(
+        &record(&server.base_url),
+        Capability::chat(),
+        chat_payload(),
+    );
+    let (chunks, error) = collect(stream).await;
+    assert!(error.is_none());
+    match chunks.last() {
+        Some(CapabilityChunk::Done(Some(stats))) => {
+            assert_eq!(stats.prompt_tokens, Some(7));
+            assert_eq!(stats.completion_tokens, Some(3));
+            assert_eq!(stats.prompt_ms, Some(42));
+            assert_eq!(stats.eval_ms, Some(120));
+        }
+        other => panic!("expected Done with stats, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_newest_timings_object_carries_the_count_not_the_first() {
+    // With `timings_per_token` on, llama-server sends a timings object with
+    // every token; the counts of the last one are the counts of the reply.
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}],\"timings\":{\"predicted_n\":1,\"predicted_ms\":10}}\n\n\
+               data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}],\"timings\":{\"predicted_n\":2,\"predicted_ms\":20}}\n\n\
+               data: {\"choices\":[],\"timings\":{\"prompt_n\":7,\"prompt_ms\":5,\"predicted_n\":3,\"predicted_ms\":30}}\n\n\
+               data: [DONE]\n\n";
+    let server = mock(move |_path, _body| (200, sse.to_owned())).await;
+    let adapter = OpenAiEndpointAdapter::new();
+
+    let stream = adapter.invoke(
+        &record(&server.base_url),
+        Capability::chat(),
+        chat_payload(),
+    );
+    let (chunks, error) = collect(stream).await;
+    assert!(error.is_none());
+    match chunks.last() {
+        Some(CapabilityChunk::Done(Some(stats))) => {
+            assert_eq!(stats.completion_tokens, Some(3));
+            assert_eq!(stats.prompt_tokens, Some(7));
+            assert_eq!(stats.eval_ms, Some(30));
+        }
+        other => panic!("expected Done with stats, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn usage_counts_win_over_the_counts_a_timings_object_carries() {
+    let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+               data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2},\"timings\":{\"prompt_n\":7,\"prompt_ms\":10,\"predicted_n\":3,\"predicted_ms\":20}}\n\n\
+               data: [DONE]\n\n";
+    let server = mock(move |_path, _body| (200, sse.to_owned())).await;
+    let adapter = OpenAiEndpointAdapter::new();
+
+    let stream = adapter.invoke(
+        &record(&server.base_url),
+        Capability::chat(),
+        chat_payload(),
+    );
+    let (chunks, error) = collect(stream).await;
+    assert!(error.is_none());
+    match chunks.last() {
+        Some(CapabilityChunk::Done(Some(stats))) => {
+            assert_eq!(stats.prompt_tokens, Some(5));
+            assert_eq!(stats.completion_tokens, Some(2));
+            assert_eq!(stats.prompt_ms, Some(10));
+            assert_eq!(stats.eval_ms, Some(20));
+        }
+        other => panic!("expected Done with stats, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn accumulates_tool_call_fragments() {
     // The tool call arrives split across two deltas, then a finish_reason flush.
     let sse = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"get_\"}}]}}]}\n\n\

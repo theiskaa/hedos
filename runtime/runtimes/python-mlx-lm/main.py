@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import select
 import struct
@@ -15,6 +16,24 @@ def send(frame_type, payload):
 
 def send_json(obj):
     send(1, json.dumps(obj).encode())
+
+
+def phase_timings(last):
+    if last is None:
+        return {}
+    timings = {}
+    for key, tokens, per_second in (
+        ("prompt_seconds", "prompt_tokens", "prompt_tps"),
+        ("generation_seconds", "generation_tokens", "generation_tps"),
+    ):
+        count = getattr(last, tokens, 0) or 0
+        rate = getattr(last, per_second, 0) or 0
+        # Only a positive finite rate is a measurement. A NaN would also reach
+        # json.dumps as a bare `NaN`, which no JSON parser on the other end
+        # accepts, costing the whole done frame rather than one figure.
+        if count and math.isfinite(rate) and rate > 0:
+            timings[key] = count / rate
+    return timings
 
 
 def read_exact(count):
@@ -586,6 +605,7 @@ def main():
                     "seconds": time.monotonic() - started,
                     "prompt_tokens": last.prompt_tokens if last else 0,
                     "completion_tokens": last.generation_tokens if last else 0,
+                    **phase_timings(last),
                 }
             )
         except Exception as error:
