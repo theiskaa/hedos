@@ -448,32 +448,7 @@ fn detect_total_memory_mb() -> i64 {
 
 #[cfg(target_os = "macos")]
 fn macos_memsize() -> Option<u64> {
-    use std::os::raw::{c_char, c_int, c_void};
-    unsafe extern "C" {
-        fn sysctlbyname(
-            name: *const c_char,
-            oldp: *mut c_void,
-            oldlenp: *mut usize,
-            newp: *const c_void,
-            newlen: usize,
-        ) -> c_int;
-    }
-    let mut value: u64 = 0;
-    let mut length = std::mem::size_of::<u64>();
-    let name = c"hw.memsize";
-    // SAFETY: `name` is a valid NUL-terminated C string; `value`/`length` are
-    // valid, correctly-sized out-parameters; `sysctlbyname` writes at most
-    // `length` bytes into `value`. A non-zero return means failure, handled below.
-    let result = unsafe {
-        sysctlbyname(
-            name.as_ptr(),
-            std::ptr::from_mut(&mut value).cast(),
-            std::ptr::from_mut(&mut length),
-            std::ptr::null(),
-            0,
-        )
-    };
-    (result == 0).then_some(value)
+    crate::sys::u64_value(c"hw.memsize")
 }
 
 #[cfg(target_os = "linux")]
