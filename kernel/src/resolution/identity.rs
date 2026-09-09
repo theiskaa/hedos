@@ -12,8 +12,9 @@ use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
     RuntimeId, SourceKind,
 };
-use crate::resolution::format::{GgufFacts, ModelFormat};
-use crate::resolution::format::{gguf_architecture_profile, ollama_profile};
+use crate::resolution::format::{
+    GgufFacts, ModelFormat, gguf_architecture_profile, ollama_profile,
+};
 use crate::resolution::gguf::{gguf_facts, has_ggml_magic, has_gguf_magic};
 use crate::resolution::pipelines::{
     PipelineFamilyRegistry, SchedulerFacts, diffusers_pipeline_class,

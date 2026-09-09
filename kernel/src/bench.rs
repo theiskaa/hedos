@@ -152,11 +152,6 @@ impl Measure {
             max: sorted[sorted.len() - 1],
         })
     }
-
-    /// Whether the ends differ enough to be worth printing beside the median.
-    pub fn has_spread(&self) -> bool {
-        (self.max - self.min) >= 0.05
-    }
 }
 
 /// What the cold run measured, or why it did not.
@@ -258,7 +253,8 @@ pub enum Status {
     Failed(String),
     /// Never tried, with the reason.
     Skipped(String),
-    /// The bench was stopped before this model's turn came, or during it.
+    /// The bench was stopped before this model measured anything; a stop
+    /// after a warm run landed keeps what it had instead.
     Stopped,
 }
 
@@ -295,14 +291,14 @@ pub struct Row {
 impl Row {
     /// A queued row for a model that will be benched.
     pub fn waiting(
-        id: impl Into<String>,
-        name: impl Into<String>,
+        id: &str,
+        name: &str,
         runtime: Option<String>,
         quantization: Option<String>,
     ) -> Self {
         Self {
-            id: id.into(),
-            name: name.into(),
+            id: id.to_owned(),
+            name: name.to_owned(),
             runtime,
             quantization,
             status: Status::Waiting,
@@ -311,14 +307,14 @@ impl Row {
 
     /// A row for a model the bench will not try, and why.
     pub fn skipped(
-        id: impl Into<String>,
-        name: impl Into<String>,
+        id: &str,
+        name: &str,
         runtime: Option<String>,
         quantization: Option<String>,
-        reason: impl Into<String>,
+        reason: &str,
     ) -> Self {
         let mut row = Self::waiting(id, name, runtime, quantization);
-        row.status = Status::Skipped(reason.into());
+        row.status = Status::Skipped(reason.to_owned());
         row
     }
 }
@@ -327,9 +323,7 @@ impl Row {
 pub fn fastest(rows: &[Row]) -> Option<f64> {
     rows.iter()
         .filter_map(|row| row.status.rate())
-        .fold(None, |best: Option<f64>, rate| {
-            Some(best.map_or(rate, |best| best.max(rate)))
-        })
+        .reduce(f64::max)
 }
 
 /// `rows` in the order the finished table draws them: measured rows fastest
@@ -532,15 +526,5 @@ mod tests {
         assert_eq!(filled_cells(0.0, 60.0, 20), 0, "and nothing measured is");
         assert_eq!(filled_cells(10.0, 0.0, 20), 0);
         assert_eq!(filled_cells(10.0, 60.0, 0), 0);
-    }
-
-    #[test]
-    fn a_spread_is_only_reported_when_the_ends_actually_differ() {
-        assert!(
-            !Measure::of(&[40.0, 40.02])
-                .expect("two values")
-                .has_spread()
-        );
-        assert!(Measure::of(&[40.0, 44.0]).expect("two values").has_spread());
     }
 }
