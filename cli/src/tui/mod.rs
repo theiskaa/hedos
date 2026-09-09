@@ -6,6 +6,8 @@
 //! loop that connects them.
 
 mod app;
+mod bench;
+pub(crate) mod bench_view;
 mod chat;
 mod edit;
 mod effect;
@@ -17,6 +19,7 @@ mod launch;
 mod layout;
 mod markup;
 mod order;
+mod palette;
 mod pull;
 mod pulls;
 mod state;
@@ -320,6 +323,10 @@ async fn drive(
                     generation,
                 } => tasks::spawn_ask(record_id, payload, generation, context, tx),
                 Effect::StopAsk => context.stop_ask(),
+                Effect::StartBench(plan, generation) => {
+                    tasks::spawn_bench(*plan, generation, context, tx);
+                }
+                Effect::StopBench => context.stop_bench(),
             }
         }
     }

@@ -3,7 +3,7 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use super::ui::BORDER_ROWS;
+use super::palette::BORDER_ROWS;
 
 /// Below this many columns the detail pane stacks under the shelf.
 const WIDE_WIDTH: u16 = 100;
@@ -135,6 +135,13 @@ impl Panes {
     /// and the header carries the machine's one line.
     pub fn pulls(area: Rect, pull_rows: usize, task_rows: usize) -> Self {
         Self::split(area, pull_rows, 0, task_rows, false)
+    }
+
+    /// Split `area` for the bench screen, which is laid out as the pulls one
+    /// is: the list of models where the shelf goes, the selected row's figures
+    /// where the model's detail goes.
+    pub fn bench(area: Rect, bench_rows: usize, task_rows: usize) -> Self {
+        Self::pulls(area, bench_rows, task_rows)
     }
 
     /// The layout behind both screens; a `machine_block` of zero rows means

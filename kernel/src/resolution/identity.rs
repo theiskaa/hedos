@@ -12,8 +12,9 @@ use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
     RuntimeId, SourceKind,
 };
-use crate::resolution::format::ModelFormat;
-use crate::resolution::format::{gguf_architecture_profile, ollama_profile};
+use crate::resolution::format::{
+    GgufFacts, ModelFormat, gguf_architecture_profile, ollama_profile,
+};
 use crate::resolution::gguf::{gguf_facts, has_ggml_magic, has_gguf_magic};
 use crate::resolution::pipelines::{
     PipelineFamilyRegistry, SchedulerFacts, diffusers_pipeline_class,
@@ -41,6 +42,8 @@ pub struct IdentifiedModel {
     pub context_length: Option<i64>,
     /// Whether the model ships a chat template.
     pub has_chat_template: Option<bool>,
+    /// The quantization the weights carry, as their format names it.
+    pub quantization: Option<String>,
 }
 
 impl IdentifiedModel {
@@ -60,6 +63,7 @@ impl IdentifiedModel {
             pipeline_class: None,
             context_length: None,
             has_chat_template: None,
+            quantization: None,
         }
     }
 }
@@ -115,16 +119,26 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
         return chat_model(ModelFormat::Endpoint, endpoint_params());
     }
     if *kind == SourceKind::ollama() {
+        // The blob a manifest points at is a GGUF, so its header says what the
+        // manifest does not: the architecture and the quantization.
+        let facts = record
+            .primary_weight_path
+            .as_deref()
+            .and_then(|path| gguf_facts(Path::new(path)));
         let profile = ollama_profile(
             manifest_has_projector_layer(&record.source.path),
-            record.primary_weight_path.as_deref(),
+            facts
+                .as_ref()
+                .and_then(|facts| facts.architecture.as_deref()),
         );
-        return IdentifiedModel::new(
+        let mut model = IdentifiedModel::new(
             ModelFormat::OllamaStore,
             Some(profile.modality),
             profile.capabilities,
             profile.execution,
         );
+        model.quantization = facts.and_then(|facts| facts.quantization);
+        return model;
     }
 
     let base = Path::new(&record.source.path);
@@ -246,8 +260,7 @@ fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
             capabilities,
             profile.execution,
         );
-        model.context_length = facts.as_ref().and_then(|facts| facts.context_length);
-        model.has_chat_template = facts.as_ref().map(|facts| facts.has_chat_template);
+        apply_facts(&mut model, facts.as_ref());
         return model;
     }
     let capabilities = if has_projector {
@@ -265,8 +278,7 @@ fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
         capabilities,
         ExecutionMode::Stream,
     );
-    model.context_length = facts.as_ref().and_then(|facts| facts.context_length);
-    model.has_chat_template = facts.as_ref().map(|facts| facts.has_chat_template);
+    apply_facts(&mut model, facts.as_ref());
     model
 }
 
@@ -286,7 +298,7 @@ fn identify_safetensors(
             vec![Capability::embed()],
             ExecutionMode::Stream,
         );
-        model.context_length = hint.and_then(|hint| hint.context_length);
+        apply_hint(&mut model, hint);
         return model;
     }
     let mut model = IdentifiedModel::new(
@@ -296,8 +308,23 @@ fn identify_safetensors(
             .unwrap_or_default(),
         hint.map_or(ExecutionMode::Sync, |hint| hint.execution),
     );
-    model.context_length = hint.and_then(|hint| hint.context_length);
+    apply_hint(&mut model, hint);
     model
+}
+
+/// Copy onto `model` what a GGUF header said about it. Every branch that reads
+/// a header ends this way, so the set of facts a header carries is named once.
+fn apply_facts(model: &mut IdentifiedModel, facts: Option<&GgufFacts>) {
+    model.context_length = facts.and_then(|facts| facts.context_length);
+    model.has_chat_template = facts.map(|facts| facts.has_chat_template);
+    model.quantization = facts.and_then(|facts| facts.quantization.clone());
+}
+
+/// The same for what a `config.json` said, which is less: a config names no
+/// chat template.
+fn apply_hint(model: &mut IdentifiedModel, hint: Option<&Hint>) {
+    model.context_length = hint.and_then(|hint| hint.context_length);
+    model.quantization = hint.and_then(|hint| hint.quantization.clone());
 }
 
 fn chat_model(format: ModelFormat, params: Vec<ParamSpec>) -> IdentifiedModel {

@@ -173,6 +173,11 @@ pub struct ModelRecord {
     /// Whether the model ships a chat template.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_chat_template: Option<bool>,
+    /// The quantization the weights carry, as their format names it: `Q4_K_M`
+    /// from a GGUF header, `4bit` from an MLX config; unread or unquantized
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
     /// Whether the model's chat template supports tool calling, when it could be
     /// read. `None` means undetermined — treated as capable, gated by a request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,6 +221,7 @@ impl ModelRecord {
             primary_weight_path: None,
             context_length: None,
             has_chat_template: None,
+            quantization: None,
             supports_tools: None,
             stop_tokens: None,
             downloading: false,

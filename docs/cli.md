@@ -158,6 +158,7 @@ Manage the shelf in a terminal UI: the same table `hedos ls` prints, with the ma
 
 - `p` pulls: a catalog grouped by what you'd use a model for, a search over Hugging Face as you type, and a plan (size, destination, fit) before a byte moves. Downloads run in a task strip with progress; `c` opens a stop card that offers to pause, keeping what landed, or cancel. A finished pull lands on the model it added.
 - `P` opens the pulls screen in the shelf's place: every pull the store still holds, newest first, with the selected one's record, rate, estimate, and history beside it. `c`, `R`, and `Y` there stop, resume, and copy the id of the selected pull. `x` forgets an ended one's record, which is what `hedos pull clean` does to all of them; `p` starts a new pull as it does on the shelf; `esc` goes back.
+- `B` opens the bench screen in the shelf's place: every chat model on the machine measured one at a time, with the selected row's runs, cold start, and where its timing came from beside it. `b` on the shelf benches the model under the cursor and opens the screen on it. Inside, `a` benches everything, `b` measures the selected row again, `c` stops the bench with what it has measured standing, and `esc` goes back to the shelf while the bench carries on. The figures are the ones `hedos bench` reports, from the same driver. A bench and a chat pane would each skew the other, so `t` is refused while one runs.
 - `w` / `u` warm and unload, through the Ollama daemon when the daemon holds the model. `x` removes, showing exactly what leaves the disk and asking first.
 - `t` opens a chat pane on the selected model, in place of the shelf: type, `enter` sends, the reply streams in with its token rate under it, and the conversation carries on until `esc` closes the pane (while a reply streams, `esc` and Ctrl-C stop it first; idle, Ctrl-C closes the pane too). The transcript scrolls with the wheel, `↑`/`↓`, `PageUp`/`PageDown` and `Home`/`End`; a scrolled view holds still while more text streams in, with its position in the title, and `End` follows the newest text again. The wheel also moves the shelf and the pull list. The model is warm afterwards, like after `hedos run`.
 - `l` launches a coding harness on the selected model, `T` opens `hedos chat` on it in the plain terminal, and `S` runs `hedos serve`. Each of these is a hand-off: the UI steps aside, the command owns the terminal, and the shelf is back the moment it ends, with a row saying how it went. Ctrl-C reaches the harness or stops the reply; Ctrl-D ends a chat.
@@ -173,6 +174,28 @@ Load a model into residency with a tiny request, so the next real request starts
 ### `hedos unload [model]`
 
 Evict a model from in-process residency and report the result. Omit the model to pick from the models that are currently warm.
+
+### `hedos bench [model...]`
+
+Measure what each model actually does on this machine: tokens a second, time to first token, and cold start, the same way for every row so two of them can be compared. Name models to bench only those, or omit them for every chat model that fits this machine's memory.
+
+```sh
+hedos bench                          # every model that fits
+hedos bench qwen3 gemma3             # just these two, whatever their size
+hedos bench --all --runs 5           # the too-big ones as well, five warm runs each
+```
+
+For each model in turn, hedos clears it from memory, runs it once cold, then runs it `--runs` times warm, and clears it again so the next one has the machine to itself. The first token of the cold run is the COLD figure; the warm runs' medians are the rest. A model a running `hedos serve` holds cannot be cleared from another process, so its cold cell reads `held` and its warm figures stand.
+
+- `--all` benches the models too big for this machine's memory too.
+- `--runs <n>` sets the warm runs per model (default 3).
+- `--max-tokens <n>` caps each reply (default 128). A reply cut by the cap is still a whole measurement.
+- `--prompt <text>` replaces the prompt every model answers.
+- `--keep-warm` leaves residency alone: nothing is evicted, so nothing is measured cold.
+
+Where a runtime reports the two phases apart, the rate is its own decode figure; where it does not, it is measured from the stream, first token to last. Token counts come from the runtime; where it reports none, they are counted from the text at roughly four characters a token and the figure wears a `~`. Time to first token is always measured here, since it is what a caller waits for. Thinking tokens count as generated text, because they cost the same time.
+
+On a terminal the table redraws in place while the models run and settles into a ranked one, fastest first, which stays in your scrollback. Piped, nothing is printed until the end and the same table arrives as plain text. `--json` carries every figure, each run behind it, and where its timing came from. Ctrl-C stops the bench; what was measured stands. The command exits non-zero when no model produced a figure.
 
 ### `hedos stats`
 

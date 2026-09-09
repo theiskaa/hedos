@@ -21,6 +21,8 @@ pub struct Hint {
     pub execution: ExecutionMode,
     /// A context-window hint pulled from the config.
     pub context_length: Option<i64>,
+    /// The quantization the config names, as `4bit`, when it does.
+    pub quantization: Option<String>,
 }
 
 impl Hint {
@@ -30,6 +32,7 @@ impl Hint {
             capabilities,
             execution,
             context_length: None,
+            quantization: None,
         }
     }
 
@@ -41,6 +44,7 @@ impl Hint {
             capabilities: Vec::new(),
             execution,
             context_length: None,
+            quantization: None,
         }
     }
 }
@@ -116,6 +120,7 @@ pub fn from_model_index(path: &Path) -> Hint {
             capabilities: family.capabilities.clone(),
             execution: ExecutionMode::Job,
             context_length: None,
+            quantization: None,
         };
     }
     Hint::unknown(ExecutionMode::Job)
@@ -152,6 +157,15 @@ pub fn from_config(json: &JsonValue) -> Option<Hint> {
         .into_iter()
         .find_map(|key| object.get(key).and_then(JsonValue::as_i64))
         .filter(|value| *value > 0);
+    // MLX writes the bits it quantized to under `quantization`; a config without
+    // the block is unquantized, or not MLX's.
+    let quantization = object
+        .get("quantization")
+        .and_then(JsonValue::as_object)
+        .and_then(|block| block.get("bits"))
+        .and_then(JsonValue::as_i64)
+        .filter(|bits| *bits > 0)
+        .map(|bits| format!("{bits}bit"));
 
     if object.contains_key("vision_config")
         && architectures.iter().any(|architecture| {
@@ -161,21 +175,26 @@ pub fn from_config(json: &JsonValue) -> Option<Hint> {
                     .any(|marker| architecture.contains(marker))
         })
     {
-        return Some(with_context(vision_chat_hint(), context_length));
+        return Some(with_facts(
+            vision_chat_hint(),
+            context_length,
+            quantization.clone(),
+        ));
     }
 
     for architecture in &architectures {
         if let Some(hint) = architecture_hint(architecture) {
-            return Some(with_context(hint, context_length));
+            return Some(with_facts(hint, context_length, quantization.clone()));
         }
     }
 
     let keys: BTreeSet<&str> = object.keys().map(String::as_str).collect();
-    config_key_hint(&keys).map(|hint| with_context(hint, context_length))
+    config_key_hint(&keys).map(|hint| with_facts(hint, context_length, quantization))
 }
 
-fn with_context(mut hint: Hint, context_length: Option<i64>) -> Hint {
+fn with_facts(mut hint: Hint, context_length: Option<i64>, quantization: Option<String>) -> Hint {
     hint.context_length = context_length;
+    hint.quantization = quantization;
     hint
 }
 

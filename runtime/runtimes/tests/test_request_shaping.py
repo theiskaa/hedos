@@ -386,3 +386,32 @@ def test_vlm_build_prompt_folds_tools_into_a_user_turn_when_system_is_rejected(m
     prompt = mlx_vlm.build_prompt(render, [{"role": "user", "content": "hi"}], [{"name": "read"}])
     assert prompt.startswith("user:You can call tools.")
     assert "system:" not in prompt
+
+
+class _LastResponse:
+    prompt_tokens = 30
+    prompt_tps = 300.0
+    generation_tokens = 4
+    generation_tps = 0.0
+
+
+def test_phase_timings_divides_each_phase_by_its_rate_and_skips_a_phase_with_no_rate(mlx_lm):
+    assert mlx_lm.phase_timings(_LastResponse()) == {"prompt_seconds": 0.1}
+    assert mlx_lm.phase_timings(None) == {}
+
+
+def test_phase_timings_skips_a_rate_that_is_not_a_positive_finite_number(mlx_lm):
+    class Last:
+        prompt_tokens = 30
+        prompt_tps = float("nan")
+        generation_tokens = 4
+        generation_tps = float("inf")
+
+    # A NaN would otherwise reach json.dumps as a bare `NaN` and cost the whole
+    # done frame, not just the figure.
+    assert mlx_lm.phase_timings(Last()) == {}
+
+
+def test_vlm_phase_timings_matches_the_mlx_lm_copy(mlx_lm, mlx_vlm):
+    assert mlx_vlm.phase_timings(_LastResponse()) == mlx_lm.phase_timings(_LastResponse())
+    assert mlx_vlm.phase_timings(None) == mlx_lm.phase_timings(None)

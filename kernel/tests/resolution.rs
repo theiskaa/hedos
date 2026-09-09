@@ -79,12 +79,26 @@ fn gguf_facts_reads_architecture_context_and_template() {
             kv_string("general.architecture", "llama"),
             kv_u32("llama.context_length", 4096),
             kv_string("tokenizer.chat_template", "{{ messages }}"),
+            kv_u32("general.file_type", 15),
         ],
     );
     let facts = gguf_facts(&write(&dir, "model.gguf", &gguf)).unwrap();
     assert_eq!(facts.architecture.as_deref(), Some("llama"));
     assert_eq!(facts.context_length, Some(4096));
     assert!(facts.has_chat_template);
+    assert_eq!(facts.quantization.as_deref(), Some("Q4_K_M"));
+}
+
+#[test]
+fn gguf_names_a_guessed_file_type_and_drops_an_unknown_one() {
+    let dir = TempDir::new();
+    // The converter sets bit 1024 on a type it inferred; the type is the rest.
+    let guessed = build_gguf(3, &[kv_u32("general.file_type", 7 | 1024)]);
+    let facts = gguf_facts(&write(&dir, "guessed.gguf", &guessed)).unwrap();
+    assert_eq!(facts.quantization.as_deref(), Some("Q8_0"));
+    let unknown = build_gguf(3, &[kv_u32("general.file_type", 999)]);
+    let facts = gguf_facts(&write(&dir, "unknown.gguf", &unknown)).unwrap();
+    assert_eq!(facts.quantization, None);
 }
 
 #[test]

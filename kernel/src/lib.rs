@@ -3,6 +3,7 @@
 //! no UI. Higher layers (gateway, cli) are thin shells over this crate.
 
 pub mod artifacts;
+pub mod bench;
 pub mod capabilities;
 pub mod discovery;
 pub mod fs;

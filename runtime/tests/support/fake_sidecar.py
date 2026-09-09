@@ -166,6 +166,8 @@ while True:
                 "seconds": 0.2,
                 "prompt_tokens": len(messages),
                 "completion_tokens": 3,
+                "prompt_seconds": 0.05,
+                "generation_seconds": 0.15,
             }
         )
     if op == "embed":

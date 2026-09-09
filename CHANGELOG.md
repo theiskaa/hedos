@@ -2,6 +2,15 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.4.1 - 2026-09-09
+
+A model can be measured. `hedos bench` runs the same prompt through every model on the machine and leaves a ranked table behind, and the shelf has the same bench as a screen of its own; underneath it, two things that had to be true first, the runtimes timing the prompt and the decoding apart and a model's quantization being read at all.
+
+- `hedos bench` measures what every model on the machine actually does: tokens a second, time to first token and cold start, the same way for every row so two of them can be compared. Each model is cleared from memory, run once cold, run again warm a few times, and cleared after, so no row is measured on a machine another row warmed. On a terminal the table redraws in place while the models run and settles into a ranked one that stays in the scrollback; piped it prints once as plain text, and `--json` carries every run behind every figure. Ctrl-C stops the bench with what it measured standing; a second one gives up on the run in flight.
+- The shelf has the same bench on `B`, with `b` benching the model under the cursor, `a` every model, `c` stopping it, and `esc` back to the shelf while it carries on. The selected row's runs, cold start and where its timing came from sit beside the table. Both surfaces are driven by the same code, so they cannot disagree about a number.
+- The runtimes report the prompt and the decoding apart where they measure them apart. Ollama has always sent `prompt_eval_duration` and `eval_duration` and llama-server a `timings` object; both were dropped on the floor, and the MLX sidecars sent neither, so a rate divided out of the total charged the prompt to the generation and undercounted every model given a long one.
+- A model's quantization is read from its weights: `general.file_type` from a GGUF header, `quantization.bits` from an MLX config. Nothing showed it before, so two builds of the same model at different quants were indistinguishable on the shelf. A shelf already on disk picks the figure up on its next scan; until then the column reads `—`.
+
 ## v1.4.0 - 2026-09-08
 
 Downloads stop belonging to the terminal that started them. A pull now runs in a worker process of its own, is managed under `hedos pull` from anywhere, and has a screen of its own in the shelf. The rest of the release is what end-to-end testing turned up once a model could be pulled and then run in the same sitting: pulled models that no runtime would bid for, sizes that read a unit low, and a handful of places where the interface said one thing while the machine did another.

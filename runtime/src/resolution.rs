@@ -364,6 +364,9 @@ fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_
     if let Some(has_chat_template) = identified.has_chat_template {
         updated.has_chat_template = Some(has_chat_template);
     }
+    if let Some(quantization) = &identified.quantization {
+        updated.quantization = Some(quantization.clone());
+    }
     updated.execution = identified.execution;
     // Re-apply the tool signal after capabilities were overwritten. Tool support
     // is the resolved runtime AND the model together: the runtime has to forward

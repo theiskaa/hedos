@@ -3,9 +3,11 @@ use super::*;
 use crate::tui::keymap;
 use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
 use crate::tui::testing::{downloading, job_row, plan, resident};
+use kernel::bench::{Phase, Status as BenchStatus};
 use kernel::install::event::InstallProgress;
 use kernel::install::pulls::PullState;
-use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+use kernel::records::{Capability, Modality, ModelSource, RuntimeId, SourceKind};
+use runtime::bench::BenchEvent;
 
 fn record(index: usize) -> ModelRecord {
     crate::tui::testing::record(&format!("model-{index}"))
@@ -13,6 +15,36 @@ fn record(index: usize) -> ModelRecord {
 
 fn app(count: usize) -> App {
     app_from((0..count).map(record).collect())
+}
+
+/// A model a bench would actually measure: one that resolves to a runtime.
+fn benchable(index: usize) -> ModelRecord {
+    let mut record = record(index);
+    record.runtime.id = Some(RuntimeId::ollama());
+    record
+}
+
+/// An app whose models can all be benched, on the bench screen with a bench
+/// under way over every one of them.
+fn benching(count: usize) -> App {
+    let mut app = app_from((0..count).map(benchable).collect());
+    press(&mut app, Key::Char('B'));
+    app.take_dirty();
+    app
+}
+
+fn bench_step(app: &mut App, step: BenchEvent) -> Vec<Effect> {
+    app.reduce(Event::Bench {
+        generation: 1,
+        step,
+    })
+}
+
+fn settled(id: &str) -> BenchEvent {
+    BenchEvent::Settled {
+        id: id.to_owned(),
+        status: Box::new(BenchStatus::Stopped),
+    }
 }
 
 fn app_from(records: Vec<ModelRecord>) -> App {
@@ -1200,7 +1232,7 @@ fn every_pulls_binding_does_something_and_nothing_else_does() {
             downloading("c"),
         ]
     };
-    for binding in keymap::pulls_bindings() {
+    for binding in keymap::PULLS.bindings() {
         for key in keys_of(binding) {
             let mut app = app(1);
             app.reduce(Event::Pulls(rows()));
@@ -1215,7 +1247,8 @@ fn every_pulls_binding_does_something_and_nothing_else_does() {
             );
         }
     }
-    let bound: Vec<char> = keymap::pulls_bindings()
+    let bound: Vec<char> = keymap::PULLS
+        .bindings()
         .flat_map(|binding| keymap::chars(binding.key))
         .chain(['q', '?', 'P'])
         .collect();
@@ -1252,4 +1285,162 @@ fn an_older_refresh_never_overwrites_a_newer_one() {
         facts: Facts::default(),
     }));
     assert_eq!(app.records[0].name, "model-5");
+}
+
+#[test]
+fn opening_the_bench_screen_starts_one_over_the_whole_shelf() {
+    let mut app = app_from((0..2).map(benchable).collect());
+    let effects = press(&mut app, Key::Char('B'));
+    assert_eq!(app.screen, Screen::Bench);
+    assert!(app.bench.running());
+    assert_eq!(app.bench.rows().len(), 2);
+    assert!(matches!(effects.as_slice(), [Effect::StartBench(plan, 1)] if plan.models.len() == 2));
+}
+
+#[test]
+fn benching_the_selected_model_opens_the_screen_on_it_alone() {
+    let mut app = app_from((0..3).map(benchable).collect());
+    press(&mut app, Key::Down);
+    let effects = press(&mut app, Key::Char('b'));
+    assert_eq!(app.screen, Screen::Bench);
+    let Some(Effect::StartBench(plan, _)) = effects.first() else {
+        panic!("expected a bench, got {effects:?}");
+    };
+    assert_eq!(plan.models, vec![record(1).id]);
+}
+
+#[test]
+fn benching_a_model_nothing_can_measure_says_so_from_the_shelf() {
+    // The default test record resolves to no runtime.
+    let mut app = app(1);
+    let effects = press(&mut app, Key::Char('b'));
+    assert!(effects.is_empty());
+    assert_eq!(app.screen, Screen::Shelf, "the screen never opened");
+    assert!(app.notice().is_some_and(|notice| notice.contains("bench")));
+}
+
+#[test]
+fn a_second_bench_is_refused_while_one_is_running() {
+    let mut app = benching(2);
+    let effects = press(&mut app, Key::Char('a'));
+    assert!(effects.is_empty());
+    assert!(
+        app.notice()
+            .is_some_and(|notice| notice.contains("already running"))
+    );
+}
+
+#[test]
+fn stopping_the_bench_asks_its_driver_to_stop() {
+    let mut app = benching(1);
+    assert!(matches!(
+        press(&mut app, Key::Char('c')).as_slice(),
+        [Effect::StopBench]
+    ));
+    // With nothing running, the same key says so rather than asking again.
+    app.reduce(Event::BenchEnded(1));
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert!(
+        app.notice()
+            .is_some_and(|notice| notice.contains("no bench"))
+    );
+}
+
+#[test]
+fn a_step_moves_its_row_and_one_from_an_older_bench_does_not() {
+    let mut app = benching(2);
+    bench_step(
+        &mut app,
+        BenchEvent::Started {
+            id: record(0).id,
+            phase: Phase::ColdStart,
+        },
+    );
+    assert!(app.take_dirty());
+    assert!(matches!(
+        app.bench.rows()[0].status,
+        BenchStatus::Running { .. }
+    ));
+    app.reduce(Event::Bench {
+        generation: 0,
+        step: settled(&record(1).id),
+    });
+    assert_eq!(
+        app.bench.rows()[1].status,
+        BenchStatus::Waiting,
+        "a step stamped with a bench already replaced lands nowhere"
+    );
+}
+
+#[test]
+fn the_shelf_comes_back_with_the_bench_still_going() {
+    let mut app = benching(2);
+    press(&mut app, Key::Escape);
+    assert_eq!(app.screen, Screen::Shelf);
+    assert!(app.bench.running(), "the bench carries on behind it");
+    press(&mut app, Key::Char('B'));
+    assert_eq!(app.screen, Screen::Bench);
+    assert_eq!(
+        app.bench.rows().len(),
+        2,
+        "and its rows are where they were"
+    );
+}
+
+#[test]
+fn the_chat_pane_is_refused_while_a_bench_is_running() {
+    let mut app = benching(1);
+    press(&mut app, Key::Escape);
+    let effects = press(&mut app, Key::Char('t'));
+    assert!(effects.is_empty());
+    assert!(app.modal.is_none(), "no pane opened");
+    assert!(app.notice().is_some_and(|notice| notice.contains("bench")));
+}
+
+#[test]
+fn a_running_bench_redraws_on_the_tick_that_nothing_else_answers() {
+    let mut app = benching(1);
+    app.take_dirty();
+    ticks(&mut app, 1);
+    assert!(app.take_dirty(), "the spinner turns between steps");
+}
+
+#[test]
+fn every_bench_binding_does_something_and_nothing_else_does() {
+    for binding in keymap::BENCH.bindings() {
+        for key in keys_of(binding) {
+            // Off the ends of the list, a move key moves nothing; the middle
+            // row is where every key has somewhere to go.
+            let mut app = benching(3);
+            press(&mut app, Key::Down);
+            app.take_dirty();
+            let effects = press(&mut app, key);
+            assert!(
+                !effects.is_empty() || app.take_dirty() || app.notice().is_some(),
+                "{} ({key:?}) does nothing on the bench screen",
+                binding.key
+            );
+        }
+    }
+    let bound: Vec<char> = keymap::BENCH
+        .bindings()
+        .flat_map(|binding| keymap::chars(binding.key))
+        .chain(['q', '?', 'B'])
+        .collect();
+    for c in (0x20u8..=0x7e)
+        .map(char::from)
+        .filter(|c| !bound.contains(c))
+    {
+        let mut app = benching(3);
+        press(&mut app, Key::Down);
+        app.take_dirty();
+        let effects = press(&mut app, Key::Char(c));
+        assert!(effects.is_empty(), "{c:?} has effects on the bench screen");
+        assert!(!app.take_dirty(), "{c:?} redraws the bench screen");
+        assert!(app.notice().is_none(), "{c:?} notifies on the bench screen");
+        assert!(
+            app.modal.is_none(),
+            "{c:?} opens a card on the bench screen"
+        );
+    }
 }

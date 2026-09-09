@@ -27,6 +27,8 @@ const EXTRAS: [&str; 3] = ["enter", "o", "P"];
 const ALWAYS: [&str; 2] = ["?", "q"];
 /// The pulls screen's keys that apply whatever is selected.
 const PULLS_FIXED: [&str; 3] = ["j/k", "p", "esc"];
+/// The bench screen's keys that apply whatever is selected.
+const BENCH_FIXED: [&str; 3] = ["j/k", "a", "esc"];
 
 /// One footer worth trying.
 struct Candidate {
@@ -44,6 +46,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         (None, None) => match app.screen {
             Screen::Shelf => fitting_line(&app.actions(), area.width as usize, app.expanded),
             Screen::Pulls => pulls_line(app, area.width as usize),
+            Screen::Bench => bench_line(app, area.width as usize),
         },
     };
     frame.render_widget(Paragraph::new(line), area);
@@ -63,16 +66,47 @@ fn chat_line(streaming: bool) -> Line<'static> {
 /// selected pull answers to; narrower, the actions go from the right, then
 /// the fixed keys the same way down to the move key, which is the floor.
 fn pulls_line(app: &App, width: usize) -> Line<'static> {
-    let fixed = keymap::pulls_pairs(&PULLS_FIXED);
-    let actions = keymap::pulls_pairs(&pulls_actions(app));
+    screen_line(
+        &keymap::PULLS.pairs(&PULLS_FIXED),
+        &keymap::PULLS.pairs(&pulls_actions(app)),
+        width,
+    )
+}
+
+/// The bench screen's keys: moving, benching everything, and the way back,
+/// then what the bench going answers to.
+fn bench_line(app: &App, width: usize) -> Line<'static> {
+    screen_line(
+        &keymap::BENCH.pairs(&BENCH_FIXED),
+        &keymap::BENCH.pairs(&bench_actions(app)),
+        width,
+    )
+}
+
+/// A screen's key line: the fixed keys, then its actions; narrower, the actions
+/// go from the right, then the fixed keys the same way down to the move key,
+/// which is the floor.
+fn screen_line(fixed: &[Pair], actions: &[Pair], width: usize) -> Line<'static> {
     let candidates = (0..=actions.len())
         .rev()
-        .map(|kept| (&fixed[..], &actions[..kept]))
+        .map(|kept| (fixed, &actions[..kept]))
         .chain((1..fixed.len()).rev().map(|kept| (&fixed[..kept], &[][..])));
     candidates
         .map(|(fixed, actions)| footer_line(fixed, actions, width))
         .find(|line| line.width() < width)
         .unwrap_or_else(|| footer_line(&fixed[..1], &[], width))
+}
+
+/// The keys the bench answers to right now: stopping it only while it runs,
+/// and re-measuring one row only while it does not.
+fn bench_actions(app: &App) -> Vec<&'static str> {
+    if app.bench.running() {
+        vec!["c"]
+    } else if app.bench.selected_row().is_some() {
+        vec!["b"]
+    } else {
+        Vec::new()
+    }
 }
 
 /// The keys the selected pull answers to, in footer order.
@@ -189,7 +223,7 @@ mod tests {
         for key in CORE.iter().chain(&EXTRAS).chain(&ALWAYS).chain(&ALL) {
             assert!(keymap::binding(key).is_some(), "{key} is not bound");
         }
-        assert_eq!(keymap::pulls_pairs(&PULLS_FIXED).len(), PULLS_FIXED.len());
+        assert_eq!(keymap::PULLS.pairs(&PULLS_FIXED).len(), PULLS_FIXED.len());
     }
 
     #[test]

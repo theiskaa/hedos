@@ -18,6 +18,7 @@ use kernel::install::provider::InstallProviderId;
 use kernel::install::pulls::{PullControl, PullError, PullStore};
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use kernel::time::now_millis;
+use runtime::bench::{BenchPlan, Cancel};
 use runtime::install::service::InstallService;
 use runtime::install::{Started, WorkerError, restart, start_or_join, stop};
 use serde_json::json;
@@ -29,6 +30,7 @@ use super::facts::Facts;
 use super::jobs;
 use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
+use crate::support::bench_run::ShelfPrepare;
 use crate::support::pulls::event_line;
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{is_resident, unload_anywhere, warm_request};
@@ -68,6 +70,9 @@ pub struct TaskContext {
     /// The reply streaming into the chat pane; aborting it is how a reply
     /// stops, and one is enough since the pane sends one ask at a time.
     ask: Mutex<Option<JoinHandle<()>>>,
+    /// The bench in flight. A bench is asked to stop rather than aborted, so
+    /// the model it is on is left unloaded rather than mid-generation.
+    bench: Mutex<Option<Cancel>>,
 }
 
 impl TaskContext {
@@ -80,7 +85,19 @@ impl TaskContext {
             audit,
             mutating: Mutex::new(Vec::new()),
             ask: Mutex::new(None),
+            bench: Mutex::new(None),
         }
+    }
+
+    /// Ask the bench in flight to stop, if one is going.
+    pub fn stop_bench(&self) {
+        if let Some(cancel) = self.bench().take() {
+            cancel.stop();
+        }
+    }
+
+    fn bench(&self) -> MutexGuard<'_, Option<Cancel>> {
+        self.bench.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Stop the reply streaming into the chat pane, if one is.
@@ -95,9 +112,12 @@ impl TaskContext {
     }
 
     /// Wait for every mutating task still running; the tasks that were only
-    /// reading are dropped with the runtime.
+    /// reading are dropped with the runtime. A bench and a streaming reply are
+    /// asked to stop rather than waited for: neither writes to the shelf, so
+    /// quitting need not sit through the model either of them is on.
     pub async fn settle(&self) {
         self.stop_ask();
+        self.stop_bench();
         let handles: Vec<JoinHandle<()>> =
             std::mem::take(&mut *self.mutating.lock().unwrap_or_else(PoisonError::into_inner));
         for handle in handles {
@@ -474,6 +494,43 @@ pub fn spawn_plan(
             .await
             .map_err(|error| error.to_string());
         Event::Planned(Planned { ask, result })
+    });
+}
+
+/// Measure the models of `plan`, reporting every step as it happens. One bench
+/// at a time: any bench still going is stopped first, since two would be
+/// competing for the same machine and neither figure would mean anything. The
+/// reducer refuses to start a second, so this is a guard rather than a path.
+pub fn spawn_bench(
+    plan: BenchPlan,
+    generation: u64,
+    context: &Arc<TaskContext>,
+    tx: &mpsc::UnboundedSender<Event>,
+) {
+    context.stop_bench();
+    let cancel = Cancel::new();
+    *context.bench() = Some(cancel.clone());
+    let runner = Arc::clone(context);
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let session = Arc::clone(runner.session());
+        let shelf = session.shelf().await;
+        let prepare = ShelfPrepare::over(&session, &shelf, &plan.models);
+        // The driver speaks its own event; the loop hears the app's, so one
+        // forwarder sits between them and closes when the bench does.
+        let (steps, mut received) = mpsc::unbounded_channel();
+        let forward = {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(step) = received.recv().await {
+                    let _ = tx.send(Event::Bench { generation, step });
+                }
+            })
+        };
+        runtime::bench::run(&session.kernel, &plan, &prepare, &cancel, &steps).await;
+        drop(steps);
+        let _ = forward.await;
+        let _ = tx.send(Event::BenchEnded(generation));
     });
 }
 

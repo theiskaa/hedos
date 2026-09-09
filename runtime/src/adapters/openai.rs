@@ -466,6 +466,10 @@ struct OpenAiStreamParser {
     started: Instant,
     prompt_tokens: Option<i64>,
     completion_tokens: Option<i64>,
+    prompt_ms: Option<i64>,
+    eval_ms: Option<i64>,
+    timings_prompt_tokens: Option<i64>,
+    timings_completion_tokens: Option<i64>,
     finish_reason: Option<String>,
     tool_fragments: BTreeMap<i64, ToolFragment>,
 }
@@ -483,8 +487,39 @@ impl OpenAiStreamParser {
             started: Instant::now(),
             prompt_tokens: None,
             completion_tokens: None,
+            prompt_ms: None,
+            eval_ms: None,
+            timings_prompt_tokens: None,
+            timings_completion_tokens: None,
             finish_reason: None,
             tool_fragments: BTreeMap::new(),
+        }
+    }
+
+    /// llama-server puts a `timings` object on its final chunk with the two
+    /// phases apart; a remote endpoint never sends one. Every field is taken
+    /// from the newest object that carries it: with `timings_per_token` on,
+    /// one arrives per token, and latching the first would pin the count at
+    /// the one token generated so far. Which counts win is settled once, at
+    /// the end, where `usage` outranks these.
+    fn take_timings(&mut self, timings: &BTreeMap<String, JsonValue>) {
+        let millis = |key: &str| {
+            timings
+                .get(key)
+                .and_then(JsonValue::as_f64)
+                .map(|ms| ms.round() as i64)
+        };
+        if let Some(ms) = millis("prompt_ms") {
+            self.prompt_ms = Some(ms);
+        }
+        if let Some(ms) = millis("predicted_ms") {
+            self.eval_ms = Some(ms);
+        }
+        if let Some(tokens) = timings.get("prompt_n").and_then(JsonValue::as_i64) {
+            self.timings_prompt_tokens = Some(tokens);
+        }
+        if let Some(tokens) = timings.get("predicted_n").and_then(JsonValue::as_i64) {
+            self.timings_completion_tokens = Some(tokens);
         }
     }
 
@@ -498,9 +533,11 @@ impl OpenAiStreamParser {
             let duration_ms = self.started.elapsed().as_millis() as i64;
             let mut chunks = self.flush_tool_calls();
             chunks.push(CapabilityChunk::Done(Some(GenerationStats {
-                prompt_tokens: self.prompt_tokens,
-                completion_tokens: self.completion_tokens,
+                prompt_tokens: self.prompt_tokens.or(self.timings_prompt_tokens),
+                completion_tokens: self.completion_tokens.or(self.timings_completion_tokens),
                 duration_ms: Some(duration_ms),
+                prompt_ms: self.prompt_ms,
+                eval_ms: self.eval_ms,
                 finish_reason: self.finish_reason.clone(),
                 ..GenerationStats::default()
             })));
@@ -517,6 +554,9 @@ impl OpenAiStreamParser {
             if let Some(tokens) = usage.get("completion_tokens").and_then(JsonValue::as_i64) {
                 self.completion_tokens = Some(tokens);
             }
+        }
+        if let Some(JsonValue::Object(timings)) = object.get("timings") {
+            self.take_timings(timings);
         }
 
         let mut chunks = Vec::new();

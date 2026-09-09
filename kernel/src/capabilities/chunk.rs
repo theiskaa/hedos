@@ -36,6 +36,12 @@ pub struct GenerationStats {
     pub ttft_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub load_ms: Option<i64>,
+    /// Milliseconds the backend spent on the prompt.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prompt_ms: Option<i64>,
+    /// Milliseconds the backend spent generating, the prompt excluded.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub eval_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub finish_reason: Option<String>,
     #[serde(default)]

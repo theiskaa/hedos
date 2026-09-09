@@ -11,6 +11,7 @@ use kernel::capabilities::GenerationStats;
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::records::ModelRecord;
 use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
+use runtime::bench::BenchEvent;
 use tokio::sync::mpsc;
 
 use super::facts::Facts;
@@ -44,6 +45,11 @@ pub enum Event {
     Planned(Planned),
     /// The chat pane's reply moved.
     Reply(Reply),
+    /// A step of the bench in flight, stamped with the bench it belongs to so
+    /// a step from one already replaced cannot land on its successor.
+    Bench { generation: u64, step: BenchEvent },
+    /// A bench's driver returned, however it went.
+    BenchEnded(u64),
     /// The terminal stopped delivering keys; nothing can drive the UI now.
     InputClosed,
 }

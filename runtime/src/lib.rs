@@ -3,7 +3,9 @@
 
 pub mod adapters;
 pub mod audio;
+pub mod bench;
 pub mod boot;
+pub mod chip;
 pub mod environment;
 pub mod facade;
 pub mod frame_codec;
@@ -18,6 +20,7 @@ pub mod removal;
 pub mod resolution;
 pub mod settings;
 pub mod sidecar;
+mod sys;
 mod time;
 mod util;
 

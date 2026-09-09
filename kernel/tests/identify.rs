@@ -140,6 +140,58 @@ fn a_gguf_beside_an_mmproj_companion_can_see() {
 }
 
 #[test]
+fn a_gguf_carries_the_quantization_its_header_names() {
+    let dir = TempDir::new();
+    let path = dir.path().join("model.gguf");
+    write(
+        &path,
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("general.file_type", 15),
+        ]),
+    );
+    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    assert_eq!(id.quantization.as_deref(), Some("Q4_K_M"));
+}
+
+#[test]
+fn an_ollama_model_reads_its_quantization_from_the_weight_blob() {
+    let dir = TempDir::new();
+    let manifest = dir.path().join("manifest");
+    write(
+        &manifest,
+        br#"{"layers":[{"mediaType":"application/vnd.ollama.image.model"}]}"#,
+    );
+    let blob = dir.path().join("blob");
+    write(
+        &blob,
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("general.file_type", 7),
+        ]),
+    );
+    let mut rec = record(SourceKind::ollama(), manifest.to_str().unwrap());
+    rec.primary_weight_path = Some(blob.to_string_lossy().into_owned());
+    let id = identify(&rec);
+    assert_eq!(id.format, ModelFormat::OllamaStore);
+    assert!(id.capabilities.contains(&Capability::chat()));
+    assert_eq!(id.quantization.as_deref(), Some("Q8_0"));
+}
+
+#[test]
+fn an_mlx_folder_names_its_quantization_in_bits() {
+    let dir = TempDir::new();
+    write(
+        &dir.path().join("config.json"),
+        br#"{"architectures":["LlamaForCausalLM"],"quantization":{"bits":4,"group_size":64}}"#,
+    );
+    write(&dir.path().join("model.safetensors"), b"weights");
+    let id = identify(&record(SourceKind::folder(), dir.path().to_str().unwrap()));
+    assert_eq!(id.format, ModelFormat::MlxSafetensors);
+    assert_eq!(id.quantization.as_deref(), Some("4bit"));
+}
+
+#[test]
 fn a_diffusers_model_index_identifies_as_an_image_job() {
     let dir = TempDir::new();
     write(

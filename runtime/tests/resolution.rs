@@ -249,6 +249,41 @@ fn resolution_merges_identified_facts_onto_the_record() {
     assert_eq!(updated.modality, Modality::text());
 }
 
+/// A GGUF v3 header carrying only `general.file_type`.
+fn gguf_with_file_type(file_type: u32) -> Vec<u8> {
+    let key = b"general.file_type";
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend_from_slice(&(key.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(key);
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&file_type.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn resolution_carries_the_quantization_identification_read() {
+    let (dir, mut reg) = registry();
+    let blob = dir.path().join("blob");
+    std::fs::write(&blob, gguf_with_file_type(15)).unwrap();
+    let mut record = ModelRecord::new(
+        "llama",
+        Modality::text(),
+        Vec::new(),
+        ModelSource::new(SourceKind::ollama(), "/nonexistent/manifest"),
+    );
+    record.primary_weight_path = Some(blob.to_string_lossy().into_owned());
+    reg.register(record.clone()).unwrap();
+
+    let updated = ollama_engine()
+        .resolve(&record, &mut reg)
+        .unwrap()
+        .expect("changed");
+    assert_eq!(updated.quantization.as_deref(), Some("Q4_K_M"));
+}
+
 #[test]
 fn confirmed_at_survives_an_unchanged_winner_but_clears_on_a_switch() {
     let (_dir, mut reg) = registry();

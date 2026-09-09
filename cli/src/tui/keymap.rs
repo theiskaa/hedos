@@ -11,9 +11,9 @@
 //! `g`/`G`, `p`/`P`). `R` is the exception: `r` is taken by an unrelated shelf
 //! verb and no free lowercase says "resume".
 //!
-//! The pulls screen answers to a few of the shelf's keys with the same verbs,
-//! listed in [`PULLS_KEYS`] and resolved through the one table, and to two
-//! keys of its own: `x` forgets an ended pull's record, `esc` is the way back.
+//! A screen that takes the shelf's place answers to a few of the shelf's keys
+//! with the same verbs and to a couple of its own; [`ScreenKeys`] holds both
+//! halves, and [`PULLS`] and [`BENCH`] are the two of them.
 
 /// A key and its verb, as every key line draws them.
 pub type Pair = (&'static str, &'static str);
@@ -33,6 +33,8 @@ pub enum Group {
     /// The pulls screen's own keys; the help files them with the shelf keys
     /// the screen shares.
     Pulls,
+    /// The bench screen's own keys, filed the same way.
+    Bench,
 }
 
 impl Group {
@@ -44,6 +46,7 @@ impl Group {
             Group::Shelf => "SHELF",
             Group::Screen => "SCREEN",
             Group::Pulls => "PULLS",
+            Group::Bench => "BENCH",
         }
     }
 }
@@ -102,12 +105,14 @@ pub const BINDINGS: &[Binding] = &[
     bind("u", "unload", Group::Model),
     glossed("l", "launch", "launch a harness", Group::Model),
     glossed("t", "try", "try here", Group::Model),
+    glossed("b", "bench", "measure it here", Group::Model),
     glossed("T", "chat", "chat in terminal", Group::Model),
     bind("x", "remove", Group::Model),
     bind("y", "copy path", Group::Model),
     glossed("Y", "copy id", "id", Group::Model),
     bind("p", "pull", Group::Shelf),
     bind("P", "pulls", Group::Shelf),
+    glossed("B", "benches", "the bench screen", Group::Shelf),
     bind("s", "scan", Group::Shelf),
     bind("/", "filter", Group::Shelf),
     bind("o", "sort", Group::Shelf),
@@ -120,44 +125,73 @@ pub const BINDINGS: &[Binding] = &[
     bind("q", "quit", Group::Screen),
 ];
 
-/// The shelf keys the pulls screen answers to, with the shelf's verbs, on top
-/// of the screen group's `?` and `q`. `P` closes it too, as the sibling of
-/// the `P` that opened it.
-pub const PULLS_KEYS: [&str; 7] = ["j/k", "↑/↓", "g/G", "p", "c", "R", "Y"];
-/// The pulls screen's own keys: forgetting an ended pull's record, which is
-/// what `hedos pull clean` does to all of them, and the way back.
-const PULLS_OWN: [Binding; 2] = [
-    bind("x", "forget", Group::Pulls),
-    bind("esc", "shelf", Group::Pulls),
-];
+/// A screen that takes the shelf's place: the shelf keys it answers to with
+/// the shelf's own verbs, and the keys that are its alone.
+pub struct ScreenKeys {
+    /// Shelf keys the screen answers to, resolved through [`BINDINGS`].
+    shared: &'static [&'static str],
+    /// Keys the screen alone answers to.
+    own: &'static [Binding],
+}
+
+/// The pulls screen, on top of the screen group's `?` and `q`. `P` closes it
+/// too, as the sibling of the `P` that opened it. Its own `x` forgets an ended
+/// pull's record, which is what `hedos pull clean` does to all of them.
+pub const PULLS: ScreenKeys = ScreenKeys {
+    shared: &["j/k", "↑/↓", "g/G", "p", "c", "R", "Y"],
+    own: &[
+        bind("x", "forget", Group::Pulls),
+        bind("esc", "shelf", Group::Pulls),
+    ],
+};
+
+/// The bench screen, the same way. `B` closes it as the sibling of the `B`
+/// that opened it, and `c` stops the bench the way it stops a pull.
+pub const BENCH: ScreenKeys = ScreenKeys {
+    shared: &["j/k", "↑/↓", "g/G", "b", "c"],
+    own: &[
+        glossed("a", "all", "bench every model", Group::Bench),
+        bind("esc", "shelf", Group::Bench),
+    ],
+};
+
+impl ScreenKeys {
+    /// Every key the screen answers to: the shared ones with their shelf
+    /// groups, then its own.
+    pub fn bindings(&self) -> impl Iterator<Item = &'static Binding> + use<'_> {
+        self.shared
+            .iter()
+            .filter_map(|key| binding(key))
+            .chain(self.own.iter())
+    }
+
+    /// The screen's keys as the help lists them: everything but moving, which
+    /// reads as it does on the shelf.
+    pub fn help_bindings(&self) -> impl Iterator<Item = &'static Binding> + use<'_> {
+        self.bindings()
+            .filter(|binding| binding.group != Group::Move)
+    }
+
+    /// `(key, verb)` pairs for `keys`, in that order, skipping any the screen
+    /// does not answer to.
+    pub fn pairs(&self, keys: &[&str]) -> Vec<Pair> {
+        keys.iter()
+            .filter_map(|key| self.bindings().find(|binding| binding.key == *key))
+            .map(|binding| (binding.key, binding.verb))
+            .collect()
+    }
+
+    /// The verb the screen gives `key`, or its gloss where it has one.
+    pub fn gloss(&self, key: &str) -> &'static str {
+        self.bindings()
+            .find(|binding| binding.key == key)
+            .map_or("", Binding::gloss)
+    }
+}
 
 /// The binding for `key`, if there is one.
 pub fn binding(key: &str) -> Option<&'static Binding> {
     BINDINGS.iter().find(|binding| binding.key == key)
-}
-
-/// Every key the pulls screen answers to: the shared ones with their shelf
-/// groups, then its own.
-pub fn pulls_bindings() -> impl Iterator<Item = &'static Binding> {
-    PULLS_KEYS
-        .iter()
-        .filter_map(|key| binding(key))
-        .chain(PULLS_OWN.iter())
-}
-
-/// The pulls screen's keys as the help lists them: everything but moving,
-/// which reads as it does on the shelf.
-pub fn pulls_help_bindings() -> impl Iterator<Item = &'static Binding> {
-    pulls_bindings().filter(|binding| binding.group != Group::Move)
-}
-
-/// `(key, verb)` pairs for `keys` on the pulls screen, in that order,
-/// skipping any that is not bound there.
-pub fn pulls_pairs(keys: &[&str]) -> Vec<Pair> {
-    keys.iter()
-        .filter_map(|key| pulls_bindings().find(|binding| binding.key == *key))
-        .map(|binding| (binding.key, binding.verb))
-        .collect()
 }
 
 /// The verb bound to `key`; empty for a key that is not bound, which the
@@ -211,20 +245,36 @@ mod tests {
     }
 
     #[test]
-    fn every_pulls_key_resolves_to_a_shelf_binding_plus_its_own() {
-        assert_eq!(pulls_bindings().count(), PULLS_KEYS.len() + PULLS_OWN.len());
-        for own in &PULLS_OWN {
-            assert_eq!(own.group, Group::Pulls);
-            assert!(
-                !PULLS_KEYS.contains(&own.key),
-                "{} is both shared and the screen's own",
-                own.key
+    fn every_screen_key_resolves_to_a_shelf_binding_plus_the_screens_own() {
+        for (screen, group) in [(&PULLS, Group::Pulls), (&BENCH, Group::Bench)] {
+            assert_eq!(
+                screen.bindings().count(),
+                screen.shared.len() + screen.own.len()
             );
+            for own in screen.own {
+                assert_eq!(own.group, group);
+                assert!(
+                    !screen.shared.contains(&own.key),
+                    "{} is both shared and the screen's own",
+                    own.key
+                );
+            }
         }
         assert_eq!(
-            pulls_pairs(&["j/k", "w", "x", "esc"]),
+            PULLS.pairs(&["j/k", "w", "x", "esc"]),
             vec![("j/k", "move"), ("x", "forget"), ("esc", "shelf")]
         );
+        assert_eq!(
+            BENCH.pairs(&["j/k", "b", "a", "esc"]),
+            vec![
+                ("j/k", "move"),
+                ("b", "bench"),
+                ("a", "all"),
+                ("esc", "shelf")
+            ]
+        );
+        assert_eq!(BENCH.gloss("a"), "bench every model");
+        assert_eq!(BENCH.gloss("nope"), "");
     }
 
     #[test]
