@@ -12,9 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::support::table;
 use crate::support::text;
-use crate::tui::palette::{
-    ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, CAUTION, COOL, DIM, EYEBROW, FAILED, spinner,
-};
+use crate::tui::palette::{ACCENT, BAR_FILLED, BOLD, CAUTION, COOL, DIM, EYEBROW, FAILED, spinner};
 
 /// The placeholder for a figure a row does not have.
 pub(crate) const DASH: &str = "—";
@@ -72,6 +70,12 @@ pub(crate) fn columns(rows: &[Row], width: usize, settled: bool) -> Columns {
             .max()
             .unwrap_or(0)
     };
+    // A column no row has a value for says nothing; a table of dashes is worse
+    // than one column fewer.
+    let sized = |cell: fn(&Row) -> Option<&String>, header: &str| match widest(cell) {
+        0 => 0,
+        widest => widest.max(header.width()),
+    };
     let mut columns = Columns {
         name: rows
             .iter()
@@ -79,10 +83,12 @@ pub(crate) fn columns(rows: &[Row], width: usize, settled: bool) -> Columns {
             .max()
             .unwrap_or(0)
             .max("NAME".width()),
-        runtime: widest(|row| row.runtime.as_ref()).max("RUNTIME".width()),
-        quant: widest(|row| row.quantization.as_ref()).max("QUANT".width()),
+        runtime: sized(|row| row.runtime.as_ref(), "RUNTIME"),
+        quant: sized(|row| row.quantization.as_ref(), "QUANT"),
         bar: BAR_WIDE,
-        spread: settled,
+        // One run measures no spread, and neither do runs that landed on the
+        // same figure; either way the column would be blank in every row.
+        spread: settled && rows.iter().any(|row| spread(row).is_some()),
         ttft: true,
         cold: true,
         line: width,
@@ -235,15 +241,16 @@ fn figures(row: &Row, columns: &Columns, fastest: Option<f64>) -> Vec<Span<'stat
 
     let mut spans = Vec::new();
     if columns.bar > 0 {
-        let (lit, unlit) = bar_text(rate, fastest, columns.bar);
+        let (lit, rest) = bar_text(rate, fastest, columns.bar);
         spans.push(Span::styled(lit, ACCENT));
-        spans.push(Span::styled(unlit, DIM));
+        spans.push(Span::raw(rest));
         spans.push(Span::raw(" ".repeat(GAP)));
     }
     spans.push(rate_span(rate, figures.estimated_tokens));
     if columns.spread {
         spans.push(Span::raw(" ".repeat(GAP)));
-        spans.push(Span::styled(padded(&spread(row), SPREAD_WIDTH), DIM));
+        let spread = spread(row).unwrap_or_default();
+        spans.push(Span::styled(padded(&spread, SPREAD_WIDTH), DIM));
     }
     if columns.ttft {
         let median = figures.ttft_ms.map(|measure| measure.median as i64);
@@ -273,7 +280,7 @@ fn rate_text(rate: f64, estimated: bool) -> String {
 /// The bar as both surfaces draw it: `filled` cells of `width` lit.
 fn bar_text(rate: f64, fastest: Option<f64>, width: usize) -> (String, String) {
     let filled = bench::filled_cells(rate, fastest.unwrap_or(rate), width);
-    (BAR_FILLED.repeat(filled), BAR_EMPTY.repeat(width - filled))
+    (BAR_FILLED.repeat(filled), " ".repeat(width - filled))
 }
 
 /// The rate in the drawn table, where the estimate mark also takes a hue.
@@ -305,17 +312,16 @@ fn running(running: Phase, tokens: i64) -> String {
 }
 
 /// `66–71`, or nothing when the runs landed on the same figure.
-fn spread(row: &Row) -> String {
-    match row
+///
+/// The ends are compared as they print, not as they were measured: two runs a
+/// hundredth of a token apart differ, but `72–72` says nothing a reader wants.
+fn spread(row: &Row) -> Option<String> {
+    let measure = row
         .status
         .figures()
-        .and_then(|figures| figures.tokens_per_second)
-    {
-        Some(measure) if measure.has_spread() => {
-            format!("{:.0}–{:.0}", measure.min, measure.max)
-        }
-        _ => String::new(),
-    }
+        .and_then(|figures| figures.tokens_per_second)?;
+    let (low, high) = (format!("{:.0}", measure.min), format!("{:.0}", measure.max));
+    (low != high).then(|| format!("{low}–{high}"))
 }
 
 /// The cold column, which has one cell to say it in: the figure, `held` for a
@@ -590,7 +596,7 @@ fn plain_cells(row: &Row, fastest: Option<f64>) -> Vec<String> {
                         "{lit}{unlit}  {}",
                         rate_text(rate, figures.estimated_tokens)
                     ),
-                    spread(row),
+                    spread(row).unwrap_or_default(),
                     optional_seconds(figures.ttft_ms.map(|measure| measure.median as i64)),
                     cold(&figures.cold_start),
                 )
@@ -619,30 +625,51 @@ mod tests {
     use kernel::bench::{ColdStart, Figures, Sample, WallClock};
     use kernel::capabilities::GenerationStats;
 
-    fn measured(id: &str, tokens: i64, decode_ms: i64) -> Row {
+    fn sample(tokens: i64, decode_ms: i64) -> Sample {
         let stats = GenerationStats {
             completion_tokens: Some(tokens),
             eval_ms: Some(decode_ms),
             ..GenerationStats::default()
         };
-        let sample = Sample::new(
+        Sample::new(
             Some(&stats),
             "",
             WallClock {
                 ttft_ms: 200,
                 total_ms: 200 + decode_ms,
             },
-        );
+        )
+    }
+
+    /// A measured row whose two runs differ, so it has a spread to draw.
+    fn measured(id: &str, tokens: i64, decode_ms: i64) -> Row {
+        let runs = vec![sample(tokens, decode_ms), sample(tokens, decode_ms + 100)];
         let mut row = Row::waiting(id, id, Some("ollama".to_owned()), Some("Q4_K_M".to_owned()));
-        row.status = Status::Done(Box::new(Figures::summarize(
-            ColdStart::Measured(900),
-            vec![sample],
-        )));
+        row.status = Status::Done(Box::new(Figures::summarize(ColdStart::Measured(900), runs)));
         row
     }
 
     fn board(rows: Vec<Row>) -> Board {
         Board::new(rows, 3, 128, "apple m3 max · 36 GiB".to_owned())
+    }
+
+    #[test]
+    fn a_column_no_row_has_a_value_for_is_not_drawn() {
+        let mut bare = measured("gemma3", 60, 1000);
+        bare.runtime = None;
+        bare.quantization = None;
+        let bare_columns = columns(std::slice::from_ref(&bare), 120, true);
+        assert_eq!(bare_columns.runtime, 0);
+        assert_eq!(bare_columns.quant, 0);
+
+        // A single run measures no spread, so that column goes the same way.
+        let mut once = measured("gemma3", 60, 1000);
+        if let Status::Done(figures) = &mut once.status {
+            figures.runs.truncate(1);
+            figures.tokens_per_second =
+                kernel::bench::Measure::of(&[figures.runs[0].tokens_per_second().unwrap()]);
+        }
+        assert!(!columns(std::slice::from_ref(&once), 120, true).spread);
     }
 
     #[test]
@@ -690,14 +717,15 @@ mod tests {
         if let Status::Done(figures) = &mut row_with.status {
             figures.estimated_tokens = true;
         }
+        let rate = row_with.status.rate().expect("a rate");
         let columns = columns(std::slice::from_ref(&row_with), 120, false);
-        let drawn = row(&row_with, &columns, Some(60.0), 0);
+        let drawn = row(&row_with, &columns, Some(rate), 0);
         let text: String = drawn
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        assert!(text.contains("~60.0"), "{text}");
+        assert!(text.contains(&format!("~{rate:.1}")), "{text}");
     }
 
     #[test]
