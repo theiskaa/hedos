@@ -4,15 +4,15 @@
 //! One set of row cells feeds all three, and the shelf's bench screen draws
 //! through the same functions, so a row reads the same wherever it appears.
 
-use kernel::bench::{self, ColdStart, Phase, Row, Status};
+use kernel::bench::{self, ColdStart, Measure, Phase, Row, Status};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use runtime::bench::BenchEvent;
 use unicode_width::UnicodeWidthStr;
 
+use super::palette::{ACCENT, BAR_FILLED, BOLD, CAUTION, COOL, DIM, EYEBROW, FAILED, spinner};
 use crate::support::table;
-use crate::support::text;
-use crate::tui::palette::{ACCENT, BAR_FILLED, BOLD, CAUTION, COOL, DIM, EYEBROW, FAILED, spinner};
+use crate::support::text::{self, padded, right_aligned};
 
 /// The placeholder for a figure a row does not have.
 pub(crate) const DASH: &str = "—";
@@ -21,8 +21,9 @@ const BAR_WIDE: usize = 20;
 const BAR_NARROW: usize = 10;
 /// The fewest cells a name keeps once everything else has been shed.
 const NAME_MIN: usize = 12;
-/// Cells the rate figure and its spread take.
-const RATE_WIDTH: usize = 5;
+/// Cells the rate figure and its spread take: a three-digit rate with the
+/// estimate mark in front of it is six.
+const RATE_WIDTH: usize = 6;
 const SPREAD_WIDTH: usize = 7;
 /// Cells a time figure takes: `0.18s`, `12.4s`.
 const TIME_WIDTH: usize = 6;
@@ -30,31 +31,31 @@ const TIME_WIDTH: usize = 6;
 const GAP: usize = 2;
 /// The rows a block spends above its model rows (the title, a blank, the
 /// column header) and below them (a blank and the machine line).
-pub(crate) const HEADER_ROWS: usize = 3;
-pub(crate) const FOOTER_ROWS: usize = 2;
-pub(crate) const CHROME_ROWS: usize = HEADER_ROWS + FOOTER_ROWS;
+const HEADER_ROWS: usize = 3;
+const FOOTER_ROWS: usize = 2;
+const CHROME_ROWS: usize = HEADER_ROWS + FOOTER_ROWS;
 
 /// Which columns fit the terminal, and how wide the flexible ones are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Columns {
     /// Cells the name column takes.
-    pub name: usize,
+    name: usize,
     /// Cells the runtime column takes; zero drops it.
-    pub runtime: usize,
+    runtime: usize,
     /// Cells the quantization column takes; zero drops it.
-    pub quant: usize,
+    quant: usize,
     /// Cells the rate bar takes; zero drops the bar and keeps the figure.
-    pub bar: usize,
+    bar: usize,
     /// Whether the spread is printed beside the rate.
-    pub spread: bool,
+    spread: bool,
     /// Whether the time-to-first-token column is drawn.
-    pub ttft: bool,
+    ttft: bool,
     /// Whether the cold-start column is drawn.
-    pub cold: bool,
+    cold: bool,
     /// The cells the whole row has, so text that stands in for the figures (a
     /// reason, a phase) can be cut to what is left rather than overrunning the
     /// pane it is drawn in.
-    pub line: usize,
+    line: usize,
 }
 
 /// The columns that fit `width` cells, shedding in the order a reader can most
@@ -315,13 +316,17 @@ fn running(running: Phase, tokens: i64) -> String {
 ///
 /// The ends are compared as they print, not as they were measured: two runs a
 /// hundredth of a token apart differ, but `72–72` says nothing a reader wants.
-fn spread(row: &Row) -> Option<String> {
-    let measure = row
-        .status
-        .figures()
-        .and_then(|figures| figures.tokens_per_second)?;
+/// The one rule both surfaces read a spread by.
+pub(crate) fn spread_text(measure: Measure) -> Option<String> {
     let (low, high) = (format!("{:.0}", measure.min), format!("{:.0}", measure.max));
     (low != high).then(|| format!("{low}–{high}"))
+}
+
+fn spread(row: &Row) -> Option<String> {
+    row.status
+        .figures()
+        .and_then(|figures| figures.tokens_per_second)
+        .and_then(spread_text)
 }
 
 /// The cold column, which has one cell to say it in: the figure, `held` for a
@@ -335,11 +340,11 @@ fn cold(cold: &ColdStart) -> String {
 }
 
 /// The same fact where there is room for the whole of it, as the shelf's
-/// detail pane has: who holds the model, rather than only that someone does.
+/// detail pane has: why nothing was cold, rather than only that nothing was.
 pub(crate) fn cold_detail(cold: &ColdStart) -> String {
     match cold {
         ColdStart::Measured(ms) => seconds(*ms),
-        ColdStart::Held(holder) => format!("held by {holder}"),
+        ColdStart::Held(reason) => reason.clone(),
         ColdStart::NotMeasured => "not measured".to_owned(),
     }
 }
@@ -356,16 +361,6 @@ pub(crate) fn seconds(ms: i64) -> String {
 
 fn optional_seconds(ms: Option<i64>) -> String {
     ms.map_or_else(|| DASH.to_owned(), seconds)
-}
-
-fn padded(text: &str, width: usize) -> String {
-    let pad = width.saturating_sub(text.width());
-    format!("{text}{}", " ".repeat(pad))
-}
-
-fn right_aligned(text: &str, width: usize) -> String {
-    let pad = width.saturating_sub(text.width());
-    format!("{}{text}", " ".repeat(pad))
 }
 
 /// Drop the padding a row ends on, so no line carries a tail of styled spaces
@@ -387,11 +382,11 @@ pub(crate) struct Board {
     /// The rows, in the order the bench walks them.
     pub(crate) rows: Vec<Row>,
     /// Warm runs per model.
-    pub(crate) runs: usize,
+    runs: usize,
     /// The cap on each reply.
-    pub(crate) max_tokens: i64,
+    max_tokens: i64,
     /// The machine line under the table.
-    pub(crate) machine: String,
+    machine: String,
 }
 
 impl Board {
@@ -457,7 +452,7 @@ impl Board {
     /// How many of the rows the bench actually walks have finished, and how
     /// many there are. A row skipped before anything ran is not progress and
     /// is not counted at either end.
-    pub(crate) fn progress(&self) -> (usize, usize) {
+    fn progress(&self) -> (usize, usize) {
         let walked = self
             .rows
             .iter()
@@ -467,6 +462,27 @@ impl Board {
             .filter(|row| !matches!(row.status, Status::Waiting | Status::Running { .. }))
             .count();
         (done, total)
+    }
+
+    /// Settle every row that never ran as stopped, for a bench given up on
+    /// before its driver could say so itself.
+    pub(crate) fn stop_unsettled(&mut self) {
+        for row in &mut self.rows {
+            if matches!(row.status, Status::Waiting | Status::Running { .. }) {
+                row.status = Status::Stopped;
+            }
+        }
+    }
+
+    /// The rows in the order a table draws them: as the bench walks them while
+    /// it runs, fastest first once it has settled. Both surfaces ask here, so
+    /// neither can rank a table the other would not.
+    pub(crate) fn ordered(&self, settled: bool) -> Vec<&Row> {
+        if settled {
+            bench::rank(&self.rows)
+        } else {
+            self.rows.iter().collect()
+        }
     }
 
     /// The index of the row being measured, for keeping it in view.
@@ -488,11 +504,7 @@ impl Board {
     pub(crate) fn lines(&self, width: usize, ticks: u64, settled: bool) -> Vec<Line<'static>> {
         let columns = columns(&self.rows, width, settled);
         let fastest = bench::fastest(&self.rows);
-        let ordered: Vec<&Row> = if settled {
-            bench::rank(&self.rows)
-        } else {
-            self.rows.iter().collect()
-        };
+        let ordered = self.ordered(settled);
         let mut lines = vec![self.title(), Line::default(), header(&columns)];
         lines.extend(
             ordered
@@ -537,10 +549,8 @@ impl Board {
                 })
                 .then(|| "~ counted from the text, the runtime reports no token count".to_owned())
         } else {
-            {
-                let (done, total) = self.progress();
-                Some(format!("{done} of {total} done"))
-            }
+            let (done, total) = self.progress();
+            Some(format!("{done} of {total} done"))
         };
         if let Some(tail) = tail {
             spans.push(Span::styled(format!("  ·  {tail}"), DIM));
@@ -561,15 +571,24 @@ pub(crate) fn windowed(
     }
     let room = height - CHROME_ROWS;
     let rows = &lines[HEADER_ROWS..lines.len() - FOOTER_ROWS];
-    // Centre the running row in what is left, clamped to the ends of the list.
-    let first = focus
-        .unwrap_or(0)
-        .saturating_sub(room / 2)
-        .min(rows.len() - room);
+    let first = first_visible(focus, rows.len(), room);
     let mut kept = lines[..HEADER_ROWS].to_vec();
     kept.extend_from_slice(&rows[first..first + room]);
     kept.extend_from_slice(&lines[lines.len() - FOOTER_ROWS..]);
     kept
+}
+
+/// The first of `count` rows to draw when only `room` of them fit, so that
+/// `focus` sits in the middle of what is shown, clamped to the ends of the
+/// list. The block and the shelf's pane scroll by the same rule.
+pub(crate) fn first_visible(focus: Option<usize>, count: usize, room: usize) -> usize {
+    if room == 0 || count <= room {
+        return 0;
+    }
+    focus
+        .unwrap_or(0)
+        .saturating_sub(room / 2)
+        .min(count - room)
 }
 
 /// The plain table a pipe gets: the settled columns, ranked, without styling.
@@ -675,17 +694,25 @@ mod tests {
     #[test]
     fn a_wide_terminal_keeps_every_column_and_a_narrow_one_sheds_them_in_order() {
         let rows = vec![measured("gemma3", 60, 1000)];
+        // This row's full line is 80 cells; each width below is one short of
+        // the arrangement before it, so exactly one more thing has to go.
         let wide = columns(&rows, 120, true);
         assert!(wide.cold && wide.ttft && wide.spread);
         assert_eq!(wide.bar, BAR_WIDE);
 
-        // The cold start goes first, then the wait, then the spread.
-        assert!(!columns(&rows, 74, true).cold);
-        let tight = columns(&rows, 66, true);
-        assert!(!tight.ttft && !tight.cold);
-        let tighter = columns(&rows, 40, true);
-        assert!(!tighter.spread);
-        assert!(tighter.bar <= BAR_NARROW);
+        let no_cold = columns(&rows, 79, true);
+        assert!(!no_cold.cold && no_cold.ttft && no_cold.spread);
+        let no_ttft = columns(&rows, 71, true);
+        assert!(!no_ttft.ttft && no_ttft.spread);
+        let no_spread = columns(&rows, 63, true);
+        assert!(!no_spread.spread);
+        assert_eq!(no_spread.bar, BAR_WIDE);
+        assert_eq!(columns(&rows, 54, true).bar, BAR_NARROW);
+        let no_bar = columns(&rows, 44, true);
+        assert_eq!(no_bar.bar, 0);
+        assert!(no_bar.runtime > 0);
+        let bare = columns(&rows, 32, true);
+        assert_eq!((bare.runtime, bare.quant), (0, 0));
     }
 
     #[test]
@@ -696,9 +723,10 @@ mod tests {
 
     #[test]
     fn only_a_measured_row_draws_a_bar() {
-        let mut waiting = Row::waiting("w", "w", None, None);
-        waiting.status = Status::Waiting;
-        let rows = vec![measured("fast", 60, 1000), waiting];
+        let rows = vec![
+            measured("fast", 60, 1000),
+            Row::waiting("w", "w", None, None),
+        ];
         let columns = columns(&rows, 120, false);
         let fastest = bench::fastest(&rows);
         let drawn = row(&rows[1], &columns, fastest, 0);
@@ -837,6 +865,15 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn the_first_visible_row_keeps_the_focus_in_the_middle_and_the_ends_full() {
+        assert_eq!(first_visible(Some(5), 3, 10), 0, "everything fits");
+        assert_eq!(first_visible(None, 20, 5), 0);
+        assert_eq!(first_visible(Some(9), 20, 5), 7, "centred");
+        assert_eq!(first_visible(Some(19), 20, 5), 15, "the end stays full");
+        assert_eq!(first_visible(Some(2), 20, 0), 0);
     }
 
     #[test]

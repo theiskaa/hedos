@@ -63,6 +63,20 @@ pub fn short_runtime(id: &str) -> &str {
     }
 }
 
+/// `text` padded with spaces to `width` terminal cells; a wide glyph counts
+/// for two, where `{:<width$}` would count it once and leave the column
+/// ragged.
+pub fn padded(text: &str, width: usize) -> String {
+    let pad = width.saturating_sub(text.width());
+    format!("{text}{}", " ".repeat(pad))
+}
+
+/// `text` right-aligned in `width` cells, counted the same way.
+pub fn right_aligned(text: &str, width: usize) -> String {
+    let pad = width.saturating_sub(text.width());
+    format!("{}{text}", " ".repeat(pad))
+}
+
 /// The leading graphemes of `graphemes` that fit in `width` cells.
 fn take_cells<'a>(graphemes: impl Iterator<Item = &'a str>, width: usize) -> String {
     let mut used = 0;

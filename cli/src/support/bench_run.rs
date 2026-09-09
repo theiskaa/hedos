@@ -12,6 +12,7 @@ use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 use runtime::bench::{EvictFuture, Eviction, Prepare};
 
+use crate::support::ollama;
 use crate::support::residency::{self, Holder};
 use crate::support::session::Session;
 use crate::support::shelf_table::verdict;
@@ -40,18 +41,13 @@ pub(crate) fn row_for(record: &ModelRecord, budget: u64, any_size: bool) -> Row 
     let quantization = record.quantization.clone();
     match skip_reason(record, budget, any_size) {
         Some(reason) => Row::skipped(
-            record.id.clone(),
+            &record.id,
             record.display_name(),
             runtime,
             quantization,
-            reason,
+            &reason,
         ),
-        None => Row::waiting(
-            record.id.clone(),
-            record.display_name(),
-            runtime,
-            quantization,
-        ),
+        None => Row::waiting(&record.id, record.display_name(), runtime, quantization),
     }
 }
 
@@ -113,20 +109,23 @@ impl Prepare for ShelfPrepare {
             };
             // A gateway holds its models in a process of its own, which nothing
             // here can evict; saying so is more use than a cold figure that is
-            // not one.
+            // not one. An Ollama model is the exception: the gateway only
+            // proxies to the daemon, and the daemon can be asked to let go.
             let holder = residency::loaded(&session, std::slice::from_ref(&record))
                 .await
                 .residents
                 .into_iter()
                 .find(|resident| resident.id == record.id)
                 .map(|resident| resident.holder);
-            if holder == Some(Holder::Gateway) {
-                return Eviction::Held("a running gateway".to_owned());
+            if holder == Some(Holder::Gateway) && ollama::tag_of(&record).is_none() {
+                return Eviction::Held("held by a running gateway".to_owned());
             }
+            // The reason is a whole clause, since the detail prints it as it is
+            // and the table has only room to say `held`.
             match residency::unload_anywhere(&session, &record).await {
                 Ok(false) => Eviction::Cleared,
-                Ok(true) => Eviction::Held("still resident".to_owned()),
-                Err(error) => Eviction::Held(error.message),
+                Ok(true) => Eviction::Held("still in memory after being asked to leave".to_owned()),
+                Err(error) => Eviction::Held(format!("could not be cleared: {}", error.message)),
             }
         })
     }

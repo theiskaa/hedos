@@ -28,10 +28,10 @@ use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::bench_run::{machine_line, rows as bench_rows};
-use crate::support::bench_view::Board;
 use crate::support::install::find_installed;
 use crate::support::residency::{Holder, warm_request};
 use crate::support::shelf_table::verdict;
+use crate::tui::bench_view::Board;
 
 /// How often the loop ticks; every cadence below is counted in these.
 pub(super) const TICK: Duration = Duration::from_millis(250);

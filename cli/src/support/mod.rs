@@ -3,7 +3,6 @@
 
 pub mod banner;
 pub mod bench_run;
-pub mod bench_view;
 pub mod clock;
 pub mod download;
 pub mod harnesses;

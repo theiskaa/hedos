@@ -17,11 +17,11 @@ use tokio::sync::mpsc;
 
 use crate::error::CliError;
 use crate::support::bench_run::{ShelfPrepare, machine_line, row_for, rows as shelf_rows};
-use crate::support::bench_view::{Board, plain, windowed};
 use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::session::{self, Session};
 use crate::support::signals;
+use crate::tui::bench_view::{Board, plain, windowed};
 
 /// How often the live block redraws for its own sake, so the spinner turns
 /// while a slow model is still on its first token.
@@ -54,7 +54,8 @@ pub struct BenchArgs {
 pub async fn run(args: BenchArgs, out: &Out) -> Result<(), CliError> {
     let session = Arc::new(Session::open()?);
     let shelf = session.shelf_or_discover().await?;
-    let rows = select(&args, &shelf)?;
+    let budget = machine::memory_budget_bytes();
+    let rows = select(&args, &shelf, budget)?;
     if rows
         .iter()
         .all(|row| matches!(row.status, Status::Skipped(_)))
@@ -82,12 +83,12 @@ pub async fn run(args: BenchArgs, out: &Out) -> Result<(), CliError> {
         rows,
         plan.runs,
         plan.max_tokens,
-        machine_line(machine::memory_budget_bytes() as i64),
+        machine_line(budget as i64),
     );
     let board = drive(board, plan.clone(), &session, &shelf, out).await?;
 
     if out.is_json() {
-        out.json(&document(&board, &plan));
+        out.json(&document(&board, &plan, budget));
     } else if !std::io::stdout().is_terminal() {
         out.line(&plain(&board.rows));
     }
@@ -144,9 +145,12 @@ async fn drive(
             }
             // Ctrl-C stops the bench, and what has been measured stands. A
             // second one gives up on the run in flight rather than waiting on a
-            // backend that may never answer.
+            // backend that may never answer: the driver is cut off, whatever it
+            // managed to say is taken, and the rows it never reached read as
+            // stopped rather than as still to come.
             () = signals::wait_for_ctrl_c() => {
                 if stopping {
+                    driver.abort();
                     break;
                 }
                 cancel.stop();
@@ -158,6 +162,10 @@ async fn drive(
         }
     }
     let _ = driver.await;
+    while let Ok(event) = rx.try_recv() {
+        board.apply(&event);
+    }
+    board.stop_unsettled();
 
     if let Some(terminal) = terminal.as_mut() {
         redraw(terminal, &board, ticks, true)?;
@@ -214,11 +222,10 @@ fn redraw(
 ///
 /// A model named on the command line is benched whatever its fit says: the
 /// reason to name one is often to find out what it does here.
-fn select(args: &BenchArgs, shelf: &[ModelRecord]) -> Result<Vec<Row>, CliError> {
+fn select(args: &BenchArgs, shelf: &[ModelRecord], budget: u64) -> Result<Vec<Row>, CliError> {
     if args.models.is_empty() {
-        return Ok(shelf_rows(shelf, machine::memory_budget_bytes(), args.all));
+        return Ok(shelf_rows(shelf, budget, args.all));
     }
-    let budget = machine::memory_budget_bytes();
     let mut rows: Vec<Row> = Vec::with_capacity(args.models.len());
     for query in &args.models {
         let record = session::resolve(query, shelf, Some(&Capability::chat()))?;
@@ -234,11 +241,11 @@ fn select(args: &BenchArgs, shelf: &[ModelRecord]) -> Result<Vec<Row>, CliError>
 }
 
 /// The whole bench as one JSON document.
-fn document(board: &Board, plan: &BenchPlan) -> Value {
+fn document(board: &Board, plan: &BenchPlan, memory_bytes: u64) -> Value {
     json!({
         "machine": {
             "chip": runtime::chip::name(),
-            "memoryBytes": machine::memory_budget_bytes(),
+            "memoryBytes": memory_bytes,
         },
         "prompt": plan.prompt,
         "maxTokens": plan.max_tokens,
@@ -303,7 +310,7 @@ fn status_name(status: &Status) -> &'static str {
 fn cold_json(cold: &ColdStart) -> Value {
     match cold {
         ColdStart::Measured(ms) => json!({ "millis": ms }),
-        ColdStart::Held(holder) => json!({ "heldBy": holder }),
+        ColdStart::Held(reason) => json!({ "notMeasured": reason }),
         ColdStart::NotMeasured => Value::Null,
     }
 }

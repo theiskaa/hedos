@@ -2,7 +2,7 @@
 //! selected row's figures where the model's detail goes.
 //!
 //! The rows are drawn by the same functions `hedos bench` draws with
-//! ([`crate::support::bench_view`]), so a row reads the same on either surface;
+//! ([`crate::tui::bench_view`]), so a row reads the same on either surface;
 //! only the frame around them, the selection, and the detail are this screen's.
 
 use ratatui::Frame;
@@ -11,18 +11,21 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::{
-    ACCENT, DIM, EYEBROW, centered, field_line, label_width, pane, selected_row, styled_field,
-    value_width,
+    ACCENT, DIM, EYEBROW, centered, field_line, label_width, pane, selected_row, value_width,
 };
-use crate::support::bench_view::{self, DASH, cold_detail, phase, seconds};
 use crate::tui::app::App;
+use crate::tui::bench_view::{self, DASH, cold_detail, first_visible, phase, seconds, spread_text};
 use crate::tui::keymap;
 use crate::tui::text;
+use crate::tui::wrap;
 use kernel::bench::{Row, Status, TimingSource};
 
 /// The labels of the detail; the column is as wide as the widest, plus a gap.
-const LABELS: [&str; 7] = [
+const LABELS: [&str; 10] = [
     "state",
+    "now",
+    "so far",
+    "why",
     "rate",
     "spread",
     "first token",
@@ -59,15 +62,14 @@ pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
+    let Some(board) = app.bench.board() else {
+        return;
+    };
     let width = inner.width as usize;
     let settled = !app.bench.running();
     let columns = bench_view::columns(rows, width, settled);
     let fastest = kernel::bench::fastest(rows);
-    let ordered: Vec<&Row> = if settled {
-        kernel::bench::rank(rows)
-    } else {
-        rows.iter().collect()
-    };
+    let ordered = board.ordered(settled);
     // The selection follows a row, not a position, so ranking the settled
     // table does not move the cursor onto a different model.
     let selected = app.bench.selected_row().map(|row| row.id.as_str());
@@ -88,13 +90,8 @@ pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
 
 /// The first row to draw so the selected one is on screen.
 fn scroll(rows: &[&Row], selected: Option<&str>, visible: usize) -> usize {
-    if visible == 0 || rows.len() <= visible {
-        return 0;
-    }
-    let index = selected
-        .and_then(|id| rows.iter().position(|row| row.id == id))
-        .unwrap_or(0);
-    index.saturating_sub(visible / 2).min(rows.len() - visible)
+    let index = selected.and_then(|id| rows.iter().position(|row| row.id == id));
+    first_visible(index, rows.len(), visible)
 }
 
 /// Draw the selected row's figures into `area`.
@@ -129,12 +126,8 @@ fn detail_lines(row: &Row, labels: usize, width: usize) -> Vec<Line<'static>> {
                 },
             );
             lines.push(field_line("rate", rate, labels));
-            if let Some(measure) = figures.tokens_per_second.filter(|m| m.has_spread()) {
-                lines.push(field_line(
-                    "spread",
-                    format!("{:.1} – {:.1}", measure.min, measure.max),
-                    labels,
-                ));
+            if let Some(spread) = figures.tokens_per_second.and_then(spread_text) {
+                lines.push(field_line("spread", spread, labels));
             }
             if let Some(measure) = figures.ttft_ms {
                 lines.push(field_line(
@@ -180,47 +173,33 @@ fn detail_lines(row: &Row, labels: usize, width: usize) -> Vec<Line<'static>> {
         }
         Status::Waiting => lines.push(field_line("state", "waiting its turn", labels)),
         Status::Stopped => lines.push(field_line("state", "stopped", labels)),
-        Status::Failed(reason) | Status::Skipped(reason) => {
-            let state = if matches!(row.status, Status::Failed(_)) {
-                "failed"
-            } else {
-                "not measured"
-            };
-            lines.push(field_line("state", state, labels));
+        Status::Failed(reason) => {
+            lines.push(field_line("state", "failed", labels));
+            lines.extend(wrapped_reason(reason, labels, width));
+        }
+        Status::Skipped(reason) => {
+            lines.push(field_line("state", "not measured", labels));
             lines.extend(wrapped_reason(reason, labels, width));
         }
     }
     lines
 }
 
-/// The reason a row has no figures, over as many lines as it needs. A pane too
-/// narrow to hold a character and its ellipsis shows none of it: `clip` returns
-/// nothing there, and a line that takes nothing would never reach the end.
+/// The reason a row has no figures, wrapped to the pane and labelled on its
+/// first line. The chat pane's wrapper breaks between words and keeps every
+/// character, where a clip would mark a cut and drop what came after it.
 fn wrapped_reason(reason: &str, labels: usize, width: usize) -> Vec<Line<'static>> {
-    if width < 2 {
+    if width == 0 {
         return Vec::new();
     }
-    let mut lines = Vec::new();
-    let mut rest = reason;
-    let mut label = "why";
-    while !rest.is_empty() {
-        let taken = text::clip(rest, width);
-        // `clip` marks a cut with an ellipsis, which the next line replaces by
-        // carrying on from where the text actually ended.
-        let kept = taken.trim_end_matches('…');
-        if kept.is_empty() {
-            break;
-        }
-        lines.push(Line::from(styled_field(
-            label,
-            kept.to_owned(),
-            labels,
-            ratatui::style::Style::new(),
-        )));
-        rest = &rest[kept.len()..];
-        label = "";
-    }
-    lines
+    wrap::wrap(reason, width)
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let label = if index == 0 { "why" } else { "" };
+            field_line(label, line, labels)
+        })
+        .collect()
 }
 
 /// Where the rate's timing came from, said plainly, since a wall-clock figure

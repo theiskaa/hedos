@@ -7,6 +7,7 @@
 
 mod app;
 mod bench;
+pub(crate) mod bench_view;
 mod chat;
 mod edit;
 mod effect;
@@ -18,7 +19,7 @@ mod launch;
 mod layout;
 mod markup;
 mod order;
-pub(crate) mod palette;
+mod palette;
 mod pull;
 mod pulls;
 mod state;

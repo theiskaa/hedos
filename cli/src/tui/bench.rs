@@ -3,7 +3,7 @@
 //!
 //! The screen takes the shelf's place while it is open, so it has a selection
 //! of its own and the detail pane follows it. The rows and their figures are
-//! the same [`Board`](crate::support::bench_view::Board) the `hedos bench`
+//! the same [`Board`](crate::tui::bench_view::Board) the `hedos bench`
 //! command keeps, fed by the same driver, so the two surfaces cannot disagree
 //! about a number. Results live for as long as the screen does; a bench in
 //! flight goes on while the shelf is showing, and the screen picks it back up.
@@ -11,7 +11,7 @@
 use kernel::bench::{Row, Status};
 use runtime::bench::BenchEvent;
 
-use crate::support::bench_view::Board;
+use crate::tui::bench_view::Board;
 
 /// The screen's state.
 #[derive(Debug, Default)]
@@ -111,12 +111,19 @@ impl BenchScreen {
     /// Move the selection by `delta` rows; whether it moved.
     pub(crate) fn step(&mut self, delta: isize) -> bool {
         let selected = self.selected() as isize + delta;
-        self.following = false;
         self.select(selected.max(0) as usize)
     }
 
     /// Put the selection on `index`, clamped to the last row; whether it moved.
+    /// A key did this, so the screen stops following the bench: a jump to the
+    /// end of the list that the next token event undid would be no jump.
     pub(crate) fn select(&mut self, index: usize) -> bool {
+        self.following = false;
+        self.place(index)
+    }
+
+    /// Put the selection on `index` without changing whose selection it is.
+    fn place(&mut self, index: usize) -> bool {
         let rows = self.rows().len();
         if rows == 0 {
             return false;
@@ -140,7 +147,7 @@ impl BenchScreen {
         let Some(running) = self.board.as_ref().and_then(Board::running) else {
             return false;
         };
-        self.select(running)
+        self.place(running)
     }
 
     /// Settle every row that never ran, for a bench that was stopped. A
@@ -165,12 +172,12 @@ impl BenchScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::bench::Phase;
+    use kernel::bench::{ColdStart, Figures, Phase};
 
     fn screen(ids: &[&str]) -> BenchScreen {
         let rows = ids
             .iter()
-            .map(|id| Row::waiting(*id, *id, None, None))
+            .map(|id| Row::waiting(id, id, None, None))
             .collect();
         let mut screen = BenchScreen::default();
         screen.start(Board::new(rows, 3, 128, "test".to_owned()), 1);
@@ -258,13 +265,23 @@ mod tests {
     fn measuring_one_row_again_keeps_the_rest_of_the_table() {
         let mut screen = screen(&["a", "b"]);
         screen.apply(1, &settle("a"));
-        screen.apply(1, &settle("b"));
+        let measured = Status::Done(Box::new(Figures::summarize(
+            ColdStart::Measured(900),
+            Vec::new(),
+        )));
+        screen.apply(
+            1,
+            &BenchEvent::Settled {
+                id: "b".to_owned(),
+                status: Box::new(measured.clone()),
+            },
+        );
         assert!(screen.requeue(&["a".to_owned()], 2));
         assert_eq!(screen.rows()[0].status, Status::Waiting);
         assert_eq!(
             screen.rows()[1].status,
-            Status::Stopped,
-            "b keeps its figure"
+            measured,
+            "b keeps what it measured"
         );
         assert!(
             !screen.requeue(&["ghost".to_owned()], 3),
@@ -287,6 +304,23 @@ mod tests {
         assert_eq!(screen.selected(), 0);
         assert!(!screen.follow_running());
         assert_eq!(screen.selected(), 0, "and stays where it was put");
+    }
+
+    #[test]
+    fn a_jump_to_the_end_of_the_list_is_not_undone_by_the_bench_either() {
+        let mut screen = screen(&["a", "b", "c"]);
+        screen.apply(
+            1,
+            &BenchEvent::Started {
+                id: "a".to_owned(),
+                phase: Phase::ColdStart,
+            },
+        );
+        // `G` is a select, not a step; it has to stop the following too.
+        assert!(screen.select(usize::MAX));
+        assert_eq!(screen.selected(), 2);
+        assert!(!screen.follow_running());
+        assert_eq!(screen.selected(), 2);
     }
 
     #[test]

@@ -39,22 +39,12 @@ use unicode_width::UnicodeWidthStr;
 use super::app::{App, Screen};
 use super::edit::LineEdit;
 use super::layout::{Panes, stacks};
-use super::palette::*;
+use super::palette::{
+    ACCENT, BACKDROP, BAR_EMPTY, BAR_FILLED, BOLD, BORDER_COLUMNS, BORDER_ROWS, CAUTION, COOL,
+    CURSOR, DIM, EYEBROW, FAILED, ORANGE, SAND, SELECTED_MARK, SELECTED_ROW, TEAL, WARM, spinner,
+};
 use super::text;
-
-/// `text` padded with spaces to `width` terminal cells; a wide glyph counts
-/// for two, where `{:<width$}` would count it once and leave the column
-/// ragged.
-fn padded(text: &str, width: usize) -> String {
-    let pad = width.saturating_sub(text.width());
-    format!("{text}{}", " ".repeat(pad))
-}
-
-/// `text` right-aligned in `width` cells, counted the same way.
-fn right_aligned(text: &str, width: usize) -> String {
-    let pad = width.saturating_sub(text.width());
-    format!("{}{text}", " ".repeat(pad))
-}
+use crate::support::text::{padded, right_aligned};
 
 /// Cells the widest of `texts` takes; none, nothing.
 fn widest(texts: &[&str]) -> usize {
@@ -259,6 +249,7 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::palette::SPINNER;
 
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
