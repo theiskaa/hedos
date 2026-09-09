@@ -119,11 +119,6 @@ async fn drive(
 
     let live = !out.is_json() && std::io::stdout().is_terminal();
     let mut terminal = live.then(|| open_block(&board)).transpose()?;
-    // What ratatui actually gave the block, which on a short terminal is less
-    // than the table asked for.
-    let block_rows = terminal
-        .as_mut()
-        .map_or(0, |terminal| terminal.get_frame().area().height);
     let mut ticker = tokio::time::interval(TICK);
     let mut ticks = 0u64;
     let mut stopping = false;
@@ -168,10 +163,11 @@ async fn drive(
         redraw(terminal, &board, ticks, true)?;
     }
     if terminal.take().is_some() {
-        // The block stays where it was drawn; the cursor is walked past it so
-        // the shell's next prompt does not land on the table's last row.
-        print!("{}", "\n".repeat(usize::from(block_rows)));
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        // The block stays where it was drawn, with the cursor on its last row;
+        // one line down is where the shell's next prompt belongs. Walking the
+        // block's whole height, as though the cursor were at the top, is a
+        // screen of blank the table has to be scrolled back through.
+        println!();
     }
     Ok(board)
 }
