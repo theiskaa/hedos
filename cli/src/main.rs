@@ -58,6 +58,8 @@ enum Command {
     Image(commands::image::ImageArgs),
     /// Show aggregate statistics from the gateway audit log.
     Stats(commands::stats::StatsArgs),
+    /// Measure what each model does on this machine.
+    Bench(commands::bench::BenchArgs),
     /// Open the shelf as a terminal screen.
     Shelf(commands::shelf::ShelfArgs),
     /// Load a model into residency.
@@ -84,6 +86,7 @@ async fn main() {
         Command::Transcribe(args) => commands::transcribe::run(args, &out).await,
         Command::Image(args) => commands::image::run(args, &out).await,
         Command::Stats(args) => commands::stats::run(args, &out).await,
+        Command::Bench(args) => commands::bench::run(args, &out).await,
         Command::Shelf(args) => commands::shelf::run(args, &out).await,
         Command::Warm(args) => commands::warm::run(args, &out).await,
         Command::Unload(args) => commands::unload::run(args, &out).await,
