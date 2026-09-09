@@ -112,6 +112,9 @@ impl RuntimeAdapter for Fake {
 struct FakePrepare {
     asked: Arc<StdMutex<Vec<String>>>,
     held: Option<String>,
+    /// Ask the bench to stop from inside the eviction, which is where a stop
+    /// lands when the user presses it during a cold start.
+    stop_during_evict: Option<Cancel>,
 }
 
 impl FakePrepare {
@@ -119,6 +122,15 @@ impl FakePrepare {
         Self {
             asked: Arc::new(StdMutex::new(Vec::new())),
             held: None,
+            stop_during_evict: None,
+        }
+    }
+
+    fn stopping_during_evict(cancel: &Cancel) -> Self {
+        Self {
+            asked: Arc::new(StdMutex::new(Vec::new())),
+            held: None,
+            stop_during_evict: Some(cancel.clone()),
         }
     }
 
@@ -126,6 +138,7 @@ impl FakePrepare {
         Self {
             asked: Arc::new(StdMutex::new(Vec::new())),
             held: Some(by.to_owned()),
+            stop_during_evict: None,
         }
     }
 }
@@ -133,6 +146,9 @@ impl FakePrepare {
 impl Prepare for FakePrepare {
     fn evict(&self, model_id: &str) -> EvictFuture {
         self.asked.lock().expect("lock").push(model_id.to_owned());
+        if let Some(cancel) = &self.stop_during_evict {
+            cancel.stop();
+        }
         let held = self.held.clone();
         Box::pin(async move {
             match held {
@@ -422,9 +438,27 @@ async fn a_stop_part_way_through_keeps_what_was_measured() {
     match settled(&drain(rx), "m") {
         Status::Done(figures) => {
             assert!(matches!(figures.cold_start, ColdStart::Measured(_)));
-            assert!(!figures.runs.is_empty(), "the warm run that landed stands");
-            assert!(figures.runs.len() < 3, "and the rest never ran");
+            assert_eq!(figures.runs.len(), 1, "the one warm run that landed stands");
         }
         other => panic!("expected the figures it had, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_stop_during_the_eviction_never_opens_the_request() {
+    let dir = TempDir::new();
+    let fake = Fake::new();
+    let calls = Arc::clone(&fake.calls);
+    let kernel = kernel(&dir, &["m"], fake);
+    let cancel = Cancel::new();
+    let prepare = FakePrepare::stopping_during_evict(&cancel);
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    runtime::bench::run(&kernel, &plan(&["m"], 1), &prepare, &cancel, &tx).await;
+
+    assert!(
+        calls.lock().expect("lock").is_empty(),
+        "a request would have loaded the model the bench was walking away from"
+    );
+    assert!(matches!(settled(&drain(rx), "m"), Status::Stopped));
 }

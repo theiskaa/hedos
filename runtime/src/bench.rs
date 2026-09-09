@@ -181,18 +181,19 @@ async fn measure(
 ) -> Status {
     let mut cold = ColdStart::NotMeasured;
     if !plan.keep_warm {
+        // Announced before the eviction rather than after it: clearing the
+        // model is the first thing a cold start waits on, and a row that reads
+        // `waiting` all through it looks like one the bench has not reached.
+        let _ = events.send(BenchEvent::Started {
+            id: id.to_owned(),
+            phase: Phase::ColdStart,
+        });
         match prepare.evict(id).await {
-            Eviction::Cleared => {
-                let _ = events.send(BenchEvent::Started {
-                    id: id.to_owned(),
-                    phase: Phase::ColdStart,
-                });
-                match one_run(kernel, plan, cancel, events, id).await {
-                    RunOutcome::Measured(sample) => cold = ColdStart::Measured(sample.ttft_ms),
-                    RunOutcome::Failed(reason) => return Status::Failed(reason),
-                    RunOutcome::Stopped => return Status::Stopped,
-                }
-            }
+            Eviction::Cleared => match one_run(kernel, plan, cancel, events, id).await {
+                RunOutcome::Measured(sample) => cold = ColdStart::Measured(sample.ttft_ms),
+                RunOutcome::Failed(reason) => return Status::Failed(reason),
+                RunOutcome::Stopped => return Status::Stopped,
+            },
             // Nothing here was cold, so there is nothing to time; the warm
             // figures below are still real.
             Eviction::Held(holder) => cold = ColdStart::Held(holder),
@@ -230,6 +231,13 @@ async fn one_run(
     events: &UnboundedSender<BenchEvent>,
     id: &str,
 ) -> RunOutcome {
+    // Checked before the request is opened, not only while the reply is read:
+    // a request an adapter has started loads the model whether or not anyone
+    // reads what comes back, and a stop that landed during the eviction would
+    // otherwise leave the model in memory as the bench walked away.
+    if cancel.stopped() {
+        return RunOutcome::Stopped;
+    }
     let started = Instant::now();
     let mut stream = match kernel.invoke(id, Capability::chat(), payload(plan)).await {
         Ok(stream) => stream,
@@ -274,6 +282,12 @@ async fn one_run(
         }
     }
 
+    // The count the reply ended on, which the interval above may not have
+    // reached.
+    let _ = events.send(BenchEvent::Tokens {
+        id: id.to_owned(),
+        tokens: estimate_tokens(&text),
+    });
     let Some(ttft_ms) = ttft_ms else {
         return RunOutcome::Failed("the model produced no tokens".to_owned());
     };
