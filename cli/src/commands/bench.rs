@@ -127,6 +127,12 @@ async fn drive(
     let mut ticker = tokio::time::interval(TICK);
     let mut ticks = 0u64;
     let mut stopping = false;
+    // The table is on screen before the first model is: opening a shelf and
+    // clearing a model from memory take seconds, and a blank terminal for that
+    // long reads as a command that did nothing.
+    if let Some(terminal) = terminal.as_mut() {
+        redraw(terminal, &board, ticks, false)?;
+    }
     loop {
         let mut moved = false;
         tokio::select! {
@@ -136,10 +142,18 @@ async fn drive(
             },
             _ = ticker.tick() => {
                 ticks += 1;
-                moved = board.running().is_some();
+                // Redrawn until the last row settles, not only while one is
+                // generating: the spinner has to turn through the eviction and
+                // the load as well, which is the longest part of a cold start.
+                moved = !board.finished();
             }
-            // Ctrl-C stops the bench; what has been measured still stands.
-            () = signals::wait_for_ctrl_c(), if !stopping => {
+            // Ctrl-C stops the bench, and what has been measured stands. A
+            // second one gives up on the run in flight rather than waiting on a
+            // backend that may never answer.
+            () = signals::wait_for_ctrl_c() => {
+                if stopping {
+                    break;
+                }
                 cancel.stop();
                 stopping = true;
             }
