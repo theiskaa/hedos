@@ -41,6 +41,8 @@ fn generation_stats_round_trips() {
         duration_ms: Some(3),
         ttft_ms: Some(4),
         load_ms: Some(5),
+        prompt_ms: Some(6),
+        eval_ms: Some(7),
         finish_reason: Some("stop".to_owned()),
         token_counts_estimated: true,
     };
