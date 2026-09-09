@@ -64,6 +64,7 @@ hedos rm gemma3 --yes               # delete a model
 hedos serve                         # start the local gateway
 hedos launch opencode               # run a coding harness on a local model
 hedos stats                         # per-model usage from the gateway audit log
+hedos bench                         # what every model does on this machine
 ```
 
 Every command takes `--json` when you want machine-readable output instead of formatted text. `hedos ls` shows a fit verdict — whether each model will actually run in this machine's memory — next to its capabilities.
