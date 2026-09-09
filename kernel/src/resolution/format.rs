@@ -51,6 +51,9 @@ pub struct GgufFacts {
     pub context_length: Option<i64>,
     /// Whether the header carries a chat template.
     pub has_chat_template: bool,
+    /// The weight type `general.file_type` names, as llama.cpp spells it
+    /// (`Q4_K_M`, `Q8_0`, `F16`), when the header carries a known one.
+    pub quantization: Option<String>,
 }
 
 /// The known-architecture profile for a GGUF `general.architecture` value.
@@ -131,22 +134,13 @@ pub fn ollama_vision_profile() -> GgufArchitectureProfile {
 }
 
 /// The profile for an Ollama model: vision when it ships a projector, otherwise
-/// the GGUF architecture's profile (read from `weight_path`) if recognized, else
-/// the plain chat default.
-///
-/// `weight_path` must be absolute — a leading `~` is not expanded (the Ollama
-/// scanner always passes a resolved blob path;
-/// a `~`-relative path would fail to open and fall through to the chat default).
-pub fn ollama_profile(has_projector: bool, weight_path: Option<&str>) -> GgufArchitectureProfile {
+/// the profile of `architecture`, the one its weight blob's GGUF header names,
+/// if recognized, else the plain chat default.
+pub fn ollama_profile(has_projector: bool, architecture: Option<&str>) -> GgufArchitectureProfile {
     if has_projector {
         return ollama_vision_profile();
     }
-    if let Some(path) = weight_path
-        && let Some(architecture) =
-            crate::resolution::gguf::gguf_general_architecture(std::path::Path::new(path))
-        && let Some(profile) = gguf_architecture_profile(&architecture)
-    {
-        return profile;
-    }
-    ollama_chat_profile()
+    architecture
+        .and_then(gguf_architecture_profile)
+        .unwrap_or_else(ollama_chat_profile)
 }

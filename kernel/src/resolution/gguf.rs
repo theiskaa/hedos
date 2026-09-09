@@ -1,5 +1,5 @@
 //! A minimal GGUF header reader: enough to pull the architecture, context
-//! length, and chat-template presence without loading the weights.
+//! length, chat-template presence, and file type without loading the weights.
 //!
 //! Values are little-endian. The reader streams over a buffered file handle and
 //! seeks past values it does not need, so it never reads the tensor data.
@@ -38,8 +38,9 @@ pub fn gguf_general_architecture(path: &Path) -> Option<String> {
     gguf_facts(path)?.architecture
 }
 
-/// Read the architecture, context length, and chat-template presence from a GGUF
-/// header. Returns `None` if the file is not a valid GGUF (v2+) header.
+/// Read the architecture, context length, chat-template presence, and the
+/// quantization from a GGUF header. Returns `None` if the file is not a valid
+/// GGUF (v2+) header.
 pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     let mut reader = Reader::open(path)?;
     if reader.read_array::<4>()? != *b"GGUF" {
@@ -55,6 +56,7 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     let mut architecture: Option<String> = None;
     let mut context_lengths: BTreeMap<String, i64> = BTreeMap::new();
     let mut has_chat_template = false;
+    let mut file_type: Option<i64> = None;
 
     for _ in 0..kv_count.min(MAX_KV_PAIRS) {
         let Some(key) = reader.read_string() else {
@@ -77,6 +79,15 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
             has_chat_template = true;
             if !reader.skip_value(value_type) {
                 break;
+            }
+        } else if key == "general.file_type" {
+            match read_integer(&mut reader, value_type) {
+                Some(value) => file_type = Some(value),
+                None => {
+                    if !reader.skip_value(value_type) {
+                        break;
+                    }
+                }
             }
         } else if key.ends_with(".context_length") {
             match read_integer(&mut reader, value_type) {
@@ -115,6 +126,53 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
         architecture,
         context_length,
         has_chat_template,
+        quantization: file_type.and_then(file_type_name).map(str::to_owned),
+    })
+}
+
+/// llama.cpp's guessed-type bit: set when the converter inferred the file type
+/// rather than being told it, and no part of the type itself.
+const FILE_TYPE_GUESSED: i64 = 1024;
+
+/// The name llama.cpp gives a `general.file_type` value (its `llama_ftype`
+/// enum); `None` for a value the table does not know, the retired ones
+/// included.
+fn file_type_name(value: i64) -> Option<&'static str> {
+    Some(match value & !FILE_TYPE_GUESSED {
+        0 => "F32",
+        1 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        7 => "Q8_0",
+        8 => "Q5_0",
+        9 => "Q5_1",
+        10 => "Q2_K",
+        11 => "Q3_K_S",
+        12 => "Q3_K_M",
+        13 => "Q3_K_L",
+        14 => "Q4_K_S",
+        15 => "Q4_K_M",
+        16 => "Q5_K_S",
+        17 => "Q5_K_M",
+        18 => "Q6_K",
+        19 => "IQ2_XXS",
+        20 => "IQ2_XS",
+        21 => "Q2_K_S",
+        22 => "IQ3_XS",
+        23 => "IQ3_XXS",
+        24 => "IQ1_S",
+        25 => "IQ4_NL",
+        26 => "IQ3_S",
+        27 => "IQ3_M",
+        28 => "IQ2_S",
+        29 => "IQ2_M",
+        30 => "IQ4_XS",
+        31 => "IQ1_M",
+        32 => "BF16",
+        36 => "TQ1_0",
+        37 => "TQ2_0",
+        38 => "MXFP4_MOE",
+        _ => return None,
     })
 }
 

@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
 use crate::records::{JsonValue, ModelSource, SourceKind};
-use crate::resolution::ollama_profile;
+use crate::resolution::{gguf_general_architecture, ollama_profile};
 
 /// A scanner over one Ollama models root.
 pub struct OllamaStoreScanner {
@@ -132,7 +132,10 @@ impl StoreScanner for OllamaStoreScanner {
                 .layers
                 .iter()
                 .any(|layer| layer.media_type.ends_with(".projector"));
-            let profile = ollama_profile(has_projector, weight_blob.as_deref());
+            let architecture = weight_blob
+                .as_deref()
+                .and_then(|path| gguf_general_architecture(Path::new(path)));
+            let profile = ollama_profile(has_projector, architecture.as_deref());
 
             let mut context_length_hint = None;
             let mut stop_tokens_hint = None;
