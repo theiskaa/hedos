@@ -37,13 +37,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     // for.
     app.note_task_rows(height);
     let shown = app.tasks.shown(height);
-    // On the pulls screen the keys act on the list's selection, so a hint
-    // beside a strip row would name a pull the key might not touch.
+    // On the pulls and bench screens the keys act on the list's selection, so a
+    // hint beside a strip row would name work the key might not touch.
     let targets = match app.screen {
         Screen::Shelf => app
             .tasks
             .hint_targets(height, |reference| app.selected_is(reference)),
-        Screen::Pulls => HintTargets::default(),
+        Screen::Pulls | Screen::Bench => HintTargets::default(),
     };
     let lines: Vec<Line> = shown
         .iter()

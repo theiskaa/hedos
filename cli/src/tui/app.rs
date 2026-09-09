@@ -3,12 +3,15 @@
 
 use std::time::Duration;
 
+use kernel::bench::Status as BenchStatus;
 use kernel::install::pulls::PullState;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
+use runtime::bench::BenchPlan;
 
+use super::bench::BenchScreen;
 use super::chat::ChatPane;
 use super::edit::LineEdit;
 use super::effect::{Effect, HandOff};
@@ -24,6 +27,8 @@ use super::state::UiState;
 use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
+use crate::support::bench_run::{machine_line, rows as bench_rows};
+use crate::support::bench_view::Board;
 use crate::support::install::find_installed;
 use crate::support::residency::{Holder, warm_request};
 use crate::support::shelf_table::verdict;
@@ -53,6 +58,7 @@ const NOTICE_TICKS: u64 = 2 * TICKS_PER_SECOND;
 pub enum Screen {
     Shelf,
     Pulls,
+    Bench,
 }
 
 /// What can sit in front of the shelf.
@@ -112,6 +118,12 @@ pub struct App {
     /// The pulls screen, kept while the shelf shows so that opening it is
     /// instant and its selection survives a visit to the shelf.
     pub pulls: PullsScreen,
+    /// The bench screen, kept the same way: a bench goes on while the shelf is
+    /// showing, and the screen picks it back up.
+    pub bench: BenchScreen,
+    /// How many benches have been started, so each one's steps carry a stamp
+    /// its predecessor's cannot be mistaken for.
+    benches: u64,
     /// Whether the detail pane has the whole body.
     pub expanded: bool,
     /// A short message in the footer, until the tick it expires on.
@@ -149,6 +161,8 @@ impl App {
             modal: None,
             screen: Screen::Shelf,
             pulls: PullsScreen::default(),
+            bench: BenchScreen::default(),
+            benches: 0,
             expanded: false,
             notice: None,
             select_pulled: None,
@@ -399,6 +413,20 @@ impl App {
                 Vec::new()
             }
             Event::Reply(reply) => self.reply(reply),
+            Event::Bench { generation, step } => {
+                if self.bench.apply(generation, &step) && self.screen == Screen::Bench {
+                    self.bench.follow_running();
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            Event::BenchEnded(generation) => {
+                // A driver that returned with rows still waiting was stopped;
+                // saying so beats leaving them reading as queued forever.
+                self.bench.stopped(generation);
+                self.dirty = true;
+                Vec::new()
+            }
             Event::InputClosed => vec![Effect::Quit],
         }
     }
@@ -440,6 +468,9 @@ impl App {
         if self.screen == Screen::Pulls {
             return self.pulls_key(key);
         }
+        if self.screen == Screen::Bench {
+            return self.bench_key(key);
+        }
         if self.filtering && !matches!(key, Key::Up | Key::Down | Key::ScrollUp | Key::ScrollDown) {
             return self.filter_key(key);
         }
@@ -461,9 +492,14 @@ impl App {
             Key::Char('u') => return self.unload(),
             Key::Char('p') => self.open_pull_modal(),
             Key::Char('P') => return self.open_pulls(),
+            Key::Char('b') => return self.bench_selected(),
+            Key::Char('B') => return self.open_bench(),
             Key::Char('x') => return self.remove(),
             Key::Char('l') => return self.launch(),
             Key::Char('T') => return self.hand_off_chat(),
+            Key::Char('t') if self.bench.running() => {
+                return self.notify("a bench is running; press B, then c to stop it".to_owned());
+            }
             Key::Char('t') => return self.open_chat(),
             Key::Char('S') => return self.serve(),
             Key::Char('/') => {
@@ -940,6 +976,131 @@ impl App {
         self.dirty = true;
     }
 
+    /// Open the bench screen. A bench already going is picked back up rather
+    /// than restarted; an empty screen starts one over the whole shelf, since
+    /// opening it is the ask.
+    fn open_bench(&mut self) -> Vec<Effect> {
+        self.screen = Screen::Bench;
+        self.dirty = true;
+        if self.bench.board().is_none() {
+            return self.start_bench(Vec::new(), false);
+        }
+        Vec::new()
+    }
+
+    /// Put the shelf back. The bench itself goes on.
+    fn close_bench(&mut self) {
+        self.screen = Screen::Shelf;
+        self.dirty = true;
+    }
+
+    /// Bench the selected model, on the screen the figures land on. The screen
+    /// opens only if the bench does: `b` on a model nothing can measure should
+    /// say so where the cursor already is.
+    fn bench_selected(&mut self) -> Vec<Effect> {
+        let Some(record) = self.selected_record() else {
+            return self.notify("no model is selected".to_owned());
+        };
+        let id = record.id.clone();
+        let effects = self.start_bench(vec![id], true);
+        if !effects.is_empty() {
+            self.screen = Screen::Bench;
+        }
+        effects
+    }
+
+    /// Start a bench over `ids`, or over the whole shelf when none are named.
+    /// `any_size` benches a model too big for this machine anyway, which is
+    /// what naming one is taken to mean.
+    fn start_bench(&mut self, ids: Vec<String>, any_size: bool) -> Vec<Effect> {
+        if self.bench.running() {
+            return self.notify("a bench is already running; c stops it".to_owned());
+        }
+        let mut rows = bench_rows(&self.records, self.facts.memory_bytes, any_size);
+        if !ids.is_empty() {
+            rows.retain(|row| ids.contains(&row.id));
+        }
+        let models: Vec<String> = rows
+            .iter()
+            .filter(|row| row.status == BenchStatus::Waiting)
+            .map(|row| row.id.clone())
+            .collect();
+        if models.is_empty() {
+            return self.notify("nothing here can be benched".to_owned());
+        }
+        let plan = BenchPlan::new(models);
+        self.benches += 1;
+        // Measuring one row again keeps the rows it is there to be compared
+        // against; a bench over everything starts a fresh table.
+        if !ids.is_empty() && self.bench.requeue(&plan.models, self.benches) {
+            self.dirty = true;
+            return vec![Effect::StartBench(Box::new(plan), self.benches)];
+        }
+        self.bench.start(
+            Board::new(
+                rows,
+                plan.runs,
+                plan.max_tokens,
+                machine_line(self.facts.memory_bytes as i64),
+            ),
+            self.benches,
+        );
+        self.dirty = true;
+        vec![Effect::StartBench(Box::new(plan), self.benches)]
+    }
+
+    /// The keys of the bench screen. Its `q` and `?` are the shelf's;
+    /// everything else is its own, so no shelf verb fires on a bench row.
+    fn bench_key(&mut self, key: Key) -> Vec<Effect> {
+        match key {
+            Key::Char('q') => return vec![Effect::Quit],
+            Key::Escape | Key::Char('B') => self.close_bench(),
+            Key::Char('?') => self.open(Modal::Help),
+            Key::Char('a') => return self.start_bench(Vec::new(), false),
+            Key::Char('b') => return self.bench_again(),
+            Key::Char('c') => return self.stop_bench(),
+            Key::Down | Key::ScrollDown | Key::Char('j') => return self.move_bench(1),
+            Key::Up | Key::ScrollUp | Key::Char('k') => return self.move_bench(-1),
+            Key::Top | Key::Char('g') => return self.select_bench(0),
+            Key::Bottom | Key::Char('G') => return self.select_bench(usize::MAX),
+            _ => {}
+        }
+        Vec::new()
+    }
+
+    /// Measure the selected row again, on its own.
+    fn bench_again(&mut self) -> Vec<Effect> {
+        let Some(id) = self.bench.selected_row().map(|row| row.id.clone()) else {
+            return self.notify("no model is selected".to_owned());
+        };
+        self.start_bench(vec![id], true)
+    }
+
+    /// Ask the bench to stop; what it has measured stands.
+    fn stop_bench(&mut self) -> Vec<Effect> {
+        if !self.bench.running() {
+            return self.notify("no bench is running".to_owned());
+        }
+        self.dirty = true;
+        vec![Effect::StopBench]
+    }
+
+    /// Move the bench screen's selection by `delta` rows.
+    fn move_bench(&mut self, delta: isize) -> Vec<Effect> {
+        if self.bench.step(delta) {
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
+    /// Put the bench screen's selection on `index`, clamped to the last row.
+    fn select_bench(&mut self, index: usize) -> Vec<Effect> {
+        if self.bench.select(index) {
+            self.dirty = true;
+        }
+        Vec::new()
+    }
+
     /// Open the catalog and search that a pull starts from.
     fn open_pull_modal(&mut self) {
         self.open(Modal::Pull(Box::new(PullModal::open(
@@ -1144,6 +1305,12 @@ impl App {
             self.dirty = true;
         }
         if self.chat_pane().is_some_and(ChatPane::waiting) || self.planning() {
+            self.dirty = true;
+        }
+        // A bench sends nothing between starting a model and its first token,
+        // which on a cold start is the longest part; without a tick of its own
+        // the spinner would sit still through exactly the wait it is there for.
+        if self.screen == Screen::Bench && self.bench.running() {
             self.dirty = true;
         }
         if self.tasks.expire(now) {

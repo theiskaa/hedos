@@ -18,6 +18,7 @@
 //! keys named where the card is drawn, and `;` joining two clauses in a
 //! notice.
 
+mod bench;
 mod chat;
 mod detail;
 mod footer;
@@ -180,6 +181,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let panes = match app.screen {
         Screen::Shelf => draw_shelf(frame, app),
         Screen::Pulls => draw_pulls(frame, app),
+        Screen::Bench => draw_bench(frame, app),
     };
     tasks::draw(frame, panes.tasks, app);
     footer::draw(frame, panes.footer, app);
@@ -223,6 +225,16 @@ fn draw_pulls(frame: &mut Frame, app: &mut App) -> Panes {
     header::draw(frame, panes.header, app, false);
     pulls::draw_list(frame, panes.shelf, app);
     pulls::draw_detail(frame, panes.detail, app);
+    panes
+}
+
+/// The bench screen: the models being measured where the shelf goes, the
+/// selected row's figures beside them.
+fn draw_bench(frame: &mut Frame, app: &mut App) -> Panes {
+    let panes = Panes::bench(frame.area(), app.bench.rows().len(), app.tasks.rows().len());
+    header::draw(frame, panes.header, app, false);
+    bench::draw_list(frame, panes.shelf, app);
+    bench::draw_detail(frame, panes.detail, app);
     panes
 }
 

@@ -109,7 +109,8 @@ fn help_cell(keys: &[&str]) -> (String, String) {
 fn group_cells(group: keymap::Group) -> Vec<HelpCell> {
     let mut cells = vec![HelpCell::Header(group.label())];
     cells.extend(match group {
-        keymap::Group::Pulls => pulls_rows(),
+        keymap::Group::Pulls => screen_rows(keymap::PULLS.help_bindings()),
+        keymap::Group::Bench => screen_rows(keymap::BENCH.help_bindings()),
         group => shelf_rows(group),
     });
     cells
@@ -139,9 +140,9 @@ fn shelf_rows(group: keymap::Group) -> Vec<HelpCell> {
     cells
 }
 
-/// The pulls screen's rows, each key with its verb.
-fn pulls_rows() -> Vec<HelpCell> {
-    keymap::pulls_help_bindings()
+/// A screen's own rows, each key with its verb.
+fn screen_rows(bindings: impl Iterator<Item = &'static keymap::Binding>) -> Vec<HelpCell> {
+    bindings
         .map(|binding| HelpCell::Row {
             key: binding.key.to_owned(),
             gloss: binding.verb.to_owned(),
@@ -161,15 +162,15 @@ fn stacked(groups: &[keymap::Group]) -> Vec<HelpCell> {
     cells
 }
 
-/// The help in three columns, the pulls keys under the move keys and the
-/// screen keys under the model keys: the split that keeps every column
-/// near the shelf's height, so the card stays short enough for its closer
-/// to show on a 24-row terminal.
+/// The help in three columns: the two short screens under the move keys, the
+/// pulls keys under the model keys, and the shelf's own on its own. The split
+/// that keeps every column near the shelf's height, so the card stays short
+/// enough for its closer to show on a 24-row terminal.
 fn three_columns() -> Vec<Vec<HelpCell>> {
     use keymap::Group;
     vec![
-        stacked(&[Group::Move, Group::Pulls]),
-        stacked(&[Group::Model, Group::Screen]),
+        stacked(&[Group::Move, Group::Bench, Group::Screen]),
+        stacked(&[Group::Model, Group::Pulls]),
         group_cells(Group::Shelf),
     ]
 }
@@ -178,7 +179,7 @@ fn three_columns() -> Vec<Vec<HelpCell>> {
 fn two_columns() -> Vec<Vec<HelpCell>> {
     use keymap::Group;
     vec![
-        stacked(&[Group::Move, Group::Screen, Group::Pulls]),
+        stacked(&[Group::Move, Group::Screen, Group::Pulls, Group::Bench]),
         stacked(&[Group::Model, Group::Shelf]),
     ]
 }
@@ -290,7 +291,28 @@ mod tests {
                 Some(set) => Some(help_cell(set).0),
                 None => Some(binding.key.to_owned()),
             })
-            .chain(keymap::pulls_help_bindings().map(|binding| binding.key.to_owned()))
+            .chain(
+                keymap::PULLS
+                    .help_bindings()
+                    .map(|binding| binding.key.to_owned()),
+            )
+            .chain(
+                keymap::BENCH
+                    .help_bindings()
+                    .map(|binding| binding.key.to_owned()),
+            )
+            .collect()
+    }
+
+    /// One column's rows as `key gloss`, for pinning which column a key was
+    /// filed under rather than only that it is drawn somewhere.
+    fn cell_texts(column: &[HelpCell]) -> Vec<String> {
+        column
+            .iter()
+            .filter_map(|cell| match cell {
+                HelpCell::Row { key, gloss } => Some(format!("{key} {gloss}")),
+                _ => None,
+            })
             .collect()
     }
 
@@ -358,17 +380,18 @@ mod tests {
                 && line.contains("SHELF"))
         );
         assert!(rows.iter().any(|line| line.contains("SCREEN")));
-        assert!(rows.iter().any(|line| line.starts_with("  PULLS")));
+        // The bench group opens the first column now; the pulls group sits in
+        // the second, so it is on a line rather than starting one.
+        assert!(rows.iter().any(|line| line.starts_with("  BENCH")));
+        assert!(rows.iter().any(|line| line.contains("PULLS")));
         // The card stays short enough for its closer on a 24-row terminal.
         assert!(layout.height() <= 24, "{} rows", layout.height());
         assert!(
-            rows.iter()
-                .any(|line| line.starts_with("  x ") && line.contains("forget"))
+            cell_texts(&layout.columns[1]).contains(&"x forget".to_owned()),
+            "the pulls screen's own key is in the column it was filed under"
         );
-        assert!(
-            rows.iter()
-                .any(|line| line.starts_with("  Y ") && line.contains("copy id"))
-        );
+        assert!(cell_texts(&layout.columns[1]).contains(&"Y copy id".to_owned()));
+        assert!(cell_texts(&layout.columns[0]).contains(&"a all".to_owned()));
         assert!(rows.iter().any(|line| line.contains("launch a harness")));
         assert!(rows.iter().any(|line| line.contains("esc       collapse")));
         assert!(rows.iter().any(|line| line.contains("chat in terminal")));
@@ -429,7 +452,7 @@ mod tests {
     fn the_help_folds_to_two_columns_on_a_narrow_terminal() {
         let wide = HelpLayout::breakpoint();
         // The one literal pin: the layout tripwire, tripped by any change to the keys.
-        assert_eq!(wide, 75);
+        assert_eq!(wide, 80);
         let three = HelpLayout::at(wide);
         let two = HelpLayout::at(wide - 1);
         assert_eq!(three.columns.len(), 3);
@@ -452,10 +475,13 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("SCREEN") && !line.contains("MOVE"))
         );
+        // The shelf's keys fold under the model's, in the same column, so the
+        // two headings are never side by side on one line.
+        assert!(rendered.iter().any(|line| line.contains("SHELF")));
         assert!(
-            rendered
+            !rendered
                 .iter()
-                .any(|line| line.starts_with("  q ") && line.contains("SHELF"))
+                .any(|line| line.contains("SHELF") && line.contains("MODEL"))
         );
         assert!(
             !rendered

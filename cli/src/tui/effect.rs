@@ -7,6 +7,8 @@ use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
 use kernel::records::{JsonValue, ModelRecord};
 
+use runtime::bench::BenchPlan;
+
 use super::tasks::{PullAction, TaskKind, TaskLabel};
 use crate::support::harnesses::HarnessSpec;
 
@@ -84,4 +86,9 @@ pub enum Effect {
     },
     /// Stop the reply in flight.
     StopAsk,
+    /// Measure the models of `plan`, reported as [`super::event::Event::Bench`]
+    /// events stamped with `generation`.
+    StartBench(Box<BenchPlan>, u64),
+    /// Ask the bench in flight to stop.
+    StopBench,
 }
