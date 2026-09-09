@@ -6,20 +6,14 @@ use std::sync::OnceLock;
 use kernel::capabilities::GenerationStats;
 use kernel::install::event::InstallProgress;
 use kernel::profiles::{FitAssessment, FitVerdict};
-use kernel::records::byte_format::{BYTES_PER_GIB, format_bytes, one_decimal};
+use kernel::records::byte_format::{format_bytes, one_decimal};
 
 use crate::support::shelf_table::verdict_label;
-pub use crate::support::text::{clip, elide_middle};
+pub use crate::support::text::{clip, count, elide_middle, gib, short_runtime};
 
 /// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
     format_bytes(bytes)
-}
-
-/// Bytes in gibibytes with one decimal, for memory figures set against a
-/// machine total: `14.2`. Negative counts read as zero.
-pub fn gib(bytes: i64) -> String {
-    one_decimal(bytes.max(0) as f64 / BYTES_PER_GIB as f64)
 }
 
 /// `buckets` as one bar per bucket, scaled to the largest; a flat line when
@@ -34,15 +28,6 @@ pub fn sparkline(buckets: &[u32]) -> String {
             BARS[level.min(BARS.len() - 1)]
         })
         .collect()
-}
-
-/// A runtime id as the shelf shows it: the sidecar prefix and long vendor
-/// names carry nothing at a glance.
-pub fn short_runtime(id: &str) -> &str {
-    match id {
-        "apple-foundation" => "apple",
-        other => other.strip_prefix("python:").unwrap_or(other),
-    }
 }
 
 /// A store kind as the shelf shows it.
@@ -161,15 +146,6 @@ pub fn tokens(count: i64) -> String {
         format!("{}k", count / 1000)
     } else {
         count.to_string()
-    }
-}
-
-/// A count with a noun that takes a plain `s` plural: `1 model`, `12 models`.
-pub fn count(count: usize, noun: &str) -> String {
-    if count == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{count} {noun}s")
     }
 }
 

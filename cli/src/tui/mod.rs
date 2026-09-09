@@ -17,6 +17,7 @@ mod launch;
 mod layout;
 mod markup;
 mod order;
+pub(crate) mod palette;
 mod pull;
 mod pulls;
 mod state;
