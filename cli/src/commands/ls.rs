@@ -60,8 +60,9 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
     Ok(())
 }
 
-/// One line per manifest runtime that would serve a model now sitting without a
-/// runtime, if it were approved. Without it the model just reads as unrunnable.
+/// One line per unapproved manifest runtime that a model on the shelf waits on.
+/// Without it the model just reads as unrunnable, or as served by a runtime
+/// that will refuse it.
 fn approval_hints(session: &Session, shelf: &[ModelRecord]) -> Vec<String> {
     session
         .kernel
@@ -71,9 +72,10 @@ fn approval_hints(session: &Session, shelf: &[ModelRecord]) -> Vec<String> {
             manifest.vm.is_none() && !host_consent(manifest, &session.settings.models).is_approved()
         })
         .filter_map(|manifest| {
+            // A model still resolved to this runtime from before its files
+            // changed waits on the approval as much as an unresolved one does.
             let waiting: Vec<&str> = servable_models(manifest, shelf)
                 .into_iter()
-                .filter(|record| record.runtime.id.is_none())
                 .map(ModelRecord::display_name)
                 .collect();
             (!waiting.is_empty()).then(|| {
