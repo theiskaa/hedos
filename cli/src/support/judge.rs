@@ -11,13 +11,21 @@
 //! probabilities the model gives them, and every map here sorts its keys.
 
 use kernel::records::{Capability, ModelRecord};
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use unicode_width::UnicodeWidthStr;
 
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
+use crate::support::text::{padded, right_aligned};
 
 /// How wide a probability bar may draw, in cells.
 const BAR_CELLS: usize = 24;
+
+/// How wide the percentage column is: `100.0%` is six cells, and a column that
+/// fits every value but one is not a column.
+const PERCENT_CELLS: usize = 6;
 
 /// What a judge can be asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +91,7 @@ pub(crate) fn compose(out: &Out, model: &str) -> Result<(String, Vec<Question>),
     let mut questions = Vec::new();
     loop {
         let index = questions.len() + 1;
-        questions.push(ask_question(index)?);
+        questions.push(ask_question(out, index)?);
         if !interactive::confirm("another question about the same state?", false)? {
             break;
         }
@@ -91,7 +99,7 @@ pub(crate) fn compose(out: &Out, model: &str) -> Result<(String, Vec<Question>),
     Ok((state, questions))
 }
 
-fn ask_question(index: usize) -> Result<Question, CliError> {
+fn ask_question(out: &Out, index: usize) -> Result<Question, CliError> {
     let kinds = [Kind::Choice, Kind::Score, Kind::Noul];
     let labels: Vec<String> = kinds
         .iter()
@@ -103,9 +111,8 @@ fn ask_question(index: usize) -> Result<Question, CliError> {
         .ok_or_else(|| CliError::new("nothing selected"))?;
     let instructions = interactive::input("question", false)?;
     let criteria = match kind {
-        Kind::Choice => collect_criteria("option", "`label: what it means`, or just a label")?,
-        Kind::Score => collect_criteria("level", "lowest level first")?,
         Kind::Noul => Vec::new(),
+        listed => collect_criteria(out, listed)?,
     };
     Ok(Question {
         id: format!("q{index}"),
@@ -116,9 +123,16 @@ fn ask_question(index: usize) -> Result<Question, CliError> {
 }
 
 /// Read a numbered list of options or levels, ending on an empty line. Two is
-/// the floor: a judge weighs alternatives against each other, and one of them
-/// carries the whole distribution whatever it says.
-fn collect_criteria(noun: &str, hint: &str) -> Result<Vec<(String, String)>, CliError> {
+/// the floor: a judge weighs alternatives against each other, and a lone one
+/// carries the whole distribution whatever it says. A list that cannot end yet,
+/// a blank label, or a repeat is said out loud and asked again rather than
+/// failing the command, which would throw away the situation and the question
+/// already typed.
+fn collect_criteria(out: &Out, kind: Kind) -> Result<Vec<(String, String)>, CliError> {
+    let (noun, hint) = match kind {
+        Kind::Choice => ("option", "`label: what it means`, or just a label"),
+        _ => ("level", "lowest first"),
+    };
     let mut entries: Vec<(String, String)> = Vec::new();
     loop {
         let line = interactive::input(&format!("{noun} {}", entries.len() + 1), true)?;
@@ -127,23 +141,41 @@ fn collect_criteria(noun: &str, hint: &str) -> Result<Vec<(String, String)>, Cli
             if entries.len() >= 2 {
                 return Ok(entries);
             }
-            return Err(CliError::new(format!(
-                "a {noun} list needs at least two entries — {hint}"
-            )));
+            out.err(&format!("  two {noun}s at least: {hint}"));
+            continue;
         }
-        let (label, description) = match line.split_once(':') {
-            Some((label, description)) => (label.trim(), description.trim()),
-            None => (line, ""),
-        };
+        let (label, description) = split_entry(kind, line);
         if label.is_empty() {
-            return Err(CliError::new(format!("a {noun} needs a label")));
+            out.err(&format!("  a {noun} needs a label before the colon"));
+            continue;
         }
         if entries.iter().any(|(existing, _)| existing == label) {
-            return Err(CliError::new(format!(
-                "{noun} \"{label}\" was already given — each one is keyed by its label"
-            )));
+            out.err(&format!(
+                "  \"{label}\" is already {noun} {}",
+                entries
+                    .iter()
+                    .position(|(existing, _)| existing == label)
+                    .unwrap_or(0)
+                    + 1
+            ));
+            continue;
         }
         entries.push((label.to_owned(), description.to_owned()));
+    }
+}
+
+/// An entered line as `(label, description)`. Only a choice's option carries a
+/// description, and it is cut at the first colon *followed by a space*, so a
+/// label holding a colon of its own (a URL, a clock time) survives. A score's
+/// level is one whole phrase: it has to stand on its own for the model to rate
+/// against it, so cutting it at a colon would ask a different question.
+fn split_entry(kind: Kind, line: &str) -> (&str, &str) {
+    match kind {
+        Kind::Choice => match line.split_once(": ") {
+            Some((label, description)) => (label.trim(), description.trim()),
+            None => (line, ""),
+        },
+        _ => (line, ""),
     }
 }
 
@@ -202,13 +234,23 @@ pub(crate) fn parse_questions(text: &str) -> Vec<Question> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
         return Vec::new();
     };
-    let Some(questions) = value
+    // A lone question may be written under the singular key, which the runtime
+    // accepts, and which then answers under the id "question".
+    let listed = match value
         .get("questions")
         .and_then(serde_json::Value::as_object)
-    else {
-        return Vec::new();
+    {
+        Some(questions) => questions.clone(),
+        None => {
+            let Some(single) = value.get("question").filter(|one| one.is_object()) else {
+                return Vec::new();
+            };
+            let mut only = serde_json::Map::new();
+            only.insert("question".to_owned(), single.clone());
+            only
+        }
     };
-    let mut recovered: Vec<Question> = questions
+    let mut recovered: Vec<Question> = listed
         .iter()
         .filter_map(|(id, question)| {
             let kind = match question.get("type").and_then(serde_json::Value::as_str)? {
@@ -235,14 +277,92 @@ pub(crate) fn parse_questions(text: &str) -> Vec<Question> {
             })
         })
         .collect();
-    // A map sorts its keys, so the questions come back in an order nobody chose.
-    // Put them back in the order they were written, which is the order they
-    // will be read in.
-    recovered.sort_by_key(|question| {
-        text.find(&format!("\"{}\"", question.id))
+    order_as_written(text, &mut recovered);
+    recovered
+}
+
+/// Put `questions` back in the order they were written. A map sorts its keys,
+/// so what the parser hands over is an order nobody chose.
+fn order_as_written(text: &str, questions: &mut [Question]) {
+    let Some(listed) = questions_object(text) else {
+        return;
+    };
+    let written = top_level_keys(listed);
+    questions.sort_by_key(|question| {
+        written
+            .iter()
+            .position(|key| key_names(key, &question.id))
             .unwrap_or(usize::MAX)
     });
-    recovered
+}
+
+/// The text of the request's `questions` object, exactly as it was written.
+/// Taken as a raw slice rather than through a map, which is the whole point:
+/// what is wanted here is the order a map would have thrown away.
+fn questions_object(text: &str) -> Option<&str> {
+    #[derive(Deserialize)]
+    struct Listed<'a> {
+        #[serde(borrow)]
+        questions: Option<&'a RawValue>,
+    }
+    serde_json::from_str::<Listed<'_>>(text)
+        .ok()?
+        .questions
+        .map(RawValue::get)
+}
+
+/// The keys of the outermost object in `text`, each as the quoted slice it was
+/// written as, in order. Depth and string state are tracked, so a key nested
+/// inside a value (an option label, say) and a brace inside a string are never
+/// mistaken for one of these.
+fn top_level_keys(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut keys = Vec::new();
+    let mut depth: usize = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let start = index;
+                index += 1;
+                while index < bytes.len() && bytes[index] != b'"' {
+                    // A backslash escapes the next byte, the closing quote
+                    // included, so both are stepped over together.
+                    index += if bytes[index] == b'\\' { 2 } else { 1 };
+                }
+                let end = (index + 1).min(bytes.len());
+                if depth == 1
+                    && text
+                        .get(end..)
+                        .is_some_and(|rest| rest.trim_start().starts_with(':'))
+                    && let Some(key) = text.get(start..end)
+                {
+                    keys.push(key);
+                }
+                index = end;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                index += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    keys
+}
+
+/// Whether the written `key` (quotes included) names `id`. A key carrying an
+/// escape is compared against the same escaping this module would produce;
+/// every ordinary one is compared as it reads.
+fn key_names(key: &str, id: &str) -> bool {
+    match key.strip_prefix('"').and_then(|key| key.strip_suffix('"')) {
+        Some(inner) if !inner.contains('\\') => inner == id,
+        _ => key == quoted(id),
+    }
 }
 
 /// A JSON value as the text to show for it: a string as itself, anything else
@@ -267,6 +387,7 @@ pub(crate) fn render(out: &Out, reply: &str, questions: &[Question]) -> Result<(
         .map_err(|_| CliError::new(format!("the model did not answer with a judgment: {reply}")))?;
     let answers = envelope
         .get("answers")
+        .and_then(serde_json::Value::as_object)
         .ok_or_else(|| CliError::new(format!("the judgment carried no answers: {reply}")))?;
     for question in questions {
         let Some(answer) = answers.get(&question.id) else {
@@ -275,25 +396,31 @@ pub(crate) fn render(out: &Out, reply: &str, questions: &[Question]) -> Result<(
         };
         out.line("");
         out.line(&question.instructions);
-        for line in lines_for(question, answer) {
-            out.line(&line);
+        let rows = distribution(question, answer);
+        if rows.is_empty() {
+            // Nothing known to lay the distribution against, so the answer
+            // stands as it came rather than being silently dropped.
+            out.line(&format!("  {answer}"));
+            continue;
+        }
+        for row in rows {
+            out.line(&row);
+        }
+        if let Some(confidence) = answer.get("confidence").and_then(serde_json::Value::as_f64) {
+            out.line(&format!("  confidence {confidence:.2}"));
         }
     }
     Ok(())
 }
 
-/// The laid-out lines for one answer, by what was asked.
-fn lines_for(question: &Question, answer: &serde_json::Value) -> Vec<String> {
-    let confidence = answer.get("confidence").and_then(serde_json::Value::as_f64);
-    let mut lines = match question.kind {
+/// The laid-out distribution for one answer, by what was asked. Empty when the
+/// question carries nothing to lay it against.
+fn distribution(question: &Question, answer: &serde_json::Value) -> Vec<String> {
+    match question.kind {
         Kind::Choice => choice_lines(question, answer),
         Kind::Score => score_lines(question, answer),
         Kind::Noul => noul_lines(answer),
-    };
-    if let Some(confidence) = confidence {
-        lines.push(format!("  confidence {confidence:.2}"));
     }
-    lines
 }
 
 fn choice_lines(question: &Question, answer: &serde_json::Value) -> Vec<String> {
@@ -315,7 +442,7 @@ fn choice_lines(question: &Question, answer: &serde_json::Value) -> Vec<String> 
     rows.sort_by(|left, right| right.2.total_cmp(&left.2));
     let widest = rows
         .iter()
-        .map(|(label, ..)| label.len())
+        .map(|(label, ..)| label.width())
         .max()
         .unwrap_or(0);
     rows.iter()
@@ -327,25 +454,29 @@ fn choice_lines(question: &Question, answer: &serde_json::Value) -> Vec<String> 
                 format!("  {description}")
             };
             format!(
-                "  {marker} {label:<widest$}  {}  {:>5}{detail}",
+                "  {marker} {}  {}  {}{detail}",
+                padded(label, widest),
                 bar(*probability),
-                percent(*probability),
+                right_aligned(&percent(*probability), PERCENT_CELLS),
             )
         })
         .collect()
 }
 
 fn score_lines(question: &Question, answer: &serde_json::Value) -> Vec<String> {
+    if question.criteria.is_empty() {
+        return Vec::new();
+    }
     let mut lines = Vec::new();
     if let Some(score) = answer.get("score").and_then(serde_json::Value::as_f64) {
-        let last = question.criteria.len().saturating_sub(1);
+        let last = question.criteria.len() - 1;
         lines.push(format!("  score {score:.2} of 0–{last}"));
     }
     let probabilities = answer.get("probabilities");
     let widest = question
         .criteria
         .iter()
-        .map(|(label, _)| label.len())
+        .map(|(label, _)| label.width())
         .max()
         .unwrap_or(0);
     for (level, (label, _)) in question.criteria.iter().enumerate() {
@@ -354,22 +485,30 @@ fn score_lines(question: &Question, answer: &serde_json::Value) -> Vec<String> {
             .and_then(serde_json::Value::as_f64)
             .unwrap_or(0.0);
         lines.push(format!(
-            "    {level} {label:<widest$}  {}  {:>5}",
+            "    {level} {}  {}  {}",
+            padded(label, widest),
             bar(probability),
-            percent(probability),
+            right_aligned(&percent(probability), PERCENT_CELLS),
         ));
     }
     lines
 }
 
 fn noul_lines(answer: &serde_json::Value) -> Vec<String> {
-    let holds = answer
-        .get("noul")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
+    let Some(holds) = answer.get("noul").and_then(serde_json::Value::as_f64) else {
+        return Vec::new();
+    };
     vec![
-        format!("    yes  {}  {:>5}", bar(holds), percent(holds)),
-        format!("    no   {}  {:>5}", bar(1.0 - holds), percent(1.0 - holds)),
+        format!(
+            "    yes  {}  {}",
+            bar(holds),
+            right_aligned(&percent(holds), PERCENT_CELLS)
+        ),
+        format!(
+            "    no   {}  {}",
+            bar(1.0 - holds),
+            right_aligned(&percent(1.0 - holds), PERCENT_CELLS)
+        ),
     ]
 }
 
@@ -521,12 +660,11 @@ mod tests {
             "probabilities": {"zeta": 0.1, "alpha": 0.8, "mid": 0.1},
             "confidence": 0.65,
         });
-        let lines = lines_for(&choice(), &answer);
+        let lines = distribution(&choice(), &answer);
         assert!(lines[0].contains("▸ alpha"), "{lines:?}");
         assert!(lines[0].contains("80.0%"), "{lines:?}");
-        // The two tied also-rans follow, and the confidence closes it.
-        assert_eq!(lines.len(), 4);
-        assert_eq!(lines[3], "  confidence 0.65");
+        // The two tied also-rans follow. Confidence is the caller's to add.
+        assert_eq!(lines.len(), 3);
         // A described option carries its description, a bare one does not.
         assert!(lines[0].contains("first letter"), "{lines:?}");
         assert!(lines.iter().any(|line| line.trim_end().ends_with("10.0%")));
@@ -541,7 +679,7 @@ mod tests {
             instructions: "Holds?".to_owned(),
             criteria: Vec::new(),
         };
-        let lines = lines_for(&question, &answer);
+        let lines = distribution(&question, &answer);
         assert!(
             lines[0].contains("yes") && lines[0].contains("25.0%"),
             "{lines:?}"
@@ -550,6 +688,137 @@ mod tests {
             lines[1].contains("no") && lines[1].contains("75.0%"),
             "{lines:?}"
         );
+    }
+
+    #[test]
+    fn an_option_label_is_never_mistaken_for_a_question_id() {
+        // "second" is written last, but also appears as an option inside the
+        // first question. Matching the first occurrence would hoist it.
+        let text = r#"{"state":"s","questions":{"first":{"type":"choice","instructions":"i","criteria":{"second":"x","other":"y"}},"middle":{"type":"noul","instructions":"m"},"second":{"type":"noul","instructions":"s"}}}"#;
+        let ids: Vec<String> = parse_questions(text)
+            .into_iter()
+            .map(|question| question.id)
+            .collect();
+        assert_eq!(ids, ["first", "middle", "second"]);
+    }
+
+    #[test]
+    fn a_brace_or_colon_inside_a_string_does_not_shift_the_keys() {
+        // Braces and colons inside a value must not read as structure, and an
+        // escaped quote must not end the string early.
+        let text = concat!(
+            r#"{"state":"a } and a : inside, and a \" quote","questions":{"#,
+            r#""zz":{"type":"noul","instructions":"} : {"},"#,
+            r#""aa":{"type":"noul","instructions":"i"}}}"#
+        );
+        assert!(
+            serde_json::from_str::<serde_json::Value>(text).is_ok(),
+            "the fixture itself must be valid JSON"
+        );
+        let ids: Vec<String> = parse_questions(text)
+            .into_iter()
+            .map(|question| question.id)
+            .collect();
+        assert_eq!(ids, ["zz", "aa"]);
+    }
+
+    #[test]
+    fn a_lone_question_may_be_written_under_the_singular_key() {
+        let recovered =
+            parse_questions(r#"{"state":"s","question":{"type":"noul","instructions":"ok?"}}"#);
+        assert_eq!(recovered.len(), 1);
+        // The runtime answers a singular question under this id.
+        assert_eq!(recovered[0].id, "question");
+    }
+
+    #[test]
+    fn a_score_level_keeps_its_whole_phrase_and_a_choice_label_keeps_its_colons() {
+        // A level has to stand on its own to be rated against, so nothing is cut.
+        assert_eq!(
+            split_entry(Kind::Score, "sev1: pages the team"),
+            ("sev1: pages the team", "")
+        );
+        // A choice splits only at a colon that is followed by a space, so a
+        // label that carries one of its own survives whole.
+        assert_eq!(
+            split_entry(Kind::Choice, "infra: servers and networking"),
+            ("infra", "servers and networking")
+        );
+        assert_eq!(
+            split_entry(Kind::Choice, "https://x.dev"),
+            ("https://x.dev", "")
+        );
+        assert_eq!(split_entry(Kind::Choice, "09:30"), ("09:30", ""));
+    }
+
+    #[test]
+    fn a_wide_label_is_padded_by_what_it_occupies_rather_than_its_bytes() {
+        let question = Question {
+            id: "q1".to_owned(),
+            kind: Kind::Choice,
+            instructions: "which".to_owned(),
+            criteria: vec![
+                ("ok".to_owned(), String::new()),
+                ("日本語".to_owned(), String::new()),
+            ],
+        };
+        let answer = serde_json::json!({
+            "choice": "ok",
+            "probabilities": {"ok": 0.6, "日本語": 0.4},
+        });
+        let lines = distribution(&question, &answer);
+        // Both rows put the bar in the same column: "日本語" is 3 characters and
+        // 9 bytes, but occupies 6 cells.
+        // Measured in cells, not bytes: the two labels differ in byte length
+        // even when they line up on screen, which is the whole point.
+        let cells_before_bar = |line: &str| {
+            let cut = line.find('█').or_else(|| line.find('▏')).unwrap_or(0);
+            line[..cut].width()
+        };
+        assert_eq!(
+            cells_before_bar(&lines[0]),
+            cells_before_bar(&lines[1]),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_certain_answer_keeps_the_percentage_column() {
+        let question = Question {
+            id: "q1".to_owned(),
+            kind: Kind::Noul,
+            instructions: "holds?".to_owned(),
+            criteria: Vec::new(),
+        };
+        let lines = distribution(&question, &serde_json::json!({ "noul": 1.0 }));
+        // 100.0% is six cells; a five-cell column would push the row out.
+        assert!(lines[0].ends_with("100.0%"), "{lines:?}");
+        assert_eq!(lines[0].chars().count(), lines[1].chars().count());
+    }
+
+    #[test]
+    fn a_question_with_nothing_to_lay_out_yields_no_rows() {
+        // The caller prints the answer as it came rather than dropping it.
+        let bare = Question {
+            id: "q1".to_owned(),
+            kind: Kind::Choice,
+            instructions: "which?".to_owned(),
+            criteria: Vec::new(),
+        };
+        let answer = serde_json::json!({"choice": "infra", "probabilities": {"infra": 0.9}});
+        assert!(distribution(&bare, &answer).is_empty());
+
+        let scoreless = Question {
+            kind: Kind::Score,
+            ..bare.clone()
+        };
+        assert!(distribution(&scoreless, &answer).is_empty());
+
+        let noul = Question {
+            kind: Kind::Noul,
+            ..bare
+        };
+        assert!(distribution(&noul, &serde_json::json!({})).is_empty());
     }
 
     #[test]

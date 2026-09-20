@@ -70,7 +70,7 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     // A judge takes a typed question, so it is composed rather than typed as a
     // prompt: offering a prompt box would be offering the one thing it refuses.
     if judge::is_judge(record) {
-        return run_judge(&session, record, args.prompt, out).await;
+        return run_judge(&session, record, &args, out).await;
     }
 
     let attachments = read_images(&args.images)?;
@@ -89,10 +89,31 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
 async fn run_judge(
     session: &Session,
     record: &ModelRecord,
-    given: Option<String>,
+    args: &RunArgs,
     out: &Out,
 ) -> Result<(), CliError> {
-    let (text, questions) = match given {
+    // A judge answers in one forward pass off a question it is handed whole:
+    // there is no prompt to steer, no reply to cap, and nothing to sample. Say
+    // so rather than accepting the flags and quietly doing nothing with them.
+    let ignored: Vec<&str> = [
+        ("--system", args.system.is_some()),
+        ("--max-tokens", args.max_tokens.is_some()),
+        ("--temperature", args.temperature.is_some()),
+        ("--image", !args.images.is_empty()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, given)| given.then_some(flag))
+    .collect();
+    if !ignored.is_empty() {
+        out.err(&format!(
+            "{} answers a typed question in one pass, so {} {} no effect on it",
+            record.display_name(),
+            ignored.join(" and "),
+            if ignored.len() == 1 { "has" } else { "have" },
+        ));
+    }
+
+    let (text, questions) = match args.prompt.clone() {
         Some(text) => {
             let questions = judge::parse_questions(&text);
             (text, questions)
@@ -114,7 +135,12 @@ async fn run_judge(
         vec![payload::user_message_with_images(&text, Vec::new())],
         None,
     ));
-    let judgment = collect_judgment(session, record, payload, out).await?;
+    let (judgment, cancelled) = collect_judgment(session, record, payload, out).await?;
+    if cancelled {
+        // Ctrl-C at a judge leaves nothing half-said to keep: it answers whole
+        // or not at all. Stopping is what was asked for, not a failure.
+        return Ok(());
+    }
     if out.is_json() {
         out.json(&serde_json::from_str(&judgment).unwrap_or(json!({ "raw": judgment })));
         return Ok(());
@@ -128,18 +154,19 @@ async fn run_judge(
 }
 
 /// Drain a judgment, which arrives whole rather than token by token, with a
-/// spinner standing in for the wait.
+/// spinner standing in for the wait. The flag says whether Ctrl-C ended it.
 async fn collect_judgment(
     session: &Session,
     record: &ModelRecord,
     payload: JsonValue,
     out: &Out,
-) -> Result<String, CliError> {
+) -> Result<(String, bool), CliError> {
     let mut stream = session
         .kernel
         .invoke_with(&record.id, Capability::judge(), payload, None, None)
         .await?;
     let mut text = String::new();
+    let mut cancelled = false;
     let mut spinner = Spinner::start(out);
     loop {
         tokio::select! {
@@ -151,11 +178,14 @@ async fn collect_judgment(
                 },
                 None => break,
             },
-            () = signals::wait_for_ctrl_c() => break,
+            () = signals::wait_for_ctrl_c() => {
+                cancelled = true;
+                break;
+            }
         }
     }
     spinner.clear();
-    Ok(text)
+    Ok((text, cancelled))
 }
 
 /// Stream the model's reply to `payload`, a spinner standing in until the

@@ -24,7 +24,7 @@ dialoguer.workspace = true
 indicatif.workspace = true
 tokio.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 reqwest.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true
