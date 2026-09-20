@@ -288,6 +288,16 @@ mod tests {
     ) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
+            // The same litter `build.rs` leaves out: caches and coverage
+            // profiles a test run drops in the tree are not part of a bundle.
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if name == "__pycache__"
+                || name.starts_with('.')
+                || name.ends_with(".pyc")
+                || name.ends_with(".profraw")
+            {
+                continue;
+            }
             if path.is_dir() {
                 collect_source_files(root, &path, out);
                 continue;
