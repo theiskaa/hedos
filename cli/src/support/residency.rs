@@ -157,11 +157,88 @@ pub(crate) fn residency_outcome(resident: bool) -> &'static str {
     }
 }
 
-/// The smallest request that loads `record`: a one-token chat/complete, or a
-/// dot of speech. `None` if the model serves none of those.
+/// The question a judge is warmed with: the smallest one that is still a
+/// question, so the load is paid for and nothing is asked of the answer.
+const WARM_QUESTION: &str =
+    r#"{"state":"","questions":{"warm":{"type":"noul","instructions":"ready"}}}"#;
+
+/// How long a gateway warm may take: a cold model behind a sidecar can spend
+/// minutes loading, and the caller asked for exactly that.
+const GATEWAY_WARM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// The body that loads `record` through a gateway's Ollama chat endpoint, or
+/// `None` for a model that answers something other than a conversation. The
+/// content is [`warm_request`]'s, so a judge is asked a question here too.
+pub(crate) fn gateway_warm_body(record: &ModelRecord) -> Option<serde_json::Value> {
+    let (_, payload) = warm_request(record)?;
+    let content = payload
+        .as_object()
+        .and_then(|fields| fields.get("messages"))
+        .and_then(JsonValue::as_array)
+        .and_then(|messages| messages.first())
+        .and_then(JsonValue::as_object)
+        .and_then(|message| message.get("content"))
+        .and_then(JsonValue::as_str)?;
+    let mut body = serde_json::json!({
+        "model": record.id,
+        "messages": [{ "role": "user", "content": content }],
+        "stream": false,
+    });
+    // A reply cap only where the local probe set one. A judge answers in a
+    // single forward pass, and a runtime that honors no sampling parameters
+    // refuses the request outright rather than ignoring the cap.
+    if payload
+        .as_object()
+        .is_some_and(|fields| fields.contains_key("max_tokens"))
+    {
+        body["options"] = serde_json::json!({ "num_predict": 1 });
+    }
+    Some(body)
+}
+
+/// Load `record` on the gateway at `port`, which is where it is served while one
+/// is running. Warming this process instead would load the model here, report
+/// success, and leave the gateway as cold as it was.
+pub(crate) async fn warm_via_gateway(record: &ModelRecord, port: u16) -> Result<String, String> {
+    let body = gateway_warm_body(record)
+        .ok_or_else(|| format!("{} can't be warmed", record.display_name()))?;
+    let response = reqwest::Client::builder()
+        .timeout(GATEWAY_WARM_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?
+        .post(format!("http://127.0.0.1:{port}/api/chat"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if response.status().is_success() {
+        return Ok(format!("warm on the gateway :{port}"));
+    }
+    let status = response.status();
+    let reason = response.text().await.unwrap_or_default();
+    Err(if reason.is_empty() {
+        format!("gateway answered {status}")
+    } else {
+        reason
+    })
+}
+
+/// The smallest request that loads `record`: a trivial question for a judge, a
+/// one-token chat/complete, or a dot of speech. `None` if the model serves none
+/// of those.
 pub(crate) fn warm_request(record: &ModelRecord) -> Option<(Capability, JsonValue)> {
     let has = |cap: &Capability| record.capabilities.contains(cap);
-    if has(&Capability::chat()) {
+    // A judge refuses prose, so its probe is the smallest well-formed question
+    // rather than "hi". Checked before chat because a judge reached over the
+    // chat wire declares both, and "hi" is exactly what it would reject.
+    if has(&Capability::judge()) {
+        let mut payload = BTreeMap::new();
+        payload.insert(
+            "messages".to_owned(),
+            JsonValue::Array(vec![payload::message("user", WARM_QUESTION)]),
+        );
+        Some((Capability::judge(), JsonValue::Object(payload)))
+    } else if has(&Capability::chat()) {
         let mut payload = BTreeMap::new();
         payload.insert(
             "messages".to_owned(),
@@ -211,4 +288,81 @@ pub(crate) async fn unload_anywhere(
         tokio::time::sleep(DAEMON_POLL).await;
     }
     Ok(governor_holds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kernel::records::{Modality, ModelSource, SourceKind};
+
+    fn model(capabilities: Vec<Capability>) -> ModelRecord {
+        ModelRecord::new(
+            "m",
+            Modality::text(),
+            capabilities,
+            ModelSource::new(SourceKind::folder(), "/models/m"),
+        )
+    }
+
+    /// The probe text a warm request carries, whatever shape it took.
+    fn probe(record: &ModelRecord) -> (Capability, String) {
+        let (capability, payload) = warm_request(record).expect("a warmable model");
+        let fields = payload.as_object().expect("an object payload").clone();
+        let text = match fields.get("messages") {
+            Some(JsonValue::Array(messages)) => messages
+                .first()
+                .and_then(JsonValue::as_object)
+                .and_then(|message| message.get("content"))
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            _ => fields
+                .get("prompt")
+                .or_else(|| fields.get("text"))
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        };
+        (capability, text)
+    }
+
+    #[test]
+    fn a_judge_is_warmed_with_a_question_rather_than_a_greeting() {
+        // Both capabilities, which is what a judge served over the chat wire
+        // declares: the greeting is exactly what such a model refuses.
+        let (capability, text) = probe(&model(vec![Capability::chat(), Capability::judge()]));
+        assert_eq!(capability, Capability::judge());
+        assert!(text.contains("\"questions\""), "{text}");
+        assert!(text.contains("\"noul\""), "{text}");
+    }
+
+    #[test]
+    fn a_chat_model_is_still_warmed_with_a_greeting() {
+        let (capability, text) = probe(&model(vec![Capability::chat()]));
+        assert_eq!(capability, Capability::chat());
+        assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn the_gateway_warm_body_carries_the_same_probe_as_a_local_one() {
+        // The gateway posts a conversation whatever the model is, so a judge's
+        // question has to travel as the message content or it warms nothing.
+        let judge = model(vec![Capability::chat(), Capability::judge()]);
+        let body = gateway_warm_body(&judge).expect("a warmable model");
+        let content = body["messages"][0]["content"].as_str().expect("content");
+        assert!(content.contains("\"questions\""), "{content}");
+        assert_eq!(body["model"], judge.id);
+
+        assert!(body.get("options").is_none(), "a judge has no reply budget");
+
+        let chatter = model(vec![Capability::chat()]);
+        let chat_body = gateway_warm_body(&chatter).expect("body");
+        assert_eq!(chat_body["messages"][0]["content"], "hi");
+        assert_eq!(chat_body["options"]["num_predict"], 1);
+    }
+
+    #[test]
+    fn a_model_that_serves_none_of_them_cannot_be_warmed() {
+        assert!(warm_request(&model(vec![Capability::image()])).is_none());
+    }
 }

@@ -7,7 +7,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
@@ -21,7 +21,6 @@ use kernel::time::now_millis;
 use runtime::bench::{BenchPlan, Cancel};
 use runtime::install::service::InstallService;
 use runtime::install::{Started, WorkerError, restart, start_or_join, stop};
-use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -33,12 +32,8 @@ use super::text;
 use crate::support::bench_run::ShelfPrepare;
 use crate::support::pulls::event_line;
 use crate::support::removal::remove_and_forget;
-use crate::support::residency::{is_resident, unload_anywhere, warm_request};
+use crate::support::residency::{self, is_resident, unload_anywhere, warm_request};
 use crate::support::session::Session;
-
-/// How long a warm through the gateway may take; a large model legitimately
-/// loads for minutes, so this only catches a gateway that never answers.
-const GATEWAY_WARM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The shelf and the facts about it, read together.
 pub struct Snapshot {
@@ -307,7 +302,7 @@ pub fn spawn(
         let outcome = match kind {
             TaskKind::Scan => scan(session).await,
             TaskKind::Warm { id, .. } => warm(session, &id).await,
-            TaskKind::WarmViaGateway { id, port, .. } => warm_via_gateway(&id, port).await,
+            TaskKind::WarmViaGateway { id, port, .. } => warm_on_gateway(&id, port).await,
             TaskKind::Unload { id, .. } => unload(session, &id).await,
             TaskKind::Remove { id, .. } => remove(session, &id).await,
         };
@@ -652,32 +647,16 @@ async fn warm(session: &Session, id: &str) -> Result<String, String> {
 
 /// A one-token chat through the gateway, so the model loads where it serves.
 /// The record id is the one name the gateway can never find ambiguous.
-async fn warm_via_gateway(id: &str, port: u16) -> Result<String, String> {
-    let body = json!({
-        "model": id,
-        "messages": [{ "role": "user", "content": "hi" }],
-        "stream": false,
-        "options": { "num_predict": 1 },
-    });
-    let response = reqwest::Client::builder()
-        .timeout(GATEWAY_WARM_TIMEOUT)
-        .build()
-        .map_err(|error| error.to_string())?
-        .post(format!("http://127.0.0.1:{port}/api/chat"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
-    if response.status().is_success() {
-        return Ok(format!("warm on the gateway :{port}"));
-    }
-    let status = response.status();
-    let reason = response.text().await.unwrap_or_default();
-    Err(if reason.is_empty() {
-        format!("gateway answered {status}")
-    } else {
-        reason
-    })
+/// Load the model `id` on the gateway at `port`, looking it up on the shelf for
+/// the warm body its capabilities call for.
+async fn warm_on_gateway(id: &str, port: u16) -> Result<String, String> {
+    let session = Session::open().map_err(|error| error.message)?;
+    let shelf = session.shelf().await;
+    let record = shelf
+        .iter()
+        .find(|record| record.id == id)
+        .ok_or_else(|| "no longer on the shelf".to_owned())?;
+    residency::warm_via_gateway(record, port).await
 }
 
 async fn unload(session: &Session, id: &str) -> Result<String, String> {
