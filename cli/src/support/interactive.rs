@@ -15,6 +15,7 @@ use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::session;
 use crate::support::shelf_table;
+use crate::support::tty;
 
 /// Whether prompting is possible: stdin is a terminal and the caller did not ask
 /// for JSON. When false, callers fall back to a hard error rather than hang
@@ -127,6 +128,7 @@ pub fn select_model<'a>(
 /// Present `items` as a fuzzy-filterable list and return the chosen index. Escape
 /// or interrupt cancels.
 pub fn select_index(prompt: &str, items: &[String]) -> Result<usize, CliError> {
+    let _modes = tty::hold();
     FuzzySelect::with_theme(&ColorfulTheme::default())
         .with_prompt(prompt)
         .items(items)
@@ -139,6 +141,7 @@ pub fn select_index(prompt: &str, items: &[String]) -> Result<usize, CliError> {
 /// Read a line of free text for `prompt`. Empty input is allowed when
 /// `allow_empty` is set; otherwise the prompt repeats.
 pub fn input(prompt: &str, allow_empty: bool) -> Result<String, CliError> {
+    let _modes = tty::hold();
     Input::<String>::with_theme(&ColorfulTheme::default())
         .with_prompt(prompt)
         .allow_empty(allow_empty)
@@ -148,6 +151,7 @@ pub fn input(prompt: &str, allow_empty: bool) -> Result<String, CliError> {
 
 /// Ask a yes/no question, returning the answer with `default` pre-selected.
 pub fn confirm(prompt: &str, default: bool) -> Result<bool, CliError> {
+    let _modes = tty::hold();
     Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt(prompt)
         .default(default)
