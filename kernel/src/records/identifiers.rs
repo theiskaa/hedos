@@ -88,6 +88,7 @@ string_id! {
         speak => "speak",
         transcribe => "transcribe",
         tools => "tools",
+        judge => "judge",
     }
 }
 
