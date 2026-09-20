@@ -96,6 +96,11 @@ def parse_question(text):
             raise ValueError(f"question {key!r} has no type of choice, score, or noul")
         if "instructions" not in question:
             raise ValueError(f"question {key!r} has no instructions")
+        criteria = question.get("criteria")
+        if question["type"] == "choice" and not (isinstance(criteria, (dict, list)) and criteria):
+            raise ValueError(f"question {key!r} is a choice with no criteria to choose between")
+        if question["type"] == "score" and not (isinstance(criteria, list) and criteria):
+            raise ValueError(f"question {key!r} is a score with no list of levels as criteria")
     return body["state"], questions
 
 
@@ -177,7 +182,9 @@ def main():
         if op == "ping":
             send_json({"event": "pong"})
             continue
-        if op != "chat":
+        # "judge" is the capability laya declares for what it does; a request
+        # invoked under it carries the same messages a chat one does.
+        if op not in ("chat", "judge"):
             continue
 
         started = time.monotonic()
@@ -194,6 +201,10 @@ def main():
                     "completion_tokens": 0,
                 }
             )
+        except ValueError as error:
+            # What parse_question refuses, and the model's own refusal of options
+            # that overrun its token budget: the request's fault, not a failure.
+            send_json({"event": "error", "message": str(error), "fault": "request"})
         except Exception as error:
             send_json({"event": "error", "message": str(error)})
 

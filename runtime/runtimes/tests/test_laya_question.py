@@ -45,6 +45,19 @@ def test_a_single_question_is_keyed_as_question(laya):
         (json.dumps({"state": "s"}), 'no "questions"'),
         (json.dumps({"state": "s", "questions": {"q": {"type": "essay"}}}), "no type of"),
         (json.dumps({"state": "s", "questions": {"q": {"type": "noul"}}}), "no instructions"),
+        (
+            json.dumps({"state": "s", "questions": {"q": {"type": "choice", "instructions": "i"}}}),
+            "no criteria to choose between",
+        ),
+        (
+            json.dumps(
+                {
+                    "state": "s",
+                    "questions": {"q": {"type": "score", "instructions": "i", "criteria": {}}},
+                }
+            ),
+            "no list of levels",
+        ),
     ],
 )
 def test_anything_else_is_refused_with_the_reason(laya, text, reason):
