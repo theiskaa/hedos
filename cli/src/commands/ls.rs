@@ -5,6 +5,7 @@
 use clap::Args;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
+use runtime::manifests::{host_consent, servable_models};
 
 use crate::error::CliError;
 use crate::support::machine;
@@ -53,7 +54,38 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
     let warm = session.warm_set_anywhere(&shelf).await;
     let records: Vec<&_> = shelf.iter().collect();
     out.line(&shelf_table::table(&records, &warm, budget));
+    for hint in approval_hints(&session, &shelf) {
+        out.line(&hint);
+    }
     Ok(())
+}
+
+/// One line per manifest runtime that would serve a model now sitting without a
+/// runtime, if it were approved. Without it the model just reads as unrunnable.
+fn approval_hints(session: &Session, shelf: &[ModelRecord]) -> Vec<String> {
+    session
+        .kernel
+        .manifest_runtimes()
+        .iter()
+        .filter(|manifest| {
+            manifest.vm.is_none() && !host_consent(manifest, &session.settings.models).is_approved()
+        })
+        .filter_map(|manifest| {
+            let waiting: Vec<&str> = servable_models(manifest, shelf)
+                .into_iter()
+                .filter(|record| record.runtime.id.is_none())
+                .map(ModelRecord::display_name)
+                .collect();
+            (!waiting.is_empty()).then(|| {
+                format!(
+                    "\n{} can run on {}, which needs your approval: `hedos runtimes approve {}`",
+                    waiting.join(", "),
+                    manifest.id,
+                    manifest.id
+                )
+            })
+        })
+        .collect()
 }
 
 /// The shelf as a JSON array: every record's own fields plus a `fit` slug

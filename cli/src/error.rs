@@ -59,5 +59,6 @@ from_error!(
     kernel::install::pulls::PullError,
     kernel::removal::RemovalError,
     runtime::install::WorkerError,
+    runtime::settings::SettingsError,
     std::io::Error,
 );
