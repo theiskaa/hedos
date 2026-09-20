@@ -20,6 +20,7 @@ use crate::handlers::models::{
     OpenAIModelsHandler,
 };
 use crate::handlers::speech::OpenAISpeechHandler;
+use crate::handlers::systemone::SystemOneHandler;
 use crate::handlers::transcriptions::OpenAITranscriptionsHandler;
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::GatewayPort;
@@ -83,7 +84,8 @@ impl GatewayRoute {
 
 /// The full route table: chat, completions, embeddings, image, speech, and
 /// transcription on the OpenAI surface, chat/generate/embed on the Ollama
-/// surface, plus the model-listing and handshake endpoints.
+/// surface, messages on the Anthropic one, TypeSafe's System One, plus the
+/// model-listing and handshake endpoints.
 pub fn standard_routes() -> Vec<GatewayRoute> {
     vec![
         GatewayRoute::new(
@@ -102,6 +104,9 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         )
         .inference()
         .described("Anthropic", "Stream or complete a message"),
+        GatewayRoute::new("POST", "/v1/systemone", Box::new(SystemOneHandler))
+            .inference()
+            .described("TypeSafe", "Answer typed questions about a state"),
         GatewayRoute::new("POST", "/api/chat", Box::new(OllamaChatHandler::default()))
             .inference()
             .described("Ollama", "Chat over the Ollama NDJSON protocol"),

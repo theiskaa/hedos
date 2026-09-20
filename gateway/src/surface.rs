@@ -16,6 +16,12 @@ pub enum GatewaySurface {
 impl GatewaySurface {
     /// The surface a request path is served on: anything under `/api` is Ollama,
     /// `/v1/messages` is Anthropic, and everything else is OpenAI.
+    ///
+    /// TypeSafe's `/v1/systemone` is among the everything else on purpose. A
+    /// surface decides two things, how an error is shaped and how a stream is
+    /// framed. System One has no stream, and the TypeSafe SDK reads a failure's
+    /// text from `error.message`, which is the OpenAI shape, so a variant of its
+    /// own would differ from this one in name only.
     pub fn for_path(path: &str) -> Self {
         if path.starts_with("/api") {
             GatewaySurface::Ollama
@@ -46,6 +52,14 @@ mod tests {
             GatewaySurface::OpenAI
         );
         assert_eq!(GatewaySurface::for_path("/"), GatewaySurface::OpenAI);
+    }
+
+    #[test]
+    fn system_one_errors_take_the_openai_shape_the_typesafe_sdk_reads() {
+        assert_eq!(
+            GatewaySurface::for_path("/v1/systemone"),
+            GatewaySurface::OpenAI
+        );
     }
 
     #[test]

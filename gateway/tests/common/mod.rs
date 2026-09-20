@@ -5,8 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gateway::admission::{GatewayAdmissionState, GatewayWorkKind};
@@ -79,6 +79,8 @@ pub struct MockPort {
     pub artifacts: HashMap<String, Vec<u8>>,
     /// Models reported as held in memory by `resident`.
     pub resident: Vec<GatewayResident>,
+    /// Every `invoke` this port received, in order: the capability and payload.
+    pub invoked: Mutex<Vec<(Capability, JsonValue)>>,
 }
 
 impl Default for MockPort {
@@ -92,6 +94,7 @@ impl Default for MockPort {
             job_events: Vec::new(),
             artifacts: HashMap::new(),
             resident: Vec::new(),
+            invoked: Mutex::new(Vec::new()),
         }
     }
 }
@@ -155,9 +158,10 @@ impl GatewayPort for MockPort {
     fn invoke<'a>(
         &'a self,
         _model_id: &'a str,
-        _capability: Capability,
-        _payload: JsonValue,
+        capability: Capability,
+        payload: JsonValue,
     ) -> PortFuture<'a, Result<ChunkStream, KernelError>> {
+        self.invoked.lock().unwrap().push((capability, payload));
         let chunks = self.chunks.clone();
         Box::pin(async move {
             let (tx, stream) = ChunkStream::channel();

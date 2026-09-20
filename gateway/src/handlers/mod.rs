@@ -25,6 +25,7 @@ pub mod messages;
 pub mod models;
 pub mod speech;
 pub mod stream;
+pub mod systemone;
 pub mod transcriptions;
 
 /// The error shown when a runtime stream fails mid-flight.
@@ -36,11 +37,15 @@ pub mod transcriptions;
 /// explanation of why a request failed. "the runtime failed to complete the
 /// request" is unactionable when the real cause is a stopped daemon, a model
 /// that cannot do tool calling, or an out-of-memory GPU.
+///
+/// A rejection is the exception to the `500`: the runtime is saying the request
+/// itself was wrong, and a client that retries server errors should not retry it.
 pub(crate) fn runtime_failed(error: runtime::adapters::RuntimeError) -> GatewayError {
-    GatewayError::new(
-        crate::error::GatewayErrorKind::ServerError,
-        error.to_string(),
-    )
+    let kind = match error {
+        runtime::adapters::RuntimeError::Rejected(_) => crate::error::GatewayErrorKind::BadRequest,
+        _ => crate::error::GatewayErrorKind::ServerError,
+    };
+    GatewayError::new(kind, error.to_string())
 }
 
 /// A `400 Bad Request` carrying `message`.
@@ -157,6 +162,18 @@ pub fn completion_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runtime_rejection_is_the_callers_fault_and_any_other_failure_is_ours() {
+        use crate::error::GatewayErrorKind;
+        use runtime::adapters::RuntimeError;
+
+        let rejected = runtime_failed(RuntimeError::Rejected("options do not fit".to_owned()));
+        assert_eq!(rejected.kind, GatewayErrorKind::BadRequest);
+        assert_eq!(rejected.message, "options do not fit");
+        let failed = runtime_failed(RuntimeError::Failed("out of memory".to_owned()));
+        assert_eq!(failed.kind, GatewayErrorKind::ServerError);
+    }
 
     #[test]
     fn a_completion_id_carries_its_prefix_and_is_unique() {
