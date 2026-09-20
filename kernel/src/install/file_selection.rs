@@ -9,7 +9,13 @@ use crate::discovery::gguf_shards;
 use crate::install::bytes::saturating_sum;
 
 const WEIGHT_EXTENSIONS: [&str; 6] = ["safetensors", "gguf", "bin", "ckpt", "pt", "pth"];
-const EXCLUDED_EXTENSIONS: [&str; 8] = ["md", "png", "jpg", "jpeg", "gif", "webp", "msgpack", "h5"];
+/// Never downloaded: documentation, pictures, and whole models in a form nothing
+/// here runs (`msgpack` is flax, `h5` tensorflow, `ot` the rust `tch` bindings,
+/// and `onnx`/`tflite` exported graphs). Without the last of those a 90 MiB
+/// `rust_model.ot` sitting under the support cap rides along as a support file.
+const EXCLUDED_EXTENSIONS: [&str; 12] = [
+    "md", "png", "jpg", "jpeg", "gif", "webp", "svg", "msgpack", "h5", "ot", "onnx", "tflite",
+];
 const EXCLUDED_DIRECTORIES: [&str; 3] = ["onnx", "openvino", "coreml"];
 /// Quantizations in descending preference; the first one present is chosen.
 const QUANT_PREFERENCE: [&str; 6] = ["q4_k_m", "q4_0", "q5_k_m", "q6_k", "q8_0", "f16"];
@@ -283,6 +289,12 @@ fn diffusers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
 
 /// Transformers selection: the root safetensors set (or the pytorch `.bin` set when
 /// none), plus small support files (config/tokenizer), excluding index sidecars.
+///
+/// Support files are taken from the whole tree, not just the root: a repo is free
+/// to keep its config under `encoder/` and its tokenizer under `tokenizer/`, and
+/// without those the weights arrive as a model nothing can load. What is not taken
+/// is a subtree carrying weights of its own: an alternative checkpoint, which
+/// brings its own config and tokenizer along and which the user did not ask for.
 fn transformers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
     let root: Vec<&HFSibling> = kept.iter().filter(|s| !s.rfilename.contains('/')).collect();
     let safetensors: Vec<&HFSibling> = root
@@ -309,13 +321,18 @@ fn transformers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
             .cloned()
             .collect()
     };
-    let support: Vec<HFSibling> = root
+    let alternatives: BTreeSet<&str> = kept
         .iter()
-        .copied()
+        .filter(|s| s.is_weight())
+        .filter_map(|s| subtree(&s.rfilename))
+        .collect();
+    let support: Vec<HFSibling> = kept
+        .iter()
         .filter(|s| {
             !s.is_weight()
                 && !s.rfilename.ends_with(".index.json")
                 && s.bytes.unwrap_or(0) <= CONFIG_CAP
+                && subtree(&s.rfilename).is_none_or(|dir| !alternatives.contains(dir))
         })
         .cloned()
         .collect();
@@ -323,4 +340,12 @@ fn transformers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
     let mut result = weights;
     result.extend(support);
     result
+}
+
+/// The top-level directory `path` sits under, or `None` when it is a root file.
+/// Nesting below that is not a subtree of its own: `typed-decisions/encoder` is
+/// part of the checkpoint under `typed-decisions`, and goes or stays with it.
+fn subtree(path: &str) -> Option<&str> {
+    let segments = segments(path);
+    (segments.len() > 1).then(|| segments[0])
 }

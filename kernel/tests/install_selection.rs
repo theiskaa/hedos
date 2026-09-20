@@ -288,3 +288,99 @@ fn a_companion_with_unknown_size_is_kept_at_the_cap_boundary() {
     assert!(result.contains("cap_exact.json"));
     assert!(result.contains("cfg.json"));
 }
+
+#[test]
+fn transformers_keeps_config_and_tokenizer_from_weightless_subdirectories() {
+    // convaiinnovations/laya: the root checkpoint's config and tokenizer live one
+    // level down, and two alternative checkpoints sit beside them with weights of
+    // their own.
+    let picked = select(&siblings(&[
+        ("model.safetensors", Some(816 << 20)),
+        ("rl_agent_config.json", Some(5)),
+        ("modeling_laya.py", Some(5)),
+        ("encoder/config.json", Some(5)),
+        ("tokenizer/tokenizer.json", Some(5)),
+        ("tokenizer/tokenizer_config.json", Some(5)),
+        ("typed-decisions/model.safetensors", Some(816 << 20)),
+        ("typed-decisions/encoder/config.json", Some(5)),
+        ("multilingual/model.safetensors", Some(816 << 20)),
+        ("multilingual/tokenizer/tokenizer.json", Some(5)),
+        ("assets/logo-lockup.svg", Some(5)),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&[
+            "model.safetensors",
+            "rl_agent_config.json",
+            "modeling_laya.py",
+            "encoder/config.json",
+            "tokenizer/tokenizer.json",
+            "tokenizer/tokenizer_config.json",
+        ]),
+        "the root checkpoint arrives whole, and the alternatives not at all"
+    );
+}
+
+#[test]
+fn transformers_takes_a_config_that_only_exists_nested() {
+    let picked = select(&siblings(&[
+        ("model.safetensors", Some(500)),
+        ("encoder/config.json", Some(5)),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["model.safetensors", "encoder/config.json"])
+    );
+}
+
+#[test]
+fn transformers_leaves_an_alternative_checkpoints_support_files_behind() {
+    let picked = select(&siblings(&[
+        ("model.safetensors", Some(500)),
+        ("config.json", Some(5)),
+        ("fp32/model.safetensors", Some(2000)),
+        ("fp32/config.json", Some(5)),
+        ("fp32/tokenizer/tokenizer.json", Some(5)),
+    ]));
+    assert_eq!(names(&picked), set(&["model.safetensors", "config.json"]));
+}
+
+#[test]
+fn transformers_selects_a_flat_repo_exactly_as_it_always_did() {
+    let picked = select(&siblings(&[
+        ("model-00001-of-00002.safetensors", Some(500)),
+        ("model-00002-of-00002.safetensors", Some(500)),
+        ("model.safetensors.index.json", Some(1)),
+        ("config.json", Some(5)),
+        ("tokenizer.json", Some(5)),
+        ("tokenizer_config.json", Some(5)),
+        ("pytorch_model.bin", Some(500)),
+        ("adapter_model.bin", Some(500)),
+        ("README.md", Some(1)),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&[
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+            "model.safetensors.index.json",
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+        ])
+    );
+}
+
+#[test]
+fn a_whole_model_in_another_framework_is_not_a_support_file() {
+    // Each of these is under the 100 MiB support cap and has no extension the
+    // weight set recognises, so without an exclusion they ride along as support.
+    let picked = select(&siblings(&[
+        ("model.safetensors", Some(90 << 20)),
+        ("config.json", Some(5)),
+        ("rust_model.ot", Some(90 << 20)),
+        ("model.onnx", Some(90 << 20)),
+        ("model.tflite", Some(90 << 20)),
+    ]));
+    assert_eq!(names(&picked), set(&["model.safetensors", "config.json"]));
+}
