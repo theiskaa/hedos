@@ -396,7 +396,7 @@ impl SidecarSupervisor {
                     return Ok(());
                 }
                 Some("cancelled") => return Err(SidecarError::Cancelled),
-                Some("error") => return Err(SidecarError::RuntimeFailed(error_message(object))),
+                Some("error") => return Err(reported_error(object)),
                 _ => continue,
             }
         }
@@ -443,7 +443,7 @@ impl SidecarSupervisor {
                 }
                 Some("done") => return Ok(()),
                 Some("cancelled") => return Err(SidecarError::Cancelled),
-                Some("error") => return Err(SidecarError::RuntimeFailed(error_message(object))),
+                Some("error") => return Err(reported_error(object)),
                 _ => continue,
             }
         }
@@ -989,6 +989,20 @@ fn done_stats(object: ControlObject<'_>) -> GenerationStats {
         prompt_ms: millis("prompt_seconds"),
         eval_ms: millis("generation_seconds"),
         ..Default::default()
+    }
+}
+
+/// The error an `error` event reports: a rejection when the sidecar marks the
+/// fault as the request's, a runtime failure otherwise.
+fn reported_error(object: ControlObject<'_>) -> SidecarError {
+    let request_fault = object
+        .and_then(|obj| obj.get("fault"))
+        .and_then(JsonValue::as_str)
+        == Some("request");
+    if request_fault {
+        SidecarError::Rejected(error_message(object))
+    } else {
+        SidecarError::RuntimeFailed(error_message(object))
     }
 }
 

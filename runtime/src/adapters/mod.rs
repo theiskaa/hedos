@@ -85,6 +85,10 @@ pub enum RuntimeError {
     /// The runtime reported a failure.
     #[error("{0}")]
     Failed(String),
+    /// The runtime refused the request as the caller's fault: a malformed or
+    /// oversized input it will refuse again if asked again unchanged.
+    #[error("{0}")]
+    Rejected(String),
     /// The runtime is not available (missing binary, daemon down, …).
     #[error("{0}")]
     Unavailable(String),
@@ -99,6 +103,7 @@ impl From<SidecarError> for RuntimeError {
         match error {
             SidecarError::Cancelled => RuntimeError::Cancelled,
             SidecarError::RuntimeFailed(message) => RuntimeError::Failed(message),
+            SidecarError::Rejected(message) => RuntimeError::Rejected(message),
             // Keep the full "sidecar <id> <detail>" message — the id is the most
             // useful part of the diagnostic.
             died @ SidecarError::SidecarDied { .. } => RuntimeError::Failed(died.to_string()),

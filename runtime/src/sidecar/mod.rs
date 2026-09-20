@@ -34,6 +34,10 @@ pub enum SidecarError {
     /// The runtime reported a failure, or a wire/encode step failed.
     #[error("{0}")]
     RuntimeFailed(String),
+    /// The runtime refused the request as the caller's fault (an `error` event
+    /// carrying `"fault": "request"`): asking again unchanged will fail again.
+    #[error("{0}")]
+    Rejected(String),
     /// The request was cancelled (the sidecar acknowledged a `cancel`).
     #[error("cancelled")]
     Cancelled,

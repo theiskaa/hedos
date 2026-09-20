@@ -130,6 +130,9 @@ while True:
         if content == "fail":
             send_json({"event": "error", "message": "the model exploded"})
             continue
+        if content == "malformed":
+            send_json({"event": "error", "message": "not a question", "fault": "request"})
+            continue
         send_json({"event": "begin"})
         if content == "deaf":
             time.sleep(5)
