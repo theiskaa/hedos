@@ -13,6 +13,19 @@ use crate::support::session::Session;
 pub struct WarmArgs {
     /// The model to warm (name, alias, or id). Omit to pick one interactively.
     model: Option<String>,
+    /// The port of the gateway to warm, when it is not the configured one.
+    #[arg(short, long)]
+    port: Option<u16>,
+}
+
+/// The gateway to warm on: the one named, else whichever is answering on the
+/// configured port. A named port is taken at its word rather than probed, so a
+/// gateway that is slow to answer is still warmed rather than quietly skipped.
+async fn live_gateway(session: &Session, named: Option<u16>) -> Option<u16> {
+    match named {
+        Some(port) => Some(port),
+        None => session.live_gateway().await.map(|live| live.port),
+    }
 }
 
 /// Run the `warm` command.
@@ -25,16 +38,26 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
 
     // A model is warm where it is served. While a gateway is running that is the
     // gateway's own copy, and warming this process's would load the model here,
-    // report success, and leave the gateway exactly as cold as it was.
-    if let Some(live) = session.live_gateway().await {
-        let outcome = residency::warm_via_gateway(record, live.port)
+    // report success, and leave the gateway exactly as cold as it was. Only a
+    // model the gateway has a warm request for goes that way: a speech or
+    // prompt-shaped probe has no route on the conversation endpoint, and
+    // failing it there would be refusing a model that warms perfectly well
+    // here just because a gateway happens to be up.
+    if let Some(live) = live_gateway(&session, args.port).await
+        && residency::gateway_warm_body(record).is_some()
+    {
+        let outcome = residency::warm_via_gateway(record, live)
             .await
             .map_err(CliError::new)?;
+        let resident = residency::held_by_gateway(live, &record.id).await;
         out.line(&format!("{} is {outcome}", record.display_name()));
+        if !resident {
+            out.err("the gateway served it but does not report it resident");
+        }
         out.json(&serde_json::json!({
             "model": record.id,
-            "resident": true,
-            "gatewayPort": live.port,
+            "resident": resident,
+            "gatewayPort": live,
         }));
         return Ok(());
     }

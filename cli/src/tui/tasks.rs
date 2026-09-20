@@ -302,7 +302,7 @@ pub fn spawn(
         let outcome = match kind {
             TaskKind::Scan => scan(session).await,
             TaskKind::Warm { id, .. } => warm(session, &id).await,
-            TaskKind::WarmViaGateway { id, port, .. } => warm_on_gateway(&id, port).await,
+            TaskKind::WarmViaGateway { id, port, .. } => warm_on_gateway(session, &id, port).await,
             TaskKind::Unload { id, .. } => unload(session, &id).await,
             TaskKind::Remove { id, .. } => remove(session, &id).await,
         };
@@ -645,12 +645,10 @@ async fn warm(session: &Session, id: &str) -> Result<String, String> {
     })
 }
 
-/// A one-token chat through the gateway, so the model loads where it serves.
-/// The record id is the one name the gateway can never find ambiguous.
-/// Load the model `id` on the gateway at `port`, looking it up on the shelf for
-/// the warm body its capabilities call for.
-async fn warm_on_gateway(id: &str, port: u16) -> Result<String, String> {
-    let session = Session::open().map_err(|error| error.message)?;
+/// Load the model `id` on the gateway at `port`, so it warms where it serves.
+/// The record id is the one name the gateway can never find ambiguous, and the
+/// shelf is read for the warm body the model's capabilities call for.
+async fn warm_on_gateway(session: &Session, id: &str, port: u16) -> Result<String, String> {
     let shelf = session.shelf().await;
     let record = shelf
         .iter()

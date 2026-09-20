@@ -169,7 +169,11 @@ A running `hedos serve` on the configured port is detected and its loaded models
 
 ### `hedos warm [model]`
 
-Load a model into residency with a tiny request, so the next real request starts warm. Reports whether the model is resident.
+Load a model into residency with a tiny request, so the next real request starts warm, and report whether it is resident afterwards.
+
+A model is warm where it is served. When a gateway is running on the configured port (or on the one `--port` names), the model is loaded there rather than in this command's own process, which would exit and take the loaded model with it. `--port` also reaches a gateway started with `hedos serve --port`, which is not the one this command probes for. A model whose warm request is not a conversation, a speech model for instance, is loaded locally either way: the gateway's chat endpoint has no route for it.
+
+The probe fits the model. A judge is asked the smallest well-formed typed question rather than being greeted, since prose is the one thing it refuses.
 
 ### `hedos unload [model]`
 

@@ -196,6 +196,19 @@ pub(crate) fn gateway_warm_body(record: &ModelRecord) -> Option<serde_json::Valu
     Some(body)
 }
 
+/// Whether the gateway on `port` reports `model_id` held in memory. A gateway
+/// that served a request has not necessarily kept the model, so this is asked
+/// rather than assumed.
+pub(crate) async fn held_by_gateway(port: u16, model_id: &str) -> bool {
+    crate::support::serving::probe(port)
+        .await
+        .is_some_and(|live| {
+            live.residents
+                .iter()
+                .any(|resident| resident.id == model_id)
+        })
+}
+
 /// Load `record` on the gateway at `port`, which is where it is served while one
 /// is running. Warming this process instead would load the model here, report
 /// success, and leave the gateway as cold as it was.
@@ -210,7 +223,13 @@ pub(crate) async fn warm_via_gateway(record: &ModelRecord, port: u16) -> Result<
         .json(&body)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            if error.is_connect() {
+                format!("no gateway answered on :{port}")
+            } else {
+                error.to_string()
+            }
+        })?;
     if response.status().is_success() {
         return Ok(format!("warm on the gateway :{port}"));
     }
