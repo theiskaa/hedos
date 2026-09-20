@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use kernel::artifacts::{Artifact, ArtifactStore};
 use kernel::discovery::{DiscoveryService, DiscoverySummary, StoreScanner};
 use kernel::jobs::{JobHistoryStore, reseeded, seeded};
+use kernel::manifests::RuntimeManifest;
 use kernel::profiles::{BUILTIN_CONTEXT_WINDOW, Verdict, assess, merged, prompt_characters};
 use kernel::records::{Capability, JsonValue, ModelRecord, SourceKind};
 use kernel::resolution::IdentificationCache;
@@ -28,6 +29,7 @@ use tokio::sync::{Mutex, mpsc};
 use crate::adapters::{ChunkStream, JobRunning, JobStream, RuntimeAdapter, RuntimeError};
 use crate::governor::MemoryGovernor;
 use crate::jobs::{JobError, JobScheduler, Runner, RunnerStream};
+use crate::manifests::StoreLoad;
 use crate::resolution::{ResolutionEngine, ResolutionExplanation};
 
 /// A model window's implicit completion length when the caller sets no
@@ -106,6 +108,11 @@ impl RegisteredAdapter {
         Self { adapter, job: None }
     }
 
+    /// The id of the runtime this adapter serves.
+    pub fn id(&self) -> String {
+        self.adapter.id().as_str().to_owned()
+    }
+
     /// An adapter that also runs jobs. `adapter` and `job` are the same backend
     /// under both trait objects.
     pub fn with_jobs(adapter: Arc<dyn RuntimeAdapter>, job: Arc<dyn JobRunning>) -> Self {
@@ -129,6 +136,7 @@ pub struct Kernel {
     tools_refolded: std::sync::atomic::AtomicBool,
     identification_cache: Arc<IdentificationCache>,
     shelf_snapshot: StdMutex<Option<(u64, Arc<[ModelRecord]>)>>,
+    manifest_runtimes: std::sync::OnceLock<StoreLoad>,
 }
 
 impl Kernel {
@@ -163,7 +171,29 @@ impl Kernel {
             tools_refolded: std::sync::atomic::AtomicBool::new(false),
             identification_cache: Arc::new(IdentificationCache::new()),
             shelf_snapshot: StdMutex::new(None),
+            manifest_runtimes: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Record the manifest runtimes this kernel's adapters were built from, and
+    /// the issues loading them raised. Set once, at boot; a second call is
+    /// ignored, since the adapter list it would describe is already fixed.
+    pub fn set_manifest_runtimes(&self, runtimes: StoreLoad) {
+        let _ = self.manifest_runtimes.set(runtimes);
+    }
+
+    /// The manifest runtimes loaded at boot, approved or not.
+    pub fn manifest_runtimes(&self) -> &[RuntimeManifest] {
+        self.manifest_runtimes
+            .get()
+            .map_or(&[], |load| load.manifests.as_slice())
+    }
+
+    /// What went wrong loading manifest runtimes at boot, one line per entry.
+    pub fn runtime_issues(&self) -> &[String] {
+        self.manifest_runtimes
+            .get()
+            .map_or(&[], |load| load.issues.as_slice())
     }
 
     /// The job scheduler, for callers that poll or subscribe to job state.
@@ -483,8 +513,11 @@ impl Kernel {
         scanners: Vec<Box<dyn StoreScanner>>,
     ) -> Result<DiscoverySummary, KernelError> {
         let mut registry = self.registry.lock().await;
-        let summary = DiscoveryService::new(scanners).discover(&mut registry)?;
+        let mut summary = DiscoveryService::new(scanners).discover(&mut registry)?;
         self.engine().resolve_all(&mut registry, None)?;
+        // A manifest that failed to load is a recipe the user wrote and needs
+        // told about, in the same place a scan reports everything else.
+        summary.issues.extend(self.runtime_issues().iter().cloned());
         Ok(summary)
     }
 

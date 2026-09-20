@@ -36,6 +36,19 @@ impl UserRuntimeStore {
     /// and loose `[serve]`/`[env]` manifests; a manifest with no detect rule loads
     /// but is flagged.
     pub fn load(&self, reserved_ids: &HashSet<String>) -> StoreLoad {
+        self.load_entries(reserved_ids, Origin::User)
+    }
+
+    /// Load the manifest-driven runtimes out of a directory of shipped bundles.
+    /// Most bundles there are driven by a hand-coded adapter and keep their
+    /// `manifest.toml` as documentation: those carry a reserved id or no detect
+    /// rule, and are passed over without an issue. What is left goes through the
+    /// same gates as a user manifest.
+    pub fn load_shipped(&self, reserved_ids: &HashSet<String>) -> StoreLoad {
+        self.load_entries(reserved_ids, Origin::Shipped)
+    }
+
+    fn load_entries(&self, reserved_ids: &HashSet<String>, origin: Origin) -> StoreLoad {
         let mut entries: Vec<PathBuf> = match std::fs::read_dir(&self.directory) {
             Ok(read_dir) => read_dir
                 .flatten()
@@ -49,9 +62,15 @@ impl UserRuntimeStore {
         let mut load = StoreLoad::default();
         let mut seen: HashSet<String> = HashSet::new();
         for entry in entries {
-            let Some((manifest_path, manifest_dir, label)) = entry_target(&entry) else {
+            let Some((manifest_path, manifest_dir, label)) = entry_target(&entry, origin.label())
+            else {
                 continue;
             };
+            // A shipped runtime is always a folder; the loose TOML beside the
+            // bundles is the sidecars' lint configuration, not a manifest.
+            if origin == Origin::Shipped && manifest_dir.is_none() {
+                continue;
+            }
             let text = match std::fs::read_to_string(&manifest_path) {
                 Ok(text) => text,
                 Err(error) => {
@@ -66,6 +85,11 @@ impl UserRuntimeStore {
                     continue;
                 }
             };
+            if origin == Origin::Shipped
+                && (manifest.detect.is_none() || reserved_ids.contains(&manifest.id))
+            {
+                continue;
+            }
             if let Some(directory) = &manifest_dir {
                 manifest.provenance = RuntimeProvenance::read(directory);
             }
@@ -115,17 +139,35 @@ impl UserRuntimeStore {
     }
 }
 
+/// Where a directory of manifests came from, which decides how an entry that
+/// cannot bid is treated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    User,
+    Shipped,
+}
+
+impl Origin {
+    /// The directory name an issue line names the entry under.
+    fn label(self) -> &'static str {
+        match self {
+            Self::User => "runtimes.d",
+            Self::Shipped => "bundled",
+        }
+    }
+}
+
 /// Resolve a `runtimes.d` entry to the manifest file to read, its directory (if
 /// the entry is a runtime folder), and a display label — or `None` if the entry
 /// is neither a `manifest.toml` folder nor a bare `*.toml`.
-fn entry_target(entry: &Path) -> Option<(PathBuf, Option<PathBuf>, String)> {
+fn entry_target(entry: &Path, root: &str) -> Option<(PathBuf, Option<PathBuf>, String)> {
     let name = file_name(entry);
     if entry.is_dir() {
         let manifest_path = entry.join("manifest.toml");
         if !manifest_path.is_file() {
             return None;
         }
-        let label = format!("runtimes.d/{name}/manifest.toml");
+        let label = format!("{root}/{name}/manifest.toml");
         Some((manifest_path, Some(entry.to_path_buf()), label))
     } else {
         let is_toml = entry
@@ -135,7 +177,7 @@ fn entry_target(entry: &Path) -> Option<(PathBuf, Option<PathBuf>, String)> {
         if !is_toml {
             return None;
         }
-        Some((entry.to_path_buf(), None, format!("runtimes.d/{name}")))
+        Some((entry.to_path_buf(), None, format!("{root}/{name}")))
     }
 }
 

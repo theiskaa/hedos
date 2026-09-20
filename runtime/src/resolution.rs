@@ -11,16 +11,18 @@
 //! so it operates directly on a borrowed [`Registry`] rather than through an async
 //! actor.
 //!
-//! Backfilling modality/capabilities from the winner's runtime manifest when
-//! identification comes up empty is deferred until the manifest-backed adapters
-//! are ported (none bid today).
+//! When a manifest runtime wins a record identification could say nothing
+//! about, the manifest's declared modality and capabilities are backfilled onto
+//! it: the manifest is the only thing that knows what such a model does.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use kernel::manifests::RuntimeManifest;
 use kernel::profiles::ProfileRegistry;
 use kernel::records::{
-    Capability, ModelRecord, ModelState, Resolution, RunTier, RuntimeId, RuntimeRef, SourceKind,
+    Capability, Modality, ModelRecord, ModelState, Resolution, RunTier, RuntimeId, RuntimeRef,
+    SourceKind,
 };
 use kernel::registry::{Registry, RegistryError};
 use kernel::resolution::{IdentificationCache, IdentifiedModel, ModelFormat, identify};
@@ -264,10 +266,44 @@ impl ResolutionEngine {
         apply_winner(&plan.bids, &mut updated, &current.runtime);
         let wires_tools = self.adapter_wires_tools(updated.runtime.id.as_ref());
         merge(&plan.identified, &mut updated, wires_tools);
+        if let Some(manifest) = self.winning_manifest(updated.runtime.id.as_ref()) {
+            backfill(manifest, &plan.identified, &mut updated);
+            // The manifest's list is copied as written, so the tool fold has to
+            // have the last word again: a manifest runtime forwards no tools,
+            // whatever its manifest declares.
+            fold_tool_capability(
+                wires_tools,
+                updated.supports_tools,
+                &mut updated.capabilities,
+            );
+        } else if updated.runtime.id.is_none()
+            && self.was_held_by_a_manifest(current.runtime.id.as_ref(), live)
+        {
+            withdraw_backfill(&plan.identified, &mut updated);
+        }
         if plan.identified.params.is_empty() {
             updated = self.profiles.refreshed(&updated);
         }
         (updated != *current).then_some(updated)
+    }
+
+    /// Whether the runtime a record is losing was a manifest's: one that is still
+    /// loaded but no longer bids (revoked, or edited since its approval), or one
+    /// that is gone altogether (deleted, or no longer loads). The built-in
+    /// adapters are registered whether or not their backends are installed, so
+    /// an id that is no longer live can only have been a manifest's.
+    fn was_held_by_a_manifest(
+        &self,
+        previous: Option<&RuntimeId>,
+        live: &HashSet<RuntimeId>,
+    ) -> bool {
+        previous.is_some_and(|id| !live.contains(id) || self.winning_manifest(Some(id)).is_some())
+    }
+
+    /// The manifest behind the adapter `id`, when that adapter is a manifest runtime.
+    fn winning_manifest(&self, id: Option<&RuntimeId>) -> Option<&RuntimeManifest> {
+        id.and_then(|id| self.adapters.iter().find(|adapter| adapter.id() == id))
+            .and_then(|adapter| adapter.manifest())
     }
 
     /// Whether the adapter behind `id` forwards tools. `false` when no adapter in
@@ -379,6 +415,34 @@ fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_
         updated.supports_tools,
         &mut updated.capabilities,
     );
+}
+
+/// Fill in from the winning `manifest` what identification left blank: the
+/// modality when none was determined, and the capabilities together with the
+/// execution mode when none were. Anything identification did determine stands.
+fn backfill(manifest: &RuntimeManifest, identified: &IdentifiedModel, updated: &mut ModelRecord) {
+    if identified.modality.is_none()
+        && let Some(modality) = manifest.modalities.first()
+    {
+        updated.modality = modality.clone();
+    }
+    if identified.capabilities.is_empty() {
+        updated.capabilities = manifest.capabilities.clone();
+        updated.execution = manifest.execution;
+    }
+}
+
+/// Take back what [`backfill`] lent a record whose manifest stopped bidding, so a
+/// parked model does not go on claiming capabilities nothing can serve. What a
+/// scanner had hinted before the manifest overrode it is not kept anywhere, so
+/// it comes back with the next scan rather than here.
+fn withdraw_backfill(identified: &IdentifiedModel, updated: &mut ModelRecord) {
+    if identified.modality.is_none() {
+        updated.modality = Modality::unknown();
+    }
+    if identified.capabilities.is_empty() {
+        updated.capabilities.clear();
+    }
 }
 
 /// Fold the `tools` capability into a conversational model when both its runtime

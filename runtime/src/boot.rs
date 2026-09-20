@@ -4,6 +4,7 @@
 //! and later the TUI) stays a thin shell. State lives under a per-user data dir;
 //! configuration comes from the shared `hedos.toml`.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,9 +17,9 @@ use kernel::registry::{Registry, RegistryError};
 use crate::adapters::{
     A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
     ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter, LlamaServerAdapter,
-    LlamaServerPool, LlamaServerSpawner, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter,
-    MlxLmAdapter, MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter,
-    WhisperEngine,
+    LlamaServerPool, LlamaServerSpawner, ManifestCommandAdapter, ManifestSidecarAdapter,
+    MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter,
+    OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -27,6 +28,7 @@ use crate::install::{
     HFHubAPI, HuggingFaceInstallProvider, InstallProvider, InstallService, InstallTransport,
     OllamaInstallProvider, ReqwestTransport,
 };
+use crate::manifests::{StoreLoad, UserRuntimeStore, host_consent};
 use crate::settings::Settings;
 use crate::sidecar::SidecarSupervisor;
 
@@ -96,8 +98,12 @@ pub fn build_kernel(dirs: &HedosDirs, settings: &Settings) -> Result<Kernel, Boo
     // which the runtime reports on use, and never blocks the non-Python commands.
     let _ = crate::sidecar::provision_bundles(&dirs.sub("bundles"));
 
-    let adapters = default_adapters(&governor, dirs);
+    let mut adapters = default_adapters(&governor, dirs);
+    let reserved = adapters.iter().map(RegisteredAdapter::id).collect();
+    let mut runtimes = manifest_runtimes(dirs, &reserved);
+    adapters.extend(manifest_adapters(&mut runtimes, settings, &governor, dirs));
     let kernel = Kernel::new(registry, artifacts, Arc::new(governor), history, adapters);
+    kernel.set_manifest_runtimes(runtimes);
     kernel.set_default_system_prompt(settings.chat.default_system_prompt().map(str::to_owned));
     Ok(kernel)
 }
@@ -244,8 +250,72 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
     let a1111 = Arc::new(A1111Adapter::new(DaemonLiveness::with_defaults()));
     adapters.push(RegisteredAdapter::with_jobs(a1111.clone(), a1111));
 
-    // Community manifest runtimes (`runtimes.d`) are loaded in a follow-up; the
-    // default set is empty, so the built-in adapters are the whole shelf.
+    adapters
+}
+
+/// Where the user's own runtime manifests live under `dirs`.
+pub fn runtimes_directory(dirs: &HedosDirs) -> PathBuf {
+    dirs.sub("runtimes.d")
+}
+
+/// Every manifest-driven runtime on this machine: the shipped bundles that no
+/// hand-coded adapter drives, then the user's `runtimes.d`. A shipped id is
+/// reserved against the user directory, so a manifest dropped there cannot
+/// shadow a bundle the binary carries.
+fn manifest_runtimes(dirs: &HedosDirs, reserved: &HashSet<String>) -> StoreLoad {
+    let mut load =
+        UserRuntimeStore::new(dirs.sub("bundles").join("Runtimes")).load_shipped(reserved);
+    let mut taken = reserved.clone();
+    taken.extend(load.manifests.iter().map(|manifest| manifest.id.clone()));
+    let user = UserRuntimeStore::new(runtimes_directory(dirs)).load(&taken);
+    load.manifests.extend(user.manifests);
+    load.issues.extend(user.issues);
+    load
+}
+
+/// One adapter per manifest in `runtimes`: a sidecar for `[serve]`, a one-shot
+/// command for `[invoke]`, each told whether the settings approve it to run on
+/// this machine. A `[vm]` manifest gets no adapter and an issue instead: there is
+/// no VM host here, and the command adapter would run it uncontained.
+fn manifest_adapters(
+    runtimes: &mut StoreLoad,
+    settings: &Settings,
+    governor: &MemoryGovernor,
+    dirs: &HedosDirs,
+) -> Vec<RegisteredAdapter> {
+    let workdirs = dirs.sub("workdirs");
+    let environments = EnvironmentManager::new(dirs.sub("env").join("manifests"));
+    let mut adapters = Vec::new();
+    for manifest in &runtimes.manifests {
+        if manifest.vm.is_some() {
+            runtimes.issues.push(format!(
+                "runtime \"{}\" needs a VM to run contained, which this build cannot start",
+                manifest.id
+            ));
+            continue;
+        }
+        let approved = host_consent(manifest, &settings.models).is_approved();
+        if manifest.serve.is_some() {
+            let adapter = Arc::new(ManifestSidecarAdapter::new(
+                manifest.clone(),
+                approved,
+                governor.clone(),
+                SidecarSupervisor::new(),
+                environments.clone(),
+                workdirs.clone(),
+            ));
+            adapters.push(RegisteredAdapter::with_jobs(adapter.clone(), adapter));
+        } else {
+            let adapter = Arc::new(ManifestCommandAdapter::new(
+                manifest.clone(),
+                approved,
+                governor.clone(),
+                environments.clone(),
+                workdirs.clone(),
+            ));
+            adapters.push(RegisteredAdapter::with_jobs(adapter.clone(), adapter));
+        }
+    }
     adapters
 }
 
