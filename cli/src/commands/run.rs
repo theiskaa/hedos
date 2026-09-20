@@ -9,6 +9,7 @@ use serde_json::json;
 
 use crate::error::CliError;
 use crate::support::interactive;
+use crate::support::judge;
 use crate::support::output::Out;
 use crate::support::payload;
 use crate::support::session::Session;
@@ -66,6 +67,12 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
         )));
     }
 
+    // A judge takes a typed question, so it is composed rather than typed as a
+    // prompt: offering a prompt box would be offering the one thing it refuses.
+    if judge::is_judge(record) {
+        return run_judge(&session, record, args.prompt, out).await;
+    }
+
     let attachments = read_images(&args.images)?;
     let prompt = interactive::text_or_prompt(out, args.prompt, "prompt")?;
     let payload = chat_payload(&prompt, args.max_tokens, args.temperature, attachments);
@@ -74,6 +81,81 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
         out.json(&json!({ "model": record.id, "text": text }));
     }
     Ok(())
+}
+
+/// Put a typed question to `record` and lay out its judgment. A question given
+/// as an argument is passed through as written, which is how a composed one can
+/// be replayed; without one it is composed here.
+async fn run_judge(
+    session: &Session,
+    record: &ModelRecord,
+    given: Option<String>,
+    out: &Out,
+) -> Result<(), CliError> {
+    let (text, questions) = match given {
+        Some(text) => {
+            let questions = judge::parse_questions(&text);
+            (text, questions)
+        }
+        None if interactive::is_interactive(out) => {
+            let (state, questions) = judge::compose(out, record.display_name())?;
+            (judge::request_text(&state, &questions), questions)
+        }
+        None => {
+            return Err(CliError::new(format!(
+                "{} answers typed questions — run it in a terminal to compose one, \
+                 or pass it as JSON: {{\"state\": …, \"questions\": {{…}}}}",
+                record.display_name()
+            )));
+        }
+    };
+
+    let payload = JsonValue::Object(payload::chat(
+        vec![payload::user_message_with_images(&text, Vec::new())],
+        None,
+    ));
+    let judgment = collect_judgment(session, record, payload, out).await?;
+    if out.is_json() {
+        out.json(&serde_json::from_str(&judgment).unwrap_or(json!({ "raw": judgment })));
+        return Ok(());
+    }
+    if questions.is_empty() {
+        // Nothing to lay the answer out against, so it stands as it came.
+        out.line(judgment.trim());
+        return Ok(());
+    }
+    judge::render(out, &judgment, &questions)
+}
+
+/// Drain a judgment, which arrives whole rather than token by token, with a
+/// spinner standing in for the wait.
+async fn collect_judgment(
+    session: &Session,
+    record: &ModelRecord,
+    payload: JsonValue,
+    out: &Out,
+) -> Result<String, CliError> {
+    let mut stream = session
+        .kernel
+        .invoke_with(&record.id, Capability::judge(), payload, None, None)
+        .await?;
+    let mut text = String::new();
+    let mut spinner = Spinner::start(out);
+    loop {
+        tokio::select! {
+            received = stream.recv() => match received {
+                Some(result) => match result? {
+                    CapabilityChunk::Text(chunk) => text.push_str(&chunk),
+                    CapabilityChunk::Status(status) => spinner.set(&status),
+                    _ => {}
+                },
+                None => break,
+            },
+            () = signals::wait_for_ctrl_c() => break,
+        }
+    }
+    spinner.clear();
+    Ok(text)
 }
 
 /// Stream the model's reply to `payload`, a spinner standing in until the

@@ -9,6 +9,7 @@ pub mod harnesses;
 pub mod http;
 pub mod install;
 pub mod interactive;
+pub mod judge;
 pub mod machine;
 pub mod ollama;
 pub mod output;
