@@ -175,6 +175,33 @@ async fn parses_token_counts_from_the_chat_done_event() {
 }
 
 #[tokio::test]
+async fn an_error_is_a_rejection_only_when_the_sidecar_blames_the_request() {
+    let spec = spec("normal");
+    let supervisor = SidecarSupervisor::new();
+    supervisor.ensure_running(&spec).await.expect("ready");
+
+    let mut failed = supervisor.request(&spec, chat("fail"));
+    assert!(matches!(
+        failed.recv().await,
+        Some(Err(SidecarError::RuntimeFailed(message))) if message == "the model exploded"
+    ));
+    let mut refused = supervisor.request(&spec, chat("malformed"));
+    assert!(matches!(
+        refused.recv().await,
+        Some(Err(SidecarError::Rejected(message))) if message == "not a question"
+    ));
+
+    // Neither is a crash: the sidecar is still there for the next request.
+    let served = collect_chunks(supervisor.request(&spec, chat("ok"))).await;
+    assert!(
+        served
+            .iter()
+            .any(|chunk| matches!(chunk, CapabilityChunk::Done(_)))
+    );
+    supervisor.shutdown_all().await;
+}
+
+#[tokio::test]
 async fn maps_a_tool_call_event_to_a_tool_call_chunk() {
     let spec = spec("normal");
     let supervisor = SidecarSupervisor::new();

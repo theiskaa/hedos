@@ -119,6 +119,10 @@ impl RuntimeAdapter for ManifestCommandAdapter {
         ))
     }
 
+    fn manifest(&self) -> Option<&RuntimeManifest> {
+        Some(&self.execution.manifest)
+    }
+
     fn invoke(
         &self,
         record: &ModelRecord,
@@ -243,7 +247,7 @@ impl Execution {
     ) -> Result<(String, PathBuf), RuntimeError> {
         if !self.approved_host_execution {
             return Err(RuntimeError::Unavailable(format!(
-                "{} runs code on this machine and needs your approval. Approve it from the model's page.",
+                "{} runs code on this machine and needs your approval. Look it over with `hedos runtimes`.",
                 self.id.as_str()
             )));
         }

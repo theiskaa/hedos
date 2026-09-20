@@ -68,6 +68,7 @@ use std::collections::HashSet;
 
 use kernel::capabilities::CapabilityChunk;
 use kernel::jobs::JobRuntimeEvent;
+use kernel::manifests::RuntimeManifest;
 use kernel::records::{Capability, JsonValue, ModelRecord, RuntimeId};
 use kernel::resolution::{IdentifiedModel, RuntimeBid};
 use tokio::sync::mpsc;
@@ -84,6 +85,10 @@ pub enum RuntimeError {
     /// The runtime reported a failure.
     #[error("{0}")]
     Failed(String),
+    /// The runtime refused the request as the caller's fault: a malformed or
+    /// oversized input it will refuse again if asked again unchanged.
+    #[error("{0}")]
+    Rejected(String),
     /// The runtime is not available (missing binary, daemon down, …).
     #[error("{0}")]
     Unavailable(String),
@@ -98,6 +103,7 @@ impl From<SidecarError> for RuntimeError {
         match error {
             SidecarError::Cancelled => RuntimeError::Cancelled,
             SidecarError::RuntimeFailed(message) => RuntimeError::Failed(message),
+            SidecarError::Rejected(message) => RuntimeError::Rejected(message),
             // Keep the full "sidecar <id> <detail>" message — the id is the most
             // useful part of the diagnostic.
             died @ SidecarError::SidecarDied { .. } => RuntimeError::Failed(died.to_string()),
@@ -181,6 +187,13 @@ pub trait RuntimeAdapter: Send + Sync {
     /// onto a record only when its winning runtime does.
     fn wires_tools(&self) -> bool {
         false
+    }
+
+    /// The manifest this adapter was built from, when it is a manifest runtime.
+    /// Resolution reads a winning manifest's declared modality and capabilities
+    /// onto a record that identification could say nothing about.
+    fn manifest(&self) -> Option<&RuntimeManifest> {
+        None
     }
 
     /// The parameter keys the adapter actually honors for a capability (others

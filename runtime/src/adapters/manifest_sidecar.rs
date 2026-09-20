@@ -62,7 +62,7 @@ impl ManifestSidecarAdapter {
 
     fn consent_error(&self) -> RuntimeError {
         RuntimeError::Unavailable(format!(
-            "{} runs code on this machine and needs your approval. Approve it from the model's page.",
+            "{} runs code on this machine and needs your approval. Look it over with `hedos runtimes`.",
             self.id.as_str()
         ))
     }
@@ -123,6 +123,10 @@ impl RuntimeAdapter for ManifestSidecarAdapter {
             BidPreference::MANIFEST,
             alternatives,
         ))
+    }
+
+    fn manifest(&self) -> Option<&RuntimeManifest> {
+        Some(&self.manifest)
     }
 
     fn invoke(

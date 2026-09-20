@@ -8,9 +8,11 @@
 //! adapters build on.
 
 mod community;
+mod consent;
 mod store;
 
 pub use community::{CommunityLibrary, ManifestInstaller, Recipe, RuntimeInstallPreview};
+pub use consent::{HostConsent, host_consent, servable_models};
 pub use store::{RuntimeCatalog, StoreLoad, UserRuntimeStore};
 
 use std::collections::BTreeMap;

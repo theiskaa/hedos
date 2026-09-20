@@ -1,0 +1,31 @@
+# laya does not generate. It is an encoder with a decision head that answers
+# typed questions (choice, score, noul) with calibrated probabilities in one
+# forward pass. "chat" is declared here only because it is the wire the runtime
+# layer can already carry: the question arrives as JSON in the last user message
+# and the judgment goes back as JSON in the reply text. This is a shim.
+#
+# "judge" is what laya actually does. Nothing is invoked under it; it marks the
+# model as one the gateway's /v1/systemone route may hand a typed question to,
+# which it then does over that same chat wire.
+#
+# The entrypoint runs the inference code the model ships in its snapshot
+# (rl_agent_api.py, rl_common.py), but only the exact bytes main.py pins by
+# hash. Approval covers this directory, and those pins are part of it.
+id           = "python:laya"
+modalities   = ["text"]
+capabilities = ["chat", "judge"]
+execution    = "stream"
+detect       = { file = "rl_agent_config.json" }
+
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]

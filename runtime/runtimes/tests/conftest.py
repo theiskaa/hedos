@@ -102,3 +102,10 @@ def stdout_pipe(mlx_lm, monkeypatch):
     finally:
         os.close(read_end)
         os.close(write_end)
+
+
+@pytest.fixture(scope="session")
+def laya():
+    """python-laya/main.py: the question parsing that stands between a chat
+    message and laya's typed-judgment head."""
+    return load_sidecar_module("python-laya", "sidecar_laya")

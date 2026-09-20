@@ -108,6 +108,21 @@ fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
 /// `root` (forward-slash separated), into `out`. A `BTreeMap` keeps insertion
 /// order irrelevant: iteration is always sorted by key, so the archive is
 /// byte-identical across builds regardless of the OS directory-read order.
+/// Whether `path` is something a test or coverage run left in the tree rather
+/// than part of a bundle: bytecode caches, coverage profiles, dotfiles. A
+/// manifest-driven bundle's consent hash covers every file shipped beside it,
+/// so litter in the archive would change that hash with no change to the source.
+fn is_build_litter(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    name == "__pycache__"
+        || name.starts_with('.')
+        || name.ends_with(".pyc")
+        || name.ends_with(".profraw")
+}
+
 fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
         .unwrap_or_else(|err| panic!("reading {}: {err}", dir.display()))
@@ -120,6 +135,9 @@ fn collect_files(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
     entries.sort();
 
     for path in entries {
+        if is_build_litter(&path) {
+            continue;
+        }
         if path.is_dir() {
             collect_files(root, &path, out);
             continue;
