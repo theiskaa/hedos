@@ -16,8 +16,10 @@
 //! it: the manifest is the only thing that knows what such a model does.
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
+use kernel::discovery::modality_hints::{SentenceTransformersLayout, sentence_transformers_layout};
 use kernel::manifests::RuntimeManifest;
 use kernel::profiles::ProfileRegistry;
 use kernel::records::{
@@ -28,6 +30,7 @@ use kernel::registry::{Registry, RegistryError};
 use kernel::resolution::{IdentificationCache, IdentifiedModel, ModelFormat, identify};
 
 use crate::adapters::RuntimeAdapter;
+use crate::sidecar::SidecarModelPaths;
 
 /// One adapter's bid, tagged with which adapter offered it.
 struct BidEntry {
@@ -341,6 +344,49 @@ impl ResolutionEngine {
             );
             (updated != *current).then_some(updated)
         })
+    }
+
+    /// Take back what an older shelf wrongly gave a cross-encoder: sentence-
+    /// transformers ships the same config file for rerankers and embedders, and
+    /// until the two were told apart a reranker was registered as an embedder,
+    /// which the embeddings runtime then served. Its capabilities are cleared
+    /// and it goes through the auction again. Only records claiming `embed`
+    /// whose snapshot declares a `CrossEncoder` are touched, one small read
+    /// each, so this is cheap enough to run on first sight of the shelf. A
+    /// record pinned by the user is left as pinned.
+    pub fn reclassify_cross_encoders(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<Vec<ModelRecord>, RegistryError> {
+        let ids: Vec<String> = registry
+            .list()
+            .into_iter()
+            .filter(|record| {
+                record.capabilities.contains(&Capability::embed())
+                    && record.runtime.resolved != Resolution::User
+                    && sentence_transformers_layout(Path::new(
+                        &SidecarModelPaths::resolve(record).snapshot,
+                    )) == Some(SentenceTransformersLayout::CrossEncoder)
+            })
+            .map(|record| record.id.clone())
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let cleared = registry.update(&ids, |current| {
+            let mut updated = current.clone();
+            updated.modality = Modality::text();
+            updated.capabilities.clear();
+            Some(updated)
+        })?;
+        let mut changed = Vec::new();
+        for record in &cleared {
+            changed.push(
+                self.resolve(record, registry)?
+                    .unwrap_or_else(|| record.clone()),
+            );
+        }
+        Ok(changed)
     }
 }
 

@@ -412,14 +412,16 @@ impl Kernel {
     pub async fn shelf(&self) -> Arc<[ModelRecord]> {
         let mut registry = self.registry.lock().await;
         // Once per process, migrate records that predate the `tools` capability
-        // (or a fold-rule change) so an existing shelf serves tools without a
-        // manual rescan. On failure the shelf is served as-is, exactly as it
+        // (or a fold-rule change), and cross-encoders an older shelf registered
+        // as embedders, so an existing shelf is right without a manual rescan. On failure the shelf is served as-is, exactly as it
         // would have been before the migration existed.
         if !self
             .tools_refolded
             .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
-            let _ = self.engine().refold_tool_capability(&mut registry);
+            let engine = self.engine();
+            let _ = engine.refold_tool_capability(&mut registry);
+            let _ = engine.reclassify_cross_encoders(&mut registry);
         }
         let generation = registry.generation();
         // Built while the registry is still locked, so the generation read above

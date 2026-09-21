@@ -176,7 +176,7 @@ async fn a_manifest_cannot_declare_its_way_into_the_tools_capability() {
 }
 
 #[tokio::test]
-async fn the_shipped_laya_bundle_loads_and_the_hand_driven_bundles_do_not() {
+async fn the_shipped_judge_bundles_load_and_the_hand_driven_bundles_do_not() {
     let fixture = Fixture::new();
     let (kernel, _) = fixture.booted().await;
     let ids: Vec<&str> = kernel
@@ -184,7 +184,7 @@ async fn the_shipped_laya_bundle_loads_and_the_hand_driven_bundles_do_not() {
         .iter()
         .map(|manifest| manifest.id.as_str())
         .collect();
-    assert_eq!(ids, ["python:laya", "judge"]);
+    assert_eq!(ids, ["python:laya", "python:zerank", "judge"]);
     assert!(
         kernel.runtime_issues().is_empty(),
         "{:?}",
@@ -230,5 +230,148 @@ async fn a_manifest_that_fails_to_load_is_reported_by_a_scan() {
             .any(|issue| issue.starts_with("runtimes.d/broken.toml")),
         "{:?}",
         summary.issues
+    );
+}
+
+#[tokio::test]
+async fn a_cross_encoder_the_shelf_once_called_an_embedder_is_served_by_zerank_once_approved() {
+    let fixture = Fixture::new();
+    let model_dir = fixture.root.join("zerank");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    for (file, contents) in [
+        ("config.json", r#"{"architectures":["Qwen3ForCausalLM"]}"#),
+        ("model.safetensors", "weights"),
+        ("tokenizer.json", "{}"),
+        (
+            "config_sentence_transformers.json",
+            r#"{"model_type":"CrossEncoder"}"#,
+        ),
+        (
+            "chat_template.jinja",
+            "{%- set zerank_query = messages | selectattr(\"role\", \"eq\", \"query\") -%}",
+        ),
+    ] {
+        std::fs::write(model_dir.join(file), contents).unwrap();
+    }
+    // What a shelf written before cross-encoders were told apart holds for it.
+    let record = ModelRecord::new(
+        "zerank-2-reranker",
+        Modality::embedding(),
+        vec![Capability::embed()],
+        ModelSource::new(SourceKind::folder(), &model_dir.to_string_lossy()),
+    );
+    let zerank_id = record.id.clone();
+    Registry::open(&fixture.dirs.sub("registry"))
+        .unwrap()
+        .register(record)
+        .unwrap();
+    let zerank = |shelf: &[ModelRecord]| {
+        shelf
+            .iter()
+            .find(|record| record.id == zerank_id)
+            .expect("zerank is on the shelf")
+            .clone()
+    };
+
+    let (kernel, _) = fixture.booted().await;
+    let unapproved = zerank(&kernel.shelf().await);
+    assert_ne!(
+        unapproved.runtime.id,
+        Some(RuntimeId::from("python:embeddings"))
+    );
+    assert_eq!(unapproved.state, ModelState::Unresolved);
+
+    fixture
+        .settings
+        .approve_runtime(
+            "python:zerank",
+            Some(&hash_of(&kernel, "python:zerank")),
+            false,
+        )
+        .unwrap();
+    let (kernel, _) = fixture.booted().await;
+    let served = zerank(&kernel.shelf().await);
+    assert_eq!(served.runtime.id, Some(RuntimeId::from("python:zerank")));
+    assert_eq!(served.modality, Modality::text());
+    assert_eq!(
+        served.capabilities,
+        vec![Capability::chat(), Capability::judge()]
+    );
+}
+
+/// A zerank-shaped snapshot, registered the way a shelf written before
+/// cross-encoders were told apart holds it: an embedder, on the embeddings
+/// runtime. Returns the record's id.
+fn stale_zerank(fixture: &Fixture) -> String {
+    let model_dir = fixture.root.join("zerank");
+    std::fs::create_dir_all(&model_dir).unwrap();
+    for (file, contents) in [
+        ("config.json", r#"{"architectures":["Qwen3ForCausalLM"]}"#),
+        ("model.safetensors", "weights"),
+        ("tokenizer.json", "{}"),
+        (
+            "config_sentence_transformers.json",
+            r#"{"model_type":"CrossEncoder"}"#,
+        ),
+        (
+            "chat_template.jinja",
+            "{%- set zerank_query = messages | selectattr(\"role\", \"eq\", \"query\") -%}",
+        ),
+    ] {
+        std::fs::write(model_dir.join(file), contents).unwrap();
+    }
+    let mut record = ModelRecord::new(
+        "zerank-2-reranker",
+        Modality::embedding(),
+        vec![Capability::embed()],
+        ModelSource::new(SourceKind::folder(), &model_dir.to_string_lossy()),
+    );
+    record.runtime.id = Some(RuntimeId::from("python:embeddings"));
+    record.state = ModelState::Ready;
+    let id = record.id.clone();
+    Registry::open(&fixture.dirs.sub("registry"))
+        .unwrap()
+        .register(record)
+        .unwrap();
+    id
+}
+
+fn on_shelf(shelf: &[ModelRecord], id: &str) -> ModelRecord {
+    shelf
+        .iter()
+        .find(|record| record.id == id)
+        .expect("the model is on the shelf")
+        .clone()
+}
+
+#[tokio::test]
+async fn a_stale_embedder_row_is_taken_back_on_first_sight_of_the_shelf_without_a_scan() {
+    let fixture = Fixture::new();
+    let id = stale_zerank(&fixture);
+
+    // No resolve and no discover: what `hedos serve` does before its first request.
+    let kernel = build_kernel(&fixture.dirs, &fixture.settings.load()).expect("build kernel");
+    let unapproved = on_shelf(&kernel.shelf().await, &id);
+    assert_eq!(unapproved.modality, Modality::text());
+    assert!(unapproved.capabilities.is_empty());
+    assert_eq!(unapproved.runtime.id, None);
+    assert_eq!(unapproved.state, ModelState::Unresolved);
+
+    fixture
+        .settings
+        .approve_runtime(
+            "python:zerank",
+            Some(&hash_of(&kernel, "python:zerank")),
+            false,
+        )
+        .unwrap();
+    let stale_again = stale_zerank(&fixture);
+    assert_eq!(stale_again, id);
+    let kernel = build_kernel(&fixture.dirs, &fixture.settings.load()).expect("build kernel");
+    let served = on_shelf(&kernel.shelf().await, &id);
+    assert_eq!(served.runtime.id, Some(RuntimeId::from("python:zerank")));
+    assert_eq!(
+        served.capabilities,
+        vec![Capability::chat(), Capability::judge()]
     );
 }

@@ -1,0 +1,5 @@
+torch
+transformers
+sentence-transformers
+safetensors
+numpy

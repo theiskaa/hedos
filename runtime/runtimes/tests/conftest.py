@@ -109,3 +109,10 @@ def laya():
     """python-laya/main.py: the question parsing that stands between a chat
     message and laya's typed-judgment head."""
     return load_sidecar_module("python-laya", "sidecar_laya")
+
+
+@pytest.fixture(scope="session")
+def zerank():
+    """python-zerank/main.py: how a typed question becomes the query and
+    document pairs a reranker scores, and how its logits become a judgment."""
+    return load_sidecar_module("python-zerank", "sidecar_zerank")

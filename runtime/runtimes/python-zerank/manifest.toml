@@ -1,0 +1,33 @@
+# zerank does not generate. It is a reranker: a Qwen3 checkpoint whose logit
+# for "Yes", read after a query and a document, is how relevant the document is
+# to the query. Ranking options against a question is a typed judgment, so it
+# answers the same questions laya does (choice, score, noul), each option scored
+# as a document against the question. The probabilities are relevance, not
+# laya's calibrated belief: a choice is a softmax over the scaled logits, a noul
+# is the model card's sigmoid(logit / 5).
+#
+# "chat" is declared only because it is the wire the runtime layer can already
+# carry, exactly as for laya: the question arrives as JSON in the last user
+# message and the judgment goes back as JSON in the reply text. "judge" marks it
+# as a model /v1/systemone, `hedos run` and `hedos warm` may hand a question to.
+#
+# Detected by the chat template's query and document roles, which are zerank's
+# own and are what this runtime renders a pair through.
+id           = "python:zerank"
+modalities   = ["text"]
+capabilities = ["chat", "judge"]
+execution    = "stream"
+detect       = { file = "chat_template.jinja", contains = "zerank_query" }
+
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]
