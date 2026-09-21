@@ -421,9 +421,16 @@ fn insert_stats(frame: &mut serde_json::Map<String, Value>, stats: Option<&Gener
     }
 }
 
+/// `token` as a pattern that matches only where it stands alone, captured as
+/// group 1. The text read includes weight paths, and a Hugging Face cache path
+/// is hex hashes, where `69b` or `f16` turn up inside a digest.
+fn standalone(token: &str) -> Option<Regex> {
+    Regex::new(&format!("(?:^|[^0-9A-Za-z])({token})(?:$|[^0-9A-Za-z])")).ok()
+}
+
 /// Matches a parameter-size token like `7b` or `1.5B` or `70m`.
 static PARAMETER_SIZE: LazyLock<Option<Regex>> =
-    LazyLock::new(|| Regex::new(r"[0-9]+(\.[0-9]+)?[bBmM]").ok());
+    LazyLock::new(|| standalone(r"[0-9]+(?:\.[0-9]+)?[bBmM]"));
 
 /// The quantization-level patterns, tried in order (e.g. `Q4_K_M`, then `Q8`,
 /// then `F16`/`BF16`).
@@ -431,10 +438,10 @@ static QUANT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"[Qq][0-9]_[0-9A-Za-z_]+",
         r"[Qq][0-9]+",
-        r"[Bb]?[Ff](16|32)",
+        r"[Bb]?[Ff](?:16|32)",
     ]
     .into_iter()
-    .filter_map(|pattern| Regex::new(pattern).ok())
+    .filter_map(standalone)
     .collect()
 });
 
@@ -514,7 +521,8 @@ pub fn details(record: &ModelRecord) -> Value {
 fn parameter_size(text: &str) -> String {
     PARAMETER_SIZE
         .as_ref()
-        .and_then(|pattern| pattern.find(text))
+        .and_then(|pattern| pattern.captures(text))
+        .and_then(|captures| captures.get(1))
         .map(|matched| matched.as_str().to_uppercase())
         .unwrap_or_default()
 }
@@ -523,7 +531,7 @@ fn parameter_size(text: &str) -> String {
 /// upper-cased, or empty if none.
 fn quantization_level(text: &str) -> String {
     for pattern in QUANT_PATTERNS.iter() {
-        if let Some(matched) = pattern.find(text) {
+        if let Some(matched) = pattern.captures(text).and_then(|captures| captures.get(1)) {
             return matched.as_str().to_uppercase();
         }
     }
@@ -897,5 +905,14 @@ mod tests {
         assert_eq!(quantization_level("model-f16.safetensors"), "F16");
         assert_eq!(quantization_level("model-bf16"), "BF16");
         assert_eq!(quantization_level("plain"), "");
+    }
+
+    #[test]
+    fn a_size_or_quantization_inside_a_hash_is_not_read_as_one() {
+        let blob = "zerank-2-reranker /hub/models--zeroentropy--zerank-2-reranker/blobs/965c1e20f69b548ecc01da6317c78bf08faa3bd763c9195da6881764623c1e99";
+        assert_eq!(parameter_size(blob), "");
+        assert_eq!(quantization_level("blobs/3af16c0e"), "");
+        assert_eq!(parameter_size("Qwen3-4B /blobs/f69b548"), "4B");
+        assert_eq!(quantization_level("model.Q4_K_M.gguf"), "Q4_K_M");
     }
 }
