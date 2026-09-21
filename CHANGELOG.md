@@ -2,6 +2,15 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.4.4 - 2026-09-21
+
+A reranker can be a judge. zeroentropy's zerank-2 scores how well a document answers a query, and ranking options against a question is a typed judgment, so it now answers the same choice, score and noul questions laya does, through the same `hedos run`, `hedos warm` and `/v1/systemone`. Getting there meant fixing how hedos recognized it in the first place: it had been filing zerank as an embedding model and serving it as one.
+
+- zerank-2-reranker runs as a judge. A shipped `python:zerank` runtime scores each of a choice's options, or each of a score's levels, as a document against the situation and the question, and turns the scores into a distribution with the model card's own temperature; a noul scores the situation against the statement. The answer comes back in laya's shape, with the raw scores beside the probabilities, since a reranker's numbers mean something on their own. It goes through the same approval as any runtime: `hedos runtimes approve python:zerank`. Be clear on what a noul means here: it is how relevant the situation is to the statement, not whether the statement holds, and a false statement on the situation's topic still scores high. Its choices are sound but flatter than laya's, so a threshold tuned on one does not carry to the other.
+- A cross-encoder is no longer mistaken for an embedding model. Rerankers and embedders built with sentence-transformers ship the same config file, and hedos read that file as "embedder" on sight, so zerank was put on the embeddings runtime and a request for embeddings got a vector that meant nothing. The file's `model_type` tells the two apart now, and a shelf that already registered a reranker as an embedder is corrected the first time it is read, with no rescan. A rescan also stops keeping capabilities that belonged to what a model used to be identified as.
+- `hedos warm` on a judge asks a question with a situation in it, so a judge that needs one to answer, zerank among them, warms instead of failing after the whole load.
+- `/api/tags` and `/api/ps` stop reading a model's size and quantization out of the hex hashes in its weight path. zerank reported itself as a 69B model; any model in the Hugging Face cache could be misreported the same way.
+
 ## v1.4.3 - 2026-09-20
 
 A judge can be asked a question. v1.4.2 could serve laya but not talk to it: `hedos run laya` offered a prompt box, which is the one thing a model that answers typed questions refuses, and replied with the schema it wanted instead. The question is composed now, the judgment is laid out, and a model warms where it is actually served.
