@@ -158,9 +158,11 @@ pub(crate) fn residency_outcome(resident: bool) -> &'static str {
 }
 
 /// The question a judge is warmed with: the smallest one that is still a
-/// question, so the load is paid for and nothing is asked of the answer.
+/// question, so the load is paid for and nothing is asked of the answer. The
+/// state is not empty, because a judge that reads a noul as the state scored
+/// against the statement (a reranker) has nothing to score without one.
 const WARM_QUESTION: &str =
-    r#"{"state":"","questions":{"warm":{"type":"noul","instructions":"ready"}}}"#;
+    r#"{"state":"ready","questions":{"warm":{"type":"noul","instructions":"ready"}}}"#;
 
 /// How long a gateway warm may take: a cold model behind a sidecar can spend
 /// minutes loading, and the caller asked for exactly that.
