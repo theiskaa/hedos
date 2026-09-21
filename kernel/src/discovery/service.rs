@@ -153,10 +153,16 @@ impl DiscoveryService {
                     record.source = model.source.clone();
                     record.footprint_bytes = Some(model.footprint_bytes);
                     record.primary_weight_path = model.primary_weight_path.clone();
+                    // An empty capability hint is usually nothing learned, so what
+                    // the record holds stands. Not when the modality moved under
+                    // it: those capabilities were a different kind of model's (a
+                    // reranker once read as an embedder kept "embed").
+                    let mut modality_moved = false;
                     if let Some(modality) = &model.modality_hint {
+                        modality_moved = record.modality != *modality;
                         record.modality = modality.clone();
                     }
-                    if !model.capabilities_hint.is_empty() {
+                    if modality_moved || !model.capabilities_hint.is_empty() {
                         record.capabilities = model.capabilities_hint.clone();
                     }
                     if let Some(context) = model.context_length_hint {

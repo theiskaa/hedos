@@ -107,6 +107,59 @@ fn updates_an_existing_record_and_revives_a_missing_one() {
 }
 
 #[test]
+fn an_empty_capability_hint_keeps_what_the_record_holds() {
+    let dir = TempDir::new();
+    let mut registry = registry(&dir);
+    let existing = record("same", SourceKind::ollama(), "same");
+    let id = existing.id.clone();
+    registry.register(existing).unwrap();
+
+    let mut model = discovered("same", SourceKind::ollama(), "same");
+    model.capabilities_hint = Vec::new();
+    let result = ScanResult {
+        discovered: vec![model],
+        ..Default::default()
+    };
+    let service = DiscoveryService::new(vec![scanner(vec![SourceKind::ollama()], result)]);
+
+    service.discover(&mut registry).expect("discover");
+    assert_eq!(
+        registry.get(&id).expect("still there").capabilities,
+        vec![Capability::chat()]
+    );
+}
+
+#[test]
+fn a_modality_that_moved_takes_the_old_capabilities_with_it() {
+    let dir = TempDir::new();
+    let mut registry = registry(&dir);
+    // A reranker a shelf once read as an embedder, now hinted as the text model
+    // it is, with nothing it can do until a runtime says so.
+    let existing = ModelRecord::new(
+        "rerank",
+        Modality::embedding(),
+        vec![Capability::embed()],
+        ModelSource::new(SourceKind::huggingface_cache(), "rerank"),
+    );
+    let id = existing.id.clone();
+    registry.register(existing).unwrap();
+
+    let mut model = discovered("rerank", SourceKind::huggingface_cache(), "rerank");
+    model.capabilities_hint = Vec::new();
+    let result = ScanResult {
+        discovered: vec![model],
+        ..Default::default()
+    };
+    let service =
+        DiscoveryService::new(vec![scanner(vec![SourceKind::huggingface_cache()], result)]);
+
+    service.discover(&mut registry).expect("discover");
+    let updated = registry.get(&id).expect("still there");
+    assert_eq!(updated.modality, Modality::text());
+    assert!(updated.capabilities.is_empty());
+}
+
+#[test]
 fn marks_a_scanned_but_absent_model_missing() {
     let dir = TempDir::new();
     let mut registry = registry(&dir);

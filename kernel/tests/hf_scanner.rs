@@ -200,6 +200,32 @@ fn sentence_transformers_markers_override_to_embedding() {
 }
 
 #[test]
+fn a_cross_encoder_is_a_reranker_that_claims_no_capability() {
+    let dir = TempDir::new();
+    let repo = model_dir(dir.path(), "org", "rerank");
+    refs_main(&repo, "r1");
+    let snapshot = snapshot_dir(&repo, "r1");
+    // A causal LM read at one logit per pair: neither a chat model, which its
+    // config alone would say, nor the embedder its sentence-transformers file
+    // would otherwise mark it as.
+    write(
+        &snapshot.join("config.json"),
+        br#"{"architectures":["Qwen3ForCausalLM"],"max_position_embeddings":40960}"#,
+    );
+    write(
+        &snapshot.join("config_sentence_transformers.json"),
+        br#"{"model_type":"CrossEncoder"}"#,
+    );
+    write(&snapshot.join("tokenizer.json"), b"{}");
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "rerank");
+    assert_eq!(model.modality_hint, Some(Modality::text()));
+    assert!(model.capabilities_hint.is_empty());
+    assert_eq!(model.context_length_hint, Some(40960));
+}
+
+#[test]
 fn a_model_index_snapshot_is_a_job() {
     let dir = TempDir::new();
     let repo = model_dir(dir.path(), "org", "diffusion");

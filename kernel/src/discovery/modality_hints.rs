@@ -85,6 +85,43 @@ pub fn embedding_hint() -> Hint {
     )
 }
 
+/// A reranker: text in, a relevance score out. It chats with no one and embeds
+/// nothing, so it claims no capability of its own; the runtime that can serve it
+/// supplies what it does.
+pub fn reranker_hint() -> Hint {
+    Hint::new(Modality::text(), Vec::new(), ExecutionMode::Stream)
+}
+
+/// What a sentence-transformers layout in a snapshot is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SentenceTransformersLayout {
+    /// A bi-encoder, pooling a text into an embedding.
+    Embedder,
+    /// A cross-encoder, scoring a pair of texts against each other.
+    CrossEncoder,
+}
+
+/// The sentence-transformers layout in `dir`, if there is one. Both kinds ship a
+/// `config_sentence_transformers.json`; only its `model_type` tells a
+/// cross-encoder from an embedder, and one read as the other is served nonsense.
+pub fn sentence_transformers_layout(dir: &Path) -> Option<SentenceTransformersLayout> {
+    let config = dir.join("config_sentence_transformers.json");
+    let declared = std::fs::read(&config)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<JsonValue>(&bytes).ok())
+        .and_then(|json| {
+            json.as_object()?
+                .get("model_type")
+                .and_then(JsonValue::as_str)
+                .map(str::to_owned)
+        });
+    if declared.as_deref() == Some("CrossEncoder") {
+        return Some(SentenceTransformersLayout::CrossEncoder);
+    }
+    (config.exists() || dir.join("1_Pooling").exists())
+        .then_some(SentenceTransformersLayout::Embedder)
+}
+
 /// A vision-capable chat model.
 pub fn vision_chat_hint() -> Hint {
     Hint::new(

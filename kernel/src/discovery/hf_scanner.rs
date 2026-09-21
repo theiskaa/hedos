@@ -11,15 +11,11 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::gguf_shards::group;
-use crate::discovery::modality_hints::{self, Hint};
+use crate::discovery::modality_hints::{self, Hint, SentenceTransformersLayout};
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
 use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{ExecutionMode, JsonValue, Modality, ModelSource, SourceKind};
 use crate::resolution::has_ggml_magic;
-
-/// Filenames that, alongside a text/unknown model, mark a sentence-transformers
-/// embedding model.
-const SENTENCE_TRANSFORMERS_MARKERS: [&str; 2] = ["config_sentence_transformers.json", "1_Pooling"];
 
 /// A scanner over one or more Hugging Face hub cache roots.
 pub struct HFCacheScanner {
@@ -218,14 +214,16 @@ fn resolve_hint(
     };
 
     let text = Some(Modality::text());
-    if (hint.modality.is_none() || hint.modality == text)
-        && names
-            .iter()
-            .any(|name| SENTENCE_TRANSFORMERS_MARKERS.contains(&name.as_str()))
-    {
-        let mut embedding = modality_hints::embedding_hint();
-        embedding.context_length = hint.context_length;
-        hint = embedding;
+    if hint.modality.is_none() || hint.modality == text {
+        let refined = match modality_hints::sentence_transformers_layout(snapshot) {
+            Some(SentenceTransformersLayout::Embedder) => Some(modality_hints::embedding_hint()),
+            Some(SentenceTransformersLayout::CrossEncoder) => Some(modality_hints::reranker_hint()),
+            None => None,
+        };
+        if let Some(mut refined) = refined {
+            refined.context_length = hint.context_length;
+            hint = refined;
+        }
     }
 
     if hint.modality == text

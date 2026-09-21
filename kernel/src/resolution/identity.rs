@@ -6,7 +6,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::is_mmproj_name;
-use crate::discovery::modality_hints::{Hint, from_config_json};
+use crate::discovery::modality_hints::{
+    Hint, SentenceTransformersLayout, from_config_json, sentence_transformers_layout,
+};
 use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
@@ -289,17 +291,23 @@ fn identify_safetensors(
 ) -> IdentifiedModel {
     let hint_modality = hint.and_then(|hint| hint.modality.clone());
     let text = Some(Modality::text());
-    if (hint_modality.is_none() || hint_modality == text)
-        && has_sentence_transformers_layout(container)
-    {
-        let mut model = IdentifiedModel::new(
-            format,
-            Some(Modality::embedding()),
-            vec![Capability::embed()],
-            ExecutionMode::Stream,
-        );
-        apply_hint(&mut model, hint);
-        return model;
+    if hint_modality.is_none() || hint_modality == text {
+        let refined = match sentence_transformers_layout(container) {
+            Some(SentenceTransformersLayout::Embedder) => {
+                Some((Modality::embedding(), vec![Capability::embed()]))
+            }
+            // Its config names a causal LM, but what it reads out is one logit
+            // per pair, never a reply, so the chat a config would imply is
+            // withheld and a runtime that scores pairs has to claim it.
+            Some(SentenceTransformersLayout::CrossEncoder) => Some((Modality::text(), Vec::new())),
+            None => None,
+        };
+        if let Some((modality, capabilities)) = refined {
+            let mut model =
+                IdentifiedModel::new(format, Some(modality), capabilities, ExecutionMode::Stream);
+            apply_hint(&mut model, hint);
+            return model;
+        }
     }
     let mut model = IdentifiedModel::new(
         format,
@@ -391,19 +399,6 @@ fn has_mmproj_companion(base: &Path) -> bool {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-    })
-}
-
-fn has_sentence_transformers_layout(container: &Path) -> bool {
-    const MARKERS: [&str; 2] = ["config_sentence_transformers.json", "1_Pooling"];
-    let Ok(entries) = std::fs::read_dir(container) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| MARKERS.contains(&name))
     })
 }
 

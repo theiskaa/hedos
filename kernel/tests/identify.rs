@@ -302,6 +302,24 @@ fn a_sentence_transformers_safetensors_folder_is_embedding() {
 }
 
 #[test]
+fn a_cross_encoder_safetensors_folder_is_neither_chat_nor_embedding() {
+    let dir = TempDir::new();
+    write(
+        &dir.path().join("config.json"),
+        br#"{"architectures":["Qwen3ForCausalLM"]}"#,
+    );
+    write(&dir.path().join("model.safetensors"), b"weights");
+    write(
+        &dir.path().join("config_sentence_transformers.json"),
+        br#"{"model_type":"CrossEncoder"}"#,
+    );
+    let id = identify(&record(SourceKind::folder(), dir.path().to_str().unwrap()));
+    assert_eq!(id.format, ModelFormat::Safetensors);
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.is_empty());
+}
+
+#[test]
 fn a_config_without_weights_falls_to_unknown_with_the_hint() {
     let dir = TempDir::new();
     // A recognized embedding arch but no safetensors on disk.
