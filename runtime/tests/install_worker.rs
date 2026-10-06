@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use kernel::install::provider::InstallProviderId;
 use kernel::install::pulls::{
-    PullControl, PullEvent, PullEventKind, PullState, PullStore, REGISTERING_LINE,
+    PullControl, PullError, PullEvent, PullEventKind, PullState, PullStore, REGISTERING_LINE,
+    StopAnswer,
 };
 use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProgress, InstallSearchHit,
@@ -21,8 +22,9 @@ use kernel::records::SourceKind;
 use runtime::install::InstallService;
 use runtime::install::provider::{InstallEventStream, InstallFuture, InstallProvider};
 use runtime::install::worker::{
-    PullWorker, RetryPolicy, SlotPool, Started, Stopped, WorkerError, claim_reference,
-    collect_ended, restart, resume_all, start_or_join, stop, sweep_claims,
+    PullWorker, RetryPolicy, SlotPool, Started, Stopped, WorkerError, await_answer,
+    claim_reference, collect_ended, restart, restart_within, resume_all, start_or_join, stop,
+    sweep_claims,
 };
 use runtime::settings::PullSettings;
 use support::TempDir;
@@ -45,6 +47,8 @@ enum Behavior {
     SaysThenMoves(String),
     /// Report progress, then hold the stream open until it is cancelled.
     Hangs,
+    /// Say something, then hold the stream open until it is cancelled.
+    SaysThenHangs(String),
 }
 
 struct MockProvider {
@@ -166,6 +170,10 @@ impl InstallProvider for MockProvider {
                     tx.closed().await;
                 }
                 Behavior::Hangs => tx.closed().await,
+                Behavior::SaysThenHangs(text) => {
+                    let _ = tx.send(Ok(InstallStreamEvent::Status(text))).await;
+                    tx.closed().await;
+                }
             }
         });
         rx
@@ -232,7 +240,7 @@ async fn a_pull_that_lands_is_recorded_done_and_registered() {
         let seen = Arc::clone(&seen);
         let registering = registering.clone();
         Box::pin(async move {
-            *seen.lock().unwrap() = registering.stored_status().status_line;
+            *seen.lock().unwrap() = Some(registering.stored_status());
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(())
         })
@@ -241,9 +249,14 @@ async fn a_pull_that_lands_is_recorded_done_and_registered() {
     assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
     let status = job.status();
     assert_eq!(status.state, PullState::Done);
-    // While the store was scanned the record said so; not after.
-    assert_eq!(during.lock().unwrap().as_deref(), Some("registering"));
+    // While the store was scanned the record said so and was past stopping;
+    // not after.
+    let during = during.lock().unwrap().clone().expect("the registrar ran");
+    assert_eq!(during.status_line.as_deref(), Some("registering"));
+    assert!(during.registering_until_ms.is_some());
+    assert!(during.past_stopping());
     assert_eq!(status.status_line, None, "over with the job");
+    assert_eq!(status.registering_until_ms, None);
     assert_eq!(status.progress.bytes_downloaded, 400);
     assert_eq!(status.pid, None);
     assert_eq!(registered.load(Ordering::Relaxed), 1);
@@ -312,26 +325,42 @@ async fn stopping_a_pull_past_stopping_is_refused_rather_than_answered_with_a_pr
         .expect("claim the job")
         .expect("the lock is free");
     // A worker holding the job while it registers what it fetched, and reading
-    // no control file until it is done. The line alone marks the window: a
+    // no control file until it is done. Its mark alone shows the window: a
     // provider whose total is only an estimate never reports a full fraction.
+    let until = kernel::time::now_millis() + 30_000;
     job.update_status(2_000, |status| {
         status.state = PullState::Running;
         status.pid = Some(std::process::id());
         status.status_line = Some(REGISTERING_LINE.to_owned());
+        status.registering_until_ms = Some(until);
     })
     .unwrap();
 
     for control in [PullControl::Pause, PullControl::Cancel] {
         match stop(&job, control) {
-            Err(WorkerError::PastStopping) => {}
+            Err(error @ WorkerError::PastStopping { within_secs }) => {
+                assert!((29..=30).contains(&within_secs), "{within_secs}");
+                assert!(error.to_string().ends_with("ends within 30s"), "{error}");
+            }
             other => panic!("a registering pull should refuse a {control:?}, got {other:?}"),
         }
     }
+    assert_eq!(job.control(), None);
+
+    // A window already run out is still refused, at zero rather than a wait
+    // in the past.
+    job.update_status(2_500, |status| status.registering_until_ms = Some(0))
+        .unwrap();
+    assert!(matches!(
+        stop(&job, PullControl::Pause),
+        Err(WorkerError::PastStopping { within_secs: 0 })
+    ));
 
     // A full byte count on its own does not: the transfer being over is not the
     // worker being deaf, and the figure can be a previous attempt's or a total
     // summed from a listing that left a file's size out. The ask is written.
     job.update_status(3_000, |status| {
+        status.registering_until_ms = None;
         status.status_line = None;
         status.progress.total_bytes = Some(400);
         status.progress.bytes_downloaded = 400;
@@ -347,6 +376,38 @@ async fn stopping_a_pull_past_stopping_is_refused_rather_than_answered_with_a_pr
         "the ask is left for the worker that is still reading it"
     );
     assert_eq!(job.status().state, PullState::Running);
+}
+
+#[tokio::test]
+async fn a_provider_that_says_registering_can_still_be_paused() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let worker = worker(
+        MockProvider::new(vec![Behavior::SaysThenHangs(REGISTERING_LINE.to_owned())]),
+        &store,
+        2,
+    );
+
+    // The provider's word lands on the status line, but the worker is still
+    // transferring and reading the control file, so the ask is taken.
+    let asking = job.clone();
+    let asker = tokio::spawn(async move {
+        loop {
+            let status = asking.stored_status();
+            if status.state == PullState::Running
+                && status.status_line.as_deref() == Some(REGISTERING_LINE)
+            {
+                assert!(!status.past_stopping());
+                return stop(&asking, PullControl::Pause).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Paused);
+    assert_eq!(asker.await.unwrap(), Stopped::Asked(PullState::Running));
+    assert_eq!(job.status().state, PullState::Paused);
 }
 
 #[tokio::test]
@@ -400,6 +461,75 @@ async fn a_registration_that_fails_still_leaves_the_download_done() {
     assert_eq!(
         job.status().message.as_deref(),
         Some("the registry would not open")
+    );
+}
+
+/// A worker over `provider` that waits `seconds` for its registration.
+fn registering_within(provider: Arc<MockProvider>, store: &PullStore, seconds: i64) -> PullWorker {
+    let settings = PullSettings {
+        register_timeout_seconds: seconds,
+        ..settings(2)
+    };
+    PullWorker::new(service(provider), store.root(), &settings)
+}
+
+/// The status lines a job's history holds, oldest first.
+fn said(job: &kernel::install::pulls::PullJobDir) -> Vec<String> {
+    job.events()
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            PullEventKind::Status { text } => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+// The clock is paused, so the five-second window passes the moment the worker
+// has nothing else to do; the registrar is on a thread the clock does not hold.
+#[tokio::test(start_paused = true)]
+async fn a_registration_that_never_returns_is_cut_short_and_the_job_still_lands() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let worker = registering_within(MockProvider::new(vec![Behavior::Lands]), &store, 5)
+        .with_registrar(Arc::new(|| Box::pin(std::future::pending())));
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
+    let status = job.status();
+    let cut_short = "registration did not finish within 5s; the next scan will pick the model up";
+    assert_eq!(status.state, PullState::Done);
+    assert_eq!(status.message.as_deref(), Some(cut_short));
+    assert!(said(&job).iter().any(|line| line == cut_short));
+    assert!(!job.worker_alive(), "the lock is free once the job settles");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_registration_that_blocks_its_thread_is_still_bounded() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    // A scan stuck in a blocking call never yields, so a timeout polled on the
+    // same thread would only be looked at once the call returned.
+    let worker = registering_within(MockProvider::new(vec![Behavior::Lands]), &store, 5)
+        .with_registrar(Arc::new(|| {
+            Box::pin(async {
+                std::thread::sleep(Duration::from_secs(5));
+                Ok(())
+            })
+        }));
+
+    let began = std::time::Instant::now();
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
+
+    assert!(
+        began.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        began.elapsed()
+    );
+    assert!(
+        job.status()
+            .message
+            .is_some_and(|message| message.starts_with("registration did not finish"))
     );
 }
 
@@ -771,6 +901,91 @@ async fn a_pause_leaves_the_job_resumable() {
 }
 
 #[tokio::test]
+async fn a_pause_the_worker_honours_is_answered_as_honoured() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let worker = worker(MockProvider::new(vec![Behavior::Hangs]), &store, 2);
+
+    let asking = job.clone();
+    let client = tokio::spawn(async move {
+        while asking.stored_status().state != PullState::Running {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            stop(&asking, PullControl::Pause).unwrap(),
+            Stopped::Asked(PullState::Running)
+        );
+        await_answer(&asking, PullControl::Pause, Duration::from_secs(5))
+            .await
+            .unwrap()
+    });
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Paused);
+    assert_eq!(
+        client.await.unwrap(),
+        Some(StopAnswer::Honoured(PullState::Paused))
+    );
+}
+
+#[tokio::test]
+async fn a_pause_overtaken_by_the_last_byte_is_answered_as_landed() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    // The ask lands while the store is scanned, as one that passed its check a
+    // moment before the worker marked itself registering would.
+    let asking = job.clone();
+    let worker = worker(MockProvider::new(vec![Behavior::Lands]), &store, 2).with_registrar(
+        Arc::new(move || {
+            let asking = asking.clone();
+            Box::pin(async move {
+                asking.request(PullControl::Pause).unwrap();
+                Ok(())
+            })
+        }),
+    );
+    let waiting = job.clone();
+    let client = tokio::spawn(async move {
+        await_answer(&waiting, PullControl::Pause, Duration::from_secs(5))
+            .await
+            .unwrap()
+    });
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Done);
+    assert_eq!(client.await.unwrap(), Some(StopAnswer::Landed));
+    assert_eq!(job.status().state, PullState::Done);
+}
+
+#[tokio::test]
+async fn an_ask_nobody_reads_is_left_pending_after_the_window() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let _held = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+    job.update_status(2_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+    })
+    .unwrap();
+
+    assert_eq!(
+        stop(&job, PullControl::Pause).unwrap(),
+        Stopped::Asked(PullState::Running)
+    );
+    assert_eq!(
+        await_answer(&job, PullControl::Pause, Duration::from_millis(100))
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(job.control(), Some(PullControl::Pause), "the ask stands");
+}
+
+#[tokio::test]
 async fn a_cancel_that_arrives_before_the_slot_does_is_still_honoured() {
     let dir = TempDir::new();
     let store = PullStore::new(dir.join("pulls"));
@@ -920,6 +1135,32 @@ fn the_backoff_grows_and_then_holds() {
 }
 
 #[test]
+fn a_policy_from_settings_gives_up_after_the_settings_window() {
+    let policy = RetryPolicy::from_settings(&PullSettings {
+        retry_window_minutes: 30,
+        ..PullSettings::default()
+    });
+    assert!(!policy.spent(0, 30 * 60_000 - 1));
+    assert!(policy.spent(0, 30 * 60_000));
+}
+
+#[test]
+fn the_default_policy_gives_up_when_the_default_settings_say() {
+    let default = RetryPolicy::default();
+    let settings = PullSettings::default();
+    let configured = RetryPolicy::from_settings(&settings);
+    let window = settings.retry_window().as_millis() as i64;
+    for now in [window - 1, window] {
+        assert_eq!(default.spent(0, now), configured.spent(0, now));
+    }
+    assert!(!default.spent(0, window - 1));
+    assert!(default.spent(0, window));
+    for attempt in 1..=6 {
+        assert_eq!(default.delay(attempt), configured.delay(attempt));
+    }
+}
+
+#[test]
 fn only_the_network_is_worth_retrying() {
     assert!(RetryPolicy::retryable(&InstallError::TransferFailed(
         "reset".into()
@@ -999,6 +1240,57 @@ async fn a_cancel_its_worker_never_read_is_honoured_by_a_resume_instead_of_wedgi
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn a_resume_over_a_cancel_that_replaced_a_pause_settles_cancelled() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| status.state = PullState::Paused)
+        .unwrap();
+    job.request(PullControl::Pause).unwrap();
+    job.request(PullControl::Cancel).unwrap();
+
+    match restart(&job) {
+        Err(WorkerError::Cancelled) => {}
+        other => panic!("the cancel should have been honoured, got {other:?}"),
+    }
+    let status = job.stored_status();
+    assert_eq!(status.state, PullState::Cancelled);
+    assert_eq!(status.pid, None, "no worker was put on it");
+    assert!(!job.worker_alive());
+}
+
+#[tokio::test]
+async fn a_cancel_behind_a_pause_ends_the_job_cancelled() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let worker = worker(MockProvider::new(vec![Behavior::Hangs]), &store, 2);
+
+    // A pause the worker reads and starts honouring, and a cancel written over
+    // it while the worker waits to clear it, as a request in flight would. The
+    // control lock is taken before the pause is visible, so the worker cannot
+    // clear the pause before the cancel is in place.
+    let asking = job.clone();
+    let asker = std::thread::spawn(move || {
+        while asking.stored_status().state != PullState::Running {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let held = kernel::install::pulls::take_lock(&asking.path().join("control.lock"))
+            .unwrap()
+            .expect("nothing has been asked, so nothing holds the control lock");
+        std::fs::write(asking.path().join("control"), b"pause").unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        std::fs::write(asking.path().join("control"), b"cancel").unwrap();
+        drop(held);
+    });
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Cancelled);
+    asker.join().expect("the asking thread");
+    assert_eq!(job.status().state, PullState::Cancelled);
+    assert_eq!(job.control(), None, "neither ask is left for a next worker");
 }
 
 #[tokio::test]
@@ -1323,6 +1615,79 @@ async fn resuming_everything_leaves_the_pulls_the_user_paused_alone() {
     assert_eq!(done.status().state, PullState::Done);
 }
 
+/// A record damaged past decoding.
+const UNREADABLE: &[u8] = b"{ not json";
+
+/// A job of `reference` whose record is [`UNREADABLE`].
+fn unreadable_job(store: &PullStore, reference: &str) -> kernel::install::pulls::PullJobDir {
+    let job = store.create(&plan(reference), 1_000).unwrap();
+    std::fs::write(job.path().join("status.json"), UNREADABLE).unwrap();
+    job
+}
+
+fn record_of(job: &kernel::install::pulls::PullJobDir) -> Vec<u8> {
+    std::fs::read(job.path().join("status.json")).unwrap()
+}
+
+#[tokio::test]
+async fn restarting_an_unreadable_record_is_refused_and_leaves_it_in_place() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = unreadable_job(&store, "org/Model");
+    job.request(PullControl::Pause).unwrap();
+
+    match restart(&job) {
+        Err(WorkerError::Unreadable) => {}
+        other => panic!("an unreadable record should not be resumed, got {other:?}"),
+    }
+    assert_eq!(record_of(&job), UNREADABLE);
+    assert_eq!(job.control(), Some(PullControl::Pause));
+    assert!(job.events().is_empty());
+}
+
+#[tokio::test]
+async fn stopping_an_unreadable_record_is_refused() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = unreadable_job(&store, "org/Model");
+
+    for control in [PullControl::Pause, PullControl::Cancel] {
+        match stop(&job, control) {
+            Err(WorkerError::Unreadable) => {}
+            other => panic!("an unreadable record should not be stopped, got {other:?}"),
+        }
+    }
+    assert!(!job.path().join("control").exists());
+    assert_eq!(record_of(&job), UNREADABLE);
+}
+
+#[tokio::test]
+async fn resume_all_leaves_an_unreadable_record_alone() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = unreadable_job(&store, "org/Model");
+
+    assert!(resume_all(&store).is_empty());
+    assert_eq!(record_of(&job), UNREADABLE);
+    assert!(job.events().is_empty());
+}
+
+#[tokio::test]
+async fn pulling_a_model_past_an_unreadable_record_starts_a_new_job() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = unreadable_job(&store, "org/Model");
+
+    // The spawn runs this test binary, which exits at once; the records are
+    // what is under test.
+    let started = start_or_join(&store, &plan("org/Model")).unwrap();
+
+    assert!(matches!(started, Started::Created(ref id) if id != job.id()));
+    assert_eq!(store.list().len(), 2);
+    assert_eq!(record_of(&job), UNREADABLE);
+    assert_eq!(job.stored_status().state, PullState::Unreadable);
+}
+
 #[tokio::test]
 async fn stopping_says_whether_it_asked_a_worker_or_settled_the_record_itself() {
     let dir = TempDir::new();
@@ -1383,4 +1748,211 @@ fn collecting_keeps_the_newest_ended_pulls_the_settings_ask_for() {
         .collect();
     assert_eq!(left, ["c/newest", "d/going"]);
     assert_eq!(collect_ended(&store, &settings), 0);
+}
+
+#[tokio::test]
+async fn a_cancel_written_after_the_worker_stopped_reading_is_settled_once_it_lets_go() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let held = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+    job.update_status(2_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+    })
+    .unwrap();
+
+    assert_eq!(
+        stop(&job, PullControl::Cancel).unwrap(),
+        Stopped::Asked(PullState::Running)
+    );
+    // The worker was already honouring a pause it had cleared: it settles
+    // paused without reading the cancel, then exits.
+    job.update_status(3_000, |status| status.state = PullState::Paused)
+        .unwrap();
+    let worker = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(held);
+    });
+
+    let answer = await_answer(&job, PullControl::Cancel, Duration::from_secs(5))
+        .await
+        .unwrap();
+    worker.await.unwrap();
+
+    assert_eq!(answer, Some(StopAnswer::Honoured(PullState::Cancelled)));
+    assert_eq!(job.status().state, PullState::Cancelled);
+}
+
+#[test]
+fn a_pause_behind_a_waiting_cancel_is_refused_and_leaves_the_cancel() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let _held = job
+        .claim()
+        .expect("claim the job")
+        .expect("the lock is free");
+    job.update_status(2_000, |status| {
+        status.state = PullState::Running;
+        status.pid = Some(std::process::id());
+    })
+    .unwrap();
+
+    stop(&job, PullControl::Cancel).unwrap();
+    match stop(&job, PullControl::Pause) {
+        Err(WorkerError::CancelWaiting) => {}
+        other => panic!("the pause should have been refused, got {other:?}"),
+    }
+    assert_eq!(job.control(), Some(PullControl::Cancel));
+}
+
+#[test]
+fn a_job_nobody_took_up_whose_model_was_pulled_again_is_neither_restarted_nor_stopped() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let abandoned = store.create(&plan("org/Model"), 1_000).unwrap();
+    let again = store.create(&plan("org/Model"), 2_000).unwrap();
+    again
+        .update_status(2_000, |status| status.state = PullState::Done)
+        .unwrap();
+
+    match restart(&abandoned) {
+        Err(WorkerError::Ended(PullState::Failed)) => {}
+        other => panic!("the resume should have been refused, got {other:?}"),
+    }
+    match stop(&abandoned, PullControl::Cancel) {
+        Err(WorkerError::Ended(PullState::Failed)) => {}
+        other => panic!("the cancel should have been refused, got {other:?}"),
+    }
+    assert!(resume_all(&store).is_empty());
+    // Written down as the failure it reads, with no ask left behind.
+    let status = abandoned.stored_status();
+    assert_eq!(status.state, PullState::Failed);
+    assert_eq!(
+        status.message.as_deref(),
+        Some(kernel::install::pulls::PULLED_AGAIN_LINE)
+    );
+    assert_eq!(abandoned.control(), None);
+    again.remove().unwrap();
+    assert!(resume_all(&store).is_empty(), "it stays failed");
+}
+
+#[tokio::test]
+async fn of_two_jobs_nobody_took_up_the_second_stays_failed_once_the_first_lands() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let first = store.create(&plan("org/Model"), 1_000).unwrap();
+    let second = store.create(&plan("org/Model"), 1_100).unwrap();
+
+    // The spawn runs this test binary, which exits at once; the first job is
+    // left queued for a worker, which is what makes the second a duplicate.
+    let resumed = resume_all(&store);
+    assert_eq!(resumed.len(), 2, "both read interrupted when listed");
+    assert!(resumed[0].1.is_ok(), "{resumed:?}");
+    assert!(
+        matches!(resumed[1].1, Err(WorkerError::Ended(PullState::Failed))),
+        "{resumed:?}"
+    );
+    assert_eq!(second.stored_status().state, PullState::Failed);
+
+    first
+        .update_status(kernel::time::now_millis(), |status| {
+            status.state = PullState::Done
+        })
+        .unwrap();
+    assert_eq!(
+        second.reading(kernel::time::now_millis()).status.state,
+        PullState::Failed
+    );
+    first.remove().unwrap();
+    assert!(resume_all(&store).is_empty());
+    assert_eq!(second.stored_status().state, PullState::Failed);
+}
+
+#[tokio::test]
+async fn a_restart_gives_up_on_a_control_lock_held_past_its_wait() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    job.update_status(1_000, |status| status.state = PullState::Paused)
+        .unwrap();
+    job.request(PullControl::Pause).unwrap();
+    let held = kernel::install::pulls::take_lock(&job.path().join("control.lock"))
+        .unwrap()
+        .expect("the control lock is free");
+
+    match restart_within(&job, Duration::from_millis(30)) {
+        Err(WorkerError::Record(PullError::ControlBusy(_))) => {}
+        other => panic!("the restart should have given up, got {other:?}"),
+    }
+    let status = job.stored_status();
+    assert_eq!(
+        (status.state, status.updated_at_ms),
+        (PullState::Paused, 1_000)
+    );
+    assert_eq!(job.control(), Some(PullControl::Pause));
+    assert!(!job.worker_alive(), "the job's own lock was let go");
+    drop(held);
+}
+
+#[tokio::test]
+async fn resuming_everything_skips_a_job_whose_control_file_is_held_and_takes_it_next_time() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let held = kernel::install::pulls::take_lock(&job.path().join("control.lock"))
+        .unwrap()
+        .expect("the control lock is free");
+
+    let started = std::time::Instant::now();
+    let resumed = resume_all(&store);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "nobody waits on a busy job"
+    );
+    assert!(
+        matches!(
+            resumed.as_slice(),
+            [(_, Err(WorkerError::Record(PullError::ControlBusy(_))))]
+        ),
+        "{resumed:?}"
+    );
+    assert_eq!(job.stored_status().updated_at_ms, 1_000);
+
+    drop(held);
+    let resumed = resume_all(&store);
+    assert!(matches!(resumed.as_slice(), [(_, Ok(_))]), "{resumed:?}");
+}
+
+#[tokio::test]
+async fn a_pause_written_over_a_cancel_being_honoured_goes_with_it() {
+    let dir = TempDir::new();
+    let store = PullStore::new(dir.join("pulls"));
+    let job = store.create(&plan("org/Model"), 1_000).unwrap();
+    let worker = worker(MockProvider::new(vec![Behavior::Hangs]), &store, 2);
+
+    // An older build writes a pause over the cancel while the worker waits to
+    // clear the cancel; the control lock is taken before the cancel is
+    // visible, so the pause is in place before the clear.
+    let asking = job.clone();
+    let asker = std::thread::spawn(move || {
+        while asking.stored_status().state != PullState::Running {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let held = kernel::install::pulls::take_lock(&asking.path().join("control.lock"))
+            .unwrap()
+            .expect("nothing has been asked, so nothing holds the control lock");
+        std::fs::write(asking.path().join("control"), b"cancel").unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        std::fs::write(asking.path().join("control"), b"pause").unwrap();
+        drop(held);
+    });
+
+    assert_eq!(worker.run(&job).await.unwrap(), PullState::Cancelled);
+    asker.join().expect("the asking thread");
+    assert_eq!(job.control(), None, "no ask is left for a next worker");
 }

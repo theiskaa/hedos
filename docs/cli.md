@@ -31,6 +31,8 @@ List the shelf: a warm indicator, the name, the runtime, the store, a memory-fit
 
 The FIT column reads `fits`, `tight`, `too big`, or `—` (footprint unknown), judged from the model's estimated footprint against this machine's memory — the same assessment the install recommendations use. `--json` carries it as a `fit` field on each record.
 
+The footprint fit is judged on is what serving the model loads, which is not always what it takes on disk: a Hugging Face repo that holds several quantizations, or blobs from older revisions, serves one weight set (with its projector and config). `--json` carries the disk figure as `footprint_bytes` and, when the store measured it apart from that, the serving figure as `serving_bytes`. In `hedos shelf` the size column and the size sort follow the serving figure, the detail pane's `size` row adds the disk figure when it differs (`8.5 GB · ctx 32k · 34 GB on disk`), and the machine pane's disk per store and the removal preview count everything on disk.
+
 Sizes are decimal, as the hubs state them (`4.9 GB` is 4.9e9 bytes); memory figures are in GiB.
 
 ### `hedos run [model] [prompt]`
@@ -95,7 +97,7 @@ Codex is not supported: it speaks the OpenAI Responses API, which this gateway d
 
 ### `hedos pull [reference]`
 
-Fetch a model from Ollama or Hugging Face. The download runs in a worker process of its own, so it outlives the terminal that started it; `hedos pull` follows that worker's progress, and Ctrl-C detaches from it rather than cancelling. `-d` starts the download and returns straight away. The worker scans when it finishes, so the model reaches the shelf whether anything is watching or not.
+Fetch a model from Ollama or Hugging Face. The download runs in a worker process of its own, so it outlives the terminal that started it; `hedos pull` follows that worker's progress, and Ctrl-C detaches from it rather than cancelling. `-d` starts the download and returns straight away. The worker scans when it finishes, so the model reaches the shelf whether anything is watching or not. It waits at most `pull.register_timeout_seconds` for that scan; a slower one is left to the next scan.
 
 Pulling a model that is already being fetched joins that download instead of starting a second one, and pulling one that stopped part-way carries on from the bytes on disk.
 
@@ -110,6 +112,14 @@ hedos pull cancel <job>        stop it for good
 hedos pull logs <job> [-n n]   its history
 hedos pull clean [--keep n]    drop the records of ended pulls past the newest n (pull.keep_ended)
 ```
+
+`pull pause` and `pull cancel` wait a few seconds for the worker and report what it did: `paused <job>` or `cancelled <job>` once it stopped, or, while it has not answered yet, `pausing <job>; its worker has not answered yet` (the ask stands). A stop that came too late says so and exits non-zero: `<job>: every byte landed before the pause was read; it is done`, or, for a pull that ended some other way first (a cancel that overtook the pause, say), `<job> ended <state>, so the pause had no effect`. A pull being registered refuses both, naming how many seconds the registration has left. Under `--json` both print the record with an `"outcome"` of `"honoured"`, `"pending"`, or `"too_late"`, matching the line and the exit code.
+
+A cancel written just after the worker stopped reading (it was already honouring a pause) is settled by the command once that worker exits, so it reads `cancelled <job>` rather than being left for the next resume; the shelf's pulls screen does the same for `c x` pressed while a pause is being honoured. A pause asked while a cancel is still waiting to be read is refused and the cancel stands: a pause never turns "stop for good" into "stop for now". If another process holds the job's control file for more than 3 seconds, `pause`, `cancel`, `resume`, and the pulls screen's `c` and `R` give up, say so, and change nothing; opening the shelf skips such a pull and takes it up the next time.
+
+A pull no worker ever took up (its worker died before it started) reads `interrupted` with the note `no worker`, in `pull ls`, on the shelf's pulls screen, and to `pull resume --all`, which starts every paused or interrupted pull. Under `--json` its `state` is `"interrupted"` and it carries `"abandoned": true`; the key is absent for every other pull. Once its model has been pulled by another job (one under way, or one that reached `done` after this pull was created, however old that job is), it reads `failed` instead, with the note `no worker took it up; the model was pulled again`, on every surface alike: `pull ls`, `--json` (`"state": "failed"`, `"superseded": true`), the pulls screen (which offers `x`, not `R`), `pull attach`, `pull resume` (refused), and `pull resume --all` and opening the shelf (skipped). Listing it changes nothing, but the first command that acts on it (`pull resume`, `pull resume --all`, `pull cancel`, `pull clean`, opening the shelf, or a resume or forget from the pulls screen) writes that `failed` into its record, so it stays failed once the other job is cleaned away or fails; from then on `--json` reads it as a plain failed pull carrying the same message, without `"superseded"`. `pull clean` collects it with the other ended pulls.
+
+A pull whose record cannot be read (a damaged `status.json`, or one a newer hedos wrote in a state this build does not know) reads `unreadable`, with the reason as its note and `"state": "unreadable"` under `--json`. Nothing touches it: `pull pause`, `pull cancel`, and `pull resume` refuse it, `pull resume --all` and opening the shelf skip it, `pull clean` and the pulls screen's `x` leave it, and pulling the same model starts a new job beside it. Delete its directory under the pull store by hand once it is no longer wanted.
 
 A job is named by its id, an unambiguous prefix of one, or its reference; a name several pulls answer to means the one still going. Since a bare word is a valid Ollama tag, a model named after a subcommand is written `hedos pull -- ls`.
 

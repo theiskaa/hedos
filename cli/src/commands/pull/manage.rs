@@ -6,15 +6,19 @@
 //! holds the job, the client settles the record itself, because there is nobody
 //! left to hear the ask.
 
+use std::time::Duration;
+
 use kernel::install::pulls::{
-    PullControl, PullEvent, PullJobDir, PullStatus, PullStore, START_GRACE_MS,
+    PullControl, PullEvent, PullJobDir, PullReading, PullStore, StopAnswer,
 };
 use kernel::time::now_millis;
-use runtime::install::{restart, stop, sweep_claims};
+use runtime::install::{
+    STOP_ANSWER_WINDOW, Stopped, WorkerError, await_answer, restart, stop, sweep_claims,
+};
 
 use crate::error::CliError;
 use crate::support::output::Out;
-use crate::support::pulls::event_line;
+use crate::support::pulls::{event_line, too_late};
 
 use super::attach::{self, Attached};
 use super::view;
@@ -22,7 +26,8 @@ use super::{LogsArgs, ResumeArgs};
 
 /// `hedos pull ls`.
 pub(super) fn list(store: &PullStore, out: &Out) -> Result<(), CliError> {
-    let jobs = records(store)?;
+    let now = now_millis();
+    let jobs = records(store, now)?;
     if out.is_json() {
         out.json(&view::json_list(&jobs));
         return Ok(());
@@ -31,22 +36,22 @@ pub(super) fn list(store: &PullStore, out: &Out) -> Result<(), CliError> {
         out.line("no pulls yet. start one with `hedos pull <ref>`");
         return Ok(());
     }
-    out.line(&view::table(&jobs, now_millis()));
+    out.line(&view::table(&jobs, now));
     Ok(())
 }
 
 /// `hedos pull attach <job>`.
 pub(super) async fn attach(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
     let job = store.resolve(query)?;
-    let status = job.status();
-    if !status.state.is_live() {
-        return attach::report(out, &job, &status);
+    let reading = job.reading(now_millis());
+    if !reading.status.state.is_live() {
+        return attach::report(out, &job, &reading);
     }
     match attach::follow(out, &job).await {
-        Attached::Ended(status) => attach::report(out, &job, &status),
+        Attached::Ended(reading) => attach::report(out, &job, &reading),
         Attached::Detached => {
             out.line(&view::detached(&job));
-            out.json(&view::json(&job, &job.status()));
+            out.json(&view::json(&job, &job.reading(now_millis())));
             Ok(())
         }
     }
@@ -55,64 +60,123 @@ pub(super) async fn attach(store: &PullStore, query: &str, out: &Out) -> Result<
 /// `hedos pull pause <job>`.
 ///
 /// Only a worker can pause a transfer, so this writes the ask rather than
-/// stopping anything itself. A job queued behind a busy slot still gets one:
-/// its worker reads the control file before it takes that slot. A pull being
-/// registered gets none, because that is the one stretch its worker spends not
-/// reading the file.
-pub(super) fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
+/// stopping anything itself, then waits a moment for the worker to say what it
+/// did. A job queued behind a busy slot still gets one: its worker reads the
+/// control file before it takes that slot. A pull being registered gets none,
+/// because that is the one stretch its worker spends not reading the file.
+pub(super) async fn pause(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
+    pause_within(store, query, out, STOP_ANSWER_WINDOW).await
+}
+
+/// [`pause`], waiting at most `within` for the worker's answer.
+async fn pause_within(
+    store: &PullStore,
+    query: &str,
+    out: &Out,
+    within: Duration,
+) -> Result<(), CliError> {
     let job = store.resolve(query)?;
-    let status = job.status();
-    if !status.state.is_live() {
-        return Err(CliError::new(format!(
-            "{} is {}, not running",
-            job.id(),
-            status.state
-        )));
-    }
+    let reading = job.reading(now_millis());
     // Nothing will ever read an ask left for a worker that never arrived.
-    if job.abandoned(now_millis(), START_GRACE_MS) {
+    if reading.abandoned {
         return Err(CliError::new(format!(
             "no worker took up {}. resume it, or cancel it",
             job.id()
         )));
     }
-    let stopped = stop(&job, PullControl::Pause)
-        .map_err(|error| CliError::new(format!("{}: {error}", job.id())))?;
-    out.line(&match stopped.settled() {
-        true => format!("paused {}", job.id()),
-        false => format!("pausing {}", job.id()),
-    });
-    out.json(&view::json(&job, &job.status()));
-    Ok(())
+    if !reading.status.state.is_live() {
+        return Err(CliError::new(format!(
+            "{} is {}, not running",
+            job.id(),
+            reading.status.state
+        )));
+    }
+    stop_and_report(&job, PullControl::Pause, out, within).await
 }
 
 /// `hedos pull cancel <job>`.
 ///
 /// The ask is written whether or not a worker is there to read it, so one that
-/// is still starting stops instead of transferring. With nothing holding the
-/// job, the record is settled here too, because there is nobody left to settle
-/// it. A pull being registered is refused, like a pause.
-pub(super) fn cancel(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
+/// is still starting stops instead of transferring, and the worker is given a
+/// moment to say what it did. With nothing holding the job, the record is
+/// settled here too, because there is nobody left to settle it. A pull being
+/// registered is refused, like a pause.
+pub(super) async fn cancel(store: &PullStore, query: &str, out: &Out) -> Result<(), CliError> {
+    cancel_within(store, query, out, STOP_ANSWER_WINDOW).await
+}
+
+/// [`cancel`], waiting at most `within` for the worker's answer.
+async fn cancel_within(
+    store: &PullStore,
+    query: &str,
+    out: &Out,
+    within: Duration,
+) -> Result<(), CliError> {
     let job = store.resolve(query)?;
-    let stopped = stop(&job, PullControl::Cancel)
-        .map_err(|error| CliError::new(format!("{}: {error}", job.id())))?;
-    out.line(&match stopped.settled() {
-        true => format!("cancelled {}", job.id()),
-        false => format!("cancelling {}", job.id()),
-    });
-    out.json(&view::json(&job, &job.status()));
+    stop_and_report(&job, PullControl::Cancel, out, within).await
+}
+
+/// Ask `job` to stop the way `control` says and report what happened, not
+/// only that it was asked.
+///
+/// A stop that came too late (the pull landed, or ended some other way, before
+/// its worker read the ask) is the command's failure, so a script can tell it
+/// from one that took. A worker that has not answered within `within` is not:
+/// the ask stands, and is said to. `--json` says which of the three it was in
+/// `outcome`: `honoured`, `pending`, or `too_late`.
+async fn stop_and_report(
+    job: &PullJobDir,
+    control: PullControl,
+    out: &Out,
+    within: Duration,
+) -> Result<(), CliError> {
+    let id = job.id();
+    let refused = |error: WorkerError| CliError::new(format!("{id}: {error}"));
+    let answer = match stop(job, control).map_err(refused)? {
+        Stopped::Settled(state) => Some(StopAnswer::Honoured(state)),
+        Stopped::Asked(_) => await_answer(job, control, within).await.map_err(refused)?,
+    };
+    out.json(&view::with_outcome(
+        view::json(job, &job.reading(now_millis())),
+        outcome(answer),
+    ));
+    if let Some(line) = too_late(id, control, answer) {
+        return Err(CliError::new(line));
+    }
+    match answer {
+        Some(StopAnswer::Honoured(state)) => out.line(&format!("{state} {id}")),
+        Some(StopAnswer::Landed | StopAnswer::Ended(_)) => {}
+        None => {
+            let asking = match control {
+                PullControl::Pause => "pausing",
+                PullControl::Cancel => "cancelling",
+            };
+            out.line(&format!("{asking} {id}; its worker has not answered yet"));
+        }
+    }
     Ok(())
+}
+
+/// The word `--json` gives for what became of a stop.
+fn outcome(answer: Option<StopAnswer>) -> &'static str {
+    match answer {
+        Some(StopAnswer::Honoured(_)) => "honoured",
+        Some(StopAnswer::Landed | StopAnswer::Ended(_)) => "too_late",
+        None => "pending",
+    }
 }
 
 /// `hedos pull resume [<job>|--all]`.
 pub(super) fn resume(store: &PullStore, args: &ResumeArgs, out: &Out) -> Result<(), CliError> {
     let jobs = match (&args.job, args.all) {
         (Some(query), _) => vec![store.resolve(query)?],
-        (None, true) => records(store)?
-            .into_iter()
-            .filter(|(_, status)| status.state.is_resumable())
-            .map(|(job, _)| job)
-            .collect(),
+        (None, true) => {
+            // A pull it skips as pulled again stays skipped, rather than
+            // coming back once the pull that superseded it is forgotten.
+            let now = now_millis();
+            store.settle_superseded(now);
+            store.stopped(now)?
+        }
         (None, false) => {
             return Err(CliError::new(
                 "name a pull to resume, or pass --all to resume every stopped one",
@@ -120,14 +184,14 @@ pub(super) fn resume(store: &PullStore, args: &ResumeArgs, out: &Out) -> Result<
         }
     };
 
-    let mut started: Vec<(PullJobDir, PullStatus)> = Vec::new();
+    let mut started: Vec<(PullJobDir, PullReading)> = Vec::new();
     let mut refused: Vec<String> = Vec::new();
     for job in jobs {
         match restart(&job) {
             Ok(_) => {
                 out.line(&format!("resuming {} ({})", job.id(), job.job().reference));
-                let status = job.status();
-                started.push((job, status));
+                let reading = job.reading(now_millis());
+                started.push((job, reading));
             }
             // One job that cannot be resumed does not stop the others; every
             // reason is reported at the end.
@@ -198,14 +262,14 @@ fn tail(events: &[PullEvent], lines: Option<usize>) -> &[PullEvent] {
     }
 }
 
-/// Every job with the record it reads as right now.
-fn records(store: &PullStore) -> Result<Vec<(PullJobDir, PullStatus)>, CliError> {
+/// Every job with the way it reads at `now_ms`.
+fn records(store: &PullStore, now_ms: i64) -> Result<Vec<(PullJobDir, PullReading)>, CliError> {
     Ok(store
         .jobs()?
         .into_iter()
         .map(|job| {
-            let status = job.status();
-            (job, status)
+            let reading = job.reading(now_ms);
+            (job, reading)
         })
         .collect())
 }

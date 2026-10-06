@@ -132,9 +132,9 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
     match command {
         PullCommand::Ls => manage::list(&store, out),
         PullCommand::Attach(args) => manage::attach(&store, &args.job, out).await,
-        PullCommand::Pause(args) => manage::pause(&store, &args.job, out),
+        PullCommand::Pause(args) => manage::pause(&store, &args.job, out).await,
         PullCommand::Resume(args) => manage::resume(&store, args, out),
-        PullCommand::Cancel(args) => manage::cancel(&store, &args.job, out),
+        PullCommand::Cancel(args) => manage::cancel(&store, &args.job, out).await,
         PullCommand::Logs(args) => manage::logs(&store, args, out),
         PullCommand::Clean(args) => {
             let keep = args

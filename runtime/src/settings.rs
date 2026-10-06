@@ -206,6 +206,10 @@ pub struct PullSettings {
     pub partial_age_hours: i64,
     /// How long a failing transfer keeps retrying before it is left interrupted.
     pub retry_window_minutes: i64,
+    /// How long a pull whose bytes have all landed waits for the scan that
+    /// registers the model, in seconds, before it settles done without it and
+    /// leaves the model to the next scan.
+    pub register_timeout_seconds: i64,
     /// How many ended pulls keep their record, for `hedos pull ls` and the
     /// pulls screen to show; the rest are dropped when hedos next opens the
     /// store. `hedos pull clean --keep n` overrides it for one run.
@@ -219,6 +223,7 @@ impl Default for PullSettings {
             auto_resume: true,
             partial_age_hours: 24,
             retry_window_minutes: 120,
+            register_timeout_seconds: 120,
             keep_ended: 20,
         }
     }
@@ -238,6 +243,11 @@ impl PullSettings {
     /// How long a failing transfer keeps retrying.
     pub fn retry_window(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.retry_window_minutes.clamp(1, 60 * 24) as u64 * 60)
+    }
+
+    /// How long a landed pull waits for its registration.
+    pub fn register_window(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.register_timeout_seconds.clamp(5, 3_600) as u64)
     }
 
     /// How many ended pulls keep their record, as the count a sweep keeps.
@@ -532,6 +542,7 @@ mod tests {
             auto_resume: true,
             partial_age_hours: 2,
             retry_window_minutes: 30,
+            register_timeout_seconds: 45,
             keep_ended: 5,
         };
         assert_eq!(settings.slots(), 3);
@@ -544,6 +555,14 @@ mod tests {
             settings.retry_window(),
             std::time::Duration::from_secs(1_800)
         );
+        assert_eq!(
+            settings.register_window(),
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(
+            PullSettings::default().register_window(),
+            std::time::Duration::from_secs(120)
+        );
     }
 
     #[test]
@@ -552,6 +571,7 @@ mod tests {
             max_concurrent: 0,
             partial_age_hours: 0,
             retry_window_minutes: -5,
+            register_timeout_seconds: 0,
             keep_ended: -1,
             ..PullSettings::default()
         };
@@ -559,11 +579,13 @@ mod tests {
         assert_eq!(none.kept_ended(), 0, "keeping none is a choice");
         assert_eq!(none.partial_age(), std::time::Duration::from_secs(3_600));
         assert_eq!(none.retry_window(), std::time::Duration::from_secs(60));
+        assert_eq!(none.register_window(), std::time::Duration::from_secs(5));
 
         let far_too_much = PullSettings {
             max_concurrent: i64::MAX,
             partial_age_hours: i64::MAX,
             retry_window_minutes: i64::MAX,
+            register_timeout_seconds: i64::MAX,
             keep_ended: i64::MAX,
             ..PullSettings::default()
         };
@@ -573,6 +595,10 @@ mod tests {
         assert_eq!(
             far_too_much.retry_window(),
             std::time::Duration::from_secs(24 * 60 * 60)
+        );
+        assert_eq!(
+            far_too_much.register_window(),
+            std::time::Duration::from_secs(3_600)
         );
     }
 
@@ -649,6 +675,30 @@ mod tests {
         // Untouched fields keep their defaults.
         assert!(settings.chat.send_with_enter);
         assert_eq!(settings.voice.speed, 1.0);
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn the_registration_window_is_read_from_the_pull_table() {
+        let path = temp_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[pull]\nregister_timeout_seconds = 30\nkeep_ended = 3\n",
+        )
+        .unwrap();
+        let settings = SettingsStore::new(&path).load();
+        assert_eq!(settings.pull.register_timeout_seconds, 30);
+        assert_eq!(
+            settings.pull.register_window(),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(settings.pull.keep_ended, 3);
+        // A table written before the key existed still loads, with the default.
+        std::fs::write(&path, "[pull]\nkeep_ended = 3\n").unwrap();
+        let settings = SettingsStore::new(&path).load();
+        assert_eq!(settings.pull.register_timeout_seconds, 120);
+        assert_eq!(settings.pull.keep_ended, 3);
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

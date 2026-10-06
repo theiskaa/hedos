@@ -16,6 +16,10 @@
 //! progress event. And a stop reaches a provider as a dropped receiver, so the
 //! difference between a pause and a cancel is carried separately, through
 //! [`InstallService::stop_keeping`].
+//!
+//! Registering what landed is a scan of the store that may block, so it runs on
+//! a thread of its own and is waited on for at most `pull.register_timeout_seconds`.
+//! A scan that outlasts that is left behind, and the job settles done anyway.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -24,8 +28,8 @@ use std::time::Duration;
 
 use kernel::install::plan::InstallPlan;
 use kernel::install::pulls::{
-    self, PullControl, PullError, PullEventKind, PullJob, PullJobDir, PullLock, PullState,
-    PullStore, REGISTERING_LINE, START_GRACE_MS,
+    self, CONTROL_LOCK_WAIT, PullControl, PullError, PullEventKind, PullJob, PullJobDir, PullLock,
+    PullReading, PullState, PullStatus, PullStore, REGISTERING_LINE, START_GRACE_MS, StopAnswer,
 };
 use kernel::install::{InstallError, InstallEvent, InstallProgress};
 use kernel::time::now_millis;
@@ -44,6 +48,12 @@ const CLAIM_ATTEMPTS: u32 = 5;
 const CLAIM_RETRY: Duration = Duration::from_millis(50);
 /// How often the control file is read while the worker is busy.
 const CONTROL_POLL: Duration = Duration::from_millis(250);
+/// How long a client that asked for a stop waits for the worker's answer:
+/// twelve of the worker's polls, which covers one poll and a provider tearing
+/// its transfer down.
+pub const STOP_ANSWER_WINDOW: Duration = CONTROL_POLL.saturating_mul(12);
+/// How often a client waiting on that answer reads the record.
+const ANSWER_POLL: Duration = Duration::from_millis(50);
 /// How often a queued worker looks for a free slot.
 const SLOT_POLL: Duration = Duration::from_secs(2);
 /// The shortest gap between two writes of the live record. Progress arrives far
@@ -83,9 +93,24 @@ pub enum WorkerError {
     #[error("cancelled: a cancel was waiting for it")]
     Cancelled,
 
-    /// Every byte has landed, so there is no transfer left to stop.
-    #[error("every byte has landed; it is being registered")]
-    PastStopping,
+    /// A pause was asked of a job a cancel is already waiting for. The cancel
+    /// stands, and the pause was not written over it.
+    #[error("a cancel is already waiting for it; a pause would change nothing")]
+    CancelWaiting,
+
+    /// Every byte has landed, so there is no transfer left to stop. The worker
+    /// stops waiting on the registration within `within_secs`.
+    #[error("every byte has landed; it is being registered, which ends within {within_secs}s")]
+    PastStopping {
+        /// How long until the worker stops waiting on the registration.
+        within_secs: i64,
+    },
+
+    /// The job's live record could not be read, so nothing here will start,
+    /// stop, or settle it: it may be a newer build's record of a pull that
+    /// build is still running.
+    #[error("its record could not be read; it is left as it is")]
+    Unreadable,
 
     /// The job's record could not be read or written.
     #[error(transparent)]
@@ -112,7 +137,7 @@ pub struct RetryPolicy {
 
 impl Default for RetryPolicy {
     fn default() -> Self {
-        Self::new(default_steps(), Duration::from_secs(2 * 60 * 60))
+        Self::from_settings(&PullSettings::default())
     }
 }
 
@@ -144,12 +169,6 @@ impl RetryPolicy {
     /// The policy the settings describe, keeping the default waits.
     pub fn from_settings(settings: &PullSettings) -> Self {
         Self::new(default_steps(), settings.retry_window())
-    }
-
-    /// This policy giving up after `window` instead.
-    pub fn with_window(mut self, window: Duration) -> Self {
-        self.window_ms = window.as_millis().min(i64::MAX as u128) as i64;
-        self
     }
 
     /// How long to wait before attempt number `attempt` of a streak (the first
@@ -256,40 +275,40 @@ pub enum Stopped {
     Settled(PullState),
 }
 
-impl Stopped {
-    /// The state the record now reads.
-    pub fn state(self) -> PullState {
-        match self {
-            Self::Asked(state) | Self::Settled(state) => state,
-        }
-    }
-
-    /// Whether the record was settled here rather than left for a worker.
-    pub fn settled(self) -> bool {
-        matches!(self, Self::Settled(_))
-    }
-}
-
 /// Ask the job's worker to stop the way `control` says, and settle the record
 /// here when no worker holds it, because there is nobody left to hear the ask.
 ///
-/// The ask is written whether or not a worker is there to read it, and left on
-/// disk once the record is settled: a worker that was still starting reads it
-/// and stands down rather than downloading over a job that is already over.
+/// The ask is written whether or not a worker is there to read it. Once the
+/// record is settled it is left on disk only while a worker may still be on
+/// its way, which reads it and stands down rather than downloading over a job
+/// that is already over; see [`settle_here`].
 ///
 /// A job past stopping is refused before the ask is written. Its worker is
 /// registering what it fetched and reads no control file until it is done, so
 /// the ask would neither stop this pull nor be reported honestly, and the file
-/// left behind would stop the next worker on the job instead.
+/// left behind would stop the next worker on the job instead. So is a job whose
+/// record cannot be read: with no worker there the ask would settle it here,
+/// writing over a record that may be another build's. So is a job that reads
+/// ended the way every surface shows it, a pull nobody took up whose model
+/// was pulled since included, which is written down as it reads
+/// ([`PullJobDir::settle_superseded`]). A pause behind a cancel already
+/// waiting is refused too, and the cancel left to be read.
 pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerError> {
-    let status = job.status();
+    let now = now_millis();
+    let reading = job.reading(now);
+    let status = &reading.status;
+    if status.state == PullState::Unreadable {
+        return Err(WorkerError::Unreadable);
+    }
     if status.state.is_terminal() {
-        return Err(WorkerError::Ended(status.state));
+        return Err(ended(job, &reading, now));
     }
-    if status.past_stopping() {
-        return Err(WorkerError::PastStopping);
+    if let Some(within_secs) = status.registering_for_secs(now) {
+        return Err(WorkerError::PastStopping { within_secs });
     }
-    job.request(control)?;
+    if job.request(control)? != control {
+        return Err(WorkerError::CancelWaiting);
+    }
     // The record is read again after the liveness probe, never before it: a
     // worker finishing in the moment between the two would otherwise have its
     // `done` overwritten, for a model that is installed.
@@ -299,20 +318,97 @@ pub fn stop(job: &PullJobDir, control: PullControl) -> Result<Stopped, WorkerErr
     Ok(Stopped::Settled(settle_here(job, control)?))
 }
 
+/// Wait at most `within` for `job`'s worker to answer `control`, reading the
+/// job as every surface shows it; `None` when it has not answered by then, and
+/// the ask still stands. A client that asked for a stop learns what came of it
+/// rather than only that it was asked; the ask is read no sooner for it.
+///
+/// A worker can stop its own way with the ask written after it last read the
+/// file, as a cancel landing while a pause is being honoured is. The job then
+/// reads stopped with the ask still on disk, and the ask would be honoured by
+/// the next resume rather than now. So once that worker has let go, the ask
+/// is settled here, as [`stop`] settles one nobody holds, and answered as
+/// honoured.
+pub async fn await_answer(
+    job: &PullJobDir,
+    control: PullControl,
+    within: Duration,
+) -> Result<Option<StopAnswer>, WorkerError> {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match control.answer(&job.reading(now_millis()).status) {
+            Some(StopAnswer::Ended(state))
+                if state.is_resumable() && job.control() == Some(control) =>
+            {
+                if !job.worker_alive() {
+                    match stop(job, control) {
+                        Ok(Stopped::Settled(state)) => {
+                            return Ok(Some(StopAnswer::Honoured(state)));
+                        }
+                        // Another worker took the job up in the meantime, and
+                        // will read the ask; or it ended, which the next read
+                        // answers.
+                        Ok(Stopped::Asked(_)) | Err(WorkerError::Ended(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+            Some(answer) => return Ok(Some(answer)),
+            None => {}
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(ANSWER_POLL.min(deadline - now)).await;
+    }
+}
+
+/// The refusal for a job that reads ended. One that reads so only because a
+/// sibling pulled its model is written down first, so it stays ended once the
+/// sibling is gone; the refusal stands whether or not that write succeeds,
+/// and the next action that meets the job tries it again.
+fn ended(job: &PullJobDir, reading: &PullReading, now: i64) -> WorkerError {
+    if reading.superseded {
+        let _ = job.settle_superseded(now);
+    }
+    WorkerError::Ended(reading.status.state)
+}
+
 /// Settle the record the way `control` asks, on behalf of a worker that is not
 /// there to do it.
+///
+/// A job this ends takes its ask with it, unless a worker may still be on its
+/// way: a job is queued with no pid from the moment a worker is spawned onto
+/// it until that worker holds it, and such a worker reads the ask to stand
+/// down rather than download over the settled record. A job that had a
+/// worker, or was paused, has nobody coming, so nothing would read the file
+/// again but a person listing the directory.
 fn settle_here(job: &PullJobDir, control: PullControl) -> Result<PullState, WorkerError> {
     let settled = control.resulting_state();
     let now = now_millis();
+    let before = job.stored_status();
     job.update_status(now, |status| {
         status.state = settled;
         status.next_attempt_at_ms = None;
+        status.registering_until_ms = None;
+        status.status_line = None;
         if settled.is_terminal() {
             status.pid = None;
         }
     })?;
     job.append(PullEventKind::State { state: settled }, now)?;
+    if settled.is_terminal() && !awaits_worker(&before) {
+        // Best effort: the job has ended either way, and a file left behind
+        // is one nothing reads.
+        let _ = job.clear_control_within(control, CONTROL_LOCK_WAIT);
+    }
     Ok(settled)
+}
+
+/// Whether `status` is a record a spawned worker may not have taken up yet.
+fn awaits_worker(status: &PullStatus) -> bool {
+    status.state == PullState::Queued && status.pid.is_none()
 }
 
 /// Put a worker back on a job that stopped, returning the new worker's pid.
@@ -326,11 +422,34 @@ fn settle_here(job: &PullJobDir, control: PullControl) -> Result<PullState, Work
 /// The record is put back to queued before the spawn, and settled as failed if
 /// the spawn does not happen, so a job is never left waiting for a process that
 /// was never started.
+///
+/// A job whose record cannot be read is refused and left as it is, its control
+/// file included: rewriting it as queued would erase what may be another
+/// build's pull.
+///
+/// A job reads the way every surface shows it here, so one nobody took up
+/// whose model was pulled since is refused as the failure it reads, and
+/// written down as one.
+///
+/// The control file's lock is waited on for at most [`CONTROL_LOCK_WAIT`], as
+/// an ask waits on it; past that the restart is refused with
+/// [`PullError::ControlBusy`] and nothing is changed.
 #[cfg(unix)]
 pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
-    let state = job.status().state;
+    restart_within(job, CONTROL_LOCK_WAIT)
+}
+
+/// [`restart`], waiting at most `wait` for the control file's lock.
+#[cfg(unix)]
+pub fn restart_within(job: &PullJobDir, wait: Duration) -> Result<u32, WorkerError> {
+    let now = now_millis();
+    let reading = job.reading(now);
+    let state = reading.status.state;
+    if state == PullState::Unreadable {
+        return Err(WorkerError::Unreadable);
+    }
     if state.is_terminal() {
-        return Err(WorkerError::Ended(state));
+        return Err(ended(job, &reading, now));
     }
     // The job's own lock is held for the rewrite, so a worker cannot start on
     // it in between and another restart cannot read this one's half-written
@@ -343,16 +462,20 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
     // that finished in the moment before has just written its ending, and a
     // cancel it never read must not be written over it.
     let stored = job.stored_status();
+    if stored.state == PullState::Unreadable {
+        return Err(WorkerError::Unreadable);
+    }
     if stored.state.is_terminal() {
         return Err(WorkerError::Ended(stored.state));
     }
-    match job.control() {
-        Some(PullControl::Cancel) => {
-            settle_here(job, PullControl::Cancel)?;
-            return Err(WorkerError::Cancelled);
-        }
-        Some(control) => job.clear_control(control)?,
-        None => {}
+    // The pause is dropped and what is left is read under one hold, so a
+    // cancel written over the pause in the meantime is either the one read
+    // here or written after the pause is gone, for the new worker to read.
+    // Clearing the pause leaves only something else, so a cancel is the one
+    // ask that can come back.
+    if job.clear_control_within(PullControl::Pause, wait)? == Some(PullControl::Cancel) {
+        settle_here(job, PullControl::Cancel)?;
+        return Err(WorkerError::Cancelled);
     }
     // `status()` derives `interrupted` at read time and nothing writes it, so
     // the history is the only place a worker's death gets recorded.
@@ -376,9 +499,10 @@ pub fn restart(job: &PullJobDir) -> Result<u32, WorkerError> {
         status.pid = None;
         status.message = None;
         status.next_attempt_at_ms = None;
-        // Whatever its last worker was doing, this one has not started: a line
-        // left over from a death mid-registration would read as a job past
-        // stopping and refuse the next ask.
+        // A mark left over from a death mid-registration means nothing once
+        // the job is queued again; the new worker's first state change would
+        // clear it too.
+        status.registering_until_ms = None;
         status.status_line = None;
     })?;
     drop(held);
@@ -548,6 +672,7 @@ pub fn fail(job: &PullJobDir, message: String) -> Result<(), WorkerError> {
         status.message = Some(message);
         status.pid = None;
         status.next_attempt_at_ms = None;
+        status.registering_until_ms = None;
     })?;
     job.append(
         PullEventKind::State {
@@ -601,29 +726,29 @@ pub fn sweep_claims(root: &Path) -> usize {
 /// held the job, and nothing else collects it. A pull the user paused is left
 /// exactly where they left it: nobody asked for it here, and un-pausing it
 /// behind their back would make a pause impossible to keep.
+///
+/// A job nobody took up whose model was pulled since is written down as the
+/// failure it reads first, so it is skipped for good rather than only while
+/// its sibling is there. A job whose control file another process holds is
+/// skipped at once with [`PullError::ControlBusy`], since nobody is waiting
+/// on this; the next call takes it up.
 #[cfg(unix)]
 pub fn resume_all(store: &PullStore) -> Vec<(String, Result<u32, WorkerError>)> {
     let now = now_millis();
+    store.settle_superseded(now);
     store
-        .jobs()
-        .unwrap_or_default()
+        .orphaned(now)
         .into_iter()
-        .filter(|job| {
-            job.status().state == PullState::Interrupted
-                // An abandoned job the user has already pulled past is left:
-                // its worker would lose the reference to the pull under way
-                // and fail as a duplicate on every open.
-                || (job.abandoned(now, START_GRACE_MS)
-                    && store
-                        .under_way(&job.job().provider, &job.job().reference, now)
-                        .is_none())
-        })
-        .map(|job| (job.id().to_owned(), restart(&job)))
+        .map(|job| (job.id().to_owned(), restart_within(&job, Duration::ZERO)))
         .collect()
 }
 
 /// What a worker does once a pull has landed: register it, so the model reaches
 /// the shelf with nobody attached to watch.
+///
+/// It may block inside its future: it runs on a thread of its own, under a
+/// runtime of its own, and is waited on for at most
+/// `pull.register_timeout_seconds`.
 pub type Registrar = Arc<dyn Fn() -> BoxFuture<Result<(), String>> + Send + Sync>;
 
 /// Runs one pull to its end.
@@ -633,6 +758,15 @@ pub struct PullWorker {
     root: PathBuf,
     policy: RetryPolicy,
     registrar: Option<Registrar>,
+    register_window: Duration,
+}
+
+/// How a registration ended.
+enum Registration {
+    Done,
+    Failed(String),
+    /// The window ran out with the registrar still going.
+    CutShort,
 }
 
 impl PullWorker {
@@ -646,6 +780,7 @@ impl PullWorker {
             root,
             policy: RetryPolicy::from_settings(settings),
             registrar: None,
+            register_window: settings.register_window(),
         }
     }
 
@@ -730,6 +865,7 @@ impl PullWorker {
             job.update_status(now_millis(), |status| {
                 status.attempt = attempts;
                 status.next_attempt_at_ms = None;
+                status.registering_until_ms = None;
                 status.message = None;
                 // Whatever the wait or the last attempt said is over.
                 status.status_line = None;
@@ -982,15 +1118,27 @@ impl PullWorker {
     }
 
     /// Register what landed, then mark the job done. A registration that fails
-    /// is said out loud on the job rather than turning a finished download into
-    /// a failure: the weights are on disk either way.
+    /// or runs out of time is said out loud on the job rather than turning a
+    /// finished download into a failure: the weights are on disk either way,
+    /// and the next scan finds them.
     async fn finish(&self, job: &PullJobDir) -> Result<PullState, WorkerError> {
         let message = match &self.registrar {
             Some(registrar) => {
                 // Every byte has landed and the record says so; what is left
                 // is a scan of the store, which can take a moment.
-                self.say(job, REGISTERING_LINE)?;
-                registrar().await.err()
+                self.mark_registering(job)?;
+                match self.register(registrar).await {
+                    Registration::Done => None,
+                    Registration::Failed(message) => Some(message),
+                    Registration::CutShort => {
+                        let line = format!(
+                            "registration did not finish within {}s; the next scan will pick the model up",
+                            self.register_window.as_secs()
+                        );
+                        job.append(PullEventKind::Status { text: line.clone() }, now_millis())?;
+                        Some(line)
+                    }
+                }
             }
             None => None,
         };
@@ -998,6 +1146,62 @@ impl PullWorker {
             self.drop_late_ask(job, control)?;
         }
         self.settle(job, PullState::Done, message)
+    }
+
+    /// Say the job is registering, and mark it past stopping until the
+    /// registration window runs out, in one write so no reader sees the line
+    /// without the mark.
+    fn mark_registering(&self, job: &PullJobDir) -> Result<(), WorkerError> {
+        let now = now_millis();
+        let window_ms = self.register_window.as_millis().min(i64::MAX as u128) as i64;
+        job.append(
+            PullEventKind::Status {
+                text: REGISTERING_LINE.to_owned(),
+            },
+            now,
+        )?;
+        job.update_status(now, |status| {
+            status.status_line = Some(REGISTERING_LINE.to_owned());
+            status.registering_until_ms = Some(now.saturating_add(window_ms));
+        })?;
+        Ok(())
+    }
+
+    /// Run `registrar` on a thread of its own and wait for it for at most the
+    /// registration window.
+    ///
+    /// A thread, not a task: the registrar's scan blocks inside its poll, and a
+    /// timeout on this runtime is not polled while a poll blocks it. Nothing
+    /// joins the thread, so a scan that never returns is left behind and the
+    /// process exits past it once the job is settled; the registry's writes
+    /// are atomic and its lock goes with the process, so it is left whole.
+    async fn register(&self, registrar: &Registrar) -> Registration {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let registrar = Arc::clone(registrar);
+        let spawned = std::thread::Builder::new()
+            .name("pull-register".to_owned())
+            .spawn(move || {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => {
+                        let _ = answer.send(runtime.block_on(registrar()));
+                    }
+                    Err(error) => {
+                        let _ = answer.send(Err(format!("could not start registering: {error}")));
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            return Registration::Failed(format!("could not start registering: {error}"));
+        }
+        match tokio::time::timeout(self.register_window, answered).await {
+            Ok(Ok(Ok(()))) => Registration::Done,
+            Ok(Ok(Err(message))) => Registration::Failed(message),
+            Ok(Err(_)) => Registration::Failed("registering stopped without saying how".to_owned()),
+            Err(_) => Registration::CutShort,
+        }
     }
 
     /// Drop an ask that reached the job after there was anything left to stop,
@@ -1008,21 +1212,41 @@ impl PullWorker {
         // Cleared before it is written down: a history line that cannot be
         // appended is worth less than a cancel left on disk, which the next
         // worker on this job would honour over a download already complete.
-        job.clear_control(control)?;
-        job.append(
-            PullEventKind::Status {
-                text: format!("{control} arrived after every byte had landed"),
-            },
-            now_millis(),
-        )?;
+        // An ask written over this one came just as late, and goes the same way.
+        let mut late = vec![control];
+        if let Some(behind) = job.clear_control(control)? {
+            job.clear_control(behind)?;
+            late.push(behind);
+        }
+        for control in late {
+            job.append(
+                PullEventKind::Status {
+                    text: format!("{control} arrived after every byte had landed"),
+                },
+                now_millis(),
+            )?;
+        }
         Ok(())
     }
 
     /// Stop the way `control` asked, and take the control file with it.
+    ///
+    /// The file is cleared before the record settles, so no reader sees the
+    /// job ended with the ask that ended it still waiting. A cancel written
+    /// over a pause being honoured ends the job cancelled: the transfer was
+    /// stopped keeping its bytes, so the partial stays until
+    /// `pull.partial_age_hours` collects it, as for a paused job cancelled
+    /// with no worker. Any other ask written over the one honoured goes with
+    /// it, as [`drop_late_ask`](Self::drop_late_ask) drops one.
     fn honour(&self, job: &PullJobDir, control: PullControl) -> Result<PullState, WorkerError> {
-        let state = self.settle(job, control.resulting_state(), None)?;
-        job.clear_control(control)?;
-        Ok(state)
+        let mut settled = control.resulting_state();
+        if let Some(behind) = job.clear_control(control)? {
+            job.clear_control(behind)?;
+            if behind == PullControl::Cancel {
+                settled = PullState::Cancelled;
+            }
+        }
+        self.settle(job, settled, None)
     }
 
     /// Move the job to `state`, recording it in the history only when it is a
@@ -1050,6 +1274,8 @@ impl PullWorker {
         job.update_status(now, |status| {
             status.state = state;
             status.next_attempt_at_ms = None;
+            // A settled job is registering nothing, whatever it settled in.
+            status.registering_until_ms = None;
             // Only a reason worth keeping overwrites one: every attempt clears
             // the message when it starts, so nothing stale survives into `done`.
             if message.is_some() {
@@ -1063,8 +1289,9 @@ impl PullWorker {
                 true => None,
                 false => Some(std::process::id()),
             };
-            // What the provider was doing is over with the job.
-            if state.is_terminal() {
+            // What the provider was doing is over once nothing is running
+            // it, whether the job ended or only stopped.
+            if !state.is_live() {
                 status.status_line = None;
             }
         })?;
