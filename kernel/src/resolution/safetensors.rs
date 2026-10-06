@@ -1,7 +1,7 @@
 //! Reading a safetensors header to tell an MLX-format weight directory from a
 //! plain one.
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::Read;
 use std::path::Path;
 
@@ -13,7 +13,7 @@ const MAX_HEADER_LEN: u64 = 100_000_000;
 /// A safetensors file begins with an 8-byte little-endian header length followed
 /// by that many bytes of JSON.
 pub fn safetensors_header_format(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
+    let mut file = crate::fs::open_regular(path).ok()?;
     let mut length_bytes = [0u8; 8];
     file.read_exact(&mut length_bytes).ok()?;
     let length = u64::from_le_bytes(length_bytes);
@@ -40,7 +40,7 @@ pub fn safetensors_format(container: &Path, config_path: &Path) -> Option<ModelF
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "safetensors"))?;
 
-    if let Ok(bytes) = fs::read(config_path)
+    if let Ok(bytes) = crate::fs::read_regular(config_path)
         && let Ok(config) = serde_json::from_slice::<serde_json::Value>(&bytes)
         && config.get("quantization").is_some()
     {

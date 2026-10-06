@@ -223,7 +223,7 @@ fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<(PathBuf, boo
     }
     let tree = gguf_tree(container);
     let weights = primary_of(&tree.weights)?;
-    Some((weights, tree.has_projector))
+    Some((weights, tree.has_projector()))
 }
 
 /// What a GGUF is, from its header. `has_projector` says whether a multimodal
@@ -362,7 +362,7 @@ fn container_url(base: &Path, record: &ModelRecord) -> PathBuf {
 
 /// Whether an Ollama manifest at `path` declares a `.projector` (vision) layer.
 fn manifest_has_projector_layer(path: &str) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(bytes) = crate::fs::read_regular(Path::new(path)) else {
         return false;
     };
     let Ok(JsonValue::Object(object)) = serde_json::from_slice::<JsonValue>(&bytes) else {
@@ -443,7 +443,7 @@ fn identify_diffusers(
 /// The scheduler facts from `scheduler/scheduler_config.json`, if the file parses.
 fn scheduler_facts(container: &Path) -> Option<SchedulerFacts> {
     let path = container.join("scheduler").join("scheduler_config.json");
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::fs::read_regular(&path).ok()?;
     let JsonValue::Object(config) = serde_json::from_slice::<JsonValue>(&bytes).ok()? else {
         return None;
     };
@@ -463,7 +463,7 @@ fn scheduler_facts(container: &Path) -> Option<SchedulerFacts> {
 /// distilled model), read from `transformer/config.json`.
 fn flux_uses_guidance(container: &Path) -> bool {
     let path = container.join("transformer").join("config.json");
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(bytes) = crate::fs::read_regular(&path) else {
         return false;
     };
     let Ok(JsonValue::Object(config)) = serde_json::from_slice::<JsonValue>(&bytes) else {

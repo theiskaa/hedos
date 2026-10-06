@@ -177,7 +177,7 @@ fn file_type_name(value: i64) -> Option<&'static str> {
 }
 
 fn first_four(path: &Path) -> Option<[u8; 4]> {
-    let mut file = File::open(path).ok()?;
+    let mut file = crate::fs::open_regular(path).ok()?;
     let mut buffer = [0u8; 4];
     file.read_exact(&mut buffer).ok()?;
     Some(buffer)
@@ -212,7 +212,7 @@ struct Reader {
 impl Reader {
     fn open(path: &Path) -> Option<Self> {
         Some(Self {
-            inner: BufReader::new(File::open(path).ok()?),
+            inner: BufReader::new(crate::fs::open_regular(path).ok()?),
         })
     }
 

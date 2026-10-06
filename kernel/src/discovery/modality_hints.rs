@@ -106,7 +106,7 @@ pub enum SentenceTransformersLayout {
 /// cross-encoder from an embedder, and one read as the other is served nonsense.
 pub fn sentence_transformers_layout(dir: &Path) -> Option<SentenceTransformersLayout> {
     let config = dir.join("config_sentence_transformers.json");
-    let declared = std::fs::read(&config)
+    let declared = crate::fs::read_regular(&config)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<JsonValue>(&bytes).ok())
         .and_then(|json| {
@@ -171,7 +171,7 @@ const VISION_LANGUAGE_ARCHITECTURES: [&str; 5] =
 /// The hint for a Hugging Face `config.json` file, or `None` if it is unreadable,
 /// unparseable, or matches no rule.
 pub fn from_config_json(path: &Path) -> Option<Hint> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::fs::read_regular(path).ok()?;
     let json = serde_json::from_slice::<JsonValue>(&bytes).ok()?;
     from_config(&json)
 }
