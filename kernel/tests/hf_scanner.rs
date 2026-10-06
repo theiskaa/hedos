@@ -527,3 +527,321 @@ fn discovers_multiple_repos_in_one_root() {
     names.sort();
     assert_eq!(names, ["A", "B"]);
 }
+
+/// Write a `size`-byte blob named `blob_name` and link `relative` in the
+/// snapshot to it, the way the hub cache lays a file out.
+fn linked(repo: &Path, snapshot: &Path, relative: &str, blob_name: &str, size: usize) {
+    blob(repo, blob_name, size);
+    let link = snapshot.join(relative);
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(repo.join("blobs").join(blob_name), link).unwrap();
+}
+
+fn hub_repo(root: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let repo = model_dir(root, "org", name);
+    refs_main(&repo, "r1");
+    let snapshot = snapshot_dir(&repo, "r1");
+    (repo, snapshot)
+}
+
+#[test]
+fn a_repo_with_several_quantizations_serves_from_one() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "multi");
+    linked(&repo, &snapshot, "a.Q4_K_M.gguf", "q4", 100);
+    linked(&repo, &snapshot, "a.Q8_0.gguf", "q8", 200);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "multi");
+    assert_eq!(model.footprint_bytes, 300);
+    assert_eq!(model.serving_bytes, Some(200));
+}
+
+#[test]
+fn a_directory_per_quantization_serves_the_primary_shard_set() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "sharded");
+    linked(&repo, &snapshot, "Q4/m-00001-of-00002.gguf", "q4a", 50);
+    linked(&repo, &snapshot, "Q4/m-00002-of-00002.gguf", "q4b", 50);
+    linked(&repo, &snapshot, "Q8/m-00001-of-00002.gguf", "q8a", 90);
+    linked(&repo, &snapshot, "Q8/m-00002-of-00002.gguf", "q8b", 80);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "sharded");
+    assert_eq!(model.footprint_bytes, 270);
+    assert_eq!(model.serving_bytes, Some(170));
+}
+
+#[test]
+fn a_projector_beside_the_weight_counts_once() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "vision");
+    linked(&repo, &snapshot, "a.Q4_K_M.gguf", "weight", 100);
+    linked(&repo, &snapshot, "mmproj-f16.gguf", "f16", 10);
+    linked(&repo, &snapshot, "mmproj-f32.gguf", "f32", 20);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "vision");
+    assert_eq!(model.footprint_bytes, 130);
+    assert_eq!(model.serving_bytes, Some(120));
+}
+
+#[test]
+fn a_root_projector_counts_for_a_quant_directory() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "rooted");
+    linked(&repo, &snapshot, "mmproj-f16.gguf", "projector", 30);
+    linked(&repo, &snapshot, "Q8_0/a.Q8_0.gguf", "q8", 100);
+    linked(&repo, &snapshot, "Q4_K_M/a.Q4_K_M.gguf", "q4", 60);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "rooted");
+    assert_eq!(model.serving_bytes, Some(130));
+}
+
+#[test]
+fn an_indexed_safetensors_set_serves_every_shard() {
+    let index = br#"{"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}"#;
+    let config = br#"{"architectures":["LlamaForCausalLM"]}"#;
+
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "indexed");
+    linked(
+        &repo,
+        &snapshot,
+        "model-00001-of-00002.safetensors",
+        "s1",
+        60,
+    );
+    linked(
+        &repo,
+        &snapshot,
+        "model-00002-of-00002.safetensors",
+        "s2",
+        40,
+    );
+    write(&snapshot.join("model.safetensors.index.json"), index);
+    write(&snapshot.join("config.json"), config);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "indexed");
+    assert_eq!(model.serving_bytes, Some(100 + config.len() as i64));
+
+    let (repo, snapshot) = hub_repo(dir.path(), "consolidated");
+    linked(
+        &repo,
+        &snapshot,
+        "model-00001-of-00002.safetensors",
+        "s1",
+        60,
+    );
+    linked(
+        &repo,
+        &snapshot,
+        "model-00002-of-00002.safetensors",
+        "s2",
+        40,
+    );
+    linked(&repo, &snapshot, "consolidated.safetensors", "whole", 150);
+    write(&snapshot.join("model.safetensors.index.json"), index);
+    write(&snapshot.join("config.json"), config);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "consolidated");
+    assert!(
+        model
+            .primary_weight_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("whole"))
+    );
+    assert_eq!(model.serving_bytes, Some(150 + config.len() as i64));
+}
+
+#[test]
+fn support_files_beside_the_weight_count_and_docs_do_not() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "supported");
+    linked(&repo, &snapshot, "a.Q4_K_M.gguf", "weight", 100);
+    linked(&repo, &snapshot, "config.json", "config", 7);
+    linked(&repo, &snapshot, "tokenizer.json", "tokenizer", 5);
+    // A second name for one blob is one file loaded, not two.
+    std::os::unix::fs::symlink(
+        repo.join("blobs").join("tokenizer"),
+        snapshot.join("tokenizer_copy.json"),
+    )
+    .unwrap();
+    linked(&repo, &snapshot, "README.md", "readme", 50);
+    linked(&repo, &snapshot, "diagram.png", "picture", 40);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "supported");
+    assert_eq!(model.footprint_bytes, 202);
+    assert_eq!(model.serving_bytes, Some(112));
+}
+
+#[test]
+fn a_snapshot_without_a_primary_has_no_serving_figure() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "pipeline");
+    write(
+        &snapshot.join("model_index.json"),
+        br#"{"_class_name":"StableDiffusionPipeline"}"#,
+    );
+    linked(
+        &repo,
+        &snapshot,
+        "unet/diffusion_pytorch_model.safetensors",
+        "unet",
+        100,
+    );
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "pipeline");
+    assert_eq!(model.footprint_bytes, 100);
+    assert_eq!(model.serving_bytes, None);
+}
+
+#[test]
+fn a_precision_variant_index_serves_its_whole_shard_set() {
+    let index = br#"{"weight_map":{"a":"model.fp32-00001-of-00002.safetensors","b":"model.fp32-00002-of-00002.safetensors"}}"#;
+    let config = br#"{"architectures":["WhisperForConditionalGeneration"]}"#;
+
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "variant");
+    linked(
+        &repo,
+        &snapshot,
+        "model.fp32-00001-of-00002.safetensors",
+        "s1",
+        80,
+    );
+    linked(
+        &repo,
+        &snapshot,
+        "model.fp32-00002-of-00002.safetensors",
+        "s2",
+        30,
+    );
+    // A half-precision copy beside it, which this set does not take in.
+    linked(&repo, &snapshot, "model.safetensors", "half", 55);
+    write(&snapshot.join("model.safetensors.index.fp32.json"), index);
+    write(&snapshot.join("config.json"), config);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "variant");
+    // The index is a map of the set, not something serving loads, as the
+    // default index is not.
+    assert_eq!(model.serving_bytes, Some(110 + config.len() as i64));
+    assert!(!model.downloading);
+}
+
+#[test]
+fn an_index_of_a_variant_nobody_fetched_leaves_the_repo_ready() {
+    let index = br#"{"weight_map":{"a":"model.fp16-00001-of-00002.safetensors","b":"model.fp16-00002-of-00002.safetensors"}}"#;
+    let config = br#"{"architectures":["LlamaForCausalLM"],"model_type":"llama","quantization":{"group_size":64,"bits":4}}"#;
+
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "tiny");
+    linked(&repo, &snapshot, "model.safetensors", "weight", 300);
+    write(&snapshot.join("config.json"), config);
+    write(&snapshot.join("tokenizer_config.json"), b"{}");
+    // A `*.json` pattern fetched the half-precision index; none of its shards
+    // were asked for.
+    write(&snapshot.join("model.safetensors.index.fp16.json"), index);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "tiny");
+    assert!(
+        !model.downloading,
+        "a set with no member here was not chosen"
+    );
+    assert_eq!(
+        model.serving_bytes,
+        Some(300 + config.len() as i64 + 2),
+        "the weight, its config and tokenizer config"
+    );
+}
+
+#[cfg(unix)]
+fn scan_within(scanner: HFCacheScanner) -> Option<ScanResult> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(scanner.scan());
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .ok()
+}
+
+#[cfg(unix)]
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo {}", path.display());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pipe_in_a_snapshot_never_blocks_the_scan() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "configpipe");
+    linked(&repo, &snapshot, "model.safetensors", "weight", 30);
+    mkfifo(&snapshot.join("config.json"));
+    let (repo, snapshot) = hub_repo(dir.path(), "indexpipe");
+    linked(
+        &repo,
+        &snapshot,
+        "model-00001-of-00002.safetensors",
+        "shard",
+        30,
+    );
+    mkfifo(&snapshot.join("model.safetensors.index.json"));
+    let (repo, snapshot) = hub_repo(dir.path(), "refpipe");
+    linked(&repo, &snapshot, "a.Q4_K_M.gguf", "gguf", 30);
+    std::fs::remove_file(repo.join("refs").join("main")).unwrap();
+    mkfifo(&repo.join("refs").join("main"));
+
+    let result = scan_within(HFCacheScanner::single(dir.path()))
+        .expect("the scan finished rather than waiting on a pipe");
+    for name in ["configpipe", "indexpipe", "refpipe"] {
+        find(&result, name);
+    }
+}
+
+#[test]
+fn a_variant_set_missing_a_shard_is_downloading_and_has_no_serving_figure() {
+    let index = br#"{"weight_map":{"a":"model.fp32-00001-of-00002.safetensors","b":"model.fp32-00002-of-00002.safetensors"}}"#;
+
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "partial");
+    linked(
+        &repo,
+        &snapshot,
+        "model.fp32-00001-of-00002.safetensors",
+        "s1",
+        80,
+    );
+    write(&snapshot.join("model.safetensors.index.fp32.json"), index);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "partial");
+    assert!(model.downloading);
+    assert_eq!(model.serving_bytes, None, "the disk figure stands in");
+}
+
+#[test]
+fn an_importance_matrix_beside_the_weight_is_not_counted_to_serve() {
+    let dir = TempDir::new();
+    let (repo, snapshot) = hub_repo(dir.path(), "quantized");
+    linked(&repo, &snapshot, "a.Q4_K_M.gguf", "weight", 100);
+    linked(&repo, &snapshot, "a.imatrix", "imatrix", 9);
+    linked(&repo, &snapshot, "imatrix.dat", "dat", 8);
+    linked(&repo, &snapshot, "config.json", "config", 7);
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "quantized");
+    assert_eq!(model.footprint_bytes, 124);
+    assert_eq!(model.serving_bytes, Some(107));
+}

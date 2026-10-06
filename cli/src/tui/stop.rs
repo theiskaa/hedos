@@ -101,6 +101,7 @@ mod tests {
 
     use kernel::install::pulls::{PullState, REGISTERING_LINE};
 
+    use crate::support::pulls::testing::mark_registering;
     use crate::tui::jobs::JobRow;
     use crate::tui::strip::TaskStrip;
     use crate::tui::tasks::{TaskId, TaskKind, TaskState};
@@ -186,9 +187,9 @@ mod tests {
 
     #[test]
     fn a_pull_being_registered_is_past_stopping() {
-        // The line alone, with no byte count to lean on.
+        // The worker's mark alone, with no byte count to lean on.
         let mut registering = downloading("x");
-        registering.status.status_line = Some(REGISTERING_LINE.to_owned());
+        mark_registering(&mut registering.status);
         registering.state = TaskState::Status(REGISTERING_LINE.to_owned());
         let strip = strip_with(vec![registering.clone()]);
         assert!(!strip.rows()[0].pull_going());

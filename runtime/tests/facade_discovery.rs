@@ -178,3 +178,86 @@ async fn explain_on_an_empty_registry_is_empty() {
     let kernel = kernel(&dir, None);
     assert!(kernel.explain().await.is_empty());
 }
+
+/// An adapter that bids on what identification reads as an MLX weight
+/// directory, and on nothing else.
+struct MlxOnly {
+    id: RuntimeId,
+}
+
+impl runtime::adapters::RuntimeAdapter for MlxOnly {
+    fn id(&self) -> &RuntimeId {
+        &self.id
+    }
+
+    fn can_serve(&self, _record: &ModelRecord, _capability: &kernel::records::Capability) -> bool {
+        true
+    }
+
+    fn bid(
+        &self,
+        _record: &ModelRecord,
+        identified: &kernel::resolution::IdentifiedModel,
+    ) -> Option<kernel::resolution::RuntimeBid> {
+        (identified.format == kernel::resolution::ModelFormat::MlxSafetensors)
+            .then(|| kernel::resolution::RuntimeBid::new(kernel::records::RunTier::Native, 15))
+    }
+
+    fn invoke(
+        &self,
+        _record: &ModelRecord,
+        _capability: kernel::records::Capability,
+        _payload: kernel::records::JsonValue,
+    ) -> runtime::adapters::ChunkStream {
+        runtime::adapters::ChunkStream::failed(runtime::adapters::RuntimeError::Failed(
+            "unused".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn an_index_of_a_variant_nobody_fetched_leaves_an_mlx_repo_resolved() {
+    let dir = TempDir::new();
+    let hub = dir.path().join("hub");
+    let repo = hub.join("models--mlx-community--tiny");
+    let snapshot = repo.join("snapshots").join("r1");
+    std::fs::create_dir_all(&snapshot).unwrap();
+    std::fs::create_dir_all(repo.join("refs")).unwrap();
+    std::fs::write(repo.join("refs").join("main"), "r1").unwrap();
+    std::fs::write(
+        snapshot.join("config.json"),
+        br#"{"architectures":["LlamaForCausalLM"],"model_type":"llama","quantization":{"group_size":64,"bits":4}}"#,
+    )
+    .unwrap();
+    std::fs::write(snapshot.join("tokenizer_config.json"), b"{}").unwrap();
+    std::fs::write(snapshot.join("model.safetensors"), vec![0u8; 64]).unwrap();
+    std::fs::write(
+        snapshot.join("model.safetensors.index.fp16.json"),
+        br#"{"weight_map":{"a":"model.fp16-00001-of-00002.safetensors","b":"model.fp16-00002-of-00002.safetensors"}}"#,
+    )
+    .unwrap();
+
+    let mlx = RuntimeId::mlx_lm();
+    let kernel = Kernel::new(
+        Registry::open(&dir.path().join("shelf")).expect("registry"),
+        ArtifactStore::new(dir.path()),
+        Arc::new(MemoryGovernor::new(GovernorConfig::with_total_mb(262_144))),
+        JobHistoryStore::with_default_limit(dir.path()),
+        vec![RegisteredAdapter::streaming(Arc::new(MlxOnly {
+            id: mlx.clone(),
+        }))],
+    );
+
+    kernel
+        .discover(vec![Box::new(kernel::discovery::HFCacheScanner::single(
+            &hub,
+        ))])
+        .await
+        .expect("discover");
+
+    let shelf = kernel.shelf().await;
+    let tiny = shelf.iter().find(|m| m.name == "tiny").expect("tiny");
+    assert!(!tiny.downloading);
+    assert_eq!(tiny.runtime.id, Some(mlx));
+    assert_eq!(tiny.state, ModelState::Ready);
+}

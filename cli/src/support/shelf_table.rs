@@ -41,10 +41,12 @@ pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
     record.runtime.id.as_ref().map_or(DASH, |id| id.as_str())
 }
 
-/// How a model of `footprint_bytes` on disk fits in `memory_bytes`, when the
-/// footprint is known.
-pub(crate) fn verdict(footprint_bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
-    FitVerdict::assess(footprint_bytes, memory_bytes).map(|fit| fit.verdict)
+/// How a model that loads `serving_bytes` when served fits in `memory_bytes`,
+/// when that figure is known. Callers pass
+/// [`ModelRecord::serving_size`], not the disk figure: a repo can hold several
+/// quantizations and serve one.
+pub(crate) fn verdict(serving_bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
+    FitVerdict::assess(serving_bytes, memory_bytes).map(|fit| fit.verdict)
 }
 
 /// The short human form of a verdict: `fits` / `tight` / `too big`, empty
@@ -58,9 +60,9 @@ pub(crate) fn verdict_label(verdict: Option<FitVerdict>) -> &'static str {
     }
 }
 
-/// The fit column from the model's footprint and the machine's memory, or `—`
-/// when the footprint is unknown (the same dash the runtime column uses for an
-/// unresolved runtime).
+/// The fit column from what serving the model loads and the machine's memory,
+/// or the `table::DASH` placeholder when that is unknown (the same one
+/// the runtime column uses for an unresolved runtime).
 ///
 /// A model whose weights are gone reads `gone` instead of a verdict: there is
 /// nothing left to fit, and a fit here would be the row's one honest-looking
@@ -69,7 +71,7 @@ fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
     if record.state == ModelState::Missing {
         return "gone";
     }
-    match verdict(record.footprint_bytes, total_memory_bytes) {
+    match verdict(record.serving_size(), total_memory_bytes) {
         Some(fit) => verdict_label(Some(fit)),
         None => DASH,
     }
@@ -153,6 +155,13 @@ mod tests {
     fn a_warm_model_keeps_its_filled_dot() {
         assert_eq!(marker(&model("warm", Some(GIB as i64)), true), "●");
         assert_eq!(marker(&model("cold", Some(GIB as i64)), false), "○");
+    }
+
+    #[test]
+    fn fit_judges_the_serving_figure_not_the_disk_figure() {
+        let mut record = model("multi", Some(40 * GIB as i64));
+        record.serving_bytes = Some(GIB as i64);
+        assert_eq!(fit_of(&record), "fits");
     }
 
     #[test]

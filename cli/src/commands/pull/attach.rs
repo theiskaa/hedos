@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use kernel::install::pulls::{PullJobDir, PullState, PullStatus, START_GRACE_MS};
+use kernel::install::pulls::{PullJobDir, PullReading, PullState, PullStatus};
 use kernel::time::now_millis;
 
 use crate::error::CliError;
@@ -23,8 +23,8 @@ const POLL: Duration = Duration::from_millis(250);
 
 /// How an attach ended.
 pub(super) enum Attached {
-    /// The pull stopped, in this state.
-    Ended(PullStatus),
+    /// The pull stopped, reading this way.
+    Ended(PullReading),
     /// The user let go; the worker was left running.
     Detached,
 }
@@ -39,14 +39,14 @@ pub(super) async fn follow(out: &Out, job: &PullJobDir) -> Attached {
     tokio::pin!(interrupt);
     loop {
         let now = now_millis();
-        let status = job.status();
-        // A job nothing ever took up will sit queued for good, and waiting on it
-        // would look exactly like waiting for a free slot.
-        if !status.state.is_live() || job.abandoned(now, START_GRACE_MS) {
+        let reading = job.reading(now);
+        // A job nothing ever took up reads interrupted rather than queued, since
+        // waiting on it would look exactly like waiting for a free slot.
+        if !reading.status.state.is_live() {
             download.finish();
-            return Attached::Ended(status);
+            return Attached::Ended(reading);
         }
-        show(&mut download, &status, job, now);
+        show(&mut download, &reading.status, now);
         tokio::select! {
             () = tokio::time::sleep(POLL) => {}
             () = &mut interrupt => {
@@ -59,7 +59,7 @@ pub(super) async fn follow(out: &Out, job: &PullJobDir) -> Attached {
 
 /// Put the record on the indicator: the bar while bytes move, the reason for the
 /// wait while they do not.
-fn show(download: &mut Download, status: &PullStatus, job: &PullJobDir, now_ms: i64) {
+fn show(download: &mut Download, status: &PullStatus, now_ms: i64) {
     match status.state {
         PullState::Running => {
             download.progress(&status.progress);
@@ -69,17 +69,13 @@ fn show(download: &mut Download, status: &PullStatus, job: &PullJobDir, now_ms: 
                 download.status(line);
             }
         }
-        _ => download.status(&waiting(job, status, now_ms)),
+        _ => download.status(&waiting(status, now_ms)),
     }
 }
 
-/// What a queued pull is waiting for.
-fn waiting(job: &PullJobDir, status: &PullStatus, now_ms: i64) -> String {
-    let note = pulls::note(
-        status,
-        job.abandoned_by(status, now_ms, START_GRACE_MS),
-        now_ms,
-    );
+/// What a queued pull some worker is coming for is waiting for.
+fn waiting(status: &PullStatus, now_ms: i64) -> String {
+    let note = pulls::note(status, false, now_ms);
     match note.is_empty() {
         true => "queued".to_owned(),
         false => format!("queued · {note}"),
@@ -88,8 +84,9 @@ fn waiting(job: &PullJobDir, status: &PullStatus, now_ms: i64) -> String {
 
 /// Say how the pull ended. A pull that did not happen is the command's failure;
 /// one the user stopped is not.
-pub(super) fn report(out: &Out, job: &PullJobDir, status: &PullStatus) -> Result<(), CliError> {
+pub(super) fn report(out: &Out, job: &PullJobDir, reading: &PullReading) -> Result<(), CliError> {
     let reference = &job.job().reference;
+    let status = &reading.status;
     match status.state {
         PullState::Done => {
             out.line(&format!("pulled {reference}"));
@@ -101,17 +98,18 @@ pub(super) fn report(out: &Out, job: &PullJobDir, status: &PullStatus) -> Result
         }
         PullState::Cancelled => out.err("cancelled"),
         PullState::Paused => out.err(&view::resumable(job, status)),
+        PullState::Interrupted if reading.abandoned => return never_taken_up(out, job, reading),
         // Nobody chose this one: the worker went away, so the model was not
         // fetched, and a script that chains onto this command must not carry on
         // to run weights that are not there.
         PullState::Interrupted => {
-            out.json(&view::json(job, status));
+            out.json(&view::json(job, reading));
             return Err(CliError::new(view::resumable(job, status)));
         }
         // A failure and a job no worker ever took up both mean the model was not
         // fetched, which a script has to be able to tell from a pull that landed.
         PullState::Failed => {
-            out.json(&view::json(job, status));
+            out.json(&view::json(job, reading));
             return Err(CliError::new(
                 status
                     .message
@@ -119,28 +117,38 @@ pub(super) fn report(out: &Out, job: &PullJobDir, status: &PullStatus) -> Result
                     .unwrap_or_else(|| format!("pulling {reference} failed")),
             ));
         }
-        PullState::Queued | PullState::Running => {
-            out.json(&view::json(job, status));
-            let id = job.id();
+        PullState::Queued | PullState::Running => return never_taken_up(out, job, reading),
+        PullState::Unreadable => {
+            out.json(&view::json(job, reading));
             return Err(CliError::new(format!(
-                "no worker took up {id}. start it again with `hedos pull resume {id}`"
+                "{}'s record could not be read",
+                job.id()
             )));
         }
     }
-    out.json(&view::json(job, status));
+    out.json(&view::json(job, reading));
     Ok(())
+}
+
+/// The failure of a pull no worker ever took up.
+fn never_taken_up(out: &Out, job: &PullJobDir, reading: &PullReading) -> Result<(), CliError> {
+    out.json(&view::json(job, reading));
+    let id = job.id();
+    Err(CliError::new(format!(
+        "no worker took up {id}. start it again with `hedos pull resume {id}`"
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::support::pulls::testing::{TempDir, job as make_job};
+    use kernel::install::pulls::START_GRACE_MS;
 
-    fn ended(state: PullState) -> PullStatus {
-        let mut status = PullStatus::queued(1_000);
-        status.state = state;
-        status
+    use crate::support::pulls::testing::{TempDir, job as make_job, shown, status, unreadable_job};
+
+    fn ended(state: PullState) -> PullReading {
+        shown(status(state))
     }
 
     #[test]
@@ -160,5 +168,32 @@ mod tests {
         report(&out, &job, &ended(PullState::Paused)).expect("the user chose this");
         report(&out, &job, &ended(PullState::Cancelled)).expect("so did they choose this");
         report(&out, &job, &ended(PullState::Done)).expect("and this is the point");
+    }
+
+    #[test]
+    fn a_pull_no_worker_took_up_says_so_rather_than_offering_a_resume_of_nothing() {
+        let directory = TempDir::new("attach-abandoned");
+        let job = make_job(&directory.store(), "Qwen/Qwen3-8B", 1_000);
+        let out = Out::new(false);
+
+        let error = report(&out, &job, &job.reading(1_000 + START_GRACE_MS))
+            .expect_err("the model was never fetched");
+
+        assert!(error.message.starts_with("no worker took up"), "{error:?}");
+    }
+
+    #[test]
+    fn a_pull_whose_record_cannot_be_read_is_the_commands_failure() {
+        let directory = TempDir::new("attach-unreadable");
+        let job = unreadable_job(&directory.store(), "Qwen/Qwen3-8B", 1_000);
+        let out = Out::new(false);
+
+        let error = report(&out, &job, &job.reading(now_millis()))
+            .expect_err("nothing says the model was fetched");
+
+        assert_eq!(
+            error.message,
+            format!("{}'s record could not be read", job.id())
+        );
     }
 }

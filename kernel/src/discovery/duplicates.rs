@@ -1,7 +1,6 @@
 //! Detecting duplicate model weights by size then a cheap content fingerprint.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -93,7 +92,7 @@ pub fn content_fingerprint(path: &Path) -> Option<String> {
 }
 
 fn fingerprint(path: &Path, size: u64) -> Option<[u8; 32]> {
-    let mut file = File::open(path).ok()?;
+    let mut file = crate::fs::open_regular(path).ok()?;
     let mut hasher = Sha256::new();
     if size <= SAMPLE_SIZE * 2 {
         let mut whole = Vec::new();

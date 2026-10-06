@@ -85,7 +85,7 @@ impl StoreScanner for OllamaStoreScanner {
                 continue;
             };
 
-            let bytes = match std::fs::read(&file) {
+            let bytes = match crate::fs::read_regular(&file) {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     result
@@ -126,7 +126,8 @@ impl StoreScanner for OllamaStoreScanner {
             // the same signal `/api/show` reports — and needs no daemon. A model
             // whose template we can't read stays undetermined (`None`).
             let tool_capable_hint = template_layer
-                .and_then(|layer| std::fs::read_to_string(self.blob_path(&layer.digest)).ok())
+                .and_then(|layer| crate::fs::read_regular(&self.blob_path(&layer.digest)).ok())
+                .and_then(|bytes| String::from_utf8(bytes).ok())
                 .map(|template| template.contains(".Tools"));
             let has_projector = manifest
                 .layers
@@ -144,7 +145,7 @@ impl StoreScanner for OllamaStoreScanner {
                 .iter()
                 .find(|layer| layer.media_type.ends_with(".params"))
             {
-                match std::fs::read(self.blob_path(&params.digest))
+                match crate::fs::read_regular(&self.blob_path(&params.digest))
                     .ok()
                     .and_then(|bytes| serde_json::from_slice::<JsonValue>(&bytes).ok())
                 {

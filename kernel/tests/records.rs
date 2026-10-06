@@ -304,6 +304,44 @@ fn record_omits_empty_optionals_when_serialized() {
 }
 
 #[test]
+fn serving_size_prefers_the_serving_figure_and_falls_back_to_disk() {
+    let mut record = a_record();
+    assert_eq!(record.serving_size(), None);
+    record.footprint_bytes = Some(300);
+    assert_eq!(record.serving_size(), Some(300));
+    record.serving_bytes = Some(200);
+    assert_eq!(record.serving_size(), Some(200));
+    assert_eq!(record.size_on_disk(), Some(300));
+    record.serving_bytes = Some(0);
+    assert_eq!(record.serving_size(), Some(300));
+}
+
+#[test]
+fn footprint_mib_budgets_the_serving_figure() {
+    let mut record = a_record();
+    record.footprint_bytes = Some(4 << 30);
+    record.serving_bytes = Some(1 << 30);
+    assert_eq!(record.footprint_mib(), Some(1024));
+    record.serving_bytes = None;
+    assert_eq!(record.footprint_mib(), Some(4096));
+}
+
+#[test]
+fn a_record_without_serving_bytes_round_trips_without_the_key() {
+    let mut record = a_record();
+    record.footprint_bytes = Some(300);
+    let text = serde_json::to_string(&record).unwrap();
+    assert!(!text.contains("serving_bytes"));
+    let back: ModelRecord = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.serving_bytes, None);
+    assert_eq!(back, record);
+
+    record.serving_bytes = Some(200);
+    let back: ModelRecord = serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+    assert_eq!(back.serving_bytes, Some(200));
+}
+
+#[test]
 fn record_equality_tracks_param_values() {
     let mut a = a_record();
     let mut b = a.clone();

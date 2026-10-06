@@ -109,7 +109,7 @@ async fn rejoin(out: &Out, job: &PullJobDir, detach: bool) -> Result<bool, CliEr
             Err(WorkerError::AlreadyRunning) => announce_joined(out, job),
             // It ended between the lookup and now, most likely landing.
             Err(WorkerError::Ended(_)) => {
-                attach::report(out, job, &job.status())?;
+                attach::report(out, job, &job.reading(now_millis()))?;
                 return Ok(true);
             }
             Err(error) => return Err(CliError::new(format!("{}: {error}", job.id()))),
@@ -161,7 +161,7 @@ async fn hand_off(out: &Out, job: &PullJobDir, detach: bool, named: Named) -> Re
         return detached(out, job, named);
     }
     match attach::follow(out, job).await {
-        Attached::Ended(status) => attach::report(out, job, &status),
+        Attached::Ended(reading) => attach::report(out, job, &reading),
         Attached::Detached => detached(out, job, Named::NotYet),
     }
 }
@@ -173,7 +173,7 @@ fn detached(out: &Out, job: &PullJobDir, named: Named) -> Result<(), CliError> {
         Named::Already => view::reach(job),
         Named::NotYet => view::detached(job),
     });
-    out.json(&view::json(job, &job.status()));
+    out.json(&view::json(job, &job.reading(now_millis())));
     Ok(())
 }
 

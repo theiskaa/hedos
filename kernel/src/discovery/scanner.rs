@@ -21,6 +21,9 @@ pub struct DiscoveredModel {
     pub execution_hint: ExecutionMode,
     /// The on-disk footprint in bytes.
     pub footprint_bytes: i64,
+    /// What serving the primary weight loads, in bytes, when the store
+    /// measures it apart from what it holds on disk.
+    pub serving_bytes: Option<i64>,
     /// The primary weight file, if identified.
     pub primary_weight_path: Option<String>,
     /// Free-text notes about this specific model.
@@ -48,6 +51,7 @@ impl DiscoveredModel {
             capabilities_hint: Vec::new(),
             execution_hint: ExecutionMode::default(),
             footprint_bytes: 0,
+            serving_bytes: None,
             primary_weight_path: None,
             diagnostics: Vec::new(),
             context_length_hint: None,

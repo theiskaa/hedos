@@ -13,6 +13,7 @@ pub mod modality_hints;
 pub mod ollama_scanner;
 pub mod scanner;
 pub mod service;
+pub(crate) mod serving;
 pub(crate) mod weights;
 
 pub use duplicates::{DEFAULT_THRESHOLD, DuplicateGroup, content_fingerprint, detect};

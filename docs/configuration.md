@@ -48,6 +48,10 @@ partial_age_hours = 24
 # How long a failing transfer keeps retrying, in minutes, before it is left
 # interrupted for you to resume.
 retry_window_minutes = 120
+# How long a pull whose bytes have all landed waits, in seconds, for the scan
+# that puts the model on the shelf. Past it the pull settles done anyway and
+# the next scan picks the model up. Between 5 and 3600.
+register_timeout_seconds = 120
 # How many ended pulls keep their record for `hedos pull ls` and the pulls
 # screen. Older ones are dropped when the shelf opens or a pull starts;
 # `hedos pull clean --keep n` overrides it for one run. 0 keeps none.

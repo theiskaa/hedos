@@ -141,3 +141,108 @@ fn the_provider_is_inferred_from_the_shape_of_the_reference() {
     );
     assert!(provider_for("gemma3:4b", Some("nowhere")).is_err());
 }
+
+#[test]
+fn every_surface_reads_an_abandoned_pull_alike() {
+    use kernel::install::pulls::{PullState, START_GRACE_MS};
+
+    use crate::support::pulls::testing::{TempDir, job};
+
+    let directory = TempDir::new("pull-surfaces-alike");
+    let store = directory.store();
+    let abandoned = job(&store, "Qwen/Qwen3-8B", 1_000);
+    let now = 1_000 + START_GRACE_MS;
+
+    let listed = view::table(&[(abandoned.clone(), abandoned.reading(now))], now);
+    let cell = listed.lines().nth(1).expect("one job row");
+    let rows = crate::tui::pull_rows(&store, now);
+    let stopped = store.stopped(now).expect("read the store");
+
+    assert!(cell.contains(PullState::Interrupted.as_str()), "{cell}");
+    assert_eq!(rows[0].pull_state, PullState::Interrupted);
+    assert_eq!(rows[0].note, "no worker");
+    assert_eq!(stopped.len(), 1);
+    assert_eq!(stopped[0].id(), abandoned.id());
+}
+
+#[test]
+fn every_surface_reads_a_pull_no_worker_took_up_as_failed_once_its_model_was_pulled_again() {
+    use kernel::install::pulls::{self, PULLED_AGAIN_LINE, PullState, START_GRACE_MS};
+
+    use crate::support::output::Out;
+    use crate::support::pulls::testing::{TempDir, job};
+
+    let directory = TempDir::new("pull-surfaces-pulled-again");
+    let store = directory.store();
+    let abandoned = job(&store, "Qwen/Qwen3-8B", 1_000);
+    let again = job(&store, "Qwen/Qwen3-8B", 2_000);
+    let now = 2_000 + START_GRACE_MS;
+
+    // The second pull under way, then landed: either way the first is over.
+    let worker = pulls::take_lock(&again.lock_path())
+        .expect("take the lock")
+        .expect("the lock is free");
+    again
+        .update_status(2_000, |status| {
+            status.state = PullState::Running;
+            status.pid = Some(std::process::id());
+        })
+        .expect("write the record");
+    for landed in [false, true] {
+        if landed {
+            again
+                .update_status(2_500, |status| {
+                    status.state = PullState::Done;
+                    status.pid = None;
+                })
+                .expect("write the record");
+        }
+        let reading = abandoned.reading(now);
+        let listed = view::table(&[(abandoned.clone(), reading.clone())], now);
+        let cell = listed.lines().nth(1).expect("one job row");
+        let json = view::json(&abandoned, &reading);
+        let rows = crate::tui::pull_rows(&store, now);
+        let row = rows
+            .iter()
+            .find(|row| row.job == abandoned.id())
+            .expect("the screen lists it");
+        let reported = attach::report(&Out::new(false), &abandoned, &reading)
+            .expect_err("the model was not fetched by this job");
+
+        assert!(cell.contains(PullState::Failed.as_str()), "{cell}");
+        assert!(cell.contains("no worker took it up"), "{cell}");
+        assert_eq!(json["state"], "failed");
+        assert_eq!(json["superseded"], true);
+        assert!(json.get("abandoned").is_none());
+        assert_eq!(row.pull_state, PullState::Failed);
+        assert!(
+            !row.pull_state.is_resumable(),
+            "the screen offers no resume"
+        );
+        assert_eq!(reported.message, PULLED_AGAIN_LINE);
+        assert!(store.stopped(now).expect("read the store").is_empty());
+        assert!(store.orphaned(now).is_empty());
+        assert_eq!(
+            abandoned.stored_status().updated_at_ms,
+            1_000,
+            "no surface that only shows it wrote to it"
+        );
+    }
+
+    // An action that meets it refuses it, and writes the reading down.
+    let resumed = manage::resume(
+        &store,
+        &ResumeArgs {
+            job: Some(abandoned.id().to_owned()),
+            all: false,
+        },
+        &Out::new(false),
+    )
+    .expect_err("nothing to resume");
+    assert!(resumed.message.contains("already failed"), "{resumed:?}");
+    assert!(runtime::install::resume_all(&store).is_empty());
+    let record = abandoned.stored_status();
+    assert_eq!(record.state, PullState::Failed);
+    assert_eq!(record.message.as_deref(), Some(PULLED_AGAIN_LINE));
+    drop(worker);
+}

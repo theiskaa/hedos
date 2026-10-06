@@ -10,7 +10,7 @@
 //! and the pulls screen, which wants every job the store still holds.
 
 use kernel::install::pulls::{
-    PullJob, PullState, PullStatus, PullStore, REGISTERING_LINE, START_GRACE_MS,
+    PullJob, PullReading, PullState, PullStatus, PullStore, REGISTERING_LINE,
 };
 
 use super::strip::ENDED_LINGER_MS;
@@ -32,7 +32,8 @@ pub struct JobRow {
     /// Where the pull is in the record's own vocabulary, which is finer than
     /// the strip's.
     pub pull_state: PullState,
-    /// The live record: what has landed, which attempt, why it stopped.
+    /// The live record as shown: what has landed, which attempt, why it
+    /// stopped, its state with both liveness rules applied.
     pub status: PullStatus,
     /// What was asked for, written once when the job was created.
     pub descriptor: PullJob,
@@ -67,16 +68,14 @@ pub fn rows(store: &PullStore, now_ms: i64) -> Vec<JobRow> {
 fn rows_of(jobs: Vec<kernel::install::pulls::PullJobDir>, now_ms: i64) -> Vec<JobRow> {
     jobs.into_iter()
         .map(|job| {
-            let status = job.status();
-            // A job queued with nobody coming for it is stopped, whatever the
+            // A job queued with nobody coming for it reads stopped, whatever the
             // record says: the kernel already refuses to join one, and a strip
             // that called it live would never let the model be pulled again.
-            let abandoned = job.abandoned_by(&status, now_ms, START_GRACE_MS);
-            let pull_state = match abandoned {
-                true => PullState::Interrupted,
-                false => status.state,
-            };
-            let aged_out = pull_state.is_terminal()
+            let PullReading {
+                status, abandoned, ..
+            } = job.reading(now_ms);
+            let pull_state = status.state;
+            let aged_out = (pull_state.is_terminal() || pull_state == PullState::Unreadable)
                 && now_ms.saturating_sub(status.updated_at_ms) >= ENDED_LINGER_MS;
             // The whole note: the painter cuts it to the row it has, where
             // `ls` cuts it to its column.
@@ -125,6 +124,9 @@ fn state(pull_state: PullState, status: &PullStatus, reference: &str, note: Stri
         // The row names the model already; a reason that opens with it
         // would name it twice.
         PullState::Failed => TaskState::Failed(said(without_subject(note, reference), "failed")),
+        // Nothing here can stop, resume, or forget it, so it reads as the
+        // failure it is to this build rather than as a pull still going.
+        PullState::Unreadable => TaskState::Failed(said(note, "unreadable")),
         // What is on disk is why the row is worth going on from.
         PullState::Paused | PullState::Interrupted => {
             let mut how = pull_state.to_string();

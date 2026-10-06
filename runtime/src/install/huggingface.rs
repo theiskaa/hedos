@@ -236,6 +236,7 @@ async fn run_install(
     // Counted after the stray partials went, so none of them is in the count.
     let meter = Arc::new(InstallProgressMeter::new(
         summed_bytes(&ordered),
+        partial(&ordered),
         writer.present_bytes(&ordered, &revision),
     ));
     for sibling in &ordered {
@@ -317,6 +318,12 @@ fn summed_bytes(selection: &[HFSibling]) -> Option<i64> {
     }
 }
 
+/// Whether [`summed_bytes`] leaves a file out: the listing gave no size for at
+/// least one, so the sum is a floor rather than the total.
+fn partial(selection: &[HFSibling]) -> bool {
+    selection.iter().any(|sibling| sibling.bytes.is_none())
+}
+
 fn last_segment(repo: &str) -> String {
     repo.rsplit('/')
         .find(|part| !part.is_empty())
@@ -338,6 +345,9 @@ fn display_path(root: &Path, home: &Path) -> String {
 /// 8 MiB or 300 ms.
 struct InstallProgressMeter {
     total_bytes: Option<i64>,
+    /// Whether `total_bytes` leaves out a file the listing did not size, so
+    /// no fraction can be read from it.
+    total_is_partial: bool,
     state: Mutex<MeterState>,
 }
 
@@ -377,9 +387,10 @@ impl InstallProgressMeter {
     const EMIT_BYTES: i64 = 8 << 20;
     const EMIT_INTERVAL: Duration = Duration::from_millis(300);
 
-    fn new(total_bytes: Option<i64>, present_bytes: i64) -> Self {
+    fn new(total_bytes: Option<i64>, total_is_partial: bool, present_bytes: i64) -> Self {
         Self {
             total_bytes,
+            total_is_partial,
             state: Mutex::new(MeterState {
                 present: present_bytes.max(0),
                 on_disk: 0,
@@ -442,7 +453,7 @@ impl InstallProgressMeter {
         InstallProgress {
             bytes_downloaded: state.downloaded().max(0),
             total_bytes: self.total_bytes,
-            total_is_partial: false,
+            total_is_partial: self.total_is_partial,
             current_file: state.current_file.clone(),
         }
     }
@@ -583,7 +594,7 @@ mod tests {
 
     #[test]
     fn the_meter_throttles_small_frequent_updates() {
-        let meter = InstallProgressMeter::new(Some(100 << 20), 0);
+        let meter = InstallProgressMeter::new(Some(100 << 20), false, 0);
         meter.begin("w.bin");
         // The first chunk of a file emits whatever its size, naming the file.
         let first = meter
@@ -599,12 +610,34 @@ mod tests {
             .expect("a large delta emits");
         assert_eq!(emitted.bytes_downloaded, (9 << 20) + 32);
         assert_eq!(emitted.total_bytes, Some(100 << 20));
-        assert!(!emitted.total_is_partial); // HF totals are exact → a fraction shows
+        assert!(!emitted.total_is_partial); // exact when every file is sized, so a fraction shows
+    }
+
+    #[test]
+    fn a_meter_over_a_listing_missing_a_size_reports_a_partial_total() {
+        let meter = InstallProgressMeter::new(Some(1_000), true, 0);
+        meter.begin("config.json");
+        let past = meter
+            .add(Landed::Fetched(1_500))
+            .expect("the first chunk emits");
+        assert!(past.total_is_partial);
+        assert!(past.bytes_downloaded > 1_000);
+        assert_eq!(past.fraction(), None);
+        assert!(meter.finish().total_is_partial);
+    }
+
+    #[test]
+    fn partial_is_true_only_when_a_sibling_is_unsized() {
+        let sized = HFSibling::new("w.safetensors", Some(10));
+        let without_size = HFSibling::new("config.json", None);
+        assert!(!partial(&[sized.clone(), sized.clone()]));
+        assert!(partial(&[sized, without_size.clone()]));
+        assert!(partial(&[without_size]));
     }
 
     #[test]
     fn bytes_on_disk_are_counted_but_never_reported_as_a_transfer() {
-        let meter = InstallProgressMeter::new(Some(1_000), 620);
+        let meter = InstallProgressMeter::new(Some(1_000), false, 620);
         meter.begin("config.json");
         assert!(
             meter.add(Landed::OnDisk(20)).is_none(),
@@ -631,7 +664,7 @@ mod tests {
     fn the_count_starts_from_what_is_on_disk_over_every_file() {
         // A resumed pull: LICENSE (no hash, fetched again) goes before the
         // weights, whose partial holds 600 of the 1000 bytes.
-        let meter = InstallProgressMeter::new(Some(1_000), 600);
+        let meter = InstallProgressMeter::new(Some(1_000), false, 600);
         meter.begin("LICENSE");
         let first = meter
             .add(Landed::Fetched(10))
@@ -647,7 +680,7 @@ mod tests {
 
         // A partial saved under an older name is more than the plan counted;
         // once found, the count moves up to it.
-        let meter = InstallProgressMeter::new(Some(1_000), 0);
+        let meter = InstallProgressMeter::new(Some(1_000), false, 0);
         meter.begin("w.bin");
         assert!(meter.add(Landed::OnDisk(700)).is_none());
         let found = meter.add(Landed::Fetched(1)).expect("emits");

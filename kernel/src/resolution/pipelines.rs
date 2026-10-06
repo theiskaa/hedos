@@ -12,7 +12,7 @@ use crate::records::{Capability, JsonValue, Modality, ParamSpec, ParamType};
 /// The `_class_name` declared in a diffusers `model_index.json` (or scheduler
 /// config), if the file reads and parses as an object.
 pub(crate) fn diffusers_pipeline_class(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
+    let bytes = crate::fs::read_regular(path).ok()?;
     let JsonValue::Object(index) = serde_json::from_slice::<JsonValue>(&bytes).ok()? else {
         return None;
     };

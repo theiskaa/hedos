@@ -150,7 +150,7 @@ fn state_style(state: PullState) -> Style {
         PullState::Queued | PullState::Running => ACCENT,
         PullState::Paused | PullState::Interrupted => CAUTION,
         PullState::Done => WARM,
-        PullState::Failed => FAILED,
+        PullState::Failed | PullState::Unreadable => FAILED,
         PullState::Cancelled => DIM,
     }
 }

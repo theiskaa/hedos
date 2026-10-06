@@ -62,7 +62,7 @@ fn skip_reason(record: &ModelRecord, budget: u64, any_size: bool) -> Option<Stri
     if record.runtime.id.is_none() {
         return Some("no runtime serves it".to_owned());
     }
-    if !any_size && verdict(record.footprint_bytes, budget) == Some(FitVerdict::TooLarge) {
+    if !any_size && verdict(record.serving_size(), budget) == Some(FitVerdict::TooLarge) {
         return Some(format!("too big for {} GiB", text::gib(budget as i64)));
     }
     None

@@ -5,8 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::discovery::gguf_models::{discovered_models, is_mmproj_name};
+use crate::discovery::gguf_models::discovered_models;
 use crate::discovery::scanner::{ScanResult, StoreScanner};
+use crate::discovery::weights::gguf_weight;
 use crate::records::SourceKind;
 
 /// A scanner over one or more LM Studio model roots.
@@ -90,28 +91,12 @@ fn collect_ggufs(dir: &Path, into: &mut Vec<(PathBuf, i64)>) -> std::io::Result<
             Ok(kind) if kind.is_dir() => {
                 let _ = collect_ggufs(&path, into);
             }
-            _ if is_gguf_weight(&path) => {
-                if let Ok(meta) = std::fs::metadata(&path)
-                    && meta.is_file()
-                {
-                    into.push((path, meta.len() as i64));
+            _ => {
+                if let Some(bytes) = gguf_weight(&path) {
+                    into.push((path, bytes as i64));
                 }
             }
-            _ => {}
         }
     }
     Ok(())
-}
-
-fn is_gguf_weight(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    if is_mmproj_name(name) {
-        return false;
-    }
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
 }

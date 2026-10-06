@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::{InstallPlan, InstallPlanFile};
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::{PullJobDir, PullLock, PullState, PullStatus, PullStore};
+use kernel::install::pulls::{
+    PullJobDir, PullLock, PullReading, PullState, PullStatus, PullStore, REGISTERING_LINE,
+};
 
 /// Keeps two directories made in the same nanosecond apart.
 static UNIQUE: AtomicU64 = AtomicU64::new(0);
@@ -63,6 +65,25 @@ pub fn job(store: &PullStore, reference: &str, now: i64) -> PullJobDir {
     store.create(&plan(reference), now).expect("create the job")
 }
 
+/// A job for `reference` in `store`, created at `now`, whose record a newer
+/// build wrote in a state this one does not know.
+pub fn unreadable_job(store: &PullStore, reference: &str, now: i64) -> PullJobDir {
+    let job = job(store, reference, now);
+    fs::write(
+        job.path().join("status.json"),
+        br#"{"state":"verifying","updated_at_ms":1}"#,
+    )
+    .expect("write the record");
+    job
+}
+
+/// Mark `status` the way a worker registering what it fetched marks it: the
+/// line it says and the field that puts it past stopping, written together.
+pub fn mark_registering(status: &mut PullStatus) {
+    status.status_line = Some(REGISTERING_LINE.to_owned());
+    status.registering_until_ms = Some(i64::MAX);
+}
+
 /// A job with a worker holding it, so the record under test is the only thing a
 /// reader is going by.
 pub struct Held {
@@ -103,4 +124,13 @@ pub fn moved(downloaded: i64, total: Option<i64>, partial: bool) -> PullStatus {
         current_file: None,
     };
     status
+}
+
+/// `status` as a surface shows a job some worker took up.
+pub fn shown(status: PullStatus) -> PullReading {
+    PullReading {
+        status,
+        abandoned: false,
+        superseded: false,
+    }
 }

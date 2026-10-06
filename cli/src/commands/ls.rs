@@ -90,9 +90,11 @@ fn approval_hints(session: &Session, shelf: &[ModelRecord]) -> Vec<String> {
         .collect()
 }
 
-/// The shelf as a JSON array: every record's own fields plus a `fit` slug
-/// (`runs_well`/`tight_fit`/`too_large`, or `null` when the footprint is
-/// unknown or the weights are gone), judged against `total_memory_bytes`.
+/// The shelf as a JSON array: every record's own fields (`footprint_bytes` on
+/// disk, and `serving_bytes` when the store measured serving apart from it)
+/// plus a `fit` slug (`runs_well`/`tight_fit`/`too_large`, or `null` when the
+/// size is unknown or the weights are gone), judged from what serving the
+/// model loads against `total_memory_bytes`.
 ///
 /// A model whose weights are gone has no fit for the same reason the table
 /// reads `gone` in that column: there is nothing left to fit, and a verdict
@@ -104,7 +106,7 @@ fn shelf_json(shelf: &[ModelRecord], total_memory_bytes: u64) -> serde_json::Val
         .map(|record| {
             let mut value = serde_json::to_value(record).unwrap_or_default();
             let fit = (record.state != ModelState::Missing)
-                .then(|| FitVerdict::assess(record.footprint_bytes, total_memory_bytes))
+                .then(|| FitVerdict::assess(record.serving_size(), total_memory_bytes))
                 .flatten()
                 .map(|assessment| assessment.verdict.as_str());
             if let Some(object) = value.as_object_mut() {
@@ -165,6 +167,16 @@ mod tests {
         let value = shelf_json(&[record], 16 * GIB);
         assert!(value[0]["fit"].is_null());
         assert_eq!(value[0]["state"], "missing", "and says why");
+    }
+
+    #[test]
+    fn json_fit_reads_the_serving_figure() {
+        let mut record = model("multi", Some(40 * GIB as i64));
+        record.serving_bytes = Some(GIB as i64);
+        let value = shelf_json(&[record], 16 * GIB);
+        assert_eq!(value[0]["fit"], "runs_well");
+        assert_eq!(value[0]["serving_bytes"], GIB as i64);
+        assert_eq!(value[0]["footprint_bytes"], 40 * GIB as i64);
     }
 
     #[test]

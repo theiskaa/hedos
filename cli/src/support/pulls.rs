@@ -2,7 +2,7 @@
 //! in a table and the screen puts them in the task strip, and a pull should not
 //! describe itself differently depending on which one is looking.
 
-use kernel::install::pulls::{PullEvent, PullEventKind, PullStatus};
+use kernel::install::pulls::{PullControl, PullEvent, PullEventKind, PullStatus, StopAnswer};
 use kernel::records::byte_format::format_bytes;
 
 use crate::support::clock;
@@ -11,6 +11,24 @@ use crate::support::table::DASH;
 /// How wide a note is allowed to be before it is cut short; a provider's message
 /// can run to a paragraph and the surfaces showing it are one line each.
 const NOTE_LIMIT: usize = 44;
+
+/// What a pause or a cancel that came too late says about the pull named
+/// `subject`; `None` for one its worker honoured, and for one still unanswered.
+///
+/// A job that ended some other way is not said to have missed the ask: its
+/// worker may have read it and been overtaken, as a pause is by a cancel that
+/// lands while it is being honoured. What is certain is that it had no effect.
+pub fn too_late(subject: &str, control: PullControl, answer: Option<StopAnswer>) -> Option<String> {
+    match answer? {
+        StopAnswer::Honoured(_) => None,
+        StopAnswer::Landed => Some(format!(
+            "{subject}: every byte landed before the {control} was read; it is done"
+        )),
+        StopAnswer::Ended(state) => Some(format!(
+            "{subject} ended {state}, so the {control} had no effect"
+        )),
+    }
+}
 
 /// How far along a pull is: a percentage against a firm total, the bytes alone
 /// when the total is only an estimate, and a dash before anything has moved.

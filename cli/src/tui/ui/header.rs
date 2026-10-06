@@ -102,7 +102,7 @@ fn shelf_line(app: &App, wont_run: bool) -> String {
         .iter()
         .filter(|record| {
             !gone(record)
-                && verdict(record.footprint_bytes, app.facts.memory_bytes)
+                && verdict(record.serving_size(), app.facts.memory_bytes)
                     == Some(FitVerdict::TooLarge)
         })
         .count();

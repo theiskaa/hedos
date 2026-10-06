@@ -10,6 +10,7 @@ use kernel::records::{Capability, ModelRecord, ModelState};
 use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
 use ratatui::widgets::TableState;
 use runtime::bench::BenchPlan;
+use runtime::install::WorkerError;
 
 use super::bench::BenchScreen;
 use super::chat::ChatPane;
@@ -292,7 +293,7 @@ impl App {
             Err(Refusal::Because(format!("{name} is already warm")))
         } else if record.state == ModelState::Missing {
             Err(Refusal::Because(format!("{name}'s weights are gone")))
-        } else if verdict(record.footprint_bytes, self.facts.memory_bytes)
+        } else if verdict(record.serving_size(), self.facts.memory_bytes)
             == Some(FitVerdict::TooLarge)
         {
             Err(Refusal::Because(format!(
@@ -1163,10 +1164,17 @@ impl App {
                 self.open(Modal::Stop(card));
                 Vec::new()
             }
-            None => {
-                let text = format!("{} is {}, not downloading", row.reference, row.pull_state);
-                self.notify(text)
-            }
+            // Polled a moment ago, so the seconds left are an upper bound.
+            None => match row.status.registering_for_secs(row.polled_at_ms) {
+                Some(within_secs) => {
+                    let why = WorkerError::PastStopping { within_secs };
+                    self.notify(format!("{}: {why}", row.reference))
+                }
+                None => {
+                    let text = format!("{} is {}, not downloading", row.reference, row.pull_state);
+                    self.notify(text)
+                }
+            },
         }
     }
 

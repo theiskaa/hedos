@@ -15,12 +15,14 @@ use kernel::discovery::service::DiscoverySummary;
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::install::pulls::{PullControl, PullError, PullStore};
+use kernel::install::pulls::{PullControl, PullError, PullJobDir, PullStore};
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use kernel::time::now_millis;
 use runtime::bench::{BenchPlan, Cancel};
 use runtime::install::service::InstallService;
-use runtime::install::{Started, WorkerError, restart, start_or_join, stop};
+use runtime::install::{
+    STOP_ANSWER_WINDOW, Started, Stopped, WorkerError, await_answer, restart, start_or_join, stop,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -30,7 +32,7 @@ use super::jobs;
 use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
 use crate::support::bench_run::ShelfPrepare;
-use crate::support::pulls::event_line;
+use crate::support::pulls::{event_line, too_late};
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{self, is_resident, unload_anywhere, warm_request};
 use crate::support::session::Session;
@@ -54,7 +56,8 @@ impl Snapshot {
 }
 
 /// What tasks run against: the kernel session, the install service the pull
-/// modal plans through, and the audit log the machine facts are read from.
+/// modal searches and plans through (built from the session's settings), and
+/// the audit log the machine facts are read from.
 pub struct TaskContext {
     session: Arc<Session>,
     install: InstallService,
@@ -71,8 +74,11 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
-    /// A context over `session`, installing through `install`.
-    pub fn new(session: Arc<Session>, install: InstallService) -> Self {
+    /// A context over `session`, searching and planning installs through the
+    /// install service its settings describe, so the shelf and a pull's worker
+    /// read the same `hedos.toml`.
+    pub fn new(session: Arc<Session>) -> Self {
+        let install = runtime::boot::install_service(&session.settings);
         let audit = AuditReader::new(session.dirs.sub("gateway"));
         Self {
             session,
@@ -390,12 +396,23 @@ pub fn spawn_pull_control(
 ) {
     let store = context.pull_store();
     let tx = tx.clone();
-    tokio::spawn(async move {
-        if let Err(reason) = act_on_pull(&store, action, &id) {
-            let _ = tx.send(Event::PullRefused(reason));
-        }
-        spawn_pulls_into(&store, &tx);
-    });
+    // A stop or a resume rewrites the record, and a resume spawns a worker, so
+    // it runs where blocking is allowed rather than on a thread that streams.
+    tokio::task::spawn_blocking(move || control_pull(&store, action, &id, &tx));
+}
+
+/// Act on the job `id` names, report a refusal, and send the rows as they
+/// read afterwards.
+fn control_pull(
+    store: &PullStore,
+    action: PullAction,
+    id: &str,
+    tx: &mpsc::UnboundedSender<Event>,
+) {
+    if let Err(reason) = act_on_pull(store, action, id) {
+        let _ = tx.send(Event::PullRefused(reason));
+    }
+    spawn_pulls_into(store, tx);
 }
 
 /// What a key on a pull row asks of its job.
@@ -424,24 +441,53 @@ fn start_pull(store: &PullStore, plan: InstallPlan) -> Result<Started, WorkerErr
     start_or_join(store, &plan)
 }
 
-/// Act on the job `id` names; the reason, phrased for the footer, when the
-/// job refuses.
+/// Act on the job `id` names; the reason, phrased for the footer and named
+/// by the job's reference, when the job refuses.
 fn act_on_pull(store: &PullStore, action: PullAction, id: &str) -> Result<(), String> {
     let job = store.open(id).map_err(|error| error.to_string())?;
-    let refused = |error: WorkerError| error.to_string();
+    let reference = job.job().reference.as_str();
+    let refused = |error: WorkerError| format!("{reference}: {error}");
     match action {
-        PullAction::Pause => stop(&job, PullControl::Pause).map(|_| ()).map_err(refused),
-        PullAction::Cancel => stop(&job, PullControl::Cancel).map(|_| ()).map_err(refused),
+        PullAction::Pause => stop_and_wait(&job, PullControl::Pause),
+        PullAction::Cancel => stop_and_wait(&job, PullControl::Cancel),
         PullAction::Resume => restart(&job).map(|_| ()).map_err(refused),
         PullAction::Forget => job.forget().map_err(|error| match error {
             // The worker holds the lock until it exits, a moment after the
             // record reads done; the id it holds means nothing on screen.
-            PullError::Held(_) => format!(
-                "{} is still being finished by its worker; try again",
-                job.job().reference
-            ),
-            error => error.to_string(),
+            PullError::Held(_) => {
+                format!("{reference} is still being finished by its worker; try again")
+            }
+            // Named by reference, as the screen's own check names it.
+            PullError::NotEnded { state, .. } => format!("{reference} is {state}, not ended"),
+            error => format!("{reference}: {error}"),
         }),
+    }
+}
+
+/// Ask `job` to stop the way `control` says, then wait for its worker's
+/// answer as `hedos pull pause` and `cancel` do. A cancel that lands while
+/// the worker honours a pause is settled once that worker lets go, rather
+/// than left on disk behind a row that reads paused. A stop that came too
+/// late is a refusal; one still unanswered stands, and the rows show it as
+/// they poll.
+///
+/// The wait blocks, so this runs on the blocking pool, as every pull control
+/// does; with no runtime to wait on it asks and returns.
+fn stop_and_wait(job: &PullJobDir, control: PullControl) -> Result<(), String> {
+    let reference = job.job().reference.as_str();
+    let refused = |error: WorkerError| format!("{reference}: {error}");
+    let answer = match stop(job, control).map_err(refused)? {
+        Stopped::Settled(_) => return Ok(()),
+        Stopped::Asked(_) => match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle
+                .block_on(await_answer(job, control, STOP_ANSWER_WINDOW))
+                .map_err(refused)?,
+            Err(_) => return Ok(()),
+        },
+    };
+    match too_late(reference, control, answer) {
+        Some(line) => Err(line),
+        None => Ok(()),
     }
 }
 

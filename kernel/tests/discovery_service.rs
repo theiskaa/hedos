@@ -479,3 +479,103 @@ fn an_unchanged_weight_reuses_the_stored_fingerprint_without_rehashing() {
         Some("BOGUS")
     );
 }
+
+#[test]
+fn a_scan_copies_the_serving_figure_and_clears_a_stale_one() {
+    let dir = TempDir::new();
+    let mut registry = registry(&dir);
+    let mut model = discovered("multi", SourceKind::huggingface_cache(), "/hub/multi");
+    model.footprint_bytes = 300;
+    model.serving_bytes = Some(200);
+    let first = ScanResult {
+        discovered: vec![model.clone()],
+        ..Default::default()
+    };
+    let kinds = vec![SourceKind::huggingface_cache()];
+    DiscoveryService::new(vec![scanner(kinds.clone(), first)])
+        .discover(&mut registry)
+        .expect("discover");
+    let id = kernel::records::stable_id(&model.source);
+    assert_eq!(registry.get(&id).unwrap().serving_bytes, Some(200));
+
+    model.serving_bytes = None;
+    let second = ScanResult {
+        discovered: vec![model],
+        ..Default::default()
+    };
+    DiscoveryService::new(vec![scanner(kinds, second)])
+        .discover(&mut registry)
+        .expect("discover");
+    let record = registry.get(&id).unwrap();
+    assert_eq!(record.serving_bytes, None);
+    assert_eq!(record.footprint_bytes, Some(300));
+}
+
+#[test]
+fn the_summary_totals_stay_on_disk() {
+    let dir = TempDir::new();
+    let mut registry = registry(&dir);
+    let mut model = discovered("multi", SourceKind::huggingface_cache(), "/hub/multi");
+    model.footprint_bytes = 300;
+    model.serving_bytes = Some(200);
+    let result = ScanResult {
+        discovered: vec![model],
+        ..Default::default()
+    };
+    let summary =
+        DiscoveryService::new(vec![scanner(vec![SourceKind::huggingface_cache()], result)])
+            .discover(&mut registry)
+            .expect("discover");
+    assert_eq!(summary.total_bytes, 300);
+    assert_eq!(
+        summary.per_kind[&SourceKind::huggingface_cache()].bytes,
+        300
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_loose_file_that_became_a_link_to_a_directory_is_marked_missing() {
+    let dir = TempDir::new();
+    let target = dir.path().join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    let weight = dir.path().join("fake.gguf");
+    std::os::unix::fs::symlink(&target, &weight).unwrap();
+    let weight = weight.to_string_lossy().into_owned();
+    let mut registry = registry(&dir);
+    // What an older build registered for it: the file is its own source.
+    let mut fake = record("fake", SourceKind::file(), &weight);
+    fake.primary_weight_path = Some(weight);
+    let id = fake.id.clone();
+    registry.register(fake).unwrap();
+
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult::default(),
+    )]);
+    service.discover(&mut registry).expect("discover");
+    assert_eq!(registry.get(&id).unwrap().state, ModelState::Missing);
+}
+
+#[test]
+fn a_repo_directory_still_stands_for_weights_its_primary_moved_within() {
+    let dir = TempDir::new();
+    let repo = dir.path().join("models--org--repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut registry = registry(&dir);
+    let mut hub = record(
+        "repo",
+        SourceKind::huggingface_cache(),
+        &repo.to_string_lossy(),
+    );
+    hub.primary_weight_path = Some(repo.join("gone.safetensors").to_string_lossy().into_owned());
+    let id = hub.id.clone();
+    registry.register(hub).unwrap();
+
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::huggingface_cache()],
+        ScanResult::default(),
+    )]);
+    service.discover(&mut registry).expect("discover");
+    assert_eq!(registry.get(&id).unwrap().state, ModelState::Unresolved);
+}

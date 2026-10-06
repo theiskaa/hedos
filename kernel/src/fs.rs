@@ -1,6 +1,30 @@
 //! Small filesystem-path helpers shared across the workspace.
 
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
+
+/// Open `path` for reading, refusing anything but a regular file (following
+/// links). Opening a pipe, a socket, or a device blocks until something
+/// writes to it, and a scan that opens one by a name it expects to be a small
+/// JSON file or a weight would wait on it for good.
+pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    File::open(path)
+}
+
+/// The whole of the file at `path`, read only when it is a regular file, as
+/// [`open_regular`] opens one.
+pub(crate) fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    io::Read::read_to_end(&mut open_regular(path)?, &mut bytes)?;
+    Ok(bytes)
+}
 
 /// Expand a leading `~` or `~/` in `path` against `home`. A path that does not
 /// begin with a tilde segment is returned unchanged.

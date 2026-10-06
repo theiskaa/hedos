@@ -233,6 +233,16 @@ mod tests {
     }
 
     #[test]
+    fn the_disk_total_still_counts_every_quant() {
+        let mut multi = record("multi", SourceKind::huggingface_cache(), Some(300));
+        multi.serving_bytes = Some(100);
+        assert_eq!(
+            disk_by_store(&[multi]),
+            vec![("huggingface-cache".to_owned(), 300)]
+        );
+    }
+
+    #[test]
     fn totals_add_up() {
         let facts = Facts {
             memory_bytes: 0,

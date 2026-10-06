@@ -147,12 +147,12 @@ impl ShelfRow {
         let verdict = if gone {
             None
         } else {
-            verdict(record.footprint_bytes, budget)
+            verdict(record.serving_size(), budget)
         };
         let mut size = if gone {
             "gone".to_owned()
         } else {
-            record.size_on_disk().map_or(DASH.to_owned(), text::bytes)
+            record.serving_size().map_or(DASH.to_owned(), text::bytes)
         };
         if matches!(verdict, Some(FitVerdict::TightFit | FitVerdict::TooLarge)) {
             size = format!("{size} {}", verdict_label(verdict));
@@ -350,6 +350,15 @@ mod tests {
             ShelfRow::new(&sized_record(Some(1)), false, 16 * GIB).cells[3],
             "hf"
         );
+    }
+
+    #[test]
+    fn a_multi_quant_row_shows_the_serving_size_without_too_big() {
+        let mut record = sized_record(Some(40 * GIB as i64));
+        record.serving_bytes = Some(GIB as i64);
+        let row = ShelfRow::new(&record, false, 16 * GIB);
+        assert_eq!(row.cells[SIZE], "1.1 GB");
+        assert_eq!(row.verdict, Some(FitVerdict::RunsWell));
     }
 
     #[test]

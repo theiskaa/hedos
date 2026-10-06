@@ -5,7 +5,7 @@
 //! an array of them, and only `resume`, which acts on many jobs and can refuse
 //! some of them, wraps its two lists in an object.
 
-use kernel::install::pulls::{PullJobDir, PullStatus, START_GRACE_MS};
+use kernel::install::pulls::{PullJobDir, PullReading, PullStatus};
 
 use crate::support::pulls::{note, progress};
 use crate::support::table;
@@ -13,20 +13,16 @@ use crate::support::table;
 const HEADERS: [&str; 5] = ["ID", "REFERENCE", "STATE", "PROGRESS", "NOTE"];
 
 /// The listing: one row per job, oldest first, with a header.
-pub(super) fn table(jobs: &[(PullJobDir, PullStatus)], now_ms: i64) -> String {
+pub(super) fn table(jobs: &[(PullJobDir, PullReading)], now_ms: i64) -> String {
     let rows: Vec<Vec<String>> = jobs
         .iter()
-        .map(|(job, status)| {
+        .map(|(job, reading)| {
             vec![
                 job.id().to_owned(),
                 job.job().reference.clone(),
-                status.state.to_string(),
-                progress(status),
-                note(
-                    status,
-                    job.abandoned_by(status, now_ms, START_GRACE_MS),
-                    now_ms,
-                ),
+                reading.status.state.to_string(),
+                progress(&reading.status),
+                note(&reading.status, reading.abandoned, now_ms),
             ]
         })
         .collect();
@@ -69,20 +65,46 @@ pub(super) fn resumable(job: &PullJobDir, status: &PullStatus) -> String {
 /// everything the table shows and everything it leaves out.
 ///
 /// The two are merged rather than nested because no field name is shared; a
-/// field added to both would silently lose the descriptor's copy.
-pub(super) fn json(job: &PullJobDir, status: &PullStatus) -> serde_json::Value {
+/// field added to both would silently lose the descriptor's copy. `state` is
+/// the state as shown, `"abandoned": true` marks a job that reads
+/// `interrupted` because no worker ever took it up, and `"superseded": true`
+/// one that reads `failed` because no worker took it up and its model was
+/// pulled since.
+pub(super) fn json(job: &PullJobDir, reading: &PullReading) -> serde_json::Value {
     let mut value = serde_json::to_value(job.job()).unwrap_or_default();
     if let (Some(object), Ok(serde_json::Value::Object(record))) =
-        (value.as_object_mut(), serde_json::to_value(status))
+        (value.as_object_mut(), serde_json::to_value(&reading.status))
     {
         object.extend(record);
+        if reading.abandoned {
+            object.insert("abandoned".to_owned(), serde_json::Value::Bool(true));
+        }
+        if reading.superseded {
+            object.insert("superseded".to_owned(), serde_json::Value::Bool(true));
+        }
+    }
+    value
+}
+
+/// A job's object with `"outcome"` added: what became of a pause or a cancel
+/// asked of it.
+pub(super) fn with_outcome(mut value: serde_json::Value, outcome: &str) -> serde_json::Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "outcome".to_owned(),
+            serde_json::Value::String(outcome.to_owned()),
+        );
     }
     value
 }
 
 /// Every job's record as an array, for the commands that act on many.
-pub(super) fn json_list(jobs: &[(PullJobDir, PullStatus)]) -> serde_json::Value {
-    serde_json::Value::Array(jobs.iter().map(|(job, status)| json(job, status)).collect())
+pub(super) fn json_list(jobs: &[(PullJobDir, PullReading)]) -> serde_json::Value {
+    serde_json::Value::Array(
+        jobs.iter()
+            .map(|(job, reading)| json(job, reading))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

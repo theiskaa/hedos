@@ -202,9 +202,12 @@ fn path_line(record: &ModelRecord, value_width: usize) -> Option<Line<'static>> 
     Some(Line::from(spans))
 }
 
-/// `size   4.7 GB · ctx 32k`, whichever of the two the record knows.
+/// `size   4.7 GB · ctx 32k`, whichever of the two the record knows, where the
+/// size is what serving the model loads. When the store holds more than that
+/// on disk (a repo with several quantizations), the disk figure follows:
+/// `size   8.5 GB · ctx 32k · 34 GB on disk`.
 fn size_line(record: &ModelRecord, value_width: usize) -> Line<'static> {
-    let size = match (record.size_on_disk(), record.context_length) {
+    let mut size = match (record.serving_size(), record.context_length) {
         (Some(bytes), Some(context)) => {
             format!("{} · ctx {}", text::bytes(bytes), text::tokens(context))
         }
@@ -212,6 +215,11 @@ fn size_line(record: &ModelRecord, value_width: usize) -> Line<'static> {
         (None, Some(context)) => format!("ctx {}", text::tokens(context)),
         (None, None) => DASH.to_owned(),
     };
+    if let Some(disk) = record.size_on_disk()
+        && record.serving_size() != Some(disk)
+    {
+        size = format!("{size} · {} on disk", text::bytes(disk));
+    }
     row("size", &size, value_width, Style::new())
 }
 
@@ -302,7 +310,7 @@ fn last_used(activity: &ModelActivity, now: i64) -> String {
 /// [`text::fit_summary`], then how much would be free with the rest of what
 /// is loaded still in memory; a record whose weights are gone says so first.
 fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
-    let (summary, required_bytes) = text::fit_parts(record.footprint_bytes, facts.memory_bytes);
+    let (summary, required_bytes) = text::fit_parts(record.serving_size(), facts.memory_bytes);
     let summary = if record.state == ModelState::Missing {
         format!("weights are gone · {summary}")
     } else {

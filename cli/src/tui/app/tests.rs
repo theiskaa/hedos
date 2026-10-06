@@ -181,6 +181,24 @@ fn warm_goes_local_without_a_gateway_and_through_it_with_one() {
 }
 
 #[test]
+fn warm_is_not_refused_for_a_repo_whose_quants_only_sum_too_big() {
+    let mut app = app(1);
+    app.facts.memory_bytes = 16 << 30;
+    app.records[0].footprint_bytes = Some(40 << 30);
+    app.records[0].serving_bytes = Some(1 << 30);
+    assert!(matches!(
+        press(&mut app, Key::Char('w')).as_slice(),
+        [Effect::Spawn(TaskKind::Warm { .. })]
+    ));
+
+    let mut app = self::app(1);
+    app.facts.memory_bytes = 16 << 30;
+    app.records[0].footprint_bytes = Some(40 << 30);
+    assert!(press(&mut app, Key::Char('w')).is_empty());
+    assert_eq!(app.notice(), Some("model-0 is too big for this machine"));
+}
+
+#[test]
 fn warming_a_warm_model_only_notifies() {
     let mut app = app(1);
     app.facts
@@ -1116,6 +1134,28 @@ fn the_pulls_screen_acts_on_the_selected_pull_and_asks_before_stopping_it() {
     assert!(press(&mut app, Key::Char('c')).is_empty());
     assert_eq!(app.notice(), Some("paused is paused, not downloading"));
     assert!(app.modal.is_none());
+}
+
+#[test]
+fn stopping_a_pull_being_registered_names_when_it_ends_as_the_command_line_does() {
+    let mut app = app(1);
+    press(&mut app, Key::Char('P'));
+    let mut registering = job_row(
+        "landed",
+        PullState::Running,
+        TaskState::Status("registering".to_owned()),
+    );
+    registering.polled_at_ms = 10_000;
+    registering.status.registering_until_ms = Some(14_500);
+    app.reduce(Event::Pulls(vec![registering]));
+    app.pulls.select_newest_live();
+
+    assert!(press(&mut app, Key::Char('c')).is_empty());
+    assert!(app.modal.is_none());
+    assert_eq!(
+        app.notice(),
+        Some("landed: every byte has landed; it is being registered, which ends within 5s")
+    );
 }
 
 #[test]

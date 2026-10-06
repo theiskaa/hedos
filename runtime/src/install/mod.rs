@@ -22,7 +22,10 @@ pub use transport::{
     TransportFuture,
 };
 pub use worker::{
-    PullWorker, Registrar, RetryPolicy, Stopped, WorkerError, collect_ended, stop, sweep_claims,
+    PullWorker, Registrar, RetryPolicy, STOP_ANSWER_WINDOW, Stopped, WorkerError, await_answer,
+    collect_ended, stop, sweep_claims,
 };
 #[cfg(unix)]
-pub use worker::{Started, fail, hold, ignore_hangup, restart, resume_all, start_or_join};
+pub use worker::{
+    Started, fail, hold, ignore_hangup, restart, restart_within, resume_all, start_or_join,
+};

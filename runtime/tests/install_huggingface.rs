@@ -161,6 +161,13 @@ async fn install_downloads_into_the_hub_cache_and_streams_progress() {
             .any(|e| matches!(e, InstallStreamEvent::Progress(_)))
     );
 
+    // Every file in the listing was sized, so the total is exact.
+    assert!(
+        events
+            .iter()
+            .all(|e| !matches!(e, InstallStreamEvent::Progress(p) if p.total_is_partial))
+    );
+
     // The file landed as a content-addressed blob with a snapshot symlink + ref.
     let repo = root.join("models--org--Model");
     assert_eq!(std::fs::read(repo.join("blobs").join(&sha)).unwrap(), body);
@@ -170,6 +177,34 @@ async fn install_downloads_into_the_hub_cache_and_streams_progress() {
         std::fs::read_to_string(repo.join("refs/main")).unwrap(),
         "rev1"
     );
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test]
+async fn an_unsized_file_in_the_listing_makes_the_progress_partial() {
+    let root = temp_root();
+    let body = vec![5u8; 8192];
+    let siblings = format!(
+        r#"{{"rfilename":"model.Q4_K_M.gguf","size":{size},"lfs":{{"size":{size},"sha256":"{sha}","pointerSize":134}}}},{{"rfilename":"config.json"}}"#,
+        size = body.len(),
+        sha = sha_hex(&body),
+    );
+    let provider = provider_custom(&root, &body, false, &siblings, None);
+    let plan = provider.plan("org/Model").await.expect("plan");
+    let events = drain(provider.install(plan)).await.expect("install");
+
+    let progress: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InstallStreamEvent::Progress(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert!(!progress.is_empty());
+    for snapshot in progress {
+        assert!(snapshot.total_is_partial, "{snapshot:?}");
+        assert_eq!(snapshot.fraction(), None);
+    }
     std::fs::remove_dir_all(&root).ok();
 }
 
