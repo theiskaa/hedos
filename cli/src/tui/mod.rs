@@ -56,6 +56,11 @@ use crate::support::output::Out;
 use crate::support::session::Session;
 use crate::support::signals;
 
+/// The pulls screen's rows, for a test that holds every surface's reading of
+/// one job side by side.
+#[cfg(test)]
+pub(crate) use self::jobs::rows as pull_rows;
+
 /// Why `drive` returned.
 enum Outcome {
     Quit,
@@ -68,10 +73,7 @@ enum Outcome {
 pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     session.shelf_or_discover().await?;
     let state_dir = session.dirs.sub("ui");
-    let context = Arc::new(TaskContext::new(
-        Arc::new(session),
-        runtime::boot::default_install_service(),
-    ));
+    let context = Arc::new(TaskContext::new(Arc::new(session)));
     let pull_settings = &context.session().settings.pull;
     runtime::install::collect_ended(&context.pull_store(), pull_settings);
     // A pull whose worker died while the machine slept is the common way one

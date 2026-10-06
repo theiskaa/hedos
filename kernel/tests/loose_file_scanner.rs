@@ -283,3 +283,73 @@ fn a_symlinked_directory_is_not_recursed() {
     let names: Vec<&str> = result.discovered.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["here"], "the symlinked dir is not descended into");
 }
+
+#[test]
+fn a_link_to_a_directory_named_like_a_gguf_is_not_a_model() {
+    let dir = TempDir::new();
+    let elsewhere = TempDir::new();
+    write(elsewhere.path(), "target/inside.txt", b"not a weight");
+    std::os::unix::fs::symlink(elsewhere.join("target"), dir.join("fake.gguf")).unwrap();
+
+    let result = LooseFileScanner::single(dir.path()).scan();
+    assert!(result.discovered.is_empty(), "{:?}", result.discovered);
+}
+
+#[test]
+fn a_dangling_gguf_link_is_not_a_model() {
+    let dir = TempDir::new();
+    std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("gone.gguf")).unwrap();
+
+    let result = LooseFileScanner::single(dir.path()).scan();
+    assert!(result.discovered.is_empty(), "{:?}", result.discovered);
+}
+
+#[test]
+fn a_linked_gguf_file_is_a_model_with_its_target_size() {
+    let dir = TempDir::new();
+    let elsewhere = TempDir::new();
+    write(elsewhere.path(), "real.gguf", &[0u8; 24]);
+    std::os::unix::fs::symlink(elsewhere.join("real.gguf"), dir.join("linked.gguf")).unwrap();
+
+    let result = LooseFileScanner::single(dir.path()).scan();
+    assert_eq!(find(&result, "linked").footprint_bytes, 24);
+}
+
+/// Run `scanner` on a thread of its own and wait for it a while, so a scan
+/// that blocks fails the test instead of hanging it.
+#[cfg(unix)]
+fn scan_within(scanner: LooseFileScanner) -> Option<ScanResult> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = done.send(scanner.scan());
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .ok()
+}
+
+#[cfg(unix)]
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo {}", path.display());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pipe_named_like_a_model_never_blocks_the_scan() {
+    let dir = TempDir::new();
+    mkfifo(&dir.join("stall.bin"));
+    mkfifo(&dir.join("stall.gguf"));
+    // A bundle whose config is a pipe is no bundle, and is not read.
+    write(dir.path(), "piped/model.safetensors", &[0u8; 8]);
+    mkfifo(&dir.join("piped/config.json"));
+    write(dir.path(), "here.gguf", &[0u8; 4]);
+
+    let result = scan_within(LooseFileScanner::single(dir.path()))
+        .expect("the scan finished rather than waiting on a pipe");
+    let names: Vec<&str> = result.discovered.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, ["here"]);
+}

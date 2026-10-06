@@ -6,9 +6,10 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::discovery::gguf_models::{discovered_models, is_mmproj_name};
+use crate::discovery::gguf_models::discovered_models;
 use crate::discovery::modality_hints::{self, Hint};
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
+use crate::discovery::weights::gguf_weight;
 use crate::records::{ExecutionMode, ModelSource, SourceKind};
 use crate::resolution::has_ggml_magic;
 
@@ -81,12 +82,12 @@ impl LooseFileScanner {
                     None => self.sweep(&path, depth + 1, result),
                 },
                 _ => {
-                    let size = std::fs::metadata(&path)
-                        .map(|meta| meta.len() as i64)
-                        .unwrap_or(0);
-                    if is_gguf_weight(&path) {
-                        ggufs.push((path, size));
+                    if let Some(bytes) = gguf_weight(&path) {
+                        ggufs.push((path, bytes as i64));
                     } else if is_ggml_bin(&path) {
+                        let size = std::fs::metadata(&path)
+                            .map(|meta| meta.len() as i64)
+                            .unwrap_or(0);
                         result.discovered.push(whisper_model(&path, size));
                     }
                 }
@@ -126,14 +127,15 @@ fn folder_bundle(dir: &Path) -> Option<DiscoveredModel> {
         if is_hidden(&path) {
             continue;
         }
-        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        let regular = std::fs::metadata(&path).ok().filter(|meta| meta.is_file());
+        // Only a regular file is named, so the configs read below never open
+        // a pipe or a device that would block the scan.
+        if regular.is_some()
+            && let Some(name) = path.file_name().and_then(|name| name.to_str())
+        {
             names.insert(name.to_owned());
         }
-        let size = std::fs::metadata(&path)
-            .ok()
-            .filter(|meta| meta.is_file())
-            .map(|meta| meta.len() as i64)
-            .unwrap_or(0);
+        let size = regular.map(|meta| meta.len() as i64).unwrap_or(0);
         entries.push((path, size));
     }
 
@@ -204,16 +206,10 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with('.'))
 }
 
-fn is_gguf_weight(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or_default();
-    !is_mmproj_name(name) && has_extension_ignoring_case(path, "gguf")
-}
-
+/// A `.bin` that is a regular file (through a link) opening with the GGML
+/// magic. Opening a pipe with no writer, or a device, would block the scan.
 fn is_ggml_bin(path: &Path) -> bool {
-    has_extension_ignoring_case(path, "bin") && has_ggml_magic(path)
+    has_extension_ignoring_case(path, "bin") && path.is_file() && has_ggml_magic(path)
 }
 
 /// A case-sensitive `.safetensors` extension check.

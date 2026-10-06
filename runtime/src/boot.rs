@@ -108,11 +108,6 @@ pub fn build_kernel(dirs: &HedosDirs, settings: &Settings) -> Result<Kernel, Boo
     Ok(kernel)
 }
 
-/// The default install service: the Ollama and Hugging Face providers.
-pub fn default_install_service() -> InstallService {
-    install_service(&Settings::default())
-}
-
 /// The install service the `settings` describe: the same providers, with the
 /// Hugging Face one keeping a half-downloaded file another pull left behind
 /// as long as `pull.partial_age_hours` says.
@@ -379,6 +374,7 @@ fn hf_token(home: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kernel::install::provider::InstallProviderId;
 
     fn temp_dirs() -> HedosDirs {
         let unique = std::time::SystemTime::now()
@@ -411,10 +407,16 @@ mod tests {
         assert_eq!(bridged.hf_cache_roots, ["~/hf"]);
     }
 
-    #[test]
-    fn the_default_install_service_offers_both_providers() {
-        let service = default_install_service();
-        // Constructed without panicking; both providers are present.
-        let _ = service;
+    #[tokio::test]
+    async fn an_install_service_offers_both_providers() {
+        let service = install_service(&Settings::default());
+        let ids: Vec<_> = service
+            .providers()
+            .await
+            .into_iter()
+            .map(|status| status.id)
+            .collect();
+        assert!(ids.contains(&InstallProviderId::ollama()));
+        assert!(ids.contains(&InstallProviderId::huggingface()));
     }
 }

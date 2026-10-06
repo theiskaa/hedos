@@ -238,3 +238,19 @@ fn discovered_models_uses_the_first_size_for_a_duplicated_path() {
             .all(|model| model.source.repo.as_deref() == Some("org/thing"))
     );
 }
+
+#[test]
+fn a_link_to_a_directory_named_like_a_gguf_is_not_a_model() {
+    let dir = TempDir::new();
+    let elsewhere = TempDir::new();
+    gguf(elsewhere.path(), "target/inside.txt", 4);
+    std::fs::create_dir_all(dir.path().join("org/model")).unwrap();
+    std::os::unix::fs::symlink(
+        elsewhere.path().join("target"),
+        dir.path().join("org/model/fake.gguf"),
+    )
+    .unwrap();
+
+    let result = LMStudioScanner::single(dir.path()).scan();
+    assert!(result.discovered.is_empty(), "{:?}", result.discovered);
+}
