@@ -445,7 +445,9 @@ static QUANT_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
-/// The `/api/tags` list body for a shelf of records.
+/// The `/api/tags` list body for a shelf of records. A model's `size` is what
+/// serving it loads, as Ollama's own is its layers, not every quantization a
+/// hub repo holds on disk.
 pub fn tags(records: &[ModelRecord]) -> Value {
     let models: Vec<Value> = records
         .iter()
@@ -455,7 +457,7 @@ pub fn tags(records: &[ModelRecord]) -> Value {
                 "name": name,
                 "model": name,
                 "modified_at": timestamp::iso8601(record.registered_at),
-                "size": record.size_on_disk().unwrap_or(0),
+                "size": record.serving_size().unwrap_or(0),
                 "digest": "",
                 "details": details(record),
             })
@@ -866,6 +868,15 @@ mod tests {
         assert_eq!(entry["modified_at"], "2020-09-13T12:26:40Z");
         assert_eq!(entry["size"], 4096i64 * 1_048_576);
         assert_eq!(entry["digest"], "");
+    }
+
+    #[test]
+    fn tags_size_is_the_serving_figure() {
+        let mut rec = record("multi", Some("/models/multi.Q8_0.gguf"));
+        rec.footprint_bytes = Some(4096 * BYTES_PER_MIB);
+        rec.serving_bytes = Some(1024 * BYTES_PER_MIB);
+        let value = tags(std::slice::from_ref(&rec));
+        assert_eq!(value["models"][0]["size"], 1024i64 * 1_048_576);
     }
 
     #[test]

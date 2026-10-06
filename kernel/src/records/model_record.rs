@@ -150,9 +150,15 @@ pub struct ModelRecord {
     #[serde(default)]
     pub execution: ExecutionMode,
     /// What the model's files take on disk, in bytes, as the store's scanner
-    /// measured them. The memory a run needs is estimated from it, not stored.
+    /// measured them. This is the disk figure; what serving the model costs is
+    /// [`serving_size`](Self::serving_size).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footprint_bytes: Option<i64>,
+    /// What serving the primary weight loads, in bytes, when the store's
+    /// scanner measured it apart from the disk figure: a hub repo can hold
+    /// several quantizations and serve one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving_bytes: Option<i64>,
     /// The whole-mebibyte figure a record written before sizes were exact
     /// carried. Read so a shelf already on disk keeps its sizes through the
     /// upgrade, folded into `footprint_bytes` when the registry loads, and
@@ -215,6 +221,7 @@ impl ModelRecord {
             alias: None,
             execution: ExecutionMode::Sync,
             footprint_bytes: None,
+            serving_bytes: None,
             legacy_footprint_mb: None,
             state: ModelState::Unresolved,
             registered_at: now_millis(),
@@ -263,10 +270,20 @@ impl ModelRecord {
         }
     }
 
-    /// The size on disk in whole mebibytes, the unit the memory governor
-    /// budgets in.
+    /// What serving the model loads, in bytes: the serving figure when one
+    /// was measured and is positive, else the size on disk. Fit and the memory
+    /// budget read this; what the model takes on disk is
+    /// [`size_on_disk`](Self::size_on_disk).
+    pub fn serving_size(&self) -> Option<i64> {
+        self.serving_bytes
+            .filter(|bytes| *bytes > 0)
+            .or_else(|| self.size_on_disk())
+    }
+
+    /// What serving the model loads, in whole mebibytes, the unit the memory
+    /// governor budgets in.
     pub fn footprint_mib(&self) -> Option<i64> {
-        self.size_on_disk()
+        self.serving_size()
             .map(|bytes| bytes / byte_format::BYTES_PER_MIB)
     }
 

@@ -1,7 +1,8 @@
 //! Scans a Hugging Face hub cache: each `models--<org>--<repo>` directory's
 //! current snapshot is inspected (`config.json` / `model_index.json` / a bare
-//! GGUF) for a modality hint, its blobs summed for the footprint, and its
-//! shard/blob completeness checked to flag a still-downloading model.
+//! GGUF) for a modality hint, its blobs summed for the disk figure, the
+//! primary weight's set measured for the serving figure, and its shard/blob
+//! completeness checked to flag a still-downloading model.
 //!
 //! The diffusers `model_index.json` path yields only a generic job hint until the
 //! pipeline-family registry it needs is ported.
@@ -13,8 +14,11 @@ use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::gguf_shards::group;
 use crate::discovery::modality_hints::{self, Hint, SentenceTransformersLayout};
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
+use crate::discovery::serving::{
+    index_shards, is_default_safetensors_index, is_safetensors_index, serving_bytes,
+};
 use crate::discovery::weights::{gguf_tree, primary_of};
-use crate::records::{ExecutionMode, JsonValue, Modality, ModelSource, SourceKind};
+use crate::records::{ExecutionMode, Modality, ModelSource, SourceKind};
 use crate::resolution::has_ggml_magic;
 
 /// A scanner over one or more Hugging Face hub cache roots.
@@ -77,13 +81,14 @@ impl HFCacheScanner {
             // quantization has no weights at the snapshot root, so the hint,
             // the completeness check and the primary weight all have to look
             // below it.
-            let ggufs = gguf_tree(&snapshot).weights;
+            let tree = gguf_tree(&snapshot);
+            let ggufs = &tree.weights;
             let mut diagnostics = Vec::new();
-            let hint = resolve_hint(&snapshot, &names, &ggufs, &mut diagnostics);
+            let hint = resolve_hint(&snapshot, &names, ggufs, &mut diagnostics);
 
             let downloading = has_incomplete_blobs(&dir.join("blobs"))
                 || index_references_missing_shard(&snapshot, &names)
-                || gguf_shards_incomplete(&ggufs);
+                || gguf_shards_incomplete(ggufs);
 
             // Last non-empty path segment (empty segments are skipped, so a
             // trailing slash doesn't yield an empty name).
@@ -101,7 +106,11 @@ impl HFCacheScanner {
             discovered.capabilities_hint = hint.capabilities;
             discovered.execution_hint = hint.execution;
             discovered.footprint_bytes = directory_bytes(&dir.join("blobs"));
-            discovered.primary_weight_path = largest_weight(&snapshot, &ggufs);
+            let primary = largest_weight(&snapshot, ggufs);
+            discovered.serving_bytes = primary
+                .as_deref()
+                .and_then(|primary| serving_bytes(&snapshot, primary, &tree));
+            discovered.primary_weight_path = primary.as_deref().map(resolve);
             discovered.diagnostics = diagnostics;
             discovered.context_length_hint = hint.context_length;
             discovered.downloading = downloading;
@@ -139,7 +148,9 @@ fn mark_failed(result: &mut ScanResult) {
 fn current_snapshot(repo_dir: &Path) -> Option<(PathBuf, String)> {
     let snapshots = repo_dir.join("snapshots");
 
-    if let Ok(revision) = std::fs::read_to_string(repo_dir.join("refs/main")) {
+    if let Ok(bytes) = crate::fs::read_regular(&repo_dir.join("refs/main"))
+        && let Ok(revision) = String::from_utf8(bytes)
+    {
         let trimmed = revision.trim();
         if !trimmed.is_empty() {
             let snapshot = snapshots.join(trimmed);
@@ -263,27 +274,31 @@ fn gguf_shards_incomplete(ggufs: &[(PathBuf, u64)]) -> bool {
     groups.iter().any(|shard_group| !shard_group.complete())
 }
 
-/// Whether a `*.safetensors.index.json` weight map references a shard whose file
-/// (resolving symlinks into the blob store) is missing — the sign of a partial
+/// Whether a safetensors index's weight map references a shard whose file
+/// (resolving symlinks into the blob store) is missing: the sign of a partial
 /// safetensors download.
+///
+/// The default index (`*.safetensors.index.json`) counts with any shard
+/// missing. A precision variant's (`*.safetensors.index.fp16.json`) counts
+/// only once one of its shards is on disk and another is not: the index is a
+/// small JSON file that a `*.json` pattern fetches whether or not the variant
+/// was wanted, and a set with no member present was not chosen, not still
+/// arriving.
 fn index_references_missing_shard(snapshot: &Path, names: &BTreeSet<String>) -> bool {
-    for index_name in names
-        .iter()
-        .filter(|name| name.ends_with(".safetensors.index.json"))
-    {
-        let Ok(bytes) = std::fs::read(snapshot.join(index_name)) else {
+    for index_name in names.iter().filter(|name| is_safetensors_index(name)) {
+        let Some(shards) = index_shards(snapshot, index_name) else {
             continue;
         };
-        let Ok(JsonValue::Object(json)) = serde_json::from_slice::<JsonValue>(&bytes) else {
-            continue;
-        };
-        let Some(JsonValue::Object(weight_map)) = json.get("weight_map") else {
-            continue;
-        };
-        let shards: BTreeSet<&str> = weight_map.values().filter_map(JsonValue::as_str).collect();
         // `exists()` follows the snapshot's symlink into `blobs/`, so a dangling
         // link (a shard not yet downloaded) reads as missing.
-        if shards.iter().any(|shard| !snapshot.join(shard).exists()) {
+        let (present, missing): (Vec<&String>, Vec<&String>) = shards
+            .iter()
+            .partition(|shard| snapshot.join(shard).exists());
+        let partial = match is_default_safetensors_index(index_name) {
+            true => !missing.is_empty(),
+            false => !present.is_empty() && !missing.is_empty(),
+        };
+        if partial {
             return true;
         }
     }
@@ -314,14 +329,15 @@ fn walk_bytes(dir: &Path, total: &mut i64) {
     }
 }
 
-/// The weight file a runtime would load, resolved through its symlink: the
-/// largest weight in the snapshot, where a GGUF is chosen by the rule
-/// identification reads the header by, and every other format is measured at
-/// the snapshot root, which is where those formats put their weights.
+/// The weight file a runtime would load, as the snapshot names it (resolve it
+/// through its symlink for the blob): the largest weight in the snapshot,
+/// where a GGUF is chosen by the rule identification reads the header by, and
+/// every other format is measured at the snapshot root, which is where those
+/// formats put their weights.
 ///
 /// A shard set is weighed by its largest member but answers with its first
 /// file, which is what a server loads the rest through.
-fn largest_weight(snapshot: &Path, ggufs: &[(PathBuf, u64)]) -> Option<String> {
+fn largest_weight(snapshot: &Path, ggufs: &[(PathBuf, u64)]) -> Option<PathBuf> {
     let gguf = primary_of(ggufs).map(|path| {
         let largest = ggufs.iter().map(|(_, size)| *size).max().unwrap_or(0);
         (path, largest)
@@ -331,7 +347,7 @@ fn largest_weight(snapshot: &Path, ggufs: &[(PathBuf, u64)]) -> Option<String> {
         (Some(gguf), _) => gguf,
         (None, other) => other?,
     };
-    Some(resolve(&best.0))
+    Some(best.0)
 }
 
 /// The largest safetensors or GGML weight at the snapshot root, with a tie

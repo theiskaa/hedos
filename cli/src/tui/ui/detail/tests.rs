@@ -161,3 +161,28 @@ fn the_compact_detail_skips_what_the_row_shows() {
     assert!(full.len() > STACKED_DETAIL_ROWS as usize);
     assert!(!texts(&full).contains(&" RECORD".to_owned()));
 }
+
+#[test]
+fn the_size_row_names_the_disk_figure_when_it_differs() {
+    let mut record = record_with("m", vec![Capability::chat()]);
+    record.footprint_bytes = Some(34_000_000_000);
+    record.serving_bytes = Some(8_500_000_000);
+    record.context_length = Some(32_768);
+    let line = text(&size_line(&record, 80));
+    assert!(
+        line.contains("8.5 GB · ctx 32k · 34 GB on disk"),
+        "{line:?}"
+    );
+}
+
+#[test]
+fn the_size_row_has_no_disk_suffix_when_they_agree() {
+    let mut record = record_with("m", vec![Capability::chat()]);
+    record.footprint_bytes = Some(4_300_000_000);
+    let line = text(&size_line(&record, 80));
+    assert!(line.contains("4.3 GB"), "{line:?}");
+    assert!(!line.contains("on disk"), "{line:?}");
+
+    record.serving_bytes = Some(4_300_000_000);
+    assert!(!text(&size_line(&record, 80)).contains("on disk"));
+}

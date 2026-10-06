@@ -152,6 +152,9 @@ impl DiscoveryService {
                     record.name = model.name.clone();
                     record.source = model.source.clone();
                     record.footprint_bytes = Some(model.footprint_bytes);
+                    // Unconditional, so a rescan that no longer measures one
+                    // clears a figure left from an earlier layout.
+                    record.serving_bytes = model.serving_bytes;
                     record.primary_weight_path = model.primary_weight_path.clone();
                     // An empty capability hint is usually nothing learned, so what
                     // the record holds stands. Not when the modality moved under
@@ -196,6 +199,7 @@ impl DiscoveryService {
                     );
                     record.execution = model.execution_hint;
                     record.footprint_bytes = Some(model.footprint_bytes);
+                    record.serving_bytes = model.serving_bytes;
                     record.state = ModelState::Unresolved;
                     record.context_length = model.context_length_hint;
                     record.has_chat_template = model.has_chat_template_hint;
@@ -276,9 +280,14 @@ impl DiscoveryService {
     }
 }
 
-/// Whether a record's weights are still on disk: its primary weight file if it
-/// names one (non-empty), otherwise the source path. A record with no weight
-/// path is treated as absent.
+/// Whether a record's weights are still on disk: its primary weight, as a
+/// regular file (through a link), or else the source it came from. A record
+/// with no weight path is treated as absent.
+///
+/// Every scanner names a file as the primary, so a directory or a dangling
+/// link there is weights gone. A source that is that same path (a loose file)
+/// is held to the same rule; one that is a directory (a hub repo, a bundle)
+/// stands for the weights inside it, as before.
 fn weights_present(record: &ModelRecord) -> bool {
     let Some(path) = record
         .primary_weight_path
@@ -287,7 +296,9 @@ fn weights_present(record: &ModelRecord) -> bool {
     else {
         return false;
     };
-    Path::new(path).exists() || Path::new(&record.source.path).exists()
+    let primary = Path::new(path);
+    let source = Path::new(&record.source.path);
+    primary.is_file() || (source != primary && source.exists())
 }
 
 /// Two sizes compared as the whole mebibytes they round to.

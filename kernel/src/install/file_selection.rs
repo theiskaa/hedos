@@ -105,6 +105,24 @@ fn segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|part| !part.is_empty()).collect()
 }
 
+/// Whether a file a repo holds at `rfilename` (repo-relative), `bytes` long,
+/// is one a pull fetches as support for its weights: an eligible file that is
+/// not itself a weight (GGUF included) or an index sidecar, and small enough to
+/// be config or tokenizer. The serving figure counts these too, less the ones
+/// serving never reads, such as an importance matrix.
+pub(crate) fn is_support_file(rfilename: &str, bytes: i64) -> bool {
+    let sibling = HFSibling::new(rfilename, Some(bytes));
+    is_eligible(&sibling) && is_support(&sibling)
+}
+
+/// The support rule on an eligible sibling: not a weight, not an index
+/// sidecar, and within [`CONFIG_CAP`].
+fn is_support(sibling: &HFSibling) -> bool {
+    !sibling.is_weight()
+        && !sibling.rfilename.ends_with(".index.json")
+        && sibling.bytes.unwrap_or(0) <= CONFIG_CAP
+}
+
 /// Whether a sibling is a plausible model file: not hidden, not a readme, not an
 /// excluded extension, not a flax/tf checkpoint, and not under an excluded dir.
 fn is_eligible(sibling: &HFSibling) -> bool {
@@ -329,10 +347,7 @@ fn transformers_selection(kept: &[HFSibling]) -> Vec<HFSibling> {
     let support: Vec<HFSibling> = kept
         .iter()
         .filter(|s| {
-            !s.is_weight()
-                && !s.rfilename.ends_with(".index.json")
-                && s.bytes.unwrap_or(0) <= CONFIG_CAP
-                && subtree(&s.rfilename).is_none_or(|dir| !alternatives.contains(dir))
+            is_support(s) && subtree(&s.rfilename).is_none_or(|dir| !alternatives.contains(dir))
         })
         .cloned()
         .collect();

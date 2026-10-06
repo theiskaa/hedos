@@ -79,7 +79,7 @@ pub fn order(records: &[ModelRecord], facts: &Facts, query: &str, sort: Sort) ->
     match sort {
         Sort::Name => {}
         Sort::Size => indices
-            .sort_by_key(|&index| std::cmp::Reverse(records[index].footprint_bytes.unwrap_or(0))),
+            .sort_by_key(|&index| std::cmp::Reverse(records[index].serving_size().unwrap_or(0))),
         Sort::LastUsed => indices.sort_by_key(|&index| {
             std::cmp::Reverse(
                 facts
