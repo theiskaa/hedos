@@ -246,7 +246,7 @@ mod tests {
         // A pull being registered reads no control file, so the key that would
         // reach it is not offered rather than offered and then refused.
         let mut registering = downloading("registering");
-        registering.status.status_line = Some(kernel::install::pulls::REGISTERING_LINE.to_owned());
+        crate::support::pulls::testing::mark_registering(&mut registering.status);
         app.pulls.sync(&[registering]);
         let deaf = text(&pulls_line(&app, 100));
         assert!(!deaf.contains("c stop"), "{deaf}");

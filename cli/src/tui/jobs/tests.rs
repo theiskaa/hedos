@@ -3,7 +3,7 @@ use super::*;
 use kernel::install::event::InstallProgress;
 use kernel::install::pulls::{REGISTERING_LINE, START_GRACE_MS};
 
-use crate::support::pulls::testing::{TempDir, job as make_job};
+use crate::support::pulls::testing::{TempDir, job as make_job, mark_registering, unreadable_job};
 
 #[test]
 fn a_pull_that_has_moved_bytes_reads_as_a_download() {
@@ -39,10 +39,8 @@ fn a_pull_that_has_moved_bytes_reads_as_a_download() {
 
     // Registering: that is what the row says rather than a full bar, and the
     // strip drops the stop key with it.
-    job.update_status(1_600, |status| {
-        status.status_line = Some(REGISTERING_LINE.to_owned())
-    })
-    .expect("write the record");
+    job.update_status(1_600, mark_registering)
+        .expect("write the record");
     let registering = super::rows(&store, 2_000);
     assert_eq!(
         registering[0].state,
@@ -68,7 +66,7 @@ fn a_provider_that_only_estimates_its_total_still_reads_as_registering() {
             total_is_partial: true,
             current_file: None,
         };
-        status.status_line = Some(REGISTERING_LINE.to_owned());
+        mark_registering(status);
     })
     .expect("write the record");
 
@@ -272,5 +270,31 @@ fn a_pull_no_worker_took_up_reads_as_stopped_rather_than_as_a_queue() {
     assert!(!rows[0].pull_state.is_live());
     assert!(rows[0].pull_state.is_resumable());
     assert!(matches!(rows[0].state, TaskState::Stopped(_)));
+    assert_eq!(rows[0].status.state, PullState::Interrupted);
+    assert_eq!(rows[0].note, "no worker");
     assert_eq!(job.stored_status().state, PullState::Queued);
+}
+
+#[test]
+fn an_unreadable_record_reads_as_failed_and_is_not_resumable() {
+    let directory = TempDir::new("jobs-unreadable");
+    let store = directory.store();
+    unreadable_job(&store, "Qwen/Qwen3-8B", 1_000);
+
+    let rows = rows(&store, i64::MAX);
+
+    assert_eq!(rows[0].pull_state, PullState::Unreadable);
+    assert!(!rows[0].pull_state.is_resumable());
+    assert!(!rows[0].pull_state.is_live());
+    assert!(!rows[0].pull_state.is_terminal());
+    match &rows[0].state {
+        TaskState::Failed(reason) => {
+            assert!(
+                reason.starts_with("its record could not be read"),
+                "{reason}"
+            )
+        }
+        other => panic!("an unreadable record should read as a failure, got {other:?}"),
+    }
+    assert!(rows[0].aged_out, "the strip lets it go like any ending");
 }

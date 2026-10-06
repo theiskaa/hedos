@@ -5,7 +5,7 @@
 //! (`job.json`, written once), the live record (`status.json`, rewritten as the
 //! transfer moves), an append-only history (`events.jsonl`), the lock a worker
 //! holds for as long as it runs, and the `control` file a client writes to ask
-//! for a pause or a cancel.
+//! for a pause or a cancel, with the lock its writers and its clearer share.
 //!
 //! Nothing here starts, signals, or waits on a process: this module owns the
 //! format and the rules, the runtime owns the worker.
@@ -18,6 +18,7 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,9 @@ const STATUS_FILE: &str = "status.json";
 const EVENTS_FILE: &str = "events.jsonl";
 const LOCK_FILE: &str = "lock";
 const CONTROL_FILE: &str = "control";
+/// What a writer of the control file and a clearer of it both hold, so a clear
+/// never compares one ask and deletes another.
+const CONTROL_LOCK_FILE: &str = "control.lock";
 
 /// The longest reference slug a job id carries; the timestamp in front is what
 /// makes the id unique, the slug is only there to make it readable.
@@ -47,6 +51,14 @@ const CREATE_ATTEMPTS: u32 = 64;
 /// opened again. One sweep in that window is rare; several in a row is not
 /// something to wait on.
 const LOCK_REOPENS: u32 = 3;
+/// How long a client asking for a stop waits for the control file's lock
+/// before saying it could not get it. The only holder that should ever be
+/// there is a worker clearing the file, which takes a read and an unlink.
+pub const CONTROL_LOCK_WAIT: Duration = Duration::from_secs(3);
+/// How often a client waiting for the control file's lock tries it again.
+const CONTROL_LOCK_RETRY: Duration = Duration::from_millis(10);
+/// What a job no worker took up reads, once its model was pulled by another.
+pub const PULLED_AGAIN_LINE: &str = "no worker took it up; the model was pulled again";
 
 /// A failure reading or writing a pull's record.
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +111,17 @@ pub enum PullError {
     /// A worker still holds the job, whatever its record reads.
     #[error("a worker still holds {0}")]
     Held(String),
+
+    /// The job's live record could not be read, so nothing is written over
+    /// it: whatever wrote it may still be the one pulling.
+    #[error("{0}'s record could not be read; it is left as it is")]
+    RecordUnreadable(String),
+
+    /// Something held the job's control file for longer than a client waits,
+    /// so the ask was not written. Carries the job id; the message leaves it
+    /// to the caller, which names the job already.
+    #[error("its control file is held by another process; nothing was asked, try again")]
+    ControlBusy(String),
 }
 
 /// Where a pull is in its life.
@@ -106,7 +129,8 @@ pub enum PullError {
 /// `Paused` and `Interrupted` both mean "stopped with bytes worth keeping"; they
 /// differ in who stopped it, which is what the user needs to know. `Interrupted`
 /// is never written by the process that died: it is what a reader concludes from
-/// a record whose worker no longer holds the lock.
+/// a record whose worker no longer holds the lock. `Unreadable` is concluded by
+/// a reader too, from a record it could not decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PullState {
@@ -124,6 +148,12 @@ pub enum PullState {
     Cancelled,
     /// Stopped by something other than the user, resumable.
     Interrupted,
+    /// The record could not be read: damaged, or written by a newer build in a
+    /// state this one does not know. Neither live, resumable, nor ended, so
+    /// nothing starts, stops, joins, or sweeps the job, and nothing writes over
+    /// it. Shown, never decoded: a record that says it is no more readable.
+    #[serde(skip_deserializing)]
+    Unreadable,
 }
 
 impl PullState {
@@ -152,6 +182,7 @@ impl PullState {
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
+            Self::Unreadable => "unreadable",
         }
     }
 }
@@ -196,6 +227,35 @@ impl PullControl {
             Self::Cancel => PullState::Cancelled,
         }
     }
+
+    /// What became of this control, as far as `status` says, or `None` while
+    /// it is still waiting to be read.
+    ///
+    /// `status` is the status as shown ([`PullJobDir::reading`]), so a job
+    /// whose worker never arrives answers the way every surface reads it
+    /// rather than staying pending. A job registering what it fetched has
+    /// landed as far as an ask goes: its worker drops one it reads after that
+    /// as late.
+    pub fn answer(self, status: &PullStatus) -> Option<StopAnswer> {
+        match status.state {
+            state if state == self.resulting_state() => Some(StopAnswer::Honoured(state)),
+            PullState::Done => Some(StopAnswer::Landed),
+            _ if status.past_stopping() => Some(StopAnswer::Landed),
+            state if state.is_live() => None,
+            state => Some(StopAnswer::Ended(state)),
+        }
+    }
+}
+
+/// What became of a pause or a cancel a worker was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopAnswer {
+    /// The worker stopped the way it was asked, and the job reads this.
+    Honoured(PullState),
+    /// Every byte landed before the ask was read, so the pull went on to done.
+    Landed,
+    /// The job ended some other way before the ask was read.
+    Ended(PullState),
 }
 
 impl std::fmt::Display for PullControl {
@@ -264,6 +324,14 @@ pub struct PullStatus {
     /// When the next retry is due, epoch milliseconds, while one is waiting.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub next_attempt_at_ms: Option<i64>,
+    /// When the worker stops waiting on the registration of what it fetched,
+    /// epoch milliseconds; present only while it registers. Written by the
+    /// worker alone, never from anything a provider says.
+    ///
+    /// The `default` is load-bearing: a record written before the field
+    /// existed has to decode as the state it was written in.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub registering_until_ms: Option<i64>,
     /// Why the job ended, or why it is waiting to retry.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub message: Option<String>,
@@ -276,18 +344,33 @@ pub struct PullStatus {
 
 impl PullStatus {
     /// Whether this pull has gone past the point an ask can stop it: a running
-    /// worker that has said it is registering what it fetched, and so will read
-    /// no control file until it is done.
+    /// worker that has marked itself registering what it fetched
+    /// ([`registering_until_ms`](Self::registering_until_ms)), and so will read
+    /// no control file until it is done. The mark is the worker's own field,
+    /// not its status line, which also carries whatever a provider says.
     ///
-    /// The byte count is deliberately not the signal. Bytes reaching the total
-    /// says the transfer is over, not that nothing is listening: the worker
-    /// polls the control file until the install reports itself done, and an ask
-    /// in that window is read and can still take effect. It is also a figure the
-    /// record can be wrong about, being carried over from a previous attempt or
-    /// summed from a listing that left a file's size out, and a wrong full bar
-    /// would make a pull unstoppable for the rest of its life.
+    /// The byte count is deliberately not the signal either. Bytes reaching the
+    /// total says the transfer is over, not that nothing is listening: the
+    /// worker polls the control file until the install reports itself done, and
+    /// an ask in that window is read and can still take effect. It is also a
+    /// figure the record can be wrong about: carried over from an earlier
+    /// attempt, an estimate, or a sum the progress marks `total_is_partial`
+    /// because the listing left a file's size out. A wrong full bar would make
+    /// a pull unstoppable for the rest of its life.
     pub fn past_stopping(&self) -> bool {
-        self.state == PullState::Running && self.status_line.as_deref() == Some(REGISTERING_LINE)
+        self.state == PullState::Running && self.registering_until_ms.is_some()
+    }
+
+    /// For a pull [past stopping](Self::past_stopping), the whole seconds
+    /// from `now_ms` until its worker stops waiting on the registration,
+    /// rounded up; `None` for any other.
+    pub fn registering_for_secs(&self, now_ms: i64) -> Option<i64> {
+        if !self.past_stopping() {
+            return None;
+        }
+        let until = self.registering_until_ms.unwrap_or_default();
+        let within_ms = until.saturating_sub(now_ms).max(0);
+        Some(within_ms.saturating_add(999) / 1_000)
     }
 
     /// A fresh record for a job that has not started, stamped `now`.
@@ -298,16 +381,53 @@ impl PullStatus {
             status_line: None,
             attempt: 0,
             next_attempt_at_ms: None,
+            registering_until_ms: None,
             message: None,
             pid: None,
             updated_at_ms: now,
         }
     }
+
+    /// The record a reader shows for one it could not read, last touched at
+    /// `updated_at_ms`, saying why in `reason`.
+    pub(crate) fn unreadable(updated_at_ms: i64, reason: &str) -> Self {
+        Self {
+            state: PullState::Unreadable,
+            message: Some(reason.to_owned()),
+            ..Self::queued(updated_at_ms)
+        }
+    }
 }
 
-/// The status line a worker writes while it registers what it fetched. The
-/// scan it names is the one stretch of a job that reads no control file, so the
-/// line doubles as the mark of a job past stopping.
+/// A job as every surface shows it: its record with both liveness rules
+/// applied, the lock rule and the abandonment rule, and a job no worker took
+/// up read as over once its model was pulled by another.
+///
+/// Reading never writes. The last of those rules rests on the job's siblings,
+/// so an action that meets such a job writes the reading down
+/// ([`PullJobDir::settle_superseded`]) before a sibling going away can turn
+/// it back into one to resume.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PullReading {
+    /// The record, its state as shown: `interrupted` for a job whose worker let
+    /// go of it and for one no worker ever took up, `failed` for one no worker
+    /// took up whose model another job has pulled since.
+    pub status: PullStatus,
+    /// Whether it reads `interrupted` because nothing ever took it up, rather
+    /// than because a worker that held it is gone.
+    pub abandoned: bool,
+    /// Whether it reads `failed` because nothing ever took it up and another
+    /// job of the same model is under way, or landed (reached `done`) after
+    /// this one was created. A worker put on it would only fail as a
+    /// duplicate, so it reads as the failure starting the pull again would
+    /// have settled it as. Once an action has written that down, the record
+    /// itself says `failed` and this is `false`.
+    pub superseded: bool,
+}
+
+/// The status line a worker writes while it registers what it fetched: the
+/// word shown and kept in the history. It is not the mark of a job past
+/// stopping, which is [`PullStatus::registering_until_ms`].
 pub const REGISTERING_LINE: &str = "registering";
 
 /// One line of a job's history.
@@ -471,6 +591,7 @@ impl PullStore {
     /// created once the caller passes the rewritten form. A job whose worker
     /// never arrived is past joining: nothing is coming for it, and preferring
     /// it because it is newest would hide the pull that is actually running.
+    /// Nor is one whose record cannot be read: nobody can say what it is doing.
     pub fn under_way(
         &self,
         provider: &InstallProviderId,
@@ -484,21 +605,73 @@ impl PullStore {
                 job.job().provider == *provider
                     && job.job().reference.eq_ignore_ascii_case(reference)
             })
-            .find(|job| !job.status().state.is_terminal() && !job.abandoned(now_ms, START_GRACE_MS))
+            .find(|job| job.takes_part(now_ms))
+    }
+
+    /// The jobs a worker should be put back on, oldest first: every one that
+    /// reads `interrupted`, whether its worker died or none ever took it up.
+    /// A pull the user paused is not among them.
+    ///
+    /// A store that cannot be read has nothing to put a worker back on; this
+    /// runs with nobody asking, so there is nobody to tell.
+    pub fn orphaned(&self, now_ms: i64) -> Vec<PullJobDir> {
+        self.taken_up(self.list(), now_ms, false)
+    }
+
+    /// [`orphaned`](Self::orphaned) plus the pulls the user paused: what an
+    /// explicit "resume everything" takes up. Someone asked for this one, so a
+    /// store that cannot be read is reported rather than read as empty.
+    pub fn stopped(&self, now_ms: i64) -> Result<Vec<PullJobDir>, PullError> {
+        Ok(self.taken_up(self.jobs()?, now_ms, true))
+    }
+
+    /// An abandoned job the user has already pulled past reads `failed`
+    /// ([`PullReading::superseded`]), so it is not among these: its worker
+    /// would lose the reference to the pull under way and fail as a duplicate.
+    fn taken_up(&self, jobs: Vec<PullJobDir>, now_ms: i64, paused_too: bool) -> Vec<PullJobDir> {
+        jobs.into_iter()
+            .filter(|job| match job.reading(now_ms).status.state {
+                PullState::Paused => paused_too,
+                PullState::Interrupted => true,
+                _ => false,
+            })
+            .collect()
+    }
+
+    /// [Settle](PullJobDir::settle_superseded) every job that reads
+    /// [superseded](PullReading::superseded) at `now_ms`, returning how many
+    /// were written down. For an action about to put workers back on jobs,
+    /// so that one it skips stays skipped whatever becomes of its siblings.
+    pub fn settle_superseded(&self, now_ms: i64) -> usize {
+        self.list()
+            .iter()
+            .filter(|job| matches!(job.settle_superseded(now_ms), Ok(true)))
+            .count()
     }
 
     /// Remove ended jobs last touched before `before_ms`, keeping the newest
     /// `keep` of them however old they are. Returns how many were removed.
     ///
     /// Each goes through [`forget`](PullJobDir::forget), so a job whose
-    /// worker still holds the lock is left, however its record reads.
+    /// worker still holds the lock is left, however its record reads. Ended
+    /// is as [`reading`](PullJobDir::reading) shows it, so a job the user
+    /// pulled past goes with the rest. Every such job is
+    /// [settled](PullJobDir::settle_superseded) before anything is removed:
+    /// its reading rests on siblings this sweep may take away, and one kept
+    /// (or left for a later sweep) would otherwise read `interrupted` again
+    /// and be resumed. It is ordered by when it was last written before that.
     pub fn sweep(&self, keep: usize, before_ms: i64) -> usize {
+        let now = crate::time::now_millis();
         let mut ended: Vec<(i64, PullJobDir)> = self
             .list()
             .into_iter()
             .filter(|job| !job.worker_alive())
             .filter_map(|job| {
-                let status = job.stored_status();
+                let reading = job.reading(now);
+                if reading.superseded && !matches!(job.settle_superseded(now), Ok(true)) {
+                    return None;
+                }
+                let status = reading.status;
                 status
                     .state
                     .is_terminal()
@@ -531,10 +704,11 @@ fn single<'a>(
         [] => Ok(None),
         [only] => Ok(Some(only)),
         many => {
+            let now = crate::time::now_millis();
             let going: Vec<&PullJobDir> = many
                 .iter()
                 .copied()
-                .filter(|job| !job.status().state.is_terminal())
+                .filter(|job| going(job.reading(now).status.state))
                 .collect();
             match going.as_slice() {
                 [only] => Ok(Some(only)),
@@ -545,6 +719,20 @@ fn single<'a>(
             }
         }
     }
+}
+
+/// Whether a job in `state` may still be doing something: not ended, and not
+/// a record nobody can read.
+fn going(state: PullState) -> bool {
+    !state.is_terminal() && state != PullState::Unreadable
+}
+
+/// The record half of [`PullJobDir::abandoned_by`]: queued, no worker's pid
+/// written, and untouched for `grace_ms` by `now_ms`.
+fn unclaimed(status: &PullStatus, now_ms: i64, grace_ms: i64) -> bool {
+    status.state == PullState::Queued
+        && status.pid.is_none()
+        && now_ms.saturating_sub(status.updated_at_ms) >= grace_ms
 }
 
 /// One pull's directory: its descriptor, and the files around it.
@@ -639,14 +827,26 @@ impl PullJobDir {
     /// The record as written, without the liveness rule applied.
     ///
     /// A missing record reads as `queued`, which is what a job whose worker
-    /// never got started is. An undecodable one reads the same way rather than
-    /// being quarantined: this file is a rewritten view of live state, not a
-    /// store of truth, and a running worker replaces it within the second.
+    /// never got started is. One that cannot be read or decoded reads
+    /// `unreadable`, stamped with when the file last changed, and is left
+    /// exactly as it is: read as queued, it would look like a job nobody took
+    /// up and be handed a worker that writes over it, when it may be a newer
+    /// build's record of a pull that build is still running.
     pub fn stored_status(&self) -> PullStatus {
-        fs::read(self.path.join(STATUS_FILE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_else(|| PullStatus::queued(self.job.created_at_ms))
+        let path = self.path.join(STATUS_FILE);
+        let decoded = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return PullStatus::queued(self.job.created_at_ms);
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        decoded.unwrap_or_else(|reason| {
+            PullStatus::unreadable(
+                modified_ms(&path).unwrap_or(self.job.created_at_ms),
+                &format!("its record could not be read: {reason}"),
+            )
+        })
     }
 
     /// The record as it is true right now: a job a worker was meant to be
@@ -666,6 +866,10 @@ impl PullJobDir {
         };
         if expects_worker && !self.worker_alive() {
             status.state = PullState::Interrupted;
+            // What the worker was saying, and the registration it was
+            // marking, ended with it.
+            status.status_line = None;
+            status.registering_until_ms = None;
         }
         status
     }
@@ -682,13 +886,122 @@ impl PullJobDir {
         self.abandoned_by(&self.stored_status(), now_ms, grace_ms)
     }
 
+    /// The job as every surface shows it at `now_ms`: [`status`](Self::status),
+    /// and `interrupted` too once it is [`abandoned`](Self::abandoned) past
+    /// [`START_GRACE_MS`], or `failed` when it is abandoned and another job of
+    /// the same model is under way or landed after this one was created.
+    /// `status` stays clock-free for the worker and the controls, which reason
+    /// on the lock alone. Nothing is written; see
+    /// [`settle_superseded`](Self::settle_superseded).
+    pub fn reading(&self, now_ms: i64) -> PullReading {
+        let mut reading = self.shown(now_ms);
+        if reading.abandoned && self.pulled_again(now_ms) {
+            reading.status.state = PullState::Failed;
+            reading.status.message = Some(PULLED_AGAIN_LINE.to_owned());
+            reading.abandoned = false;
+            reading.superseded = true;
+        }
+        reading
+    }
+
+    /// [`reading`](Self::reading) without asking the other jobs anything.
+    fn shown(&self, now_ms: i64) -> PullReading {
+        let mut status = self.status();
+        // `status` never moves a queued record with no pid, so testing it here
+        // is testing the stored record.
+        let abandoned = self.abandoned_by(&status, now_ms, START_GRACE_MS);
+        if abandoned {
+            status.state = PullState::Interrupted;
+        }
+        PullReading {
+            status,
+            abandoned,
+            superseded: false,
+        }
+    }
+
+    /// Whether this job is one a pull of its model could still be going
+    /// through: not ended, readable, and not left by its worker before it
+    /// began.
+    fn takes_part(&self, now_ms: i64) -> bool {
+        let shown = self.shown(now_ms);
+        going(shown.status.state) && !shown.abandoned
+    }
+
+    /// Whether another job of this one's model is under way, or reached
+    /// `done` at a time after this one was created: when it landed, not when
+    /// it was created, so an older job that lands after this one counts. Its
+    /// siblings are the store's, which is the directory this job sits in; it
+    /// is told from them by its directory, since a copied directory keeps the
+    /// id its descriptor names.
+    fn pulled_again(&self, now_ms: i64) -> bool {
+        let Some(root) = self.path.parent() else {
+            return false;
+        };
+        PullStore::new(root).list().into_iter().any(|other| {
+            other.path != self.path
+                && other.job.provider == self.job.provider
+                && other
+                    .job
+                    .reference
+                    .eq_ignore_ascii_case(&self.job.reference)
+                && (other.takes_part(now_ms) || other.landed_after(self.job.created_at_ms))
+        })
+    }
+
+    /// Whether this job reached `done` after `at_ms`. A done record is
+    /// written once, when the job lands, so when it was written is when it
+    /// landed.
+    fn landed_after(&self, at_ms: i64) -> bool {
+        let stored = self.stored_status();
+        stored.state == PullState::Done && stored.updated_at_ms > at_ms
+    }
+
+    /// Write down a job that reads [superseded](PullReading::superseded) at
+    /// `now_ms` as the `failed` it reads, with [`PULLED_AGAIN_LINE`], so the
+    /// reading no longer rests on its siblings: once the job that pulled the
+    /// model is forgotten or fails, it would otherwise read `interrupted`
+    /// again and be resumed into a pull nobody asked for. Returns whether it
+    /// was written; `false` for any other job, and for one a worker took up
+    /// in the meantime.
+    ///
+    /// The job's own lock is held for the check and the write, as a restart
+    /// holds it, so no worker starts on the job in between. For an action
+    /// that meets such a job; a surface that only shows it never calls this.
+    pub fn settle_superseded(&self, now_ms: i64) -> Result<bool, PullError> {
+        if !self.reading(now_ms).superseded {
+            return Ok(false);
+        }
+        let Some(_held) = self.claim()? else {
+            return Ok(false);
+        };
+        // Read again under the lock. `abandoned` cannot be asked here, since
+        // its lock probe would find this hold; nobody else can hold it now.
+        let stored = self.stored_status();
+        if !unclaimed(&stored, now_ms, START_GRACE_MS) || !self.pulled_again(now_ms) {
+            return Ok(false);
+        }
+        self.update_status(now_ms, |status| {
+            status.state = PullState::Failed;
+            status.message = Some(PULLED_AGAIN_LINE.to_owned());
+            status.pid = None;
+            status.next_attempt_at_ms = None;
+            status.registering_until_ms = None;
+            status.status_line = None;
+        })?;
+        self.append(
+            PullEventKind::State {
+                state: PullState::Failed,
+            },
+            now_ms,
+        )?;
+        Ok(true)
+    }
+
     /// [`abandoned`](Self::abandoned) for a record already read, so a reader
     /// that holds one does not read it again; the lock is still probed.
     pub fn abandoned_by(&self, status: &PullStatus, now_ms: i64, grace_ms: i64) -> bool {
-        status.state == PullState::Queued
-            && status.pid.is_none()
-            && now_ms.saturating_sub(status.updated_at_ms) >= grace_ms
-            && !self.worker_alive()
+        unclaimed(status, now_ms, grace_ms) && !self.worker_alive()
     }
 
     /// Write `status` atomically, so a reader sees the old record or the new one
@@ -707,12 +1020,17 @@ impl PullJobDir {
     /// Read the stored record, hand it to `change`, and write it back stamped
     /// `now`. Saves the caller from carrying the record between writes; the
     /// worker is the only writer, so no two of these can interleave.
+    ///
+    /// A record that reads `unreadable` is refused rather than written over.
     pub fn update_status(
         &self,
         now: i64,
         change: impl FnOnce(&mut PullStatus),
     ) -> Result<PullStatus, PullError> {
         let mut status = self.stored_status();
+        if status.state == PullState::Unreadable {
+            return Err(PullError::RecordUnreadable(self.job.id.clone()));
+        }
         change(&mut status);
         status.updated_at_ms = now;
         self.write_status(&status)?;
@@ -757,26 +1075,119 @@ impl PullJobDir {
             .and_then(PullControl::parse)
     }
 
-    /// Ask the worker for `control`.
-    pub fn request(&self, control: PullControl) -> Result<(), PullError> {
+    /// Ask the worker for `control`, returning the ask that stands once this
+    /// is done: `control`, or a cancel already waiting when `control` is a
+    /// pause, since a pause written over it would quietly turn "stop for
+    /// good" into "stop for now". Waits up to [`CONTROL_LOCK_WAIT`] while a
+    /// clear of the control file is in flight, which is a read and an unlink.
+    pub fn request(&self, control: PullControl) -> Result<PullControl, PullError> {
+        self.request_within(control, CONTROL_LOCK_WAIT)
+    }
+
+    /// [`request`](Self::request), waiting at most `wait` for the control
+    /// file's lock; [`PullError::ControlBusy`] when it is still held then.
+    pub fn request_within(
+        &self,
+        control: PullControl,
+        wait: Duration,
+    ) -> Result<PullControl, PullError> {
+        let mut standing = control;
         self.guard_write(|| {
+            let _held = self.hold_control_within(wait)?;
+            if control == PullControl::Pause && self.control() == Some(PullControl::Cancel) {
+                standing = PullControl::Cancel;
+                return Ok(());
+            }
             persistence::write_atomic(&self.path.join(CONTROL_FILE), control.as_str().as_bytes())?;
             Ok(())
-        })
+        })?;
+        Ok(standing)
     }
 
     /// Drop the control the worker has honoured, leaving a later one alone: a
     /// cancel that arrived while a pause was being honoured is still waiting to
-    /// be read, and deleting it would lose it silently.
-    pub fn clear_control(&self, honoured: PullControl) -> Result<(), PullError> {
-        if self.control() != Some(honoured) {
-            return Ok(());
+    /// be read, and deleting it would lose it silently. Returns the control
+    /// still waiting: `None` once `honoured` is gone or nothing was asked,
+    /// `Some` when a different ask is on disk.
+    ///
+    /// The compare and the delete happen under one hold, which
+    /// [`request`](Self::request) also takes, so an ask written in between is
+    /// either seen here or written after the delete. Blocks while a request is
+    /// in flight.
+    pub fn clear_control(&self, honoured: PullControl) -> Result<Option<PullControl>, PullError> {
+        let held = self.hold_control()?;
+        self.clear_held(honoured, held)
+    }
+
+    /// [`clear_control`](Self::clear_control), waiting at most `wait` for the
+    /// control file's lock; [`PullError::ControlBusy`] when it is still held
+    /// then, with nothing cleared. For a client, which has someone waiting on
+    /// it; the worker's own clear waits for as long as it takes.
+    pub fn clear_control_within(
+        &self,
+        honoured: PullControl,
+        wait: Duration,
+    ) -> Result<Option<PullControl>, PullError> {
+        let held = self.hold_control_within(wait)?;
+        self.clear_held(honoured, held)
+    }
+
+    /// The compare and delete of [`clear_control`](Self::clear_control),
+    /// under the control lock `_held`.
+    fn clear_held(
+        &self,
+        honoured: PullControl,
+        _held: File,
+    ) -> Result<Option<PullControl>, PullError> {
+        match self.control() {
+            Some(control) if control == honoured => {}
+            waiting => return Ok(waiting),
         }
         match fs::remove_file(self.path.join(CONTROL_FILE)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(None),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// The control file's lock, held until the handle drops. A job swept from
+    /// under it is reported gone, as a write into one is.
+    fn hold_control(&self) -> Result<File, PullError> {
+        let file = self.open_control_lock()?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    /// [`hold_control`](Self::hold_control), giving up once `wait` has passed
+    /// with the lock still held elsewhere.
+    fn hold_control_within(&self, wait: Duration) -> Result<File, PullError> {
+        let file = self.open_control_lock()?;
+        let deadline = Instant::now() + wait;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::Error(error)) => return Err(error.into()),
+                Err(TryLockError::WouldBlock) => {}
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(PullError::ControlBusy(self.job.id.clone()));
+            }
+            std::thread::sleep(CONTROL_LOCK_RETRY.min(deadline - now));
+        }
+    }
+
+    fn open_control_lock(&self) -> Result<File, PullError> {
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.path.join(CONTROL_LOCK_FILE))
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::NotFound => PullError::NotFound(self.job.id.clone()),
+                _ => PullError::Io(error),
+            })
     }
 
     /// Delete the job's directory. The weights it fetched are not touched: they
@@ -792,8 +1203,17 @@ impl PullJobDir {
     /// ended can still be under a worker, and deleting the directory then
     /// would leave a partial one behind. The rule every collector follows,
     /// the sweep included.
+    ///
+    /// A refusal names the state the job shows, as [`reading`](Self::reading)
+    /// gives it: a pull whose worker is gone is `interrupted`, not the
+    /// `running` its record still says. A job that reads
+    /// [superseded](PullReading::superseded) is
+    /// [settled](Self::settle_superseded) first, so it is forgotten as the
+    /// failure it reads, or stays one if the removal fails.
     pub fn forget(&self) -> Result<(), PullError> {
-        let state = self.stored_status().state;
+        let now = crate::time::now_millis();
+        self.settle_superseded(now)?;
+        let state = self.reading(now).status.state;
         if !state.is_terminal() {
             return Err(PullError::NotEnded {
                 id: self.id().to_owned(),
@@ -881,6 +1301,13 @@ fn ends_mid_line(path: &Path) -> bool {
         .ok()
         .filter(|bytes| !bytes.is_empty())
         .is_some_and(|bytes| bytes.last() != Some(&b'\n'))
+}
+
+/// When the file at `path` last changed, epoch milliseconds.
+fn modified_ms(path: &Path) -> Option<i64> {
+    let modified = fs::metadata(path).and_then(|meta| meta.modified()).ok()?;
+    let elapsed = modified.duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(elapsed.as_millis()).ok()
 }
 
 /// The last segment of `path`, for naming a directory that has no descriptor.
