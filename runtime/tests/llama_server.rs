@@ -174,9 +174,9 @@ enum Held {
     Closed,
 }
 
-/// An embedding server that reads each request and never answers it,
-/// reporting the request and, later, the client closing its connection.
-async fn holding_embedder() -> (MockServer, tokio::sync::mpsc::UnboundedReceiver<Held>) {
+/// A server that reads each request and never answers it, reporting the
+/// request and, later, the client closing its connection.
+async fn holding_server() -> (MockServer, tokio::sync::mpsc::UnboundedReceiver<Held>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (seen, held) = tokio::sync::mpsc::unbounded_channel();
@@ -210,25 +210,8 @@ async fn holding_embedder() -> (MockServer, tokio::sync::mpsc::UnboundedReceiver
 
 /// Read one HTTP request and decode its JSON body.
 async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<serde_json::Value> {
-    let mut buffer = Vec::new();
-    let mut tmp = [0u8; 8192];
-    let head_end = loop {
-        let n = stream.read(&mut tmp).await.ok().filter(|n| *n > 0)?;
-        buffer.extend_from_slice(&tmp[..n]);
-        if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
-            break at + 4;
-        }
-    };
-    let head = String::from_utf8_lossy(&buffer[..head_end]).to_ascii_lowercase();
-    let length: usize = head
-        .lines()
-        .find_map(|line| line.strip_prefix("content-length:"))
-        .and_then(|value| value.trim().parse().ok())?;
-    while buffer.len() < head_end + length {
-        let n = stream.read(&mut tmp).await.ok().filter(|n| *n > 0)?;
-        buffer.extend_from_slice(&tmp[..n]);
-    }
-    serde_json::from_slice(&buffer[head_end..head_end + length]).ok()
+    let (_, body) = read_raw_request(stream).await?;
+    serde_json::from_slice(&body).ok()
 }
 
 type Seen<T> = Arc<Mutex<Option<T>>>;
@@ -324,6 +307,278 @@ async fn collect(mut stream: ChunkStream) -> (Vec<CapabilityChunk>, Option<Runti
     (chunks, error)
 }
 
+/// What a System One stand-in received: the request line's path and the
+/// body's bytes.
+type Asked = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+/// A decision server that records each request and answers it with `status`
+/// and `body`.
+async fn systemone_server(status: u16, body: &'static str) -> (MockServer, Asked) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let asked: Asked = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&asked);
+    let accept = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let seen = Arc::clone(&seen);
+            tokio::spawn(async move {
+                let Some((path, request)) = read_raw_request(&mut stream).await else {
+                    return;
+                };
+                seen.lock().unwrap().push((path, request));
+                let head = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(body.as_bytes()).await;
+                let _ = stream.flush().await;
+            });
+        }
+    })
+    .abort_handle();
+    (
+        MockServer {
+            base_url: format!("http://{addr}"),
+            accept,
+        },
+        asked,
+    )
+}
+
+/// Read one HTTP request: its path and its body's bytes as sent.
+async fn read_raw_request(stream: &mut tokio::net::TcpStream) -> Option<(String, Vec<u8>)> {
+    let mut buffer = Vec::new();
+    let mut tmp = [0u8; 8192];
+    let head_end = loop {
+        let n = stream.read(&mut tmp).await.ok().filter(|n| *n > 0)?;
+        buffer.extend_from_slice(&tmp[..n]);
+        if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buffer[..head_end]).to_string();
+    let path = head.split_whitespace().nth(1)?.to_owned();
+    let length: usize = head
+        .to_ascii_lowercase()
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse().ok())?;
+    while buffer.len() < head_end + length {
+        let n = stream.read(&mut tmp).await.ok().filter(|n| *n > 0)?;
+        buffer.extend_from_slice(&tmp[..n]);
+    }
+    Some((path, buffer[head_end..head_end + length].to_vec()))
+}
+
+/// A choice question whose options, and whose state's keys, are out of
+/// alphabetical order, so a re-encoding would show.
+const QUESTION: &str = r#"{"state":{"z":1,"a":2},"questions":{"route":{"type":"choice","instructions":"Which team?","criteria":{"zeta":null,"alpha":null,"mid":null}}},"images":["data:image/png;base64,AA"]}"#;
+
+const ENVELOPE: &str = r#"{"model":"clef","answers":{"route":{"type":"choice","choice":"zeta","probabilities":{"zeta":0.7,"alpha":0.2,"mid":0.1},"confidence":0.5}},"usage":{"input_tokens":239,"output_tokens":0}}"#;
+
+fn decision_record() -> ModelRecord {
+    let mut rec = ModelRecord::new(
+        "Clef-Flash-Q4_K_M",
+        Modality::text(),
+        vec![Capability::judge(), Capability::see()],
+        ModelSource::new(SourceKind::file(), "/models/clef-flash.gguf"),
+    );
+    rec.runtime.id = Some(RuntimeId::llama_cpp());
+    rec.context_length = Some(262_144);
+    rec
+}
+
+fn judge_payload(question: &str) -> JsonValue {
+    JsonValue::Object(
+        [(
+            "messages".to_owned(),
+            JsonValue::Array(vec![JsonValue::Object(
+                [
+                    ("role".to_owned(), JsonValue::String("user".to_owned())),
+                    ("content".to_owned(), JsonValue::String(question.to_owned())),
+                ]
+                .into_iter()
+                .collect(),
+            )]),
+        )]
+        .into_iter()
+        .collect(),
+    )
+}
+
+#[tokio::test]
+async fn a_judge_invoke_asks_a_decision_server_the_question_as_written() {
+    let (server, asked) = systemone_server(200, ENVELOPE).await;
+    let (adapter, last_context, last_mode) = adapter_watching(Ok(server.base_url.clone()));
+    let (chunks, error) = collect(adapter.invoke(
+        &decision_record(),
+        Capability::judge(),
+        judge_payload(QUESTION),
+    ))
+    .await;
+    assert!(error.is_none(), "error: {error:?}");
+    assert_eq!(*last_mode.lock().unwrap(), Some(ServerMode::Decision));
+    assert_eq!(*last_context.lock().unwrap(), Some(16384));
+
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].0, "/v1/systemone");
+    assert_eq!(asked[0].1, QUESTION.as_bytes());
+
+    assert_eq!(chunks.len(), 2, "{chunks:?}");
+    match &chunks[0] {
+        CapabilityChunk::Text(text) => assert_eq!(text, ENVELOPE),
+        other => panic!("expected the envelope, got {other:?}"),
+    }
+    match &chunks[1] {
+        CapabilityChunk::Done(Some(stats)) => assert_eq!(stats.prompt_tokens, Some(239)),
+        other => panic!("expected Done with stats, got {other:?}"),
+    }
+}
+
+/// What a refusal is expected to become.
+type Expected = fn(&RuntimeError) -> bool;
+
+#[tokio::test]
+async fn a_decision_servers_refusals_map_to_whose_fault_they_are() {
+    let cases: [(u16, &str, Expected); 5] = [
+        (
+            400,
+            r#"{"error":{"code":400,"message":"criteria must be an object","type":"invalid_request_error"}}"#,
+            |err| matches!(err, RuntimeError::Rejected(m) if m == "criteria must be an object"),
+        ),
+        (
+            500,
+            r#"{"error":{"code":500,"message":"input (20000 tokens) is too large to process. increase the physical batch size (current batch size: 16384)","type":"server_error"}}"#,
+            |err| matches!(err, RuntimeError::Rejected(m) if m.contains("20000 tokens") && m.contains("16384-token window")),
+        ),
+        (
+            501,
+            r#"{"error":{"code":501,"message":"This server does not support image input for decisions, start it with --mmproj","type":"not_supported_error"}}"#,
+            |err| matches!(err, RuntimeError::Rejected(m) if m == "Clef-Flash-Q4_K_M does not read images"),
+        ),
+        (
+            404,
+            r#"{"error":{"code":404,"message":"File Not Found","type":"not_found_error"}}"#,
+            |err| matches!(err, RuntimeError::Unavailable(m) if m.contains("0.6.0")),
+        ),
+        (
+            503,
+            "",
+            |err| matches!(err, RuntimeError::Failed(m) if m.contains("503")),
+        ),
+    ];
+    for (status, body, expected) in cases {
+        let (server, _) = systemone_server(status, body).await;
+        let (adapter, _) = adapter_over(Ok(server.base_url.clone()));
+        let (chunks, error) = collect(adapter.invoke(
+            &decision_record(),
+            Capability::judge(),
+            judge_payload(QUESTION),
+        ))
+        .await;
+        assert!(chunks.is_empty(), "{status}: {chunks:?}");
+        let error = error.expect("an error");
+        assert!(expected(&error), "{status}: {error:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_judge_payload_without_a_question_starts_no_server() {
+    let (adapter, last_context) = adapter_over(Ok("http://127.0.0.1:9".to_owned()));
+    let (_, error) = collect(adapter.invoke(
+        &decision_record(),
+        Capability::judge(),
+        embed_payload(&["x"]),
+    ))
+    .await;
+    assert!(
+        matches!(error, Some(RuntimeError::Rejected(_))),
+        "{error:?}"
+    );
+    assert_eq!(*last_context.lock().unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_decision_server_that_dies_starting_names_the_llama_cpp_it_needs() {
+    let (adapter, _) = adapter_over(Err(RuntimeError::Unavailable(
+        "llama-server exited during startup".to_owned(),
+    )));
+    let (_, error) = collect(adapter.invoke(
+        &decision_record(),
+        Capability::judge(),
+        judge_payload(QUESTION),
+    ))
+    .await;
+    match error {
+        Some(RuntimeError::Unavailable(message)) => {
+            assert!(
+                message.starts_with("llama-server exited during startup"),
+                "{message}"
+            );
+            assert!(message.contains("llama.cpp 0.6.0 or newer"), "{message}");
+        }
+        other => panic!("expected Unavailable, got {other:?}"),
+    }
+
+    // Any other failure to start is passed on as it is.
+    let (adapter, _) = adapter_over(Err(RuntimeError::Unavailable("no free port".to_owned())));
+    let (_, error) = collect(adapter.invoke(
+        &decision_record(),
+        Capability::judge(),
+        judge_payload(QUESTION),
+    ))
+    .await;
+    assert!(matches!(error, Some(RuntimeError::Unavailable(m)) if m == "no free port"));
+}
+
+#[tokio::test]
+async fn a_consumer_that_goes_away_closes_the_question_in_flight() {
+    let (server, mut held) = holding_server().await;
+    let (adapter, _) = adapter_over(Ok(server.base_url.clone()));
+    let stream = adapter.invoke(
+        &decision_record(),
+        Capability::judge(),
+        judge_payload(QUESTION),
+    );
+    let patience = std::time::Duration::from_secs(5);
+    let first = tokio::time::timeout(patience, held.recv()).await.unwrap();
+    assert_eq!(first, Some(Held::Request(0)));
+    drop(stream);
+    let next = tokio::time::timeout(patience, held.recv()).await;
+    assert_eq!(
+        next.expect("the question was kept open"),
+        Some(Held::Closed)
+    );
+}
+
+#[test]
+fn a_decision_record_is_served_only_for_judge_with_its_capped_window_and_no_options() {
+    let (adapter, _) = adapter_over(Ok("http://x".to_owned()));
+    let rec = decision_record();
+    assert!(adapter.can_serve(&rec, &Capability::judge()));
+    for capability in [
+        Capability::chat(),
+        Capability::complete(),
+        Capability::embed(),
+    ] {
+        assert!(!adapter.can_serve(&rec, &capability), "{capability:?}");
+    }
+    assert_eq!(
+        adapter.effective_context_window(&rec, Some(4096)),
+        Some(16384)
+    );
+    assert!(
+        adapter
+            .honored_param_keys(&rec, &Capability::judge())
+            .is_empty()
+    );
+}
+
 #[test]
 fn effective_context_clamps_into_the_model_window() {
     let mut rec = gguf_record();
@@ -371,7 +626,7 @@ fn effective_context_clamps_into_the_model_window() {
 }
 
 #[test]
-fn bid_takes_a_gguf_that_chats_or_embeds() {
+fn bid_takes_a_gguf_that_chats_embeds_or_judges() {
     let (adapter, _) = adapter_over(Ok("http://x".to_owned()));
     let rec = gguf_record();
     let identified = |format, modality, capabilities| {
@@ -414,6 +669,24 @@ fn bid_takes_a_gguf_that_chats_or_embeds() {
         vec![Capability::embed()],
     );
     assert!(adapter.bid(&rec, &safetensors_embedder).is_none());
+
+    for capabilities in [
+        vec![Capability::judge()],
+        vec![Capability::judge(), Capability::see()],
+    ] {
+        let decision = identified(ModelFormat::Gguf, Modality::text(), capabilities);
+        native(
+            adapter
+                .bid(&rec, &decision)
+                .expect("a decision gguf is bid on"),
+        );
+    }
+    let safetensors_judge = identified(
+        ModelFormat::Safetensors,
+        Modality::text(),
+        vec![Capability::judge()],
+    );
+    assert!(adapter.bid(&rec, &safetensors_judge).is_none());
 }
 
 #[test]
@@ -591,7 +864,7 @@ async fn a_batch_of_long_inputs_carries_about_one_window_of_text_a_request() {
 
 #[tokio::test]
 async fn a_consumer_that_goes_away_closes_the_request_in_flight_and_sends_no_more() {
-    let (server, mut held) = holding_embedder().await;
+    let (server, mut held) = holding_server().await;
     let (adapter, _) = adapter_over(Ok(server.base_url.clone()));
     let inputs: Vec<String> = (0..200).map(|n| format!("input-{n}")).collect();
     let names: Vec<&str> = inputs.iter().map(String::as_str).collect();
@@ -704,21 +977,37 @@ async fn an_embedder_with_a_wide_window_is_launched_capped() {
 #[test]
 fn a_record_claiming_only_what_no_server_mode_answers_is_never_served_as_chat() {
     let (adapter, _) = adapter_over(Ok("http://x".to_owned()));
-    let mut judge = gguf_record();
-    judge.capabilities = vec![Capability::judge()];
+    let mut sighted = gguf_record();
+    sighted.capabilities = vec![Capability::see()];
     for capability in [
         Capability::chat(),
         Capability::complete(),
         Capability::embed(),
         Capability::judge(),
+        Capability::see(),
     ] {
-        assert!(!adapter.can_serve(&judge, &capability), "{capability:?}");
+        assert!(!adapter.can_serve(&sighted, &capability), "{capability:?}");
     }
 
     let mut pinned = gguf_record();
     pinned.capabilities.clear();
     assert!(adapter.can_serve(&pinned, &Capability::chat()));
     assert!(!adapter.can_serve(&pinned, &Capability::embed()));
+}
+
+#[test]
+fn sight_is_served_only_for_a_chat_or_decision_record_that_claims_it() {
+    let (adapter, _) = adapter_over(Ok("http://x".to_owned()));
+    let with = |capabilities: Vec<Capability>| {
+        let mut rec = gguf_record();
+        rec.capabilities = capabilities;
+        adapter.can_serve(&rec, &Capability::see())
+    };
+    assert!(with(vec![Capability::chat(), Capability::see()]));
+    assert!(with(vec![Capability::judge(), Capability::see()]));
+    assert!(!with(vec![Capability::chat()]));
+    assert!(!with(vec![Capability::judge()]));
+    assert!(!with(vec![Capability::embed(), Capability::see()]));
 }
 
 #[tokio::test]

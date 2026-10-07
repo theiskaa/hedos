@@ -62,14 +62,6 @@ pub(crate) struct GgufTree {
     pub projectors: Vec<(PathBuf, u64)>,
 }
 
-impl GgufTree {
-    /// Whether a multimodal projector sits among the weights, which is what
-    /// lets the weights beside it see.
-    pub(crate) fn has_projector(&self) -> bool {
-        !self.projectors.is_empty()
-    }
-}
-
 /// Every GGUF file under `dir`, split into the weights a model is served from
 /// and the projectors that accompany them.
 ///
@@ -241,7 +233,6 @@ mod tests {
         let mut expected = vec![(f32, 20), (f16, 15)];
         expected.sort();
         assert_eq!(tree.projectors, expected);
-        assert!(tree.has_projector());
     }
 
     #[test]

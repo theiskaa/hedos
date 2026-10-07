@@ -1,6 +1,7 @@
 //! Format and capability facts derived from a model's files.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use crate::records::{Capability, ExecutionMode, Modality};
 
@@ -61,6 +62,18 @@ pub struct GgufFacts {
     /// `laya`): a model that answers typed questions with probabilities, and
     /// neither chats nor embeds whatever its architecture.
     pub decision: Option<String>,
+    /// The width of the model's token embeddings, `{arch}.embedding_length`.
+    pub embedding_length: Option<i64>,
+    /// Whether a multimodal projector's header marks it as encoding images
+    /// (`clip.has_vision_encoder`), which llama.cpp builds its vision path on.
+    pub has_vision_encoder: bool,
+    /// Every dimension of every tensor the header lists, or `None` when its
+    /// tensor infos could not be read.
+    pub tensor_dimensions: Option<BTreeSet<u64>>,
+    /// Whether the file reaches the data of its last tensor: `false` for one
+    /// cut short, as an interrupted download leaves it, or whose tensor infos
+    /// could not be read.
+    pub tensors_present: bool,
     /// Whether the weights carry a classification head (a `cls.weight` or
     /// `cls.output.weight` tensor), which is what a reranker scores a pair with.
     pub has_classifier_head: bool,

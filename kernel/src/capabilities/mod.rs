@@ -4,6 +4,7 @@
 
 pub mod chat;
 pub mod chunk;
+pub mod decision;
 pub mod stop_matcher;
 pub mod think_splitter;
 pub mod tools;
@@ -13,6 +14,7 @@ pub use chat::{
     decode_tool_specs,
 };
 pub use chunk::{AudioFrame, CapabilityChunk, GenerationStats};
+pub use decision::question_carries_images;
 pub use stop_matcher::{StopMatcher, stop_strings};
 pub use think_splitter::{Piece, TagPair, ThinkSplitter, has_visible_tags};
 pub use tools::{ToolCall, ToolSpec};

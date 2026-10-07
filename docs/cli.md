@@ -67,9 +67,11 @@ Stream a single completion to stdout. Omit the model to pick one interactively, 
 - `--system <text>` sets a system prompt for the run.
 - `--max-tokens <n>` caps the generated length.
 - `--temperature <f>` sets the sampling temperature.
-- `--image <path>` attaches a local image for a vision (`see`) model to read; repeat it for several images. With `--image`, the picker and name resolution scope to vision-capable models, and a model that cannot see is refused up front rather than answering blind.
+- `--image <path>` attaches a local image for a vision (`see`) model to read; repeat it for several images. With `--image`, the picker scopes to vision-capable models, and a model that cannot see is refused up front rather than answering blind.
 
 Under `--json`, streaming is suppressed and the full text plus the model id is printed as one object at the end.
+
+A judge (a model that answers typed questions, such as a decision GGUF or laya) takes a question rather than a prompt: pass it as JSON, `{"state": ..., "questions": {...}}`, or omit it in a terminal to compose one. The answer is laid out as each option's probability, or printed as the envelope under `--json`. `--image` on a judge that sees (clef, OpenJev) adds each file to the question's `images` as a data URL, leaving the rest of the question as written; a question that already lists its `images` cannot take `--image` too.
 
 ### `hedos chat [model]`
 
@@ -208,7 +210,7 @@ Load a model into residency with a tiny request, so the next real request starts
 
 A model is warm where it is served. When a gateway is running on the configured port (or on the one `--port` names), the model is loaded there rather than in this command's own process, which would exit and take the loaded model with it. `--port` also reaches a gateway started with `hedos serve --port`, which is not the one this command probes for. A model whose warm request is not a conversation, a speech model for instance, is loaded locally either way: the gateway's chat endpoint has no route for it.
 
-The probe fits the model. A judge is asked the smallest well-formed typed question rather than being greeted, since prose is the one thing it refuses.
+The probe fits the model. A judge is asked the smallest well-formed typed question rather than being greeted, since prose is the one thing it refuses, and on a running gateway it is asked on `/v1/systemone`, the route it is served on.
 
 ### `hedos unload [model]`
 

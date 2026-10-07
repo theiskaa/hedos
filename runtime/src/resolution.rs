@@ -78,9 +78,11 @@ impl ResolutionExplanation {
     }
 }
 
-/// What one pass of [`ResolutionEngine::resolve_stranded_embedders`] did.
+/// What one pass of a stranded-model migration
+/// ([`ResolutionEngine::resolve_stranded_embedders`],
+/// [`ResolutionEngine::resolve_stranded_judges`]) did.
 #[derive(Debug, Clone, Default)]
-pub struct StrandedEmbedders {
+pub struct StrandedModels {
     /// The records it changed.
     pub changed: Vec<ModelRecord>,
     /// The rows whose file is there but could not be read, one still being
@@ -152,13 +154,16 @@ impl ResolutionEngine {
     /// when it claims neither chat nor completion: this exists to rescue
     /// embedders, and a file gone or unreadable since the scan reads as a
     /// generic chat GGUF, which would hand a stranded row capabilities it never
-    /// had. Every other record is left exactly as it is, so this is safe to run
-    /// on first sight of a shelf. Reports the records that changed, and how
-    /// many rows went unread because a GGUF that is there could not be read.
+    /// had. A decision GGUF it re-reads claims neither either, so a row this
+    /// pass selects becomes the judge it is here, ahead of
+    /// [`Self::resolve_stranded_judges`]. Every other record is left exactly as
+    /// it is, so this is safe to run on first sight of a shelf. Reports the
+    /// records that changed, and how many rows went unread because a GGUF that
+    /// is there could not be read.
     pub fn resolve_stranded_embedders(
         &self,
         registry: &mut Registry,
-    ) -> Result<StrandedEmbedders, RegistryError> {
+    ) -> Result<StrandedModels, RegistryError> {
         let unread = Cell::new(0usize);
         let changed = self.resolve_where(
             registry,
@@ -174,29 +179,55 @@ impl ResolutionEngine {
             |record, plan| {
                 let identified = &plan.identified;
                 let claims = &identified.capabilities;
-                let embeds = identified.format == ModelFormat::Gguf
+                let settled = identified.format == ModelFormat::Gguf
                     && !claims.contains(&Capability::chat())
                     && !claims.contains(&Capability::complete());
-                // A GGUF whose header was read carries an answer on its chat
-                // template, so one with none was never read. A file that is
-                // gone has nothing to migrate and the next scan marks it
-                // missing, so only one still there (unreadable, or still being
-                // written) is worth another pass.
-                let weights = record
-                    .primary_weight_path
-                    .as_deref()
-                    .unwrap_or(&record.source.path);
-                if !embeds
-                    && identified.format == ModelFormat::Gguf
-                    && identified.has_chat_template.is_none()
-                    && Path::new(weights).exists()
-                {
+                if !settled && header_unread(record, identified) {
                     unread.set(unread.get() + 1);
                 }
-                embeds
+                settled
             },
         )?;
-        Ok(StrandedEmbedders {
+        Ok(StrandedModels {
+            changed,
+            unread: unread.get(),
+        })
+    }
+
+    /// Resolve the decision GGUFs (clef, laya, kev, openjev, lev) an older
+    /// shelf put on llama.cpp as chat models or left unresolved, so long as
+    /// neither is downloading or pinned by the user. Every llama.cpp chat
+    /// model and every unresolved record is identified again, since an older
+    /// shelf left a decision GGUF unresolved under whatever it took it for (an
+    /// embedder, or nothing); a re-identification is taken only when it is a
+    /// GGUF that claims `judge`, so every other record is left exactly as it
+    /// is. Reports the records that changed, and how many rows went unread
+    /// because a GGUF that is there could not be read.
+    pub fn resolve_stranded_judges(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<StrandedModels, RegistryError> {
+        let unread = Cell::new(0usize);
+        let changed = self.resolve_where(
+            registry,
+            |record| {
+                let served_as_chat = record.runtime.id == Some(RuntimeId::llama_cpp())
+                    && record.capabilities.contains(&Capability::chat());
+                (served_as_chat || record.state == ModelState::Unresolved)
+                    && !record.downloading
+                    && record.runtime.resolved != Resolution::User
+            },
+            |record, plan| {
+                let identified = &plan.identified;
+                let judges = identified.format == ModelFormat::Gguf
+                    && identified.capabilities.contains(&Capability::judge());
+                if !judges && header_unread(record, identified) {
+                    unread.set(unread.get() + 1);
+                }
+                judges
+            },
+        )?;
+        Ok(StrandedModels {
             changed,
             unread: unread.get(),
         })
@@ -598,6 +629,20 @@ fn fold_tool_capability(
         (false, true) => capabilities.retain(|cap| *cap != Capability::tools()),
         _ => {}
     }
+}
+
+/// Whether `record`'s GGUF is there but its header could not be read, which a
+/// later migration pass may yet read. A header that was read carries an answer
+/// on its chat template, so one with none was never read. A file that is gone
+/// has nothing to migrate and the next scan marks it missing.
+fn header_unread(record: &ModelRecord, identified: &IdentifiedModel) -> bool {
+    let weights = record
+        .primary_weight_path
+        .as_deref()
+        .unwrap_or(&record.source.path);
+    identified.format == ModelFormat::Gguf
+        && identified.has_chat_template.is_none()
+        && Path::new(weights).exists()
 }
 
 #[cfg(test)]

@@ -168,11 +168,18 @@ const WARM_QUESTION: &str =
 /// minutes loading, and the caller asked for exactly that.
 const GATEWAY_WARM_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// The body that loads `record` through a gateway's Ollama chat endpoint, or
-/// `None` for a model that answers something other than a conversation. The
-/// content is [`warm_request`]'s, so a judge is asked a question here too.
-pub(crate) fn gateway_warm_body(record: &ModelRecord) -> Option<serde_json::Value> {
-    let (_, payload) = warm_request(record)?;
+/// The route and body that load `record` through a gateway, or `None` for a
+/// model that answers neither a conversation nor a typed question. A judge is
+/// asked [`WARM_QUESTION`] on `/v1/systemone`, the route it is served on, which
+/// a model that only judges answers and the conversation route does not; any
+/// other model gets [`warm_request`]'s message on the Ollama chat endpoint.
+pub(crate) fn gateway_warm(record: &ModelRecord) -> Option<(&'static str, serde_json::Value)> {
+    let (capability, payload) = warm_request(record)?;
+    if capability == Capability::judge() {
+        let mut body: serde_json::Value = serde_json::from_str(WARM_QUESTION).ok()?;
+        body["model"] = serde_json::Value::String(record.id.clone());
+        return Some(("/v1/systemone", body));
+    }
     let content = payload
         .as_object()
         .and_then(|fields| fields.get("messages"))
@@ -195,7 +202,7 @@ pub(crate) fn gateway_warm_body(record: &ModelRecord) -> Option<serde_json::Valu
     {
         body["options"] = serde_json::json!({ "num_predict": 1 });
     }
-    Some(body)
+    Some(("/api/chat", body))
 }
 
 /// Whether the gateway on `port` reports `model_id` held in memory. A gateway
@@ -215,13 +222,13 @@ pub(crate) async fn held_by_gateway(port: u16, model_id: &str) -> bool {
 /// is running. Warming this process instead would load the model here, report
 /// success, and leave the gateway as cold as it was.
 pub(crate) async fn warm_via_gateway(record: &ModelRecord, port: u16) -> Result<String, String> {
-    let body = gateway_warm_body(record)
-        .ok_or_else(|| format!("{} can't be warmed", record.display_name()))?;
+    let (route, body) =
+        gateway_warm(record).ok_or_else(|| format!("{} can't be warmed", record.display_name()))?;
     let response = reqwest::Client::builder()
         .timeout(GATEWAY_WARM_TIMEOUT)
         .build()
         .map_err(|error| error.to_string())?
-        .post(format!("http://127.0.0.1:{port}/api/chat"))
+        .post(format!("http://127.0.0.1:{port}{route}"))
         .json(&body)
         .send()
         .await
@@ -365,21 +372,30 @@ mod tests {
     }
 
     #[test]
-    fn the_gateway_warm_body_carries_the_same_probe_as_a_local_one() {
-        // The gateway posts a conversation whatever the model is, so a judge's
-        // question has to travel as the message content or it warms nothing.
-        let judge = model(vec![Capability::chat(), Capability::judge()]);
-        let body = gateway_warm_body(&judge).expect("a warmable model");
-        let content = body["messages"][0]["content"].as_str().expect("content");
-        assert!(content.contains("\"questions\""), "{content}");
-        assert_eq!(body["model"], judge.id);
+    fn a_judge_is_warmed_on_the_gateway_with_a_typed_question_on_its_own_route() {
+        // A judge that also chats (laya) and one that only judges (a decision
+        // GGUF) alike are warmed on the route they are served on.
+        for capabilities in [
+            vec![Capability::chat(), Capability::judge()],
+            vec![Capability::judge()],
+        ] {
+            let judge = model(capabilities);
+            let (route, body) = gateway_warm(&judge).expect("a warmable model");
+            assert_eq!(route, "/v1/systemone");
+            assert_eq!(body["model"], judge.id);
+            assert_eq!(body["state"], "ready");
+            assert_eq!(body["questions"]["warm"]["type"], "noul");
+            assert!(body.get("messages").is_none());
+        }
+    }
 
-        assert!(body.get("options").is_none(), "a judge has no reply budget");
-
+    #[test]
+    fn a_chat_model_is_warmed_on_the_gateway_with_a_one_token_conversation() {
         let chatter = model(vec![Capability::chat()]);
-        let chat_body = gateway_warm_body(&chatter).expect("body");
-        assert_eq!(chat_body["messages"][0]["content"], "hi");
-        assert_eq!(chat_body["options"]["num_predict"], 1);
+        let (route, body) = gateway_warm(&chatter).expect("body");
+        assert_eq!(route, "/api/chat");
+        assert_eq!(body["messages"][0]["content"], "hi");
+        assert_eq!(body["options"]["num_predict"], 1);
     }
 
     #[test]

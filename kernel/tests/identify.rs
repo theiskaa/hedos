@@ -3,10 +3,10 @@
 
 mod support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kernel::records::{Capability, ExecutionMode, Modality, ModelRecord, ModelSource, SourceKind};
-use kernel::resolution::{ModelFormat, identify};
+use kernel::resolution::{IdentifiedModel, ModelFormat, identify, projector_for};
 use support::TempDir;
 
 fn record(kind: SourceKind, path: &str) -> ModelRecord {
@@ -455,8 +455,28 @@ fn an_encoder_gguf_that_names_no_pooling_serves_nothing() {
     assert!(unknown.capabilities.is_empty());
 }
 
+fn decision_gguf(dir: &TempDir, name: &str, architecture: &str, decision: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    write(
+        &path,
+        &gguf(&[
+            kv_string("general.architecture", architecture),
+            kv_string(&format!("{architecture}.decision.type"), decision),
+            kv_u32(&format!("{architecture}.context_length"), 262_144),
+            kv_string("tokenizer.chat_template", "{{ x }}"),
+        ]),
+    );
+    path
+}
+
+fn identify_file(path: &Path) -> IdentifiedModel {
+    identify(&record(SourceKind::file(), path.to_str().unwrap()))
+}
+
 #[test]
-fn an_encoder_gguf_with_a_decision_head_is_not_an_embedder() {
+fn an_encoder_gguf_with_a_decision_head_is_a_judge_and_not_an_embedder() {
+    // Laya and Julia-1: a `modern-bert` encoder whose classifier pools, plus a
+    // decision head that is what llama.cpp serves.
     let dir = TempDir::new();
     let path = dir.path().join("laya.gguf");
     write(
@@ -466,24 +486,80 @@ fn an_encoder_gguf_with_a_decision_head_is_not_an_embedder() {
             kv_string("modern-bert.decision.type", "laya"),
             kv_u32("modern-bert.classifier.pooling_type", 1),
             kv_u32("modern-bert.pooling_type", 1),
+            kv_u32("modern-bert.context_length", 8192),
         ]),
     );
-    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    let id = identify_file(&path);
     assert_eq!(id.format, ModelFormat::Gguf);
     assert_eq!(id.modality, Some(Modality::text()));
-    assert!(id.capabilities.is_empty());
+    assert_eq!(id.capabilities, vec![Capability::judge()]);
+    assert_eq!(id.context_length, Some(8192));
+}
 
-    let clef = dir.path().join("clef.gguf");
+#[test]
+fn a_decision_gguf_is_a_judge_whatever_its_architecture_and_chat_template() {
+    // clef is an architecture of its own; OpenJev, Kev and lev are `qwen35`, a
+    // chat architecture, with a chat template. The decision key wins over both.
+    let dir = TempDir::new();
+    for (architecture, decision) in [
+        ("clef", "clef"),
+        ("qwen35", "openjev"),
+        ("qwen35", "kev"),
+        ("qwen35", "lev"),
+    ] {
+        let path = decision_gguf(&dir, &format!("{decision}.gguf"), architecture, decision);
+        let id = identify_file(&path);
+        assert_eq!(id.modality, Some(Modality::text()), "{decision}");
+        assert_eq!(id.capabilities, vec![Capability::judge()], "{decision}");
+        assert_eq!(id.execution, ExecutionMode::Stream, "{decision}");
+        assert_eq!(id.context_length, Some(262_144), "{decision}");
+        assert_eq!(id.has_chat_template, Some(true), "{decision}");
+    }
+}
+
+#[test]
+fn a_decision_gguf_sees_only_when_its_type_reads_images_and_a_projector_came_with_it() {
+    for (architecture, decision, sees) in [
+        ("clef", "clef", true),
+        ("qwen35", "openjev", true),
+        ("qwen35", "kev", false),
+        ("qwen35", "lev", false),
+        ("modern-bert", "laya", false),
+    ] {
+        let dir = TempDir::new();
+        let path = decision_gguf(&dir, "model-Q4_K_M.gguf", architecture, decision);
+        write(&dir.path().join("mmproj-model-Q8_0.gguf"), b"GGUF");
+        let mut expected = vec![Capability::judge()];
+        if sees {
+            expected.push(Capability::see());
+        }
+        assert_eq!(identify_file(&path).capabilities, expected, "{decision}");
+    }
+}
+
+#[test]
+fn a_decision_gguf_without_a_projector_never_sees() {
+    let dir = TempDir::new();
+    let path = decision_gguf(&dir, "clef.gguf", "clef", "clef");
+    assert_eq!(identify_file(&path).capabilities, vec![Capability::judge()]);
+}
+
+#[test]
+fn a_decision_key_named_for_another_architecture_is_not_a_decision_model() {
+    let dir = TempDir::new();
+    let path = dir.path().join("qwen35.gguf");
     write(
-        &clef,
+        &path,
         &gguf(&[
-            kv_string("general.architecture", "clef"),
+            kv_string("general.architecture", "qwen35"),
             kv_string("clef.decision.type", "clef"),
             kv_string("tokenizer.chat_template", "{{ x }}"),
         ]),
     );
-    let id = identify(&record(SourceKind::file(), clef.to_str().unwrap()));
-    assert!(!id.capabilities.contains(&Capability::embed()));
+    assert_eq!(
+        identify_file(&path).capabilities,
+        vec![Capability::chat(), Capability::complete()]
+    );
 }
 
 #[test]
@@ -553,7 +629,8 @@ fn a_decision_gguf_never_embeds_whatever_its_header_pools() {
         ]),
     );
     let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
-    assert!(!id.capabilities.contains(&Capability::embed()));
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert_eq!(id.capabilities, vec![Capability::judge()]);
 }
 
 #[test]
@@ -710,6 +787,327 @@ fn a_projector_beside_the_weights_adds_sight_but_is_not_the_weights() {
     assert_eq!(id.modality, Some(Modality::text()));
     assert!(id.capabilities.contains(&Capability::chat()));
     assert!(id.capabilities.contains(&Capability::see()));
+}
+
+/// A loose GGUF record for `weights` beside each projector in `projectors`
+/// (name, size), quantized as `quantization`.
+fn loose_with_projectors(
+    dir: &TempDir,
+    weights: &str,
+    quantization: Option<&str>,
+    projectors: &[(&str, usize)],
+) -> ModelRecord {
+    let path = dir.path().join(weights);
+    write(&path, b"GGUF");
+    for (name, size) in projectors {
+        write(&dir.path().join(name), &projector(64, *size));
+    }
+    let mut rec = record(SourceKind::file(), path.to_str().unwrap());
+    rec.quantization = quantization.map(str::to_owned);
+    rec
+}
+
+fn file_name(path: Option<PathBuf>) -> Option<String> {
+    path.and_then(|path| path.file_name()?.to_str().map(str::to_owned))
+}
+
+#[test]
+fn the_projector_named_for_the_weights_quantization_is_the_one_served() {
+    let dir = TempDir::new();
+    let rec = loose_with_projectors(
+        &dir,
+        "Clef-Flash-Q8_0.gguf",
+        Some("Q8_0"),
+        &[
+            ("mmproj-Clef-Flash-BF16.gguf", 90),
+            ("mmproj-Clef-Flash-Q8_0.gguf", 60),
+        ],
+    );
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-Clef-Flash-Q8_0.gguf")
+    );
+
+    // BF16 weights take the BF16 projector, though it is the larger one.
+    let dir = TempDir::new();
+    let rec = loose_with_projectors(
+        &dir,
+        "model-BF16.gguf",
+        Some("BF16"),
+        &[
+            ("mmproj-model-BF16.gguf", 90),
+            ("mmproj-model-Q8_0.gguf", 60),
+        ],
+    );
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-model-BF16.gguf")
+    );
+}
+
+#[test]
+fn weights_with_no_projector_of_their_quantization_take_the_smallest() {
+    let dir = TempDir::new();
+    let rec = loose_with_projectors(
+        &dir,
+        "Clef-Flash-Q4_K_M.gguf",
+        Some("Q4_K_M"),
+        &[
+            ("mmproj-Clef-Flash-BF16.gguf", 90),
+            ("mmproj-Clef-Flash-Q8_0.gguf", 60),
+        ],
+    );
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-Clef-Flash-Q8_0.gguf")
+    );
+
+    // A quantization only part of a name is not a match: F16 weights do not
+    // take the BF16 projector for it, but the smaller one.
+    let dir = TempDir::new();
+    let rec = loose_with_projectors(
+        &dir,
+        "model-F16.gguf",
+        Some("F16"),
+        &[
+            ("mmproj-model-BF16.gguf", 90),
+            ("mmproj-model-Q8_0.gguf", 60),
+        ],
+    );
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-model-Q8_0.gguf")
+    );
+
+    let dir = TempDir::new();
+    let rec = loose_with_projectors(
+        &dir,
+        "model.gguf",
+        None,
+        &[("mmproj-b.gguf", 60), ("mmproj-a.gguf", 60)],
+    );
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-a.gguf")
+    );
+}
+
+/// A GGUF header of `architecture` with `width` as its embedding width.
+fn weights_of_width(architecture: &str, width: u32) -> Vec<u8> {
+    gguf(&[
+        kv_string("general.architecture", architecture),
+        kv_u32(&format!("{architecture}.embedding_length"), width),
+    ])
+}
+
+/// A vision projector: its header marks an image encoder and lists one
+/// tensor `width` wide, whose data follows, `padding` bytes and one more.
+fn projector(width: u64, padding: usize) -> Vec<u8> {
+    projector_with(width, padding, true)
+}
+
+/// [`projector`], with `vision` saying whether it encodes images.
+fn projector_with(width: u64, padding: usize, vision: bool) -> Vec<u8> {
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend_from_slice(&2u64.to_le_bytes());
+    bytes.extend(kv_string("general.architecture", "clip"));
+    let encoder = if vision {
+        "clip.has_vision_encoder"
+    } else {
+        "clip.has_audio_encoder"
+    };
+    bytes.extend(gguf_string(encoder));
+    bytes.extend_from_slice(&7u32.to_le_bytes());
+    bytes.push(1);
+    bytes.extend(gguf_string("mm.2.weight"));
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.resize(bytes.len().div_ceil(32) * 32 + padding + 1, 0);
+    bytes
+}
+
+fn projector_of_width(width: u64) -> Vec<u8> {
+    projector(width, 0)
+}
+
+#[test]
+fn another_models_projector_in_the_same_folder_is_not_this_ones_sight() {
+    // A text model kept in ~/Models beside gemma and gemma's projector:
+    // llama.cpp refuses a projector whose width is not the model's.
+    let dir = TempDir::new();
+    let llama = dir.path().join("Llama-3.2-3B-Instruct-Q4_K_M.gguf");
+    write(&llama, &weights_of_width("llama", 3072));
+    let gemma = dir.path().join("gemma-3-4b-it-Q4_K_M.gguf");
+    write(&gemma, &weights_of_width("gemma3", 2560));
+    write(
+        &dir.path().join("mmproj-gemma-3-4b-it-f16.gguf"),
+        &projector_of_width(2560),
+    );
+
+    let llama_id = identify_file(&llama);
+    assert_eq!(
+        llama_id.capabilities,
+        vec![Capability::chat(), Capability::complete()]
+    );
+    let mut llama_record = record(SourceKind::file(), llama.to_str().unwrap());
+    llama_record.capabilities = llama_id.capabilities;
+    assert_eq!(projector_for(&llama_record), None);
+
+    let gemma_id = identify_file(&gemma);
+    assert!(gemma_id.capabilities.contains(&Capability::see()));
+    let gemma_record = record(SourceKind::file(), gemma.to_str().unwrap());
+    assert_eq!(
+        file_name(projector_for(&gemma_record)).as_deref(),
+        Some("mmproj-gemma-3-4b-it-f16.gguf")
+    );
+}
+
+#[test]
+fn an_audio_only_projector_is_not_sight() {
+    let dir = TempDir::new();
+    let model = dir.path().join("ultravox-Q4_K_M.gguf");
+    write(&model, &weights_of_width("llama", 3072));
+    write(
+        &dir.path().join("mmproj-ultravox-f16.gguf"),
+        &projector_with(3072, 0, false),
+    );
+    assert!(
+        !identify_file(&model)
+            .capabilities
+            .contains(&Capability::see())
+    );
+    let rec = record(SourceKind::file(), model.to_str().unwrap());
+    assert_eq!(projector_for(&rec), None);
+}
+
+#[test]
+fn an_older_converters_projector_is_matched_by_its_tensors_not_its_header() {
+    // llava 1.6's projector names CLIP's 768 as its projection width; its
+    // output tensor is the 4096 the text model takes, which is what llama.cpp
+    // checks.
+    let dir = TempDir::new();
+    let model = dir.path().join("llava-v1.6-mistral-7b.Q4_K_M.gguf");
+    write(&model, &weights_of_width("llama", 4096));
+    write(
+        &dir.path().join("mmproj-model-f16.gguf"),
+        &projector(4096, 0),
+    );
+    assert!(
+        identify_file(&model)
+            .capabilities
+            .contains(&Capability::see())
+    );
+    let rec = record(SourceKind::file(), model.to_str().unwrap());
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-model-f16.gguf")
+    );
+}
+
+#[test]
+fn a_projector_cut_short_or_unreadable_is_never_loaded_but_one_beside_it_is() {
+    let dir = TempDir::new();
+    let model = dir.path().join("SmolVLM2-Q8_0.gguf");
+    write(&model, &weights_of_width("llama", 960));
+    let mut cut = projector(960, 0);
+    cut.truncate(cut.len() - 1);
+    write(&dir.path().join("mmproj-SmolVLM2-a-f32.gguf"), &cut);
+    write(&dir.path().join("mmproj-SmolVLM2-b-f16.gguf"), b"GGUF");
+    write(
+        &dir.path().join("mmproj-SmolVLM2-c-Q8_0.gguf"),
+        &projector(960, 4096),
+    );
+    let rec = record(SourceKind::file(), model.to_str().unwrap());
+    assert_eq!(
+        file_name(projector_for(&rec)).as_deref(),
+        Some("mmproj-SmolVLM2-c-Q8_0.gguf")
+    );
+
+    // With only those beside it, the model still says it sees, as a name is
+    // all there is to go on, but no server is given either.
+    std::fs::remove_file(dir.path().join("mmproj-SmolVLM2-c-Q8_0.gguf")).unwrap();
+    assert!(
+        identify_file(&model)
+            .capabilities
+            .contains(&Capability::see())
+    );
+    assert_eq!(projector_for(&rec), None);
+}
+
+#[test]
+fn a_decision_model_beside_another_models_projector_does_not_see() {
+    let dir = TempDir::new();
+    let openjev = dir.path().join("OpenJev-Q4_K_M.gguf");
+    write(
+        &openjev,
+        &gguf(&[
+            kv_string("general.architecture", "qwen35"),
+            kv_string("qwen35.decision.type", "openjev"),
+            kv_u32("qwen35.embedding_length", 5120),
+        ]),
+    );
+    write(
+        &dir.path().join("mmproj-Clef-Flash-Q8_0.gguf"),
+        &projector_of_width(4096),
+    );
+    assert_eq!(
+        identify_file(&openjev).capabilities,
+        vec![Capability::judge()]
+    );
+}
+
+#[test]
+fn a_snapshots_projector_of_another_width_is_not_its_sight() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    write(
+        &snapshot.join("model.gguf"),
+        &weights_of_width("llama", 3072),
+    );
+    write(
+        &snapshot.join("mmproj-other.gguf"),
+        &projector_of_width(2560),
+    );
+    let rec = hf_record(&dir, "rev1");
+    assert!(!identify(&rec).capabilities.contains(&Capability::see()));
+    assert_eq!(projector_for(&rec), None);
+}
+
+#[test]
+fn a_gguf_with_no_projector_or_from_ollama_has_none_to_serve() {
+    let dir = TempDir::new();
+    let rec = loose_with_projectors(&dir, "model.gguf", Some("Q8_0"), &[]);
+    assert_eq!(projector_for(&rec), None);
+
+    let dir = TempDir::new();
+    write(&dir.path().join("mmproj-model.gguf"), b"GGUF");
+    let ollama = record(
+        SourceKind::ollama(),
+        dir.path().join("manifest").to_str().unwrap(),
+    );
+    assert_eq!(projector_for(&ollama), None);
+}
+
+#[test]
+fn a_snapshots_projector_is_found_where_its_sight_was_and_served_by_its_snapshot_path() {
+    let dir = TempDir::new();
+    let snapshot = snapshot_of(&dir, "rev1");
+    write(&snapshot.join("Q4_K_M").join("model-Q4_K_M.gguf"), b"GGUF");
+    write(&snapshot.join("mmproj-model-BF16.gguf"), &projector(64, 80));
+    write(&snapshot.join("mmproj-model-Q8_0.gguf"), &projector(64, 40));
+    let mut rec = hf_record(&dir, "rev1");
+    rec.quantization = Some("Q4_K_M".to_owned());
+
+    assert!(identify(&rec).capabilities.contains(&Capability::see()));
+    assert_eq!(
+        projector_for(&rec),
+        Some(snapshot.join("mmproj-model-Q8_0.gguf"))
+    );
 }
 
 #[test]

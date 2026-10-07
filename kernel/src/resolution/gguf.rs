@@ -1,14 +1,15 @@
 //! A minimal GGUF header reader: enough to pull the architecture, context
 //! length, chat-template presence, file type, pooling, decision-model marker,
-//! and classifier head without loading the weights.
+//! the widths a projector is matched by, and classifier head without loading
+//! the weights.
 //!
 //! Values are little-endian. The reader streams over a buffered file handle and
 //! seeks past values it does not need, so it never reads the tensor data: the
 //! tensor names it looks at sit in the header, ahead of the data.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use crate::resolution::format::{GgufFacts, GgufPooling};
@@ -22,9 +23,12 @@ const MAX_TENSORS: u64 = 1 << 16;
 /// a classifier head stay a few MiB at most.
 const MAX_TENSOR_NAME: u64 = 64;
 const MAX_TENSOR_DIMS: u32 = 8;
+/// The alignment of the tensor data when `general.alignment` names none.
+const DEFAULT_ALIGNMENT: u64 = 32;
 
 const TYPE_UINT32: u32 = 4;
 const TYPE_INT32: u32 = 5;
+const TYPE_BOOL: u32 = 7;
 const TYPE_STRING: u32 = 8;
 const TYPE_ARRAY: u32 = 9;
 const TYPE_UINT64: u32 = 10;
@@ -47,8 +51,9 @@ pub fn gguf_general_architecture(path: &Path) -> Option<String> {
 }
 
 /// Read the architecture, context length, chat-template presence, the
-/// quantization, the pooling, the decision type, and whether a classifier head
-/// is among the tensors from a GGUF header. Returns `None` if the file is not a
+/// quantization, the pooling, the decision type, the embedding width (or a
+/// projector's projection width), and whether a classifier head is among the
+/// tensors from a GGUF header. Returns `None` if the file is not a
 /// valid GGUF (v2+) header.
 pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     let mut reader = Reader::open(path)?;
@@ -66,6 +71,9 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     let mut context_lengths: BTreeMap<String, i64> = BTreeMap::new();
     let mut poolings: BTreeMap<String, i64> = BTreeMap::new();
     let mut decisions: BTreeMap<String, String> = BTreeMap::new();
+    let mut embedding_lengths: BTreeMap<String, i64> = BTreeMap::new();
+    let mut has_vision_encoder = false;
+    let mut alignment = DEFAULT_ALIGNMENT;
     let mut has_chat_template = false;
     let mut file_type: Option<i64> = None;
     let mut kvs_read = 0u64;
@@ -125,6 +133,28 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
                     }
                 }
             }
+        } else if is_model_key(&key, "embedding_length") || key == "general.alignment" {
+            match read_integer(&mut reader, value_type) {
+                Some(value) if key == "general.alignment" => {
+                    alignment = u64::try_from(value)
+                        .ok()
+                        .filter(|value| *value > 0)
+                        .unwrap_or(DEFAULT_ALIGNMENT);
+                }
+                Some(value) => {
+                    embedding_lengths.insert(key, value);
+                }
+                None => {
+                    if !reader.skip_value(value_type) {
+                        break;
+                    }
+                }
+            }
+        } else if key == "clip.has_vision_encoder" && value_type == TYPE_BOOL {
+            let Some([flag]) = reader.read_array::<1>() else {
+                break;
+            };
+            has_vision_encoder = flag != 0;
         } else if is_model_key(&key, "decision.type") && value_type == TYPE_STRING {
             let Some(value) = reader.read_string() else {
                 break;
@@ -137,7 +167,9 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     }
     // The tensor infos follow the last value, so they can be found only when
     // every value before them was read or skipped.
-    let has_classifier_head = kvs_read == kv_count && reader.has_classifier_head(tensor_count);
+    let tensors = (kvs_read == kv_count)
+        .then(|| reader.scan_tensors(tensor_count, alignment))
+        .flatten();
 
     let context_length = own_value(architecture.as_deref(), "context_length", &context_lengths)
         .or_else(|| lone_value(&context_lengths));
@@ -146,6 +178,11 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     let pooling = own_value(architecture.as_deref(), "pooling_type", &poolings)
         .and_then(GgufPooling::from_llama);
     let decision = own_value(architecture.as_deref(), "decision.type", &decisions);
+    let embedding_length = own_value(
+        architecture.as_deref(),
+        "embedding_length",
+        &embedding_lengths,
+    );
 
     Some(GgufFacts {
         architecture,
@@ -154,7 +191,11 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
         quantization: file_type.and_then(file_type_name).map(str::to_owned),
         pooling,
         decision,
-        has_classifier_head,
+        embedding_length,
+        has_vision_encoder,
+        has_classifier_head: tensors.as_ref().is_some_and(|scan| scan.classifier_head),
+        tensors_present: tensors.as_ref().is_some_and(|scan| scan.data_reached),
+        tensor_dimensions: tensors.map(|scan| scan.dimensions),
     })
 }
 
@@ -260,6 +301,17 @@ fn scalar_width(value_type: u32) -> Option<u64> {
     }
 }
 
+/// What the tensor infos of a GGUF say.
+#[derive(Default)]
+struct TensorScan {
+    /// Whether one names a classifier head (`cls.weight`, `cls.output.weight`).
+    classifier_head: bool,
+    /// Every dimension of every tensor.
+    dimensions: BTreeSet<u64>,
+    /// Whether the file reaches the data of its last tensor.
+    data_reached: bool,
+}
+
 struct Reader {
     inner: BufReader<File>,
 }
@@ -321,34 +373,33 @@ impl Reader {
         self.inner.seek_relative(count as i64).is_ok()
     }
 
-    /// Whether one of the next `count` tensor infos names a classifier head.
-    /// A malformed info, a name too long included, ends the search with no
-    /// head found.
-    fn has_classifier_head(&mut self, count: u64) -> bool {
+    /// Read the next `count` tensor infos, the data after them starting at the
+    /// next multiple of `alignment`. A malformed info, a name too long
+    /// included, ends the scan with nothing found.
+    fn scan_tensors(&mut self, count: u64, alignment: u64) -> Option<TensorScan> {
+        let mut scan = TensorScan::default();
+        let mut last_offset = 0u64;
         for _ in 0..count.min(MAX_TENSORS) {
-            let Some(length) = self.read_u64().filter(|length| *length < MAX_TENSOR_NAME) else {
-                return false;
-            };
-            let Some(name) = self.read_bytes(length as usize) else {
-                return false;
-            };
+            let length = self.read_u64().filter(|length| *length < MAX_TENSOR_NAME)?;
+            let name = self.read_bytes(length as usize)?;
             if name == b"cls.weight" || name == b"cls.output.weight" {
-                return true;
+                scan.classifier_head = true;
             }
-            let Some(dims) = self.read_u32().filter(|dims| *dims <= MAX_TENSOR_DIMS) else {
-                return false;
-            };
+            let dims = self.read_u32().filter(|dims| *dims <= MAX_TENSOR_DIMS)?;
             for _ in 0..dims {
-                if self.read_u64().is_none() {
-                    return false;
-                }
+                scan.dimensions.insert(self.read_u64()?);
             }
-            // The element type and the offset into the data.
-            if self.read_u32().is_none() || self.read_u64().is_none() {
-                return false;
-            }
+            // The element type, then the offset into the data.
+            self.read_u32()?;
+            last_offset = last_offset.max(self.read_u64()?);
         }
-        false
+        let infos_end = self.inner.stream_position().ok()?;
+        let data_start = infos_end.div_ceil(alignment).checked_mul(alignment)?;
+        let length = self.inner.get_ref().metadata().ok()?.len();
+        scan.data_reached = data_start
+            .checked_add(last_offset)
+            .is_some_and(|start| start < length);
+        Some(scan)
     }
 
     fn skip_value(&mut self, value_type: u32) -> bool {

@@ -3,6 +3,8 @@
 //! full adapter→pool→server chat path — all against a mock spawner that binds the
 //! allocated port with a real loopback HTTP server.
 
+mod support;
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,9 +14,10 @@ use kernel::records::{
     Capability, JsonValue, Modality, ModelRecord, ModelSource, RuntimeId, SourceKind,
 };
 use runtime::adapters::{
-    ChunkStream, LlamaBackend, LlamaServerAdapter, LlamaServerPool, RuntimeAdapter, RuntimeError,
-    ServerMode, ServerProcess, ServerSpawner,
+    ChunkStream, LlamaBackend, LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner,
+    RuntimeAdapter, RuntimeError, ServerLaunch, ServerMode, ServerProcess, ServerSpawner,
 };
+use support::{TempDir, gguf, kv_string, projector_gguf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::AbortHandle;
 
@@ -24,6 +27,7 @@ use tokio::task::AbortHandle;
 struct MockSpawner {
     count: Arc<AtomicUsize>,
     modes: Arc<Mutex<Vec<ServerMode>>>,
+    projectors: Arc<Mutex<Vec<Option<String>>>>,
     healthy: bool,
     alive_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     health_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
@@ -34,6 +38,7 @@ impl MockSpawner {
         Self {
             count: Arc::new(AtomicUsize::new(0)),
             modes: Arc::new(Mutex::new(Vec::new())),
+            projectors: Arc::new(Mutex::new(Vec::new())),
             healthy,
             alive_flags: Arc::new(Mutex::new(Vec::new())),
             health_flags: Arc::new(Mutex::new(Vec::new())),
@@ -42,22 +47,23 @@ impl MockSpawner {
 }
 
 impl ServerSpawner for MockSpawner {
-    fn spawn(
-        &self,
-        _gguf_path: &str,
-        port: u16,
-        _context_tokens: i64,
-        mode: ServerMode,
-    ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+    fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
         self.count.fetch_add(1, Ordering::SeqCst);
-        self.modes.lock().unwrap().push(mode);
-        let std_listener = std::net::TcpListener::bind(("127.0.0.1", port))
-            .map_err(|error| RuntimeError::Unavailable(error.to_string()))?;
-        std_listener
-            .set_nonblocking(true)
-            .map_err(|error| RuntimeError::Unavailable(error.to_string()))?;
-        let listener = tokio::net::TcpListener::from_std(std_listener)
-            .map_err(|error| RuntimeError::Unavailable(error.to_string()))?;
+        self.modes.lock().unwrap().push(launch.mode);
+        self.projectors
+            .lock()
+            .unwrap()
+            .push(launch.projector.map(str::to_owned));
+        // The pool frees the port just before this binds it, and a server it
+        // replaced may have held it a moment ago; like llama-server, take it
+        // over rather than wait out the closed connections' TIME_WAIT.
+        let unavailable = |error: std::io::Error| RuntimeError::Unavailable(error.to_string());
+        let socket = tokio::net::TcpSocket::new_v4().map_err(unavailable)?;
+        socket.set_reuseaddr(true).map_err(unavailable)?;
+        socket
+            .bind(std::net::SocketAddr::from(([127, 0, 0, 1], launch.port)))
+            .map_err(unavailable)?;
+        let listener = socket.listen(64).map_err(unavailable)?;
         let health = Arc::new(AtomicBool::new(self.healthy));
         self.health_flags.lock().unwrap().push(Arc::clone(&health));
         let accept = tokio::spawn(async move {
@@ -341,6 +347,217 @@ async fn a_server_in_the_other_mode_is_replaced_not_reused() {
 }
 
 #[tokio::test]
+async fn a_decision_request_launches_a_decision_server_and_replaces_a_chat_one() {
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+    let rec = record("judge");
+
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
+    pool.base_url(&rec, 4096, ServerMode::Decision)
+        .await
+        .expect("respawn");
+    pool.base_url(&rec, 4096, ServerMode::Decision)
+        .await
+        .expect("reuse");
+    assert_eq!(
+        *spawner.modes.lock().unwrap(),
+        [ServerMode::Chat, ServerMode::Decision]
+    );
+}
+
+/// A record for a loose GGUF in `dir`, quantized Q8_0, beside a BF16 and a
+/// Q8_0 projector, claiming `capabilities`.
+fn sighted(dir: &std::path::Path, capabilities: Vec<Capability>) -> ModelRecord {
+    let weights = dir.join("model-Q8_0.gguf");
+    std::fs::write(&weights, b"GGUF").unwrap();
+    std::fs::write(dir.join("mmproj-model-BF16.gguf"), projector_gguf(64, 0)).unwrap();
+    std::fs::write(dir.join("mmproj-model-Q8_0.gguf"), projector_gguf(64, 0)).unwrap();
+    let mut rec = record("sighted");
+    rec.source.path = weights.to_str().unwrap().to_owned();
+    rec.quantization = Some("Q8_0".to_owned());
+    rec.capabilities = capabilities;
+    rec
+}
+
+#[tokio::test]
+async fn a_model_that_sees_is_launched_with_its_projector_in_chat_and_decision_mode() {
+    let scratch = TempDir::new();
+    let projector = scratch.join("mmproj-model-Q8_0.gguf");
+    for (capabilities, mode) in [
+        (
+            vec![Capability::chat(), Capability::see()],
+            ServerMode::Chat,
+        ),
+        (
+            vec![Capability::judge(), Capability::see()],
+            ServerMode::Decision,
+        ),
+    ] {
+        let spawner = Arc::new(MockSpawner::new(true));
+        let pool = fast_pool(Arc::clone(&spawner));
+        pool.base_url(&sighted(scratch.path(), capabilities), 4096, mode)
+            .await
+            .expect("ready");
+        assert_eq!(
+            *spawner.projectors.lock().unwrap(),
+            [Some(projector.to_str().unwrap().to_owned())],
+            "{mode:?}"
+        );
+    }
+
+    // A record that does not claim sight is launched without one, whatever
+    // sits beside it, and so is any embedding server.
+    for (capabilities, mode) in [
+        (vec![Capability::chat()], ServerMode::Chat),
+        (vec![Capability::judge()], ServerMode::Decision),
+        (
+            vec![Capability::embed(), Capability::see()],
+            ServerMode::Embedding,
+        ),
+    ] {
+        let spawner = Arc::new(MockSpawner::new(true));
+        let pool = fast_pool(Arc::clone(&spawner));
+        pool.base_url(&sighted(scratch.path(), capabilities), 4096, mode)
+            .await
+            .expect("ready");
+        assert_eq!(*spawner.projectors.lock().unwrap(), [None], "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_server_launched_without_the_projector_wanted_is_replaced_not_reused() {
+    let scratch = TempDir::new();
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+    let blind = sighted(scratch.path(), vec![Capability::chat()]);
+    let seeing = sighted(scratch.path(), vec![Capability::chat(), Capability::see()]);
+
+    pool.base_url(&blind, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
+    pool.base_url(&seeing, 4096, ServerMode::Chat)
+        .await
+        .expect("respawn");
+    pool.base_url(&seeing, 4096, ServerMode::Chat)
+        .await
+        .expect("reuse");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
+}
+
+/// The stand-in `llama-server` for the real spawner: it writes its arguments,
+/// one a line, to the file named in place of `ARGS_FILE`, then answers every
+/// request on its `--port` with an empty JSON object.
+const RECORDING_STAND_IN: &str = r#"#!/bin/sh
+printf '%s\n' "$@" > 'ARGS_FILE'
+while [ $# -gt 0 ]; do [ "$1" = --port ] && port=$2; shift; done
+exec /usr/bin/python3 -I -c '
+import http.server, sys
+class Answer(http.server.BaseHTTPRequestHandler):
+    def answer(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+    do_GET = answer
+    def log_message(self, *args):
+        pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Answer).serve_forever()
+' "$port"
+"#;
+
+/// Whether the interpreter the stand-in server runs on works here. On a Mac
+/// without the Command Line Tools `/usr/bin/python3` is only a stub that
+/// offers to install them, so the stand-in cases are skipped there.
+fn python_runs() -> bool {
+    let runs = std::process::Command::new("/usr/bin/python3")
+        .args(["-I", "-c", ""])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !runs {
+        eprintln!("skipped: /usr/bin/python3 does not run, and the stand-in server needs it");
+    }
+    runs
+}
+
+#[tokio::test]
+async fn the_real_spawner_launches_a_decision_server_sized_to_its_window() {
+    if !python_runs() {
+        return;
+    }
+    let root = TempDir::new();
+    let args_file = root.join("args");
+    let server = root.join("llama-server");
+    let script = RECORDING_STAND_IN.replace("ARGS_FILE", args_file.to_str().unwrap());
+    std::fs::write(&server, script).unwrap();
+    std::fs::set_permissions(&server, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    for (architecture, decision, one_slot) in [
+        ("clef", "clef", true),
+        ("qwen35", "openjev", true),
+        ("modern-bert", "laya", false),
+    ] {
+        let weights = root.join(&format!("{decision}.gguf"));
+        let header = gguf(&[
+            kv_string("general.architecture", architecture),
+            kv_string(&format!("{architecture}.decision.type"), decision),
+        ]);
+        std::fs::write(&weights, header).unwrap();
+        let mut rec = record(decision);
+        rec.source.path = weights.to_str().unwrap().to_owned();
+        rec.capabilities = vec![Capability::judge()];
+        let pool = LlamaServerPool::new(Arc::new(LlamaServerSpawner::new(&server)))
+            .with_ready_timeout(Duration::from_secs(10));
+
+        pool.base_url(&rec, 16384, ServerMode::Decision)
+            .await
+            .expect("ready");
+        let args: Vec<String> = std::fs::read_to_string(&args_file)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let after = |flag: &str| {
+            args.iter()
+                .position(|arg| arg == flag)
+                .and_then(|index| args.get(index + 1))
+                .map(String::as_str)
+        };
+        assert_eq!(after("--model"), weights.to_str(), "{decision}");
+        assert_eq!(after("--alias"), Some(decision), "{decision}");
+        assert_eq!(after("--ctx-size"), Some("16384"), "{decision}");
+        assert_eq!(after("--ubatch-size"), Some("16384"), "{decision}");
+        assert_eq!(after("--batch-size"), Some("16384"), "{decision}");
+        assert_eq!(after("--parallel"), one_slot.then_some("1"), "{decision}");
+        assert!(!args.iter().any(|arg| arg == "--embedding"), "{decision}");
+        assert_eq!(after("--mmproj"), None, "{decision}");
+    }
+
+    // clef with its projector beside it, as identification left it.
+    let projector = root.join("mmproj-clef-Q8_0.gguf");
+    std::fs::write(&projector, projector_gguf(64, 0)).unwrap();
+    let mut rec = record("clef-sighted");
+    rec.source.path = root.join("clef.gguf").to_str().unwrap().to_owned();
+    rec.capabilities = vec![Capability::judge(), Capability::see()];
+    let pool = LlamaServerPool::new(Arc::new(LlamaServerSpawner::new(&server)))
+        .with_ready_timeout(Duration::from_secs(10));
+    pool.base_url(&rec, 16384, ServerMode::Decision)
+        .await
+        .expect("ready");
+    let args = std::fs::read_to_string(&args_file).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    let mmproj = args.iter().position(|arg| *arg == "--mmproj");
+    assert_eq!(
+        mmproj.and_then(|index| args.get(index + 1)).copied(),
+        projector.to_str()
+    );
+}
+
+#[tokio::test]
 async fn evict_forces_a_respawn() {
     let spawner = Arc::new(MockSpawner::new(true));
     let pool = fast_pool(Arc::clone(&spawner));
@@ -363,10 +580,7 @@ async fn a_process_dead_on_arrival_is_unavailable() {
     impl ServerSpawner for DeadSpawner {
         fn spawn(
             &self,
-            _gguf: &str,
-            _port: u16,
-            _ctx: i64,
-            _mode: ServerMode,
+            _launch: &ServerLaunch<'_>,
         ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
             Ok(Box::new(DeadProcess))
         }
@@ -393,10 +607,7 @@ async fn a_spawn_failure_is_forwarded() {
     impl ServerSpawner for FailingSpawner {
         fn spawn(
             &self,
-            _gguf: &str,
-            _port: u16,
-            _ctx: i64,
-            _mode: ServerMode,
+            _launch: &ServerLaunch<'_>,
         ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
             Err(RuntimeError::Unavailable("no binary".to_owned()))
         }

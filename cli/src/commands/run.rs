@@ -2,8 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use clap::Args;
-use kernel::capabilities::{AttachmentKind, CapabilityChunk, ChatAttachment};
+use kernel::capabilities::{
+    AttachmentKind, CapabilityChunk, ChatAttachment, question_carries_images,
+};
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use serde_json::json;
 
@@ -12,7 +16,7 @@ use crate::support::interactive;
 use crate::support::judge;
 use crate::support::output::Out;
 use crate::support::payload;
-use crate::support::session::Session;
+use crate::support::session::{self, Session};
 use crate::support::signals::Interrupts;
 use crate::support::spinner::Spinner;
 
@@ -43,23 +47,44 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     let shelf = session.shelf_or_discover().await?;
     let warm = session.warm_set_anywhere(&shelf).await;
 
-    // A named model resolves against the whole shelf, then an image run checks
-    // `see` explicitly — so a named non-vision model gets a precise reason instead
-    // of being silently swapped for a look-alike that can see. With no model named,
-    // an image run offers only vision models in the picker.
-    let pick = if args.model.is_some() || args.images.is_empty() {
-        Capability::chat()
-    } else {
-        Capability::see()
-    };
-    let record = interactive::choose_model(
-        out,
-        args.model.as_deref(),
-        &shelf,
-        Some(&pick),
-        "run",
-        &warm,
-    )?;
+    // A named model resolves against every model `run` can serve, one that
+    // chats or one that judges, then an image run checks `see` explicitly, so a
+    // named non-vision model gets a precise reason instead of being silently
+    // swapped for a look-alike that can see. With no model named, an image run
+    // offers only vision models in the picker.
+    let runnable: Vec<ModelRecord> = shelf
+        .iter()
+        .filter(|record| {
+            let has = |capability: Capability| record.capabilities.contains(&capability);
+            if args.model.is_none() && !args.images.is_empty() {
+                has(Capability::see())
+            } else {
+                has(Capability::chat()) || has(Capability::judge())
+            }
+        })
+        .cloned()
+        .collect();
+    if let Some(name) = args.model.as_deref()
+        && let Ok(found) = session::resolve(name, &shelf, None)
+        && !runnable.iter().any(|record| record.id == found.id)
+    {
+        return Err(CliError::new(format!(
+            "{} neither chats nor answers typed questions; `hedos ls` shows what it does",
+            found.display_name()
+        )));
+    }
+    if args.model.is_none() && runnable.is_empty() {
+        let wanted = if args.images.is_empty() {
+            "chats or answers typed questions"
+        } else {
+            "reads images"
+        };
+        return Err(CliError::new(format!(
+            "no model on the shelf {wanted}; install one with `hedos pull <ref>`"
+        )));
+    }
+    let record =
+        interactive::choose_model(out, args.model.as_deref(), &runnable, None, "run", &warm)?;
     if !args.images.is_empty() && !record.capabilities.contains(&Capability::see()) {
         return Err(CliError::new(format!(
             "{} cannot read images — it has no `see` capability; pick a vision model with `hedos ls`",
@@ -67,13 +92,15 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
         )));
     }
 
+    // Read before anything is composed, so a bad path loses nothing typed.
+    let attachments = read_images(&args.images)?;
+
     // A judge takes a typed question, so it is composed rather than typed as a
     // prompt: offering a prompt box would be offering the one thing it refuses.
     if judge::is_judge(record) {
-        return run_judge(&session, record, &args, out).await;
+        return run_judge(&session, record, &args, &attachments, out).await;
     }
 
-    let attachments = read_images(&args.images)?;
     let prompt = interactive::text_or_prompt(out, args.prompt, "prompt")?;
     let payload = chat_payload(&prompt, args.max_tokens, args.temperature, attachments);
     let text = stream_answer(&session, record, payload, args.system.as_deref(), out).await?;
@@ -90,6 +117,7 @@ async fn run_judge(
     session: &Session,
     record: &ModelRecord,
     args: &RunArgs,
+    images: &[ChatAttachment],
     out: &Out,
 ) -> Result<(), CliError> {
     // A judge answers in one forward pass off a question it is handed whole:
@@ -99,7 +127,6 @@ async fn run_judge(
         ("--system", args.system.is_some()),
         ("--max-tokens", args.max_tokens.is_some()),
         ("--temperature", args.temperature.is_some()),
-        ("--image", !args.images.is_empty()),
     ]
     .into_iter()
     .filter_map(|(flag, given)| given.then_some(flag))
@@ -113,7 +140,7 @@ async fn run_judge(
         ));
     }
 
-    let (text, questions) = match args.prompt.clone() {
+    let (mut text, questions) = match args.prompt.clone() {
         Some(text) => {
             let questions = judge::parse_questions(&text);
             (text, questions)
@@ -130,6 +157,26 @@ async fn run_judge(
             )));
         }
     };
+
+    if !images.is_empty() {
+        let urls: Vec<String> = images
+            .iter()
+            .map(|image| {
+                format!(
+                    "data:{};base64,{}",
+                    image.mime_type,
+                    BASE64_STANDARD.encode(&image.data)
+                )
+            })
+            .collect();
+        text = judge::with_images(&text, &urls)?;
+    }
+    if !record.capabilities.contains(&Capability::see()) && question_carries_images(&text) {
+        return Err(CliError::new(format!(
+            "{} does not read images; pick a judge that sees with `hedos ls --capability see`",
+            record.display_name()
+        )));
+    }
 
     let payload = JsonValue::Object(payload::chat(
         vec![payload::user_message_with_images(&text, Vec::new())],
@@ -275,8 +322,8 @@ fn read_images(paths: &[PathBuf]) -> Result<Vec<ChatAttachment>, CliError> {
 }
 
 /// The MIME type for an image path from its extension, defaulting to `image/png`
-/// for an unknown or absent one. The chat wire carries only the raw base64 bytes,
-/// so this is inert there, but `ChatAttachment` records it.
+/// for an unknown or absent one. It labels the data URL a judge's `images`
+/// carry; the chat wire sends the raw base64 bytes, whose type is read off them.
 fn image_mime(path: &Path) -> &'static str {
     match path
         .extension()

@@ -108,7 +108,8 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         .described("Anthropic", "Stream or complete a message"),
         GatewayRoute::new("POST", "/v1/systemone", Box::new(SystemOneHandler))
             .inference()
-            .described("TypeSafe", "Answer typed questions about a state"),
+            .described("TypeSafe", "Answer typed questions about a state")
+            .max_body(32 * 1024 * 1024),
         GatewayRoute::new("POST", "/api/chat", Box::new(OllamaChatHandler::default()))
             .inference()
             .described("Ollama", "Chat over the Ollama NDJSON protocol"),
