@@ -845,3 +845,49 @@ fn an_importance_matrix_beside_the_weight_is_not_counted_to_serve() {
     assert_eq!(model.footprint_bytes, 124);
     assert_eq!(model.serving_bytes, Some(107));
 }
+
+/// The files `model`'s footprint counts as its scanner listed them, and as
+/// the shelf lists them again from the record it becomes, each sorted.
+fn listed_both_ways(model: &DiscoveredModel) -> (Vec<String>, Vec<String>) {
+    let record = kernel::records::ModelRecord::new(
+        &model.name,
+        kernel::records::Modality::text(),
+        Vec::new(),
+        model.source.clone(),
+    );
+    let mut scanned = model.files.clone();
+    scanned.sort();
+    let mut again: Vec<String> = kernel::discovery::footprint_files(&record)
+        .unwrap_or_default()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    again.sort();
+    (scanned, again)
+}
+
+#[test]
+fn lists_every_file_of_the_repo_the_way_the_shelf_lists_them() {
+    let dir = TempDir::new();
+    let repo = standard_repo(dir.path());
+    blob(&repo, "config-blob", 12);
+    std::fs::write(repo.join(".DS_Store"), b"\x00\x00\x00\x01Bud1").unwrap();
+
+    let result = HFCacheScanner::single(dir.path()).scan();
+    let model = find(&result, "Llama-3");
+    let (scanned, again) = listed_both_ways(model);
+    let at = |relative: &str| repo.join(relative).to_string_lossy().into_owned();
+    assert_eq!(
+        scanned,
+        vec![
+            at(".DS_Store"),
+            at("blobs/config-blob"),
+            at("blobs/weight-blob"),
+            at("refs/main"),
+            at("snapshots/abc123/config.json"),
+            at("snapshots/abc123/model.safetensors"),
+            at("snapshots/abc123/tokenizer.json"),
+        ]
+    );
+    assert_eq!(again, scanned);
+}

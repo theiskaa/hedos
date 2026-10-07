@@ -259,7 +259,7 @@ pub(crate) async fn stream_completions(
             let error = if err.is_connect() || err.is_timeout() {
                 RuntimeError::Unavailable("the configured server isn't reachable".to_owned())
             } else {
-                RuntimeError::Failed(format!("endpoint: {err}"))
+                RuntimeError::Failed(format!("endpoint: {}", err.without_url()))
             };
             let _ = tx.send(Err(error));
             return;
@@ -308,6 +308,151 @@ fn forward_line(
         }
     }
     true
+}
+
+/// Build a `/v1/embeddings` request body for `inputs`, asking for plain float
+/// vectors. Only the model and the inputs are sent.
+pub(crate) fn embeddings_body(model: &str, inputs: &[JsonValue]) -> Result<Vec<u8>, RuntimeError> {
+    let body = super::object_of([
+        ("model", JsonValue::String(model.to_owned())),
+        ("input", JsonValue::Array(inputs.to_vec())),
+        ("encoding_format", JsonValue::String("float".to_owned())),
+    ]);
+    serde_json::to_vec(&body)
+        .map_err(|err| RuntimeError::Failed(format!("encoding request: {err}")))
+}
+
+/// Read a `/v1/embeddings` response: one vector per input in input order (each
+/// row's `index`), and the `usage.prompt_tokens` when reported. Strict: a row
+/// that is not an array of numbers, or a set of indexes that is not exactly one
+/// per row, fails the whole response rather than misplacing a vector.
+pub(crate) fn parse_embeddings(bytes: &[u8]) -> Result<(Vec<Vec<f64>>, Option<i64>), RuntimeError> {
+    let understood =
+        || RuntimeError::Failed("the embeddings response was not understood".to_owned());
+    let value: JsonValue = serde_json::from_slice(bytes).map_err(|_| understood())?;
+    let object = value.as_object().ok_or_else(understood)?;
+    let rows = object
+        .get("data")
+        .and_then(JsonValue::as_array)
+        .filter(|rows| !rows.is_empty())
+        .ok_or_else(understood)?;
+    let mut ordered: Vec<Option<Vec<f64>>> = vec![None; rows.len()];
+    for row in rows {
+        let row = row.as_object().ok_or_else(understood)?;
+        let index = row
+            .get("index")
+            .and_then(JsonValue::as_i64)
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(understood)?;
+        let vector = row
+            .get("embedding")
+            .and_then(JsonValue::as_array)
+            .ok_or_else(understood)?
+            .iter()
+            .map(|value| value.as_f64().ok_or_else(understood))
+            .collect::<Result<Vec<f64>, _>>()?;
+        let slot = ordered.get_mut(index).ok_or_else(understood)?;
+        if slot.replace(vector).is_some() {
+            return Err(understood());
+        }
+    }
+    let vectors = ordered
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(understood)?;
+    let prompt_tokens = object
+        .get("usage")
+        .and_then(JsonValue::as_object)
+        .and_then(|usage| usage.get("prompt_tokens"))
+        .and_then(JsonValue::as_i64);
+    Ok((vectors, prompt_tokens))
+}
+
+/// Why an embeddings request got no vectors back.
+#[derive(Debug)]
+pub(crate) enum EmbeddingsFailure {
+    /// The server answered with a failing status and this body. What it
+    /// means is the server's to say.
+    Answered(u16, ErrorBody),
+    /// No answer arrived, or the one that did was not understood.
+    Runtime(RuntimeError),
+}
+
+/// Post one embeddings request to `{base}/v1/embeddings` and read back its
+/// vectors, in input order, with the prompt token count when reported. `label`
+/// names the server in an error, which never carries its address.
+pub(crate) async fn post_embeddings(
+    client: &reqwest::Client,
+    base: &str,
+    body: Vec<u8>,
+    label: &str,
+) -> Result<(Vec<Vec<f64>>, Option<i64>), EmbeddingsFailure> {
+    let sent = client
+        .post(format!("{base}/v1/embeddings"))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await;
+    let mut response = sent.map_err(|err| {
+        EmbeddingsFailure::Runtime(if err.is_connect() || err.is_timeout() {
+            RuntimeError::Unavailable(format!("{label} isn't reachable"))
+        } else {
+            RuntimeError::Failed(format!("{label} stopped before answering"))
+        })
+    })?;
+    let status = response.status();
+    if status != reqwest::StatusCode::OK {
+        let body = super::capped_body(&mut response, super::MAX_ERROR_BYTES, label)
+            .await
+            .unwrap_or_default();
+        return Err(EmbeddingsFailure::Answered(
+            status.as_u16(),
+            ErrorBody::read(&body),
+        ));
+    }
+    let bytes = super::capped_body(&mut response, super::MAX_EMBEDDINGS_BYTES, label)
+        .await
+        .map_err(EmbeddingsFailure::Runtime)?;
+    parse_embeddings(&bytes).map_err(EmbeddingsFailure::Runtime)
+}
+
+/// What an OpenAI-shaped error body says, as `{"error":{"message","type"}}`
+/// or a bare `{"error": "..."}`.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct ErrorBody {
+    /// The error's message, when it names a non-empty one.
+    pub(crate) message: Option<String>,
+    /// The error's `type`, when it names one.
+    pub(crate) kind: Option<String>,
+}
+
+impl ErrorBody {
+    /// Read `body`; anything that is not an error object reads as empty.
+    pub(crate) fn read(body: &[u8]) -> Self {
+        let Ok(value) = serde_json::from_slice::<JsonValue>(body) else {
+            return Self::default();
+        };
+        let Some(error) = value.as_object().and_then(|object| object.get("error")) else {
+            return Self::default();
+        };
+        let text = |value: Option<&JsonValue>| {
+            value
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        match error.as_object() {
+            Some(fields) => Self {
+                message: text(fields.get("message")),
+                kind: text(fields.get("type")),
+            },
+            None => Self {
+                message: text(Some(error)),
+                kind: None,
+            },
+        }
+    }
 }
 
 /// Normalize a server base URL: add a scheme if missing, strip trailing slashes,
@@ -642,4 +787,94 @@ fn parse_tool_arguments(raw: &str) -> JsonValue {
         return JsonValue::Object(BTreeMap::new());
     }
     super::object_of([("_raw", JsonValue::String(raw.to_owned()))])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decoded(body: &[u8]) -> JsonValue {
+        serde_json::from_slice(body).expect("json")
+    }
+
+    fn object(pairs: &[(&str, JsonValue)]) -> JsonValue {
+        JsonValue::Object(
+            pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn embeddings_body_forwards_only_the_inputs() {
+        let inputs = [JsonValue::String("a".to_owned())];
+        let body = decoded(&embeddings_body("m", &inputs).expect("body"));
+        assert_eq!(
+            body,
+            object(&[
+                ("model", JsonValue::String("m".to_owned())),
+                ("input", JsonValue::Array(inputs.to_vec())),
+                ("encoding_format", JsonValue::String("float".to_owned())),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_embeddings_orders_rows_by_index() {
+        let body = br#"{"data":[{"index":1,"embedding":[3,4]},{"index":0,"embedding":[1.5,2]}]}"#;
+        let (vectors, prompt_tokens) = parse_embeddings(body).expect("parsed");
+        assert_eq!(vectors, vec![vec![1.5, 2.0], vec![3.0, 4.0]]);
+        assert_eq!(prompt_tokens, None);
+    }
+
+    #[test]
+    fn parse_embeddings_reads_prompt_tokens() {
+        let body = br#"{"data":[{"index":0,"embedding":[1]}],"usage":{"prompt_tokens":7,"total_tokens":7}}"#;
+        let (_, prompt_tokens) = parse_embeddings(body).expect("parsed");
+        assert_eq!(prompt_tokens, Some(7));
+    }
+
+    #[test]
+    fn parse_embeddings_rejects_a_non_numeric_element() {
+        let body = br#"{"data":[{"index":0,"embedding":[1,"x"]}]}"#;
+        assert!(parse_embeddings(body).is_err());
+        let not_an_array = br#"{"data":[{"index":0,"embedding":[[1]]}]}"#;
+        assert!(parse_embeddings(not_an_array).is_err());
+        let not_a_row = br#"{"data":[{"index":0,"embedding":1}]}"#;
+        assert!(parse_embeddings(not_a_row).is_err());
+    }
+
+    #[test]
+    fn parse_embeddings_rejects_an_empty_or_duplicate_index_list() {
+        assert!(parse_embeddings(br#"{"data":[]}"#).is_err());
+        let duplicate = br#"{"data":[{"index":0,"embedding":[1]},{"index":0,"embedding":[2]}]}"#;
+        assert!(parse_embeddings(duplicate).is_err());
+        let missing = br#"{"data":[{"embedding":[1]}]}"#;
+        assert!(parse_embeddings(missing).is_err());
+        let out_of_range = br#"{"data":[{"index":0,"embedding":[1]},{"index":2,"embedding":[2]}]}"#;
+        assert!(parse_embeddings(out_of_range).is_err());
+    }
+
+    #[test]
+    fn an_error_body_names_its_message_and_type() {
+        assert_eq!(
+            ErrorBody::read(
+                br#"{"error":{"code":400,"message":"too long","type":"exceed_context_size_error"}}"#
+            ),
+            ErrorBody {
+                message: Some("too long".to_owned()),
+                kind: Some("exceed_context_size_error".to_owned()),
+            }
+        );
+        assert_eq!(
+            ErrorBody::read(br#"{"error":"bad"}"#).message.as_deref(),
+            Some("bad")
+        );
+        assert_eq!(ErrorBody::read(b"not json"), ErrorBody::default());
+        assert_eq!(
+            ErrorBody::read(br#"{"error":{"message":"  "}}"#),
+            ErrorBody::default()
+        );
+    }
 }

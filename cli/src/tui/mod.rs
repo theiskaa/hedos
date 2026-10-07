@@ -12,7 +12,7 @@ mod chat;
 mod edit;
 mod effect;
 mod event;
-mod facts;
+pub(crate) mod facts;
 mod jobs;
 mod keymap;
 mod launch;
@@ -38,8 +38,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use base64::Engine;
+use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
 use tokio::sync::mpsc;
 use tokio::time::{Interval, MissedTickBehavior};
@@ -52,7 +54,7 @@ use self::tasks::{TaskContext, TaskLabel, TaskState};
 use crate::commands;
 use crate::error::CliError;
 use crate::support::clock;
-use crate::support::output::Out;
+use crate::support::output::{self, Out};
 use crate::support::session::Session;
 use crate::support::signals;
 
@@ -99,6 +101,15 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         }
     });
     let (tx, mut rx) = mpsc::unbounded_channel();
+    // A termination quits the way a closed input does, so the screen's state
+    // is saved, the terminal restored, and the servers stopped on the way out.
+    let termination_guard = tokio::spawn({
+        let tx = tx.clone();
+        async move {
+            signals::terminated().await;
+            let _ = tx.send(Event::InputClosed);
+        }
+    });
     let mut ticks = tokio::time::interval(app::TICK);
     // Ticks missed while something else had the terminal are not owed: a
     // burst of them would age the strip and fire a refresh per 10 s away.
@@ -109,6 +120,9 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     // appears, which is the point of it surviving the terminal.
     tasks::spawn_pulls(&context, &tx);
     let terminal_modes = TerminalModes::capture();
+    // A launch hand-off cut by a termination leaves its harness running on
+    // the terminal, whose modes are then its own to put back.
+    let mut harness_kept_terminal = false;
     let outcome = loop {
         match on_terminal(
             &mut app,
@@ -121,7 +135,25 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
         .await
         {
             Ok(Outcome::HandOff(hand_off)) => {
-                let (label, state) = run_hand_off(*hand_off, &context, out).await;
+                // A served gateway stops itself on a termination, draining
+                // what is in flight. Any other hand-off may be waiting on the
+                // user's next line, which a termination must not wait for.
+                let launches = matches!(*hand_off, HandOff::Launch { .. });
+                let ran = if matches!(*hand_off, HandOff::Serve) {
+                    run_hand_off(*hand_off, &context, out).await
+                } else {
+                    tokio::select! {
+                        ran = run_hand_off(*hand_off, &context, out) => ran,
+                        _ = signals::terminated() => {
+                            harness_kept_terminal = launches;
+                            break Ok(());
+                        }
+                    }
+                };
+                if signals::termination().is_some() {
+                    break Ok(());
+                }
+                let (label, state) = ran;
                 let sequence = tasks::next_refresh_sequence();
                 let snapshot = context.snapshot().await.stamped(sequence);
                 app.came_back(snapshot, label, state);
@@ -140,7 +172,10 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     }
     context.settle().await;
     interrupt_guard.abort();
-    terminal_modes.restore();
+    termination_guard.abort();
+    if !harness_kept_terminal {
+        terminal_modes.restore();
+    }
     outcome
 }
 
@@ -163,15 +198,29 @@ async fn on_terminal(
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(error) => {
-            ratatui::restore();
+            restore_screen();
             return Err(terminal_error(error));
         }
     };
     let mouse = MouseCapture::enable();
     let outcome = drive(&mut terminal, app, context, tx, rx, ticks).await;
+    // Dropped, the terminal shows the cursor again and reports a failure to
+    // stderr, which on a closed terminal fails in turn and aborts. One that
+    // cannot be shown the cursor is gone, so it is let go without that.
+    if terminal.show_cursor().is_err() {
+        std::mem::forget(terminal);
+    } else {
+        drop(terminal);
+    }
     drop(mouse);
-    ratatui::restore();
-    drop(input);
+    restore_screen();
+    // Only a hand-off needs the reader gone: on the way out it is left to
+    // end, so one stuck on a terminal that hung up never holds the exit.
+    if matches!(outcome, Ok(Outcome::HandOff(_))) {
+        input.hand_over();
+    } else {
+        drop(input);
+    }
     // Keys read in the moment before the reader stopped would otherwise act
     // on the UI when it comes back, in a screen they were not typed at.
     let mut kept = Vec::new();
@@ -184,6 +233,14 @@ async fn on_terminal(
         let _ = tx.send(event);
     }
     outcome
+}
+
+/// Leave raw mode and the alternate screen and show the cursor, as
+/// `ratatui::restore` and the terminal's own drop do, but without reporting a
+/// failure: the terminal may have been closed, and the report would go to it.
+fn restore_screen() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen, Show);
 }
 
 /// The terminal's line discipline as the UI found it. Raw mode is switched
@@ -285,10 +342,16 @@ async fn drive(
     ticks: &mut Interval,
 ) -> Result<Outcome, CliError> {
     loop {
-        if app.take_dirty() {
-            terminal
-                .draw(|frame| ui::draw(frame, app))
-                .map_err(terminal_error)?;
+        if app.take_dirty()
+            && let Err(error) = terminal.draw(|frame| ui::draw(frame, app))
+        {
+            // A terminal that hung up takes no more frames. Its hang-up
+            // quits the screen as quietly as a closed input does, whichever
+            // of the two is noticed first.
+            if output::terminal_gone(&error) {
+                return Ok(Outcome::Quit);
+            }
+            return Err(terminal_error(error));
         }
         let event = tokio::select! {
             received = rx.recv() => match received {

@@ -39,7 +39,8 @@ impl GatewayHandling for OpenAIModelsHandler {
         Box::pin(async move {
             let shelf = port.shelf().await;
             let visible = identity.scopes.filter(&ready(&shelf));
-            respond_json(responder, &openai::models_list(&visible));
+            let listed = openai::models_list(&visible, |record| port.served_window(record));
+            respond_json(responder, &listed);
             Ok(GatewayOutcome::ok())
         })
     }

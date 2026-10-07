@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::gguf_shards::group;
 use crate::discovery::modality_hints::{self, Hint, SentenceTransformersLayout};
+use crate::discovery::on_disk::directory_contents;
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
 use crate::discovery::serving::{
     index_shards, is_default_safetensors_index, is_safetensors_index, serving_bytes,
@@ -106,6 +107,10 @@ impl HFCacheScanner {
             discovered.capabilities_hint = hint.capabilities;
             discovered.execution_hint = hint.execution;
             discovered.footprint_bytes = directory_bytes(&dir.join("blobs"));
+            discovered.files = directory_contents(&dir)
+                .iter()
+                .map(|path| display(path))
+                .collect();
             let primary = largest_weight(&snapshot, ggufs);
             discovered.serving_bytes = primary
                 .as_deref()

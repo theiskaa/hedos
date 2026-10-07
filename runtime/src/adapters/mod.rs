@@ -48,7 +48,7 @@ pub use grammar::{
     tool_grammar, tool_system_block,
 };
 pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
-pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter};
+pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter, ServerMode};
 pub use manifest_command::ManifestCommandAdapter;
 pub use manifest_sidecar::ManifestSidecarAdapter;
 pub use mflux::MfluxAdapter;
@@ -222,4 +222,34 @@ pub(crate) fn object_of<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonVa
             .map(|(key, value)| (key.to_owned(), value))
             .collect(),
     )
+}
+
+/// The most an embeddings response may carry: a batch of wide vectors written
+/// out as decimal text.
+pub(crate) const MAX_EMBEDDINGS_BYTES: usize = 32 * 1024 * 1024;
+
+/// The most of a failed response's body read for the message it carries.
+pub(crate) const MAX_ERROR_BYTES: usize = 64 * 1024;
+
+/// Read `response`'s body, failing once it grows past `cap` bytes so a runaway
+/// server cannot exhaust memory. `label` names the runtime in the error.
+pub(crate) async fn capped_body(
+    response: &mut reqwest::Response,
+    cap: usize,
+    label: &str,
+) -> Result<Vec<u8>, RuntimeError> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|err| RuntimeError::Failed(format!("{label}: {}", err.without_url())))?
+    {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > cap {
+            return Err(RuntimeError::Failed(format!(
+                "{label} sent a response larger than {cap} bytes"
+            )));
+        }
+    }
+    Ok(bytes)
 }

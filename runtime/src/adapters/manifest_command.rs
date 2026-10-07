@@ -442,13 +442,39 @@ mod tests {
         RuntimeManifest::parse(&text, None).unwrap()
     }
 
-    fn adapter(manifest: RuntimeManifest, approved: bool) -> ManifestCommandAdapter {
+    /// A directory of one test's own, removed when it drops. Every run clears
+    /// and refills its workdir's `outputs`, so tests running at once (in this
+    /// process or another `cargo test`) must not share one.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Self(
+                std::env::temp_dir()
+                    .join(format!("hedos-manifest-{}-{unique}", std::process::id())),
+            )
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn adapter(
+        scratch: &Scratch,
+        manifest: RuntimeManifest,
+        approved: bool,
+    ) -> ManifestCommandAdapter {
         ManifestCommandAdapter::new(
             manifest,
             approved,
             MemoryGovernor::new(GovernorConfig::with_total_mb(262_144)),
-            EnvironmentManager::new(std::env::temp_dir().join("hedos-manifest-env")),
-            std::env::temp_dir().join("hedos-manifest-workdirs"),
+            EnvironmentManager::new(scratch.0.join("env")),
+            scratch.0.join("workdirs"),
         )
     }
 
@@ -467,7 +493,8 @@ mod tests {
 
     #[test]
     fn it_serves_a_declared_capability_for_its_own_runtime() {
-        let adapter = adapter(manifest("sync", "true"), true);
+        let scratch = Scratch::new();
+        let adapter = adapter(&scratch, manifest("sync", "true"), true);
         assert_eq!(adapter.id(), &RuntimeId::from("echo-runtime"));
         assert!(adapter.can_serve(&record(), &Capability::chat()));
         assert!(!adapter.can_serve(&record(), &Capability::embed()));
@@ -475,18 +502,19 @@ mod tests {
 
     #[test]
     fn it_bids_when_detect_matches_and_execution_is_approved() {
+        let scratch = Scratch::new();
         let identified = IdentifiedModel::new(
             kernel::resolution::ModelFormat::Gguf,
             None,
             Vec::new(),
             ExecutionMode::Sync,
         );
-        let bid = adapter(manifest("sync", "true"), true).bid(&record(), &identified);
+        let bid = adapter(&scratch, manifest("sync", "true"), true).bid(&record(), &identified);
         assert!(bid.is_some());
         assert_eq!(bid.unwrap().preference, BidPreference::MANIFEST);
         // Not approved → no bid.
         assert!(
-            adapter(manifest("sync", "true"), false)
+            adapter(&scratch, manifest("sync", "true"), false)
                 .bid(&record(), &identified)
                 .is_none()
         );
@@ -494,7 +522,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_job_execution_rejects_streaming_invoke() {
-        let mut stream = adapter(manifest("job", "true"), true).invoke(
+        let scratch = Scratch::new();
+        let mut stream = adapter(&scratch, manifest("job", "true"), true).invoke(
             &record(),
             Capability::chat(),
             JsonValue::Object(Default::default()),
@@ -507,7 +536,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_execution_rejects_the_job_run_path() {
-        let mut stream = adapter(manifest("sync", "true"), true).run(
+        let scratch = Scratch::new();
+        let mut stream = adapter(&scratch, manifest("sync", "true"), true).run(
             &record(),
             Capability::chat(),
             JsonValue::Object(Default::default()),
@@ -520,7 +550,8 @@ mod tests {
 
     #[tokio::test]
     async fn unapproved_execution_fails_with_unavailable() {
-        let adapter = adapter(manifest("sync", "true"), false);
+        let scratch = Scratch::new();
+        let adapter = adapter(&scratch, manifest("sync", "true"), false);
         let mut stream = adapter.invoke(
             &record(),
             Capability::chat(),
@@ -538,7 +569,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn it_runs_a_command_and_streams_its_stdout() {
-        let adapter = adapter(manifest("sync", "printf hello"), true);
+        let scratch = Scratch::new();
+        let adapter = adapter(&scratch, manifest("sync", "printf hello"), true);
         let mut stream = adapter.invoke(
             &record(),
             Capability::chat(),
@@ -560,8 +592,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_job_run_emits_started_then_a_result_per_output_file() {
+        let scratch = Scratch::new();
         // The command writes one file into the outputs directory.
-        let adapter = adapter(manifest("job", "touch {outputs}/frame.png"), true);
+        let adapter = adapter(&scratch, manifest("job", "touch {outputs}/frame.png"), true);
         let mut stream = adapter.run(
             &record(),
             Capability::image(),
@@ -583,7 +616,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_command_that_overruns_its_timeout_is_stopped() {
-        let adapter = adapter(manifest("sync", "sleep 30"), true)
+        let scratch = Scratch::new();
+        let adapter = adapter(&scratch, manifest("sync", "sleep 30"), true)
             .with_execution_timeout(Duration::from_millis(150));
         let mut stream = adapter.invoke(
             &record(),
@@ -605,7 +639,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_nonzero_exit_becomes_a_failure() {
-        let adapter = adapter(manifest("sync", "false"), true);
+        let scratch = Scratch::new();
+        let adapter = adapter(&scratch, manifest("sync", "false"), true);
         let mut stream = adapter.invoke(
             &record(),
             Capability::chat(),

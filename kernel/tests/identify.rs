@@ -406,6 +406,193 @@ fn a_recognized_gguf_architecture_uses_its_profile_and_facts() {
     assert_eq!(id.has_chat_template, Some(true));
 }
 
+fn encoder(dir: &TempDir, name: &str, architecture: &str, pooling: Option<u32>) -> ModelRecord {
+    let path = dir.path().join(name);
+    let mut kvs = vec![kv_string("general.architecture", architecture)];
+    if let Some(pooling) = pooling {
+        kvs.push(kv_u32(&format!("{architecture}.pooling_type"), pooling));
+    }
+    write(&path, &gguf(&kvs));
+    record(SourceKind::file(), path.to_str().unwrap())
+}
+
+#[test]
+fn a_bert_gguf_with_mean_pooling_embeds() {
+    let dir = TempDir::new();
+    let id = identify(&encoder(&dir, "mean.gguf", "bert", Some(1)));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.modality, Some(Modality::embedding()));
+    assert_eq!(id.capabilities, vec![Capability::embed()]);
+}
+
+#[test]
+fn a_bert_gguf_with_rank_pooling_is_a_reranker_with_no_capability() {
+    let dir = TempDir::new();
+    let id = identify(&encoder(&dir, "rank.gguf", "bert", Some(4)));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.is_empty());
+}
+
+#[test]
+fn an_encoder_gguf_with_no_pooling_serves_nothing() {
+    let dir = TempDir::new();
+    let id = identify(&encoder(&dir, "none.gguf", "t5encoder", Some(0)));
+    assert_eq!(id.modality, Some(Modality::embedding()));
+    assert!(id.capabilities.is_empty());
+}
+
+#[test]
+fn an_encoder_gguf_that_names_no_pooling_serves_nothing() {
+    // llama.cpp falls back to no pooling when the header names none, and its
+    // `/v1/embeddings` refuses a model that pools nothing.
+    let dir = TempDir::new();
+    let id = identify(&encoder(&dir, "default.gguf", "nomic-bert", None));
+    assert_eq!(id.modality, Some(Modality::embedding()));
+    assert!(id.capabilities.is_empty());
+
+    let unknown = identify(&encoder(&dir, "unknown.gguf", "nomic-bert", Some(9)));
+    assert!(unknown.capabilities.is_empty());
+}
+
+#[test]
+fn an_encoder_gguf_with_a_decision_head_is_not_an_embedder() {
+    let dir = TempDir::new();
+    let path = dir.path().join("laya.gguf");
+    write(
+        &path,
+        &gguf(&[
+            kv_string("general.architecture", "modern-bert"),
+            kv_string("modern-bert.decision.type", "laya"),
+            kv_u32("modern-bert.classifier.pooling_type", 1),
+            kv_u32("modern-bert.pooling_type", 1),
+        ]),
+    );
+    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.is_empty());
+
+    let clef = dir.path().join("clef.gguf");
+    write(
+        &clef,
+        &gguf(&[
+            kv_string("general.architecture", "clef"),
+            kv_string("clef.decision.type", "clef"),
+            kv_string("tokenizer.chat_template", "{{ x }}"),
+        ]),
+    );
+    let id = identify(&record(SourceKind::file(), clef.to_str().unwrap()));
+    assert!(!id.capabilities.contains(&Capability::embed()));
+}
+
+#[test]
+fn a_decoder_gguf_whose_header_pools_is_an_embedder_and_not_a_chat_model() {
+    // Qwen3-Embedding: a decoder architecture with a chat template, converted
+    // to embed with last-token pooling.
+    let dir = TempDir::new();
+    let path = dir.path().join("qwen3-embedding.gguf");
+    write(
+        &path,
+        &gguf(&[
+            kv_string("general.architecture", "qwen3"),
+            kv_u32("qwen3.context_length", 32768),
+            kv_u32("qwen3.pooling_type", 3),
+            kv_string("tokenizer.chat_template", "{{ x }}"),
+        ]),
+    );
+    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    assert_eq!(id.format, ModelFormat::Gguf);
+    assert_eq!(id.modality, Some(Modality::embedding()));
+    assert_eq!(id.capabilities, vec![Capability::embed()]);
+    assert_eq!(id.context_length, Some(32768));
+
+    for pooling in [1, 2] {
+        let id = identify(&encoder(&dir, "llama-pooled.gguf", "llama", Some(pooling)));
+        assert_eq!(
+            id.capabilities,
+            vec![Capability::embed()],
+            "pooling {pooling}"
+        );
+    }
+}
+
+#[test]
+fn a_decoder_gguf_that_ranks_claims_nothing() {
+    // Qwen3-Reranker: rank pooling under the decoder's own architecture.
+    let dir = TempDir::new();
+    let id = identify(&encoder(&dir, "qwen3-reranker.gguf", "qwen3", Some(4)));
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.is_empty());
+}
+
+#[test]
+fn a_decoder_gguf_that_pools_nothing_stays_a_chat_model() {
+    let dir = TempDir::new();
+    for pooling in [None, Some(0), Some(9)] {
+        let id = identify(&encoder(&dir, "chat.gguf", "llama", pooling));
+        assert_eq!(id.modality, Some(Modality::text()), "pooling {pooling:?}");
+        assert_eq!(
+            id.capabilities,
+            vec![Capability::chat(), Capability::complete()],
+            "pooling {pooling:?}"
+        );
+    }
+}
+
+#[test]
+fn a_decision_gguf_never_embeds_whatever_its_header_pools() {
+    let dir = TempDir::new();
+    let path = dir.path().join("clef.gguf");
+    write(
+        &path,
+        &gguf(&[
+            kv_string("general.architecture", "clef"),
+            kv_string("clef.decision.type", "clef"),
+            kv_u32("clef.pooling_type", 3),
+        ]),
+    );
+    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    assert!(!id.capabilities.contains(&Capability::embed()));
+}
+
+#[test]
+fn an_encoder_gguf_with_a_classifier_head_and_no_pooling_reads_as_a_reranker() {
+    // bge-reranker-v2-m3 and jina-reranker GGUFs name no pooling but carry the
+    // classifier head they score a pair with.
+    let dir = TempDir::new();
+    let path = dir.path().join("reranker.gguf");
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend(kv_string("general.architecture", "bert"));
+    bytes.extend(gguf_string("cls.weight"));
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&1024u64.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    write(&path, &bytes);
+    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    assert_eq!(id.modality, Some(Modality::text()));
+    assert!(id.capabilities.is_empty());
+}
+
+#[test]
+fn an_encoder_gguf_never_takes_pooling_named_for_another_architecture() {
+    let dir = TempDir::new();
+    let path = dir.path().join("wrongarch.gguf");
+    write(
+        &path,
+        &gguf(&[
+            kv_string("general.architecture", "bert"),
+            kv_u32("nomic-bert.pooling_type", 1),
+        ]),
+    );
+    let id = identify(&record(SourceKind::file(), path.to_str().unwrap()));
+    assert!(id.capabilities.is_empty());
+}
+
 #[test]
 fn a_gguf_magic_file_without_the_extension_is_still_gguf() {
     let dir = TempDir::new();

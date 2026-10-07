@@ -12,7 +12,7 @@ use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload::{self, message};
 use crate::support::session::Session;
-use crate::support::signals;
+use crate::support::signals::Interrupts;
 
 /// Arguments for `chat`.
 #[derive(Args)]
@@ -71,8 +71,9 @@ pub(crate) async fn chat(
     let mut history: Vec<JsonValue> = Vec::new();
     loop {
         if tty {
-            eprint!("› ");
-            let _ = std::io::stderr().flush();
+            let mut stderr = std::io::stderr();
+            let _ = write!(stderr, "› ");
+            let _ = stderr.flush();
         }
         let Some(line) = read_line().await? else {
             break; // Ctrl-D
@@ -90,6 +91,9 @@ pub(crate) async fn chat(
             .await?;
 
         let mut reply = String::new();
+        // One listener for the whole reply: a press between two turns of the
+        // loop would otherwise land on no listener and be lost.
+        let mut interrupts = Interrupts::new();
         loop {
             tokio::select! {
                 received = stream.recv() => match received {
@@ -102,7 +106,7 @@ pub(crate) async fn chat(
                     None => break,
                 },
                 // Ctrl-C cuts the reply short and returns to the prompt.
-                () = signals::wait_for_ctrl_c() => break,
+                () = interrupts.next() => break,
             }
         }
         if out.is_json() {

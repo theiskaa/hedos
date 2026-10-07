@@ -52,13 +52,14 @@ pub fn discovered_models(
         apply_hint(&mut model, &hint);
         model.footprint_bytes = bytes_by_path.get(path.as_path()).copied().unwrap_or(0);
         model.primary_weight_path = Some(display(path));
+        model.files = vec![display(path)];
         discovered.push(model);
     }
 
     for shard_group in groups {
         let Some(first) = shard_group.first_shard() else {
             issues.push(format!(
-                "sharded model {} is missing its first part — skipped",
+                "sharded model {} is missing its first part, so it was skipped",
                 shard_group.base
             ));
             continue;
@@ -67,6 +68,11 @@ pub fn discovered_models(
         apply_hint(&mut model, &hint);
         model.footprint_bytes = shard_group.footprint_bytes();
         model.primary_weight_path = Some(display(first));
+        model.files = shard_group
+            .members
+            .iter()
+            .map(|member| display(&member.path))
+            .collect();
         model.downloading = !shard_group.complete();
         discovered.push(model);
     }

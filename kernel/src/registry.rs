@@ -43,13 +43,21 @@ pub enum RegistryError {
 #[derive(Debug, Deserialize)]
 struct Envelope {
     schema_version: u32,
+    #[serde(default)]
+    migration_level: u32,
     models: Vec<ModelRecord>,
 }
 
 #[derive(Serialize)]
 struct EnvelopeRef<'a> {
     schema_version: u32,
+    #[serde(skip_serializing_if = "is_zero")]
+    migration_level: u32,
     models: Vec<&'a ModelRecord>,
+}
+
+fn is_zero(level: &u32) -> bool {
+    *level == 0
 }
 
 /// The in-memory model store, backed by `<directory>/models.json`. Every mutating
@@ -62,6 +70,7 @@ struct EnvelopeRef<'a> {
 pub struct Registry {
     directory: PathBuf,
     models: BTreeMap<String, ModelRecord>,
+    migration_level: u32,
     generation: u64,
 }
 
@@ -72,17 +81,19 @@ impl Registry {
     /// place and reported as [`RegistryError::FutureSchema`]. If the file holds
     /// two records with the same id, the last one in file order wins.
     pub fn open(directory: &Path) -> Result<Self, RegistryError> {
-        let models = Self::load_models(directory)?;
+        let (models, migration_level) = Self::load(directory)?;
         Ok(Self {
             directory: directory.to_path_buf(),
             models,
+            migration_level,
             generation: 0,
         })
     }
 
-    /// Read `<directory>/models.json` into a fresh map, applying the same
-    /// missing/corrupt/future-schema handling as [`Self::open`].
-    fn load_models(directory: &Path) -> Result<BTreeMap<String, ModelRecord>, RegistryError> {
+    /// Read `<directory>/models.json` into a fresh map and its migration level,
+    /// applying the same missing/corrupt/future-schema handling as
+    /// [`Self::open`].
+    fn load(directory: &Path) -> Result<(BTreeMap<String, ModelRecord>, u32), RegistryError> {
         let file = directory.join(STORE_FILE);
         match persistence::read_json::<Envelope>(&file) {
             Ok(Some(envelope)) => {
@@ -92,7 +103,7 @@ impl Registry {
                         supported: SCHEMA_VERSION,
                     });
                 }
-                Ok(envelope
+                let models = envelope
                     .models
                     .into_iter()
                     .map(|mut record| {
@@ -102,9 +113,10 @@ impl Registry {
                         record.adopt_legacy_footprint();
                         (record.id.clone(), record)
                     })
-                    .collect())
+                    .collect();
+                Ok((models, envelope.migration_level))
             }
-            Ok(None) => Ok(BTreeMap::new()),
+            Ok(None) => Ok((BTreeMap::new(), 0)),
             Err(StoreError::Corrupt { source, .. }) => {
                 Err(RegistryError::CorruptStore(source.to_string()))
             }
@@ -115,7 +127,7 @@ impl Registry {
     /// Re-read the on-disk store into memory, discarding the in-memory view. Called
     /// under the advisory lock so a mutation applies to the latest committed state.
     fn reload(&mut self) -> Result<(), RegistryError> {
-        self.models = Self::load_models(&self.directory)?;
+        (self.models, self.migration_level) = Self::load(&self.directory)?;
         Ok(())
     }
 
@@ -127,7 +139,8 @@ impl Registry {
     /// it fetched is another process, and a screen that never re-read would show
     /// a download as landed with the model nowhere on its shelf.
     pub fn refresh(&mut self) -> Result<bool, RegistryError> {
-        let models = Self::load_models(&self.directory)?;
+        let (models, migration_level) = Self::load(&self.directory)?;
+        self.migration_level = migration_level;
         if models == self.models {
             return Ok(false);
         }
@@ -287,13 +300,59 @@ impl Registry {
         Ok(changed)
     }
 
+    /// How far the one-time shelf migrations have run over this store. A build
+    /// that does not know the level ignores it on read and drops it on its next
+    /// write, so a shelf such a build has written is migrated again.
+    pub fn migration_level(&self) -> u32 {
+        self.migration_level
+    }
+
+    /// Record that the shelf migrations up to `level` have run over
+    /// `migrated`: every record the migration read, by id, as it left them.
+    /// The store is read again under the lock, and when it holds anything
+    /// else, another process wrote it after the migration read it, so nothing
+    /// is marked and `false` says to migrate the store as it is now, which this
+    /// view then holds. A level at or below the stored one needs no mark, and
+    /// neither does an empty store, which has nothing to migrate and is not
+    /// created for this. Marking leaves the records untouched, so the
+    /// [generation](Self::generation) does not move.
+    pub fn mark_migrated(
+        &mut self,
+        level: u32,
+        migrated: &BTreeMap<String, ModelRecord>,
+    ) -> Result<bool, RegistryError> {
+        let _lock = self.lock()?;
+        self.refresh()?;
+        if self.migration_level >= level || self.models.is_empty() {
+            return Ok(true);
+        }
+        if self.models != *migrated {
+            return Ok(false);
+        }
+        self.migration_level = level;
+        self.write()?;
+        Ok(true)
+    }
+
+    /// Every record this view holds, by id, as a migration reads them before
+    /// it runs; see [`Self::mark_migrated`].
+    pub fn records(&self) -> BTreeMap<String, ModelRecord> {
+        self.models.clone()
+    }
+
     fn save(&mut self) -> Result<(), RegistryError> {
+        self.write()?;
+        self.generation += 1;
+        Ok(())
+    }
+
+    fn write(&self) -> Result<(), RegistryError> {
         let envelope = EnvelopeRef {
             schema_version: SCHEMA_VERSION,
+            migration_level: self.migration_level,
             models: self.models.values().collect(),
         };
         persistence::write_json_atomic(&self.directory.join(STORE_FILE), &envelope)?;
-        self.generation += 1;
         Ok(())
     }
 }

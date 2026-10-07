@@ -353,3 +353,65 @@ fn a_pipe_named_like_a_model_never_blocks_the_scan() {
     let names: Vec<&str> = result.discovered.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["here"]);
 }
+
+/// The files `model`'s footprint counts as its scanner listed them, and as
+/// the shelf lists them again from the record it becomes, each sorted.
+fn listed_both_ways(model: &DiscoveredModel) -> (Vec<String>, Vec<String>) {
+    let record = kernel::records::ModelRecord::new(
+        &model.name,
+        kernel::records::Modality::text(),
+        Vec::new(),
+        model.source.clone(),
+    );
+    let mut scanned = model.files.clone();
+    scanned.sort();
+    let mut again: Vec<String> = kernel::discovery::footprint_files(&record)
+        .unwrap_or_default()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    again.sort();
+    (scanned, again)
+}
+
+#[test]
+fn lists_a_bundle_a_shard_set_and_a_whisper_file_the_way_the_shelf_lists_them() {
+    let dir = TempDir::new();
+    write(dir.path(), "bundle/config.json", CONFIG);
+    write(dir.path(), "bundle/model.safetensors", &[0u8; 100]);
+    write(dir.path(), "bundle/.hidden", b"x");
+    write(dir.path(), "bundle/.DS_Store", b"\x00\x00\x00\x01Bud1");
+    write(dir.path(), "bundle/onnx/model.onnx", b"x");
+    write(dir.path(), "m-00001-of-00002.gguf", &[0u8; 10]);
+    write(dir.path(), "m-00002-of-00002.gguf", &[0u8; 10]);
+    write(dir.path(), "ggml-base.bin", b"lmggDATA");
+
+    let result = LooseFileScanner::single(dir.path()).scan();
+    let path = |relative: &str| dir.path().join(relative).to_string_lossy().into_owned();
+
+    let bundle = find(&result, "bundle");
+    let (scanned, again) = listed_both_ways(bundle);
+    assert_eq!(
+        scanned,
+        vec![
+            path("bundle/.DS_Store"),
+            path("bundle/.hidden"),
+            path("bundle/config.json"),
+            path("bundle/model.safetensors"),
+            path("bundle/onnx/model.onnx"),
+        ],
+        "every file the bundle's removal deletes"
+    );
+    assert_eq!(again, scanned);
+
+    let shards = find(&result, "m");
+    let (scanned, again) = listed_both_ways(shards);
+    let set = vec![path("m-00001-of-00002.gguf"), path("m-00002-of-00002.gguf")];
+    assert_eq!(scanned, set);
+    assert_eq!(again, scanned);
+
+    let whisper = find(&result, "ggml-base");
+    let (scanned, again) = listed_both_ways(whisper);
+    assert_eq!(scanned, vec![path("ggml-base.bin")]);
+    assert_eq!(again, scanned);
+}

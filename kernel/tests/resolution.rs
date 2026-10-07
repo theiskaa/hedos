@@ -9,8 +9,8 @@ use std::fs;
 
 use kernel::records::{Capability, ExecutionMode, Modality};
 use kernel::resolution::{
-    ModelFormat, gguf_architecture_profile, gguf_facts, gguf_general_architecture, has_ggml_magic,
-    has_gguf_magic, ollama_chat_profile, ollama_vision_profile, safetensors_format,
+    GgufPooling, ModelFormat, gguf_architecture_profile, gguf_facts, gguf_general_architecture,
+    has_ggml_magic, has_gguf_magic, ollama_chat_profile, ollama_vision_profile, safetensors_format,
     safetensors_header_format,
 };
 use support::TempDir;
@@ -64,6 +64,26 @@ fn build_gguf(version: u32, kvs: &[Vec<u8>]) -> Vec<u8> {
     bytes
 }
 
+/// A GGUF v3 header with `kvs` and one tensor info per name (one dimension,
+/// type F32, offset zero), and no tensor data.
+fn build_gguf_with_tensors(kvs: &[Vec<u8>], tensors: &[&str]) -> Vec<u8> {
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+    for kv in kvs {
+        bytes.extend_from_slice(kv);
+    }
+    for name in tensors {
+        bytes.extend(gguf_string(name));
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&384u64.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+    }
+    bytes
+}
+
 fn write(dir: &TempDir, name: &str, bytes: &[u8]) -> std::path::PathBuf {
     let path = dir.join(name);
     fs::write(&path, bytes).unwrap();
@@ -87,6 +107,108 @@ fn gguf_facts_reads_architecture_context_and_template() {
     assert_eq!(facts.context_length, Some(4096));
     assert!(facts.has_chat_template);
     assert_eq!(facts.quantization.as_deref(), Some("Q4_K_M"));
+}
+
+#[test]
+fn gguf_facts_reads_the_architectures_pooling_type() {
+    let dir = TempDir::new();
+    let cls = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "bert"),
+            kv_u32("bert.pooling_type", 2),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "cls.gguf", &cls)).unwrap();
+    assert_eq!(facts.pooling, Some(GgufPooling::Cls));
+
+    let unnamed = build_gguf(3, &[kv_string("general.architecture", "bert")]);
+    let facts = gguf_facts(&write(&dir, "unnamed.gguf", &unnamed)).unwrap();
+    assert_eq!(facts.pooling, None);
+
+    let unknown = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "bert"),
+            kv_u32("bert.pooling_type", 9),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "unknown.gguf", &unknown)).unwrap();
+    assert_eq!(facts.pooling, None);
+}
+
+#[test]
+fn gguf_facts_reads_a_decision_type_and_not_a_classifier_heads_pooling() {
+    let dir = TempDir::new();
+    let laya = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "modern-bert"),
+            kv_string("modern-bert.decision.type", "laya"),
+            kv_u32("modern-bert.decision.max_head_tokens", 192),
+            kv_u32("modern-bert.classifier.pooling_type", 1),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "laya.gguf", &laya)).unwrap();
+    assert_eq!(facts.decision.as_deref(), Some("laya"));
+    assert_eq!(facts.pooling, None);
+
+    let plain = build_gguf(3, &[kv_string("general.architecture", "bert")]);
+    let facts = gguf_facts(&write(&dir, "plain.gguf", &plain)).unwrap();
+    assert_eq!(facts.decision, None);
+}
+
+#[test]
+fn gguf_facts_never_takes_pooling_or_a_decision_named_for_another_architecture() {
+    let dir = TempDir::new();
+    let foreign = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "bert"),
+            kv_u32("nomic-bert.pooling_type", 1),
+            kv_string("modern-bert.decision.type", "laya"),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "foreign.gguf", &foreign)).unwrap();
+    assert_eq!(facts.pooling, None);
+    assert_eq!(facts.decision, None);
+
+    let nameless = build_gguf(3, &[kv_u32("bert.pooling_type", 1)]);
+    let facts = gguf_facts(&write(&dir, "nameless.gguf", &nameless)).unwrap();
+    assert_eq!(facts.pooling, None);
+}
+
+#[test]
+fn gguf_facts_finds_a_classifier_head_among_the_tensors() {
+    let dir = TempDir::new();
+    let kvs = [kv_string("general.architecture", "bert")];
+    for head in ["cls.weight", "cls.output.weight"] {
+        let bytes = build_gguf_with_tensors(&kvs, &["token_embd.weight", head]);
+        let facts = gguf_facts(&write(&dir, "head.gguf", &bytes)).unwrap();
+        assert!(facts.has_classifier_head, "{head}");
+    }
+
+    let plain = build_gguf_with_tensors(&kvs, &["token_embd.weight", "blk.0.attn_q.weight"]);
+    let facts = gguf_facts(&write(&dir, "plain.gguf", &plain)).unwrap();
+    assert!(!facts.has_classifier_head);
+
+    // Tensor infos cut short read as no head, and the header facts stand.
+    let mut cut = build_gguf_with_tensors(&kvs, &["token_embd.weight", "cls.weight"]);
+    cut.truncate(cut.len() - 30);
+    let facts = gguf_facts(&write(&dir, "cut.gguf", &cut)).unwrap();
+    assert!(!facts.has_classifier_head);
+    assert_eq!(facts.architecture.as_deref(), Some("bert"));
+
+    // A name as long as llama.cpp refuses ends the search: what follows it is
+    // never read.
+    let long = "x".repeat(64);
+    let named = build_gguf_with_tensors(&kvs, &[long.as_str(), "cls.weight"]);
+    let facts = gguf_facts(&write(&dir, "named.gguf", &named)).unwrap();
+    assert!(!facts.has_classifier_head);
+    let longest = "x".repeat(63);
+    let named = build_gguf_with_tensors(&kvs, &[longest.as_str(), "cls.weight"]);
+    let facts = gguf_facts(&write(&dir, "named.gguf", &named)).unwrap();
+    assert!(facts.has_classifier_head);
 }
 
 #[test]

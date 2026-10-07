@@ -100,7 +100,7 @@ impl UserRuntimeStore {
                 .is_some_and(RuntimeProvenance::is_community);
             if is_community && manifest.vm.is_none() {
                 load.issues.push(format!(
-                    "{label}: community runtimes run contained — \"{}\" has no [vm] section",
+                    "{label}: community runtimes run contained, and \"{}\" has no [vm] section",
                     manifest.id
                 ));
                 continue;
@@ -112,7 +112,7 @@ impl UserRuntimeStore {
             }
             if seen.contains(&manifest.id) {
                 load.issues.push(format!(
-                    "{label}: duplicate id \"{}\" — keeping the first",
+                    "{label}: duplicate id \"{}\", keeping the first",
                     manifest.id
                 ));
                 continue;
@@ -398,7 +398,7 @@ mod tests {
         assert!(
             load.issues
                 .iter()
-                .any(|issue| issue.contains("duplicate id"))
+                .any(|issue| issue.contains("duplicate id") && !issue.contains('\u{2014}'))
         );
         std::fs::remove_dir_all(&dir).ok();
     }

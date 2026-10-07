@@ -11,7 +11,12 @@ hedos serve            # binds 127.0.0.1:43367
 hedos serve -p 8080    # a different port
 ```
 
-The default port is `43367`, chosen to avoid colliding with Ollama's `11434`. The port also comes from your settings if you set one there. The server prints its base URL on startup and stops cleanly on Ctrl-C, flushing its audit log on the way out.
+The default port is `43367`, chosen to avoid colliding with Ollama's `11434`. The port also comes from your settings if you set one there. The server prints its base URL on startup and stops cleanly on Ctrl-C, SIGTERM, or SIGHUP, flushing its audit log on the way out, and every model server it started is stopped with it. It takes no new requests once told to stop:
+
+- Ctrl-C waits for the requests still in flight, however long they take. A second Ctrl-C ends them.
+- SIGTERM, or SIGHUP from a closed terminal, gives them 5 seconds and then ends them.
+- An ended request that had no answer yet gets a `503` saying `the gateway is stopping`, in the dialect of its route. A streamed answer stops where it stands: its body is closed as a complete one, with no closing event (no `data: [DONE]`). Either way the gateway drops its request to the model: a model server still starting for it is stopped, a reply stops generating, and an embeddings batch sends no more of its inputs, with llama-server cancelling the ones it had not started. The audit log records each ended request as `503` with `the gateway is stopping`, a streamed one included, under its client and the model its body named.
+- A gateway started ignoring SIGHUP, as `nohup hedos serve` starts it, keeps ignoring it, so it outlives the terminal.
 
 ## Authentication
 
@@ -124,10 +129,20 @@ The response is the System One envelope, `{"model", "answers", "usage"}`, exactl
 
 The model has to be one that declares the `judge` capability (`hedos ls --capability judge`). A name that does not resolve, `jev-latest` included, is a `404` and a model that only chats is a `400`; both name the models that would do, and nothing else on the shelf answers in their place. A malformed request, or one the model refuses (laya raises when a question's options overrun its 192-token budget for them), is a `400` with the reason in `error.message`, which is where the SDK reads it. A bearer token is ignored like on every other route, so a real TypeSafe key in the environment does no harm. There is no streamed form. The SDK's default timeout is 10 seconds and a cold model takes longer than that to load, so `hedos warm <model>` first.
 
+## Embeddings
+
+`/v1/embeddings`, `/api/embed`, and `/api/embeddings` take any model that embeds (`hedos ls --capability embed`). A GGUF embedder is served by `llama-server`, started for embeddings:
+
+- One request embeds at most 2048 inputs, as OpenAI allows; more is a `400` before any work. The gateway sends a batch to `llama-server` in pieces of at most 64 inputs and about one window of text (4 bytes for each token of the window; a longer input goes alone), so no one piece holds the model for more than a few seconds, and answers with one response, its vectors in input order and its token counts summed.
+- A client that goes away ends its batch at once: the piece in flight is dropped, `llama-server` cancels the inputs of it that it had not started (the one it is reading finishes), and nothing more is sent. The audit log records the request as `cancelled` with status `499`, which `hedos stats` does not count as an error.
+- The window is the one the model declares, capped at 8192 tokens. An input longer than an encoder's window is a `400` that names both: `the input is 9001 tokens, more than the 8192 this model embeds at once`. A decoder embedder that pools by its last token (Qwen3-Embedding) takes one token less than its window, 8191. Both counts include the model's special tokens. `/v1/models` reports the most one input may hold as `meta.n_ctx`: 8192 for a long encoder, 8191 for Qwen3-Embedding. In a batch, the message names the input by its index: `input 3 is 2102 tokens, more than the 2048 this model embeds at once`.
+- The server of an encoder that llama.cpp keeps no cache for (BERT, nomic-bert, jina-bert, modern-bert, gemma-embedding, and similar) embeds several inputs at once, as `llama-server` sets it up. Any other embedder's server embeds one at a time: a decoder embedder (Qwen3-Embedding), and the encoders llama.cpp still gives a cache (`llama-embed`, `t5encoder`). Its inputs share one cache of the window and several at once overflow it, so concurrent requests to it queue.
+- An over-long input is never truncated. Ollama's `/api/embed` truncates by default, but `llama-server` adds a model's special tokens (BERT's `[CLS]` and `[SEP]`, the end-of-text token a last-token embedder reads its vector from) only to text it tokenizes itself, so cutting the input to tokens in the gateway and sending it back cannot reproduce what the model expects to read. Split long text to fit the window before embedding it. The `truncate` parameter is refused on every model.
+
 ## Fidelity
 
 The gateway serves each model's real behavior, not a lowest common denominator. It reads the model's context length, chat template, and tool-calling dialect and honors them. When a request asks for something a model cannot do (a capability it does not serve, or a parameter the runtime does not honor), the gateway returns a clear error in the dialect you used rather than pretending.
 
 ## Concurrency
 
-The number of requests served at once is bounded by the `max_concurrent_inference` setting. Requests beyond that wait for a slot. This keeps a burst of clients from oversubscribing the machine's memory.
+The number of requests served at once is bounded by the `max_concurrent_inference` setting (4 by default). A request beyond that does not wait: it is refused at once with a `503` saying `too many requests are already running`, in the dialect of its route, and a `Retry-After: 1` header, so a client retries it. This keeps a burst of clients from oversubscribing the machine's memory.

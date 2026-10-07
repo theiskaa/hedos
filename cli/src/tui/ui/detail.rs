@@ -18,6 +18,7 @@ use crate::support::clock;
 use crate::support::residency::Holder;
 use crate::support::shelf_table::runtime_label;
 use crate::support::table::DASH;
+use crate::support::text::printable;
 use crate::tui::app::App;
 use crate::tui::facts::{Facts, HOURS, ModelActivity};
 use crate::tui::layout::STACKED_DETAIL_ROWS;
@@ -67,10 +68,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
         (BOLD, DIM)
     };
     let block = Block::bordered()
-        .title(Span::styled(
-            format!(" {} ", record.display_name()),
-            title_style,
-        ))
+        .title(Span::styled(title(record), title_style))
         .border_style(border_style);
     // The stacked pane's height decides first, then whether the user has
     // expanded the pane.
@@ -363,6 +361,12 @@ fn residency_line(record: &ModelRecord, facts: &Facts, value_width: usize) -> Li
         None => spans.push(Span::styled("cold", DIM)),
     }
     Line::from(spans)
+}
+
+/// The pane's title: the model's name, escaped as the shelf table escapes
+/// it, so a name cannot color the border or reorder it.
+fn title(record: &ModelRecord) -> String {
+    format!(" {} ", printable(record.display_name()))
 }
 
 #[cfg(test)]

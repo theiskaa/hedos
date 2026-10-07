@@ -31,6 +31,8 @@ impl OllamaStoreScanner {
 struct Manifest {
     #[serde(default)]
     layers: Vec<Layer>,
+    #[serde(default)]
+    config: Option<Layer>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +171,11 @@ impl StoreScanner for OllamaStoreScanner {
             discovered.capabilities_hint = profile.capabilities;
             discovered.execution_hint = profile.execution;
             discovered.footprint_bytes = footprint;
+            discovered.files = manifest
+                .layers
+                .iter()
+                .map(|layer| display(&self.blob_path(&layer.digest)))
+                .collect();
             discovered.primary_weight_path = weight_blob;
             discovered.context_length_hint = context_length_hint;
             discovered.has_chat_template_hint = has_template.then_some(true);
@@ -179,6 +186,236 @@ impl StoreScanner for OllamaStoreScanner {
 
         result
     }
+}
+
+/// The layer blobs the manifest at `manifest` names, under the models root it
+/// sits in (`<root>/manifests/<registry>/<namespace>/<model>/<tag>`). `None`
+/// when the path is not laid out that way or the manifest cannot be read.
+pub(crate) fn manifest_blobs(manifest: &Path) -> Option<Vec<PathBuf>> {
+    let (store, parsed) = read_manifest(manifest)?;
+    Some(
+        parsed
+            .layers
+            .iter()
+            .map(|layer| store.blob_path(&layer.digest))
+            .collect(),
+    )
+}
+
+/// The files besides its layers that the daemon deletes with the model whose
+/// manifest is at `manifest`: the manifest itself, and its config blob when
+/// it names one that is on disk. Neither holds weights when it is what the
+/// daemon writes ([`manifest_as_ollama_writes`], [`config_as_ollama_writes`]).
+/// `None` as [`manifest_blobs`] is.
+pub(crate) fn manifest_bookkeeping(manifest: &Path) -> Option<Vec<PathBuf>> {
+    let (store, parsed) = read_manifest(manifest)?;
+    let mut files = vec![manifest.to_path_buf()];
+    files.extend(
+        parsed
+            .config
+            .map(|config| store.blob_path(&config.digest))
+            .filter(|blob| blob.is_file()),
+    );
+    Some(files)
+}
+
+/// The most an Ollama manifest or config blob read as the daemon's own holds.
+/// The daemon writes a few hundred bytes for each.
+const WRITTEN_BYTES: u64 = 1 << 20;
+
+/// The most a name in a manifest or config the daemon writes holds (a media
+/// type, a family, a quantization, a renderer).
+const NAME_BYTES: usize = 256;
+
+/// The most names a list in a config the daemon writes holds (its families,
+/// its capabilities).
+const NAMES: usize = 64;
+
+/// The most a model name in a manifest holds (a layer's `from` or `name`).
+const ADDRESS_BYTES: usize = 4096;
+
+/// Whether the file at `path` is an Ollama manifest as the daemon writes it:
+/// JSON with a schema version of 2, a media type, a config layer and the
+/// layers, each a media type, a `sha256:` digest, a size, and the model it
+/// came `from`, and no other field, in at most a MiB. Nothing else can hide
+/// there.
+pub(crate) fn manifest_as_ollama_writes(path: &Path) -> bool {
+    written_json::<WrittenManifest>(path).is_some_and(|manifest| manifest.plausible())
+}
+
+/// Whether the file at `path` is an Ollama config blob as the daemon writes
+/// it for a local model: JSON with the model's format, family, type and
+/// quantization, its renderer and parser names, the platform, and the
+/// digests of its layers, and no other field, in at most a MiB. A cloud
+/// model's config, naming the host it runs on, is that model, so it is not.
+pub(crate) fn config_as_ollama_writes(path: &Path) -> bool {
+    written_json::<WrittenConfig>(path).is_some_and(|config| config.plausible())
+}
+
+fn written_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > WRITTEN_BYTES {
+        return None;
+    }
+    let bytes = crate::fs::read_regular(path).ok()?;
+    if bytes.len() as u64 > WRITTEN_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenManifest {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    #[serde(rename = "mediaType", default)]
+    media_type: String,
+    #[serde(default)]
+    config: Option<WrittenLayer>,
+    #[serde(default)]
+    layers: Vec<WrittenLayer>,
+}
+
+impl WrittenManifest {
+    fn plausible(&self) -> bool {
+        self.schema_version == 2
+            && self.media_type.len() <= NAME_BYTES
+            && self
+                .config
+                .iter()
+                .chain(&self.layers)
+                .all(WrittenLayer::plausible)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenLayer {
+    #[serde(rename = "mediaType")]
+    media_type: String,
+    digest: String,
+    size: u64,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl WrittenLayer {
+    fn plausible(&self) -> bool {
+        self.media_type.len() <= NAME_BYTES
+            && is_digest(&self.digest)
+            && self.size <= i64::MAX as u64
+            && self
+                .from
+                .as_ref()
+                .is_none_or(|from| from.len() <= ADDRESS_BYTES)
+            && self
+                .name
+                .as_ref()
+                .is_none_or(|name| name.len() <= ADDRESS_BYTES)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenConfig {
+    #[serde(default)]
+    model_format: String,
+    #[serde(default)]
+    model_family: String,
+    #[serde(default)]
+    model_families: Option<Vec<String>>,
+    #[serde(default)]
+    model_type: String,
+    #[serde(default)]
+    file_type: String,
+    #[serde(default)]
+    renderer: String,
+    #[serde(default)]
+    parser: String,
+    #[serde(default)]
+    requires: String,
+    #[serde(default)]
+    remote_host: String,
+    #[serde(default)]
+    remote_model: String,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    context_length: u64,
+    #[serde(default)]
+    embedding_length: u64,
+    #[serde(default)]
+    base_name: String,
+    #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    os: String,
+    #[serde(default)]
+    rootfs: Option<WrittenRootFs>,
+}
+
+impl WrittenConfig {
+    fn plausible(&self) -> bool {
+        let names = [
+            &self.model_format,
+            &self.model_family,
+            &self.model_type,
+            &self.file_type,
+            &self.renderer,
+            &self.parser,
+            &self.requires,
+            &self.base_name,
+            &self.architecture,
+            &self.os,
+        ];
+        let lists = || self.model_families.iter().chain(&self.capabilities);
+        lists().all(|list| list.len() <= NAMES)
+            && names
+                .into_iter()
+                .chain(lists().flatten())
+                .all(|name| name.len() <= NAME_BYTES)
+            && self.remote_host.is_empty()
+            && self.remote_model.is_empty()
+            && self.context_length <= u64::from(u32::MAX)
+            && self.embedding_length <= u64::from(u32::MAX)
+            && self.rootfs.as_ref().is_none_or(WrittenRootFs::plausible)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WrittenRootFs {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    diff_ids: Option<Vec<String>>,
+}
+
+impl WrittenRootFs {
+    fn plausible(&self) -> bool {
+        self.kind.len() <= NAME_BYTES && self.diff_ids.iter().flatten().all(|id| is_digest(id))
+    }
+}
+
+/// Whether `text` is a digest as Ollama spells one: `sha256:` and 64 hex
+/// characters.
+fn is_digest(text: &str) -> bool {
+    text.strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn read_manifest(manifest: &Path) -> Option<(OllamaStoreScanner, Manifest)> {
+    let manifests = manifest.ancestors().nth(4)?;
+    if manifests.file_name()? != "manifests" {
+        return None;
+    }
+    let store = OllamaStoreScanner::new(manifests.parent()?);
+    let bytes = crate::fs::read_regular(manifest).ok()?;
+    let parsed = serde_json::from_slice::<Manifest>(&bytes).ok()?;
+    Some((store, parsed))
 }
 
 /// Recursively collect the regular files under `dir` (skipping hidden entries).
@@ -221,4 +458,56 @@ fn string_array(value: &JsonValue) -> Option<Vec<String>> {
 
 fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MANIFEST: &str = r#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"mediaType":"application/vnd.docker.container.image.v1+json","digest":"sha256:f0988ff50a2458c598ff6b1b87b94d0f5c44d73061c2795391878b00b2285e11","size":473},"layers":[{"mediaType":"application/vnd.ollama.image.model","digest":"sha256:4c27e0f5b5adf02ac956c7322bd2ee7636fe3f45a8512c9aba5385242cb6e09a","size":9608338848},{"mediaType":"application/vnd.ollama.image.license","digest":"sha256:7339fa418c9ad3e8e12e74ad0fd26a9cc4be8703f9c110728a992b193be85cb2","size":11355}]}"#;
+
+    const CONFIG: &str = r#"{"model_format":"gguf","model_family":"gemma4","model_families":["gemma4"],"model_type":"8.0B","file_type":"Q4_K_M","renderer":"gemma4","parser":"gemma4","requires":"0.20.0","architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:4c27e0f5b5adf02ac956c7322bd2ee7636fe3f45a8512c9aba5385242cb6e09a"]}}"#;
+
+    /// Whether `text`, written to a file, passes `check`.
+    fn passes(check: fn(&Path) -> bool, text: &str) -> bool {
+        let path = std::env::temp_dir().join(format!(
+            "hedos-ollama-written-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, text).unwrap();
+        let passed = check(&path);
+        std::fs::remove_file(&path).ok();
+        passed
+    }
+
+    #[test]
+    fn a_manifest_the_daemon_wrote_is_its_own_and_one_with_more_is_not() {
+        assert!(passes(manifest_as_ollama_writes, MANIFEST));
+        let noted = MANIFEST.replacen('{', r#"{"notes":"mine","#, 1);
+        assert!(!passes(manifest_as_ollama_writes, &noted));
+        let short = MANIFEST.replace("sha256:7339fa41", "sha256:zz");
+        assert!(!passes(manifest_as_ollama_writes, &short));
+        let old = MANIFEST.replace(r#""schemaVersion":2"#, r#""schemaVersion":1"#);
+        assert!(!passes(manifest_as_ollama_writes, &old));
+        assert!(!passes(manifest_as_ollama_writes, "not json"));
+    }
+
+    #[test]
+    fn a_config_the_daemon_wrote_is_its_own_and_one_with_more_is_not() {
+        assert!(passes(config_as_ollama_writes, CONFIG));
+        assert!(passes(config_as_ollama_writes, "{}"));
+        let diary = CONFIG.replacen('{', r#"{"diary":"mine","#, 1);
+        assert!(!passes(config_as_ollama_writes, &diary));
+        let long = CONFIG.replace(
+            "gemma4\",\"parser",
+            &format!("{}\",\"parser", "x".repeat(300)),
+        );
+        assert!(!passes(config_as_ollama_writes, &long));
+        let cloud = CONFIG.replacen('{', r#"{"remote_host":"https://ollama.com:443","#, 1);
+        assert!(
+            !passes(config_as_ollama_writes, &cloud),
+            "a cloud model's config is the model"
+        );
+    }
 }

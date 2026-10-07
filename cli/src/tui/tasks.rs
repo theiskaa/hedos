@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::event::{Event, Planned, Refreshed, Reply, ReplyStep, Searched};
-use super::facts::Facts;
+use super::facts::{DiskCount, Facts};
 use super::jobs;
 use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
@@ -71,6 +71,8 @@ pub struct TaskContext {
     /// The bench in flight. A bench is asked to stop rather than aborted, so
     /// the model it is on is left unloaded rather than mid-generation.
     bench: Mutex<Option<Cancel>>,
+    /// The machine pane's disk figures, counted off the refresh's path.
+    disk: DiskCount,
 }
 
 impl TaskContext {
@@ -87,6 +89,7 @@ impl TaskContext {
             mutating: Mutex::new(Vec::new()),
             ask: Mutex::new(None),
             bench: Mutex::new(None),
+            disk: DiskCount::default(),
         }
     }
 
@@ -153,7 +156,7 @@ impl TaskContext {
         let entries = tokio::task::spawn_blocking(move || reader.audit.entries())
             .await
             .unwrap_or_else(|_| Vec::new().into());
-        let facts = Facts::collect(&self.session, &records, &entries).await;
+        let facts = Facts::collect(&self.session, &records, &entries, &self.disk).await;
         Snapshot { records, facts }
     }
 }
@@ -645,9 +648,9 @@ async fn scan(session: &Session) -> Result<String, String> {
     Ok(scan_summary(&summary))
 }
 
-/// `found 12 models · 9 hf · 3 ollama · 2 issues` in the strip's own
-/// register, the stores in the order `per_kind` keeps them, sorted by
-/// kind, or `found nothing`.
+/// `found 12 models · 3 ollama · 9 hf · 2 issues` in the strip's own
+/// register, the stores in [`DiscoverySummary::stores`] order (Ollama
+/// first, as the headline names them), or `found nothing`.
 fn scan_summary(summary: &DiscoverySummary) -> String {
     if summary.total_count == 0 {
         return "found nothing".to_owned();
@@ -658,9 +661,8 @@ fn scan_summary(summary: &DiscoverySummary) -> String {
     )];
     parts.extend(
         summary
-            .per_kind
-            .iter()
-            .filter(|(_, stat)| stat.count > 0)
+            .stores()
+            .into_iter()
             .map(|(kind, stat)| format!("{} {}", stat.count, text::short_store(kind.as_str()))),
     );
     if !summary.issues.is_empty() {

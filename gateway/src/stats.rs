@@ -17,7 +17,8 @@ use crate::audit::GatewayAuditEntry;
 pub struct GatewayStats {
     /// Every audited request, including those with no associated model.
     pub total_requests: u64,
-    /// Requests whose outcome was anything other than `ok`.
+    /// Requests whose outcome was anything other than `ok`, apart from the
+    /// ones their client abandoned, which nothing rejected.
     pub rejected_requests: u64,
     /// [`Self::rejected_requests`] over [`Self::total_requests`]; `0.0` when the
     /// log is empty.
@@ -35,7 +36,8 @@ pub struct ModelStats {
     pub model: String,
     /// Requests served for this model, successful or not.
     pub requests: u64,
-    /// Those requests whose outcome was anything other than `ok`.
+    /// Those requests whose outcome was anything other than `ok`, apart from
+    /// the ones their client abandoned.
     pub errors: u64,
     /// [`Self::errors`] over [`Self::requests`].
     pub error_rate: f64,
@@ -77,7 +79,8 @@ pub fn summarize(entries: &[GatewayAuditEntry]) -> GatewayStats {
 
     for entry in entries {
         let ok = entry.is_ok();
-        if !ok {
+        let failed = !ok && !entry.is_cancelled();
+        if failed {
             rejected_requests += 1;
         }
         if let Some(model) = entry.model.as_deref() {
@@ -86,7 +89,7 @@ pub fn summarize(entries: &[GatewayAuditEntry]) -> GatewayStats {
             tally.last_seen_millis = tally.last_seen_millis.max(entry.ts_millis);
             if ok {
                 tally.ok_durations.push(entry.duration_ms);
-            } else {
+            } else if failed {
                 tally.errors += 1;
             }
         }
@@ -184,6 +187,21 @@ mod tests {
         assert_eq!(stats.rejected_requests, 0);
         assert_eq!(stats.rejection_rate, 0.0);
         assert!(stats.models.is_empty());
+    }
+
+    #[test]
+    fn an_abandoned_request_is_neither_rejected_nor_an_error() {
+        let entries = vec![
+            entry(Some("nomic"), "ok", 10),
+            entry(Some("nomic"), "cancelled", 2000),
+            entry(None, "cancelled", 2000),
+        ];
+        let stats = summarize(&entries);
+        assert_eq!(stats.total_requests, 3);
+        assert_eq!(stats.rejected_requests, 0);
+        assert_eq!(stats.models[0].requests, 2);
+        assert_eq!(stats.models[0].errors, 0);
+        assert_eq!(stats.models[0].latency.as_ref().map(|l| l.p99), Some(10));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! tokens a second, time to first token, and cold start, measured the same way
 //! for every row so two of them can be compared.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::sync::Arc;
 
 use clap::Args;
@@ -20,7 +20,7 @@ use crate::support::bench_run::{ShelfPrepare, machine_line, row_for, rows as she
 use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::session::{self, Session};
-use crate::support::signals;
+use crate::support::signals::Interrupts;
 use crate::tui::bench_view::{Board, plain, windowed};
 
 /// How often the live block redraws for its own sake, so the spinner turns
@@ -129,6 +129,9 @@ async fn drive(
     if let Some(terminal) = terminal.as_mut() {
         redraw(terminal, &board, ticks, false)?;
     }
+    // One listener for the whole run, so a second press is never lost
+    // between two turns of the loop.
+    let mut interrupts = Interrupts::new();
     loop {
         let mut moved = false;
         tokio::select! {
@@ -148,7 +151,7 @@ async fn drive(
             // backend that may never answer: the driver is cut off, whatever it
             // managed to say is taken, and the rows it never reached read as
             // stopped rather than as still to come.
-            () = signals::wait_for_ctrl_c() => {
+            () = interrupts.next() => {
                 if stopping {
                     driver.abort();
                     break;
@@ -175,7 +178,7 @@ async fn drive(
         // one line down is where the shell's next prompt belongs. Walking the
         // block's whole height, as though the cursor were at the top, is a
         // screen of blank the table has to be scrolled back through.
-        println!();
+        let _ = writeln!(std::io::stdout());
     }
     Ok(board)
 }

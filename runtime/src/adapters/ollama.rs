@@ -11,13 +11,13 @@ use kernel::records::{
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 use tokio::sync::mpsc;
 
-use super::{ChunkStream, RuntimeAdapter, RuntimeError};
+use super::{
+    ChunkStream, MAX_EMBEDDINGS_BYTES, MAX_ERROR_BYTES, RuntimeAdapter, RuntimeError, capped_body,
+};
 
 /// Where a local Ollama daemon listens unless told otherwise.
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 const NOT_RUNNING_HINT: &str = "Ollama isn't running. Start it with `ollama serve`.";
-const MAX_EMBED_BYTES: usize = 32 * 1024 * 1024;
-const MAX_ERROR_BYTES: usize = 64 * 1024;
 
 /// `(payload key, ollama option key)` — the request params Ollama honors.
 const OPTION_KEYS: [(&str, &str); 11] = [
@@ -191,7 +191,7 @@ async fn stream_chat(
 ) {
     if response.status() != reqwest::StatusCode::OK {
         let code = response.status().as_u16();
-        let body = capped_body(&mut response, MAX_ERROR_BYTES)
+        let body = capped_body(&mut response, MAX_ERROR_BYTES, "ollama")
             .await
             .unwrap_or_default();
         let _ = tx.send(Err(RuntimeError::Failed(http_error_message(&body, code))));
@@ -309,7 +309,7 @@ async fn stream_embed(
     tx: &mpsc::UnboundedSender<Result<CapabilityChunk, RuntimeError>>,
 ) {
     let status = response.status();
-    let bytes = match capped_body(&mut response, MAX_EMBED_BYTES).await {
+    let bytes = match capped_body(&mut response, MAX_EMBEDDINGS_BYTES, "ollama").await {
         Ok(bytes) => bytes,
         Err(err) => {
             let _ = tx.send(Err(err));
@@ -431,26 +431,6 @@ async fn ensure_daemon(client: &reqwest::Client, base_url: &str) -> bool {
     crate::install::ollama::start_daemon(client, base_url, &environment)
         .await
         .is_ok()
-}
-
-async fn capped_body(
-    response: &mut reqwest::Response,
-    cap: usize,
-) -> Result<Vec<u8>, RuntimeError> {
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| RuntimeError::Failed(format!("ollama: {err}")))?
-    {
-        bytes.extend_from_slice(&chunk);
-        if bytes.len() > cap {
-            return Err(RuntimeError::Failed(format!(
-                "ollama sent a response larger than {cap} bytes"
-            )));
-        }
-    }
-    Ok(bytes)
 }
 
 fn chat_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError> {

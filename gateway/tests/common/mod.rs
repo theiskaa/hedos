@@ -16,7 +16,7 @@ use kernel::jobs::{Job, JobEvent};
 use kernel::records::{
     Capability, JsonValue, Modality, ModelRecord, ModelSource, ModelState, SourceKind,
 };
-use runtime::adapters::ChunkStream;
+use runtime::adapters::{ChunkStream, RuntimeError};
 use runtime::facade::KernelError;
 use tokio::sync::mpsc;
 
@@ -81,7 +81,13 @@ pub struct MockPort {
     pub resident: Vec<GatewayResident>,
     /// Every `invoke` this port received, in order: the capability and payload.
     pub invoked: Mutex<Vec<(Capability, JsonValue)>>,
+    /// When set, each invoke's stream is left open after `chunks`, its sender
+    /// kept here, so a test can see whether the reader let it go.
+    pub open_streams: Option<Mutex<Vec<StreamSender>>>,
 }
+
+/// The sending half of a runtime's chunk stream.
+pub type StreamSender = mpsc::UnboundedSender<Result<CapabilityChunk, RuntimeError>>;
 
 impl Default for MockPort {
     fn default() -> Self {
@@ -95,6 +101,7 @@ impl Default for MockPort {
             artifacts: HashMap::new(),
             resident: Vec::new(),
             invoked: Mutex::new(Vec::new()),
+            open_streams: None,
         }
     }
 }
@@ -167,6 +174,9 @@ impl GatewayPort for MockPort {
             let (tx, stream) = ChunkStream::channel();
             for chunk in chunks {
                 let _ = tx.send(Ok(chunk));
+            }
+            if let Some(open) = &self.open_streams {
+                open.lock().unwrap().push(tx);
             }
             Ok(stream)
         })

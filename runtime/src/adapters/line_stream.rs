@@ -48,6 +48,7 @@ pub(crate) async fn read_lines<F>(
             }
             Ok(None) => break,
             Err(err) => {
+                let err = err.without_url();
                 let _ = tx.send(Err(RuntimeError::Failed(format!("{error_prefix}: {err}"))));
                 return;
             }

@@ -169,7 +169,7 @@ impl ManifestInstaller {
             .is_some_and(|provenance| provenance.is_community())
         {
             return Err(ManifestError::Failed(format!(
-                "{id} was not installed by Hedos — remove it by hand from runtimes.d"
+                "{id} was not installed by Hedos; remove it by hand from runtimes.d"
             )));
         }
         std::fs::remove_dir_all(&destination)
@@ -183,7 +183,7 @@ impl ManifestInstaller {
     ) -> Result<&'a ManifestVm, ManifestError> {
         let Some(vm) = &manifest.vm else {
             return Err(ManifestError::Failed(format!(
-                "community runtimes run contained — {} needs a [vm] section",
+                "community runtimes run contained, so {} needs a [vm] section",
                 manifest.id
             )));
         };

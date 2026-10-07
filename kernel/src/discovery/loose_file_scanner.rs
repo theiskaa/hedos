@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::discovered_models;
 use crate::discovery::modality_hints::{self, Hint};
+use crate::discovery::on_disk::directory_contents;
 use crate::discovery::scanner::{DiscoveredModel, ScanResult, StoreScanner};
 use crate::discovery::weights::gguf_weight;
 use crate::records::{ExecutionMode, ModelSource, SourceKind};
@@ -115,6 +116,10 @@ impl StoreScanner for LooseFileScanner {
         }
         result
     }
+
+    fn watched_directories(&self) -> Vec<PathBuf> {
+        self.user_directories.clone()
+    }
 }
 
 /// A `config.json` + `safetensors` directory as a single folder-bundle model, or
@@ -172,6 +177,10 @@ fn folder_bundle(dir: &Path) -> Option<DiscoveredModel> {
     model.execution_hint = hint.execution;
     model.footprint_bytes = total;
     model.primary_weight_path = largest;
+    model.files = directory_contents(dir)
+        .iter()
+        .map(|path| display(path))
+        .collect();
     model.context_length_hint = hint.context_length;
     Some(model)
 }
@@ -189,6 +198,7 @@ fn whisper_model(path: &Path, size: i64) -> DiscoveredModel {
     model.execution_hint = hint.execution;
     model.footprint_bytes = size;
     model.primary_weight_path = Some(display(path));
+    model.files = vec![display(path)];
     model
 }
 

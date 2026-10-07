@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::OK_OUTCOME;
+use crate::identity::{CANCELLED_OUTCOME, OK_OUTCOME};
 use crate::wire::timestamp::{iso8601, millis_from_iso8601};
 
 /// One line of the audit log: who called, what they asked for, and how it went.
@@ -134,6 +134,11 @@ impl GatewayAuditEntry {
     /// Whether the request was served (as opposed to rejected or failed).
     pub fn is_ok(&self) -> bool {
         self.outcome == OK_OUTCOME
+    }
+
+    /// Whether the client abandoned the request before it was answered.
+    pub fn is_cancelled(&self) -> bool {
+        self.outcome == CANCELLED_OUTCOME
     }
 }
 

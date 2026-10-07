@@ -382,3 +382,93 @@ fn skips_paths_deeper_than_four_components() {
     assert!(result.discovered.is_empty());
     assert!(result.issues.is_empty());
 }
+
+/// The files `model`'s footprint counts as its scanner listed them, and as
+/// the shelf lists them again from the record it becomes, each sorted.
+fn listed_both_ways(model: &DiscoveredModel) -> (Vec<String>, Vec<String>) {
+    let record = kernel::records::ModelRecord::new(
+        &model.name,
+        kernel::records::Modality::text(),
+        Vec::new(),
+        model.source.clone(),
+    );
+    let mut scanned = model.files.clone();
+    scanned.sort();
+    let mut again: Vec<String> = kernel::discovery::footprint_files(&record)
+        .unwrap_or_default()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    again.sort();
+    (scanned, again)
+}
+
+#[test]
+fn lists_every_layer_blob_the_way_the_shelf_lists_them() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    write_manifest(
+        root,
+        ["registry.ollama.ai", "library", "llama3.2", "latest"],
+        &manifest(&[
+            layer("application/vnd.ollama.image.model", 100, "sha256:aaa"),
+            layer("application/vnd.ollama.image.template", 5, "sha256:bbb"),
+        ]),
+    );
+    write_blob(root, "sha256:aaa", &[0u8; 100]);
+    write_blob(root, "sha256:bbb", b"hello");
+
+    let result = OllamaStoreScanner::new(root).scan();
+    let model = only(&result.discovered);
+    let (scanned, again) = listed_both_ways(model);
+    let blobs = root.join("blobs");
+    assert_eq!(
+        scanned,
+        vec![
+            blobs.join("sha256-aaa").to_string_lossy().into_owned(),
+            blobs.join("sha256-bbb").to_string_lossy().into_owned(),
+        ]
+    );
+    assert_eq!(again, scanned);
+}
+
+#[test]
+fn the_shelf_counts_a_blob_two_tags_share_once() {
+    let dir = TempDir::new();
+    let root = dir.path();
+    let layers = manifest(&[
+        layer("application/vnd.ollama.image.model", 100, "sha256:aaa"),
+        layer("application/vnd.ollama.image.template", 5, "sha256:bbb"),
+    ]);
+    write_manifest(
+        root,
+        ["registry.ollama.ai", "library", "qwen", "latest"],
+        &layers,
+    );
+    write_manifest(
+        root,
+        ["registry.ollama.ai", "library", "qwen", "7b"],
+        &layers,
+    );
+    write_blob(root, "sha256:aaa", &[0u8; 100]);
+    write_blob(root, "sha256:bbb", b"hello");
+
+    let records: Vec<kernel::records::ModelRecord> = OllamaStoreScanner::new(root)
+        .scan()
+        .discovered
+        .iter()
+        .map(|model| {
+            let mut record = kernel::records::ModelRecord::new(
+                &model.name,
+                kernel::records::Modality::text(),
+                Vec::new(),
+                model.source.clone(),
+            );
+            record.footprint_bytes = Some(model.footprint_bytes);
+            record
+        })
+        .collect();
+    assert_eq!(records.len(), 2);
+    let disk = kernel::discovery::disk_by_store(&records);
+    assert_eq!(disk[&SourceKind::ollama()], 105, "not 210");
+}

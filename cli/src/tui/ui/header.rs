@@ -6,12 +6,11 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use kernel::profiles::FitVerdict;
-use kernel::records::{ModelRecord, ModelState};
+use kernel::profiles::FitTally;
+use kernel::records::ModelState;
 
 use super::{DIM, EYEBROW, wordmark};
 use crate::support::banner::{KOALA, KOALA_WIDTH};
-use crate::support::shelf_table::verdict;
 use crate::tui::app::App;
 use crate::tui::layout::TALL_HEADER_ROWS;
 use crate::tui::text;
@@ -96,20 +95,15 @@ fn shelf_line(app: &App, wont_run: bool) -> String {
     if !wont_run {
         return parts.join(" · ");
     }
-    let gone = |record: &&ModelRecord| record.state == ModelState::Missing;
-    let too_big = app
-        .records
-        .iter()
-        .filter(|record| {
-            !gone(record)
-                && verdict(record.serving_size(), app.facts.memory_bytes)
-                    == Some(FitVerdict::TooLarge)
-        })
-        .count();
+    let too_big = FitTally::over(&app.records, app.facts.memory_bytes).too_large;
     if too_big > 0 {
         parts.push(format!("{too_big} too big"));
     }
-    let gone = app.records.iter().filter(gone).count();
+    let gone = app
+        .records
+        .iter()
+        .filter(|record| record.state == ModelState::Missing)
+        .count();
     if gone > 0 {
         parts.push(format!("{gone} gone"));
     }

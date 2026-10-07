@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::thread;
 use std::time::Duration;
 
@@ -153,12 +154,18 @@ pub enum Edit {
 /// stop request is honoured promptly.
 const POLL: Duration = Duration::from_millis(100);
 
-/// The input thread. Dropping it stops the reader and waits for it to let
-/// go of the terminal, so whatever takes the terminal next is the only
-/// reader of stdin, and an early return never leaves a reader behind.
+/// How long handing the terminal over waits for the input thread to let go.
+const LET_GO: Duration = Duration::from_secs(1);
+
+/// The input thread. [`Input::hand_over`] stops the reader and waits for it to
+/// let go of the terminal, so whatever takes the terminal next is its only
+/// reader. Dropped instead, it is told to stop and left to end on its own:
+/// the UI is on its way out, and a reader of a terminal that hung up never
+/// ends, since crossterm reads its end of input over and over.
 pub struct Input {
     stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
+    /// Disconnects when the thread ends.
+    ended: std_mpsc::Receiver<()>,
 }
 
 impl Input {
@@ -168,7 +175,9 @@ impl Input {
     pub fn spawn(tx: mpsc::UnboundedSender<Event>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);
-        let thread = thread::spawn(move || {
+        let (ending, ended) = std_mpsc::channel::<()>();
+        thread::spawn(move || {
+            let _ending = ending;
             // Whatever crossterm parsed while the UI was away was typed at
             // something else.
             while matches!(event::poll(Duration::ZERO), Ok(true)) {
@@ -207,19 +216,21 @@ impl Input {
                 }
             }
         });
-        Self {
-            stop,
-            thread: Some(thread),
-        }
+        Self { stop, ended }
+    }
+
+    /// Stop the reader and wait, at most [`LET_GO`], for it to let go of the
+    /// terminal. One still reading by then is stuck on a terminal that hung
+    /// up, which nothing else will read either.
+    pub fn hand_over(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.ended.recv_timeout(LET_GO);
     }
 }
 
 impl Drop for Input {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 

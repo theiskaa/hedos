@@ -21,13 +21,32 @@ use crate::request::GatewayRequest;
 use crate::resolver::resolve_authorized;
 use crate::responder::GatewayResponder;
 
+/// The most inputs one request may embed, as OpenAI allows. Every vector is
+/// held until the response is written, so a batch is bounded here, before any
+/// work, rather than by the memory it would take.
+const MAX_EMBEDDING_INPUTS: usize = 2048;
+
+/// `inputs`, or a `400` when there are more than [`MAX_EMBEDDING_INPUTS`].
+fn within_batch_limit(inputs: Vec<String>) -> Result<Vec<String>, GatewayError> {
+    if inputs.len() > MAX_EMBEDDING_INPUTS {
+        return Err(bad_request(format!(
+            "the input holds {} items, more than the {MAX_EMBEDDING_INPUTS} one request may embed",
+            inputs.len()
+        )));
+    }
+    Ok(inputs)
+}
+
 /// Invoke `record`'s embedding runtime over `inputs` and collect one vector per
 /// input, plus the terminal stats. Maps an unsupported-capability failure to a
-/// clear 501 rather than a generic 400.
+/// clear 501 rather than a generic 400. A client that goes away before the
+/// vectors are in drops the runtime's stream, which stops a batch at its next
+/// chunk.
 async fn collect_embeddings(
     port: &dyn GatewayPort,
     record: &ModelRecord,
     inputs: Vec<String>,
+    responder: &GatewayResponder,
 ) -> Result<(Vec<Vec<f64>>, Option<GenerationStats>), GatewayError> {
     let count = inputs.len();
     let input = if count == 1 {
@@ -55,7 +74,19 @@ async fn collect_embeddings(
 
     let mut vectors = Vec::new();
     let mut final_stats = None;
-    while let Some(result) = stream.recv().await {
+    loop {
+        let received = tokio::select! {
+            received = stream.recv() => received,
+            () = responder.closed() => {
+                return Err(GatewayError::new(
+                    GatewayErrorKind::ClientClosed,
+                    "the client went away before the embeddings were done",
+                ));
+            }
+        };
+        let Some(result) = received else {
+            break;
+        };
         match result.map_err(runtime_failed)? {
             CapabilityChunk::Vector(vector) => vectors.push(vector),
             CapabilityChunk::Done(stats) => final_stats = stats,
@@ -139,7 +170,7 @@ impl GatewayHandling for OpenAIEmbeddingsHandler {
         Box::pin(async move {
             let body = request.decoded_json()?;
             let model = required_model(&body)?;
-            let inputs = Self::inputs(&body)?;
+            let inputs = within_batch_limit(Self::inputs(&body)?)?;
             let format = body
                 .get("encoding_format")
                 .and_then(JsonValue::as_str)
@@ -164,7 +195,7 @@ impl GatewayHandling for OpenAIEmbeddingsHandler {
                 identity,
             )
             .await?;
-            let (vectors, stats) = collect_embeddings(port, &record, inputs).await?;
+            let (vectors, stats) = collect_embeddings(port, &record, inputs, responder).await?;
 
             let data: Vec<Value> = vectors
                 .iter()
@@ -235,7 +266,7 @@ impl GatewayHandling for OllamaEmbedHandler {
                 }
             }
             let legacy = request.path == "/api/embeddings";
-            let inputs = Self::inputs(&body, legacy)?;
+            let inputs = within_batch_limit(Self::inputs(&body, legacy)?)?;
             let record = resolve_authorized(
                 port,
                 model,
@@ -244,7 +275,7 @@ impl GatewayHandling for OllamaEmbedHandler {
                 identity,
             )
             .await?;
-            let (vectors, stats) = collect_embeddings(port, &record, inputs).await?;
+            let (vectors, stats) = collect_embeddings(port, &record, inputs, responder).await?;
 
             if legacy {
                 respond_json(responder, &json!({ "embedding": vectors[0] }));

@@ -586,3 +586,51 @@ fn refold_withholds_tools_from_a_record_on_a_non_wiring_runtime() {
     assert_eq!(changed.len(), 1);
     assert!(!changed[0].capabilities.contains(&Capability::tools()));
 }
+
+#[test]
+fn resolve_stranded_embedders_skips_a_downloading_or_user_pinned_record() {
+    let (dir, mut reg) = registry();
+    let engine = ResolutionEngine::new(vec![FakeAdapter::arced(
+        RuntimeId::llama_cpp(),
+        Some(RuntimeBid::new(RunTier::Native, 20)),
+    )]);
+    let header = support::gguf(&[
+        support::kv_string("general.architecture", "bert"),
+        support::kv_u32("bert.pooling_type", 1),
+    ]);
+    let stranded = |name: &str| {
+        let path = dir.path().join(format!("{name}.gguf"));
+        std::fs::write(&path, &header).unwrap();
+        ModelRecord::new(
+            name,
+            Modality::embedding(),
+            vec![Capability::embed()],
+            ModelSource::new(SourceKind::file(), &path.to_string_lossy()),
+        )
+    };
+    let plain = stranded("plain");
+    let mut downloading = stranded("downloading");
+    downloading.downloading = true;
+    let mut pinned = stranded("pinned");
+    pinned.runtime.resolved = Resolution::User;
+    pinned.runtime.id = Some(RuntimeId::from("gone"));
+    let mut claims_nothing = stranded("nothing");
+    claims_nothing.capabilities.clear();
+    for record in [&plain, &downloading, &pinned, &claims_nothing] {
+        reg.register(record.clone()).unwrap();
+    }
+    let before: Vec<ModelRecord> = [&downloading, &pinned, &claims_nothing]
+        .iter()
+        .map(|record| reg.get(&record.id).cloned().unwrap())
+        .collect();
+
+    let pass = engine.resolve_stranded_embedders(&mut reg).unwrap();
+    assert_eq!(pass.unread, 0);
+    let changed = pass.changed;
+    let ids: Vec<&str> = changed.iter().map(|record| record.id.as_str()).collect();
+    assert_eq!(ids, [plain.id.as_str()]);
+    assert_eq!(changed[0].runtime.id, Some(RuntimeId::llama_cpp()));
+    for untouched in &before {
+        assert_eq!(reg.get(&untouched.id), Some(untouched));
+    }
+}

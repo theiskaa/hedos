@@ -626,8 +626,9 @@ pub fn completion(
     })
 }
 
-/// The `GET /v1/models` list body for a shelf of records.
-pub fn models_list(records: &[ModelRecord]) -> Value {
+/// The `GET /v1/models` list body for a shelf of records, each advertising
+/// the context window `window` gives it.
+pub fn models_list(records: &[ModelRecord], window: impl Fn(&ModelRecord) -> Option<i64>) -> Value {
     let data: Vec<Value> = records
         .iter()
         .map(|record| {
@@ -642,7 +643,7 @@ pub fn models_list(records: &[ModelRecord]) -> Value {
             // schema, but goose and crush both read it to size the context
             // window. Without it they assume a default far larger than a small
             // local model has, and silently overflow it.
-            if let Some(context) = record.context_length {
+            if let Some(context) = window(record) {
                 entry["meta"] = json!({ "n_ctx": context });
             }
             entry
@@ -1203,7 +1204,9 @@ mod tests {
         );
         record.registered_at = 5_000; // 5 seconds in millis
         record.alias = Some("Friendly".to_owned());
-        let value = models_list(std::slice::from_ref(&record));
+        let value = models_list(std::slice::from_ref(&record), |record| {
+            record.context_length
+        });
         assert_eq!(value["object"], "list");
         assert_eq!(value["data"][0]["id"], "Friendly");
         assert_eq!(value["data"][0]["created"], 5);
@@ -1222,7 +1225,11 @@ mod tests {
             ModelSource::new(SourceKind::ollama(), "tag"),
         );
         record.context_length = Some(4096);
-        let value = models_list(std::slice::from_ref(&record));
+        let value = models_list(std::slice::from_ref(&record), |record| {
+            record.context_length
+        });
         assert_eq!(value["data"][0]["meta"]["n_ctx"], 4096);
+        let served = models_list(std::slice::from_ref(&record), |_| Some(2048));
+        assert_eq!(served["data"][0]["meta"]["n_ctx"], 2048);
     }
 }

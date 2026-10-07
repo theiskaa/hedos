@@ -7,12 +7,13 @@ use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 
 use crate::support::table::{self, DASH};
+use crate::support::text;
 
 /// The six columns shown for a model: state marker, name, runtime, store, fit, caps.
 pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
     [
         marker(record, warm).to_owned(),
-        record.display_name().to_owned(),
+        text::printable(record.display_name()).into_owned(),
         runtime_label(record).to_owned(),
         record.source.kind.as_str().to_owned(),
         fit_label(record, total_memory_bytes).to_owned(),
@@ -149,6 +150,12 @@ mod tests {
         let row = cells(&record, false, 16 * GIB);
         assert_eq!(row[0], "✕", "the gutter marks it");
         assert_eq!(row[4], "gone", "and the fit column says why");
+    }
+
+    #[test]
+    fn a_name_with_control_characters_prints_them_visibly() {
+        let row = cells(&model("evil\u{1b}[31mred\nrow", None), false, 16 * GIB);
+        assert_eq!(row[1], "evil\\u{1b}[31mred\\nrow");
     }
 
     #[test]

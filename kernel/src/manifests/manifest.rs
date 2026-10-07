@@ -248,7 +248,7 @@ impl RawManifest {
         }
         if invoke.is_some() && execution == ExecutionMode::Stream {
             return Err(invalid(
-                "invoke manifests run to completion — declare sync (or job), or use [serve] to stream",
+                "invoke manifests run to completion: declare sync (or job), or use [serve] to stream",
             ));
         }
 
@@ -274,7 +274,7 @@ impl RawManifest {
                 })?;
                 if !image.contains("@sha256:") {
                     return Err(invalid(format!(
-                        "manifest {id} [vm] image must be digest-pinned (…@sha256:…) — tags can move"
+                        "manifest {id} [vm] image must be digest-pinned (…@sha256:…), since tags can move"
                     )));
                 }
                 if serve.is_some() {
@@ -284,12 +284,12 @@ impl RawManifest {
                 }
                 if env.is_some() {
                     return Err(invalid(format!(
-                        "manifest {id} declares both [vm] and [env] — the image and its setup are the environment"
+                        "manifest {id} declares both [vm] and [env], but the image and its setup are the environment"
                     )));
                 }
                 if permissions.network {
                     return Err(invalid(
-                        "vm runtimes always run offline — remove permissions.network",
+                        "vm runtimes always run offline: remove permissions.network",
                     ));
                 }
                 Some(ManifestVm {

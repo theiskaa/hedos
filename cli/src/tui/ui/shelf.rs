@@ -19,6 +19,7 @@ use super::{
 use crate::support::banner::{KOALA, KOALA_WIDTH};
 use crate::support::shelf_table::{marker, runtime_label, verdict, verdict_label};
 use crate::support::table::DASH;
+use crate::support::text::printable;
 use crate::tui::app::App;
 use crate::tui::keymap;
 use crate::tui::order::Sort;
@@ -160,7 +161,7 @@ impl ShelfRow {
         Self {
             cells: [
                 marker(record, warm).to_owned(),
-                record.display_name().to_owned(),
+                printable(record.display_name()).into_owned(),
                 text::short_runtime(runtime_label(record)).to_owned(),
                 text::short_store(record.source.kind.as_str()).to_owned(),
                 size,
@@ -359,6 +360,15 @@ mod tests {
         let row = ShelfRow::new(&record, false, 16 * GIB);
         assert_eq!(row.cells[SIZE], "1.1 GB");
         assert_eq!(row.verdict, Some(FitVerdict::RunsWell));
+    }
+
+    #[test]
+    fn a_name_with_control_or_bidi_characters_shows_them_visibly() {
+        let mut record = sized_record(Some(GIB as i64));
+        record.name = "evil\u{1b}[31m\u{202e}gpj\nx\u{2028}y".to_owned();
+        let name = &ShelfRow::new(&record, false, 16 * GIB).cells[1];
+        assert_eq!(name, "evil\\u{1b}[31m\\u{202e}gpj\\nx\\u{2028}y");
+        assert!(name.chars().all(|c| !c.is_control()));
     }
 
     #[test]

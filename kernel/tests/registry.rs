@@ -508,3 +508,83 @@ fn a_refresh_that_finds_nothing_new_is_not_a_change() {
     assert!(!registry.refresh().unwrap());
     assert_eq!(registry.generation(), generation);
 }
+
+#[test]
+fn a_migration_level_persists_without_moving_the_generation() {
+    let dir = TempDir::new();
+    let mut registry = Registry::open(dir.path()).unwrap();
+    assert!(registry.mark_migrated(1, &registry.records()).unwrap());
+    assert_eq!(
+        registry.migration_level(),
+        0,
+        "an empty store is not marked"
+    );
+    assert!(!dir.path().join("models.json").exists());
+
+    registry.register(record("A", "/a")).unwrap();
+    let generation = registry.generation();
+    assert!(registry.mark_migrated(1, &registry.records()).unwrap());
+    assert_eq!(registry.migration_level(), 1);
+    assert_eq!(registry.generation(), generation);
+    assert!(registry.mark_migrated(0, &registry.records()).unwrap());
+    assert_eq!(registry.migration_level(), 1, "a level never goes back");
+
+    registry.register(record("B", "/b")).unwrap();
+    assert_eq!(Registry::open(dir.path()).unwrap().migration_level(), 1);
+}
+
+#[test]
+fn a_store_another_process_wrote_after_the_migration_read_it_is_not_marked() {
+    let dir = TempDir::new();
+    let mut registry = Registry::open(dir.path()).unwrap();
+    registry.register(record("A", "/a")).unwrap();
+    let read = registry.records();
+
+    // An older build's scan lands meanwhile, adding a record the migration
+    // never saw.
+    let mut other = Registry::open(dir.path()).unwrap();
+    other.register(record("B", "/b")).unwrap();
+
+    let generation = registry.generation();
+    assert!(!registry.mark_migrated(1, &read).unwrap());
+    assert_eq!(registry.migration_level(), 0);
+    assert_eq!(Registry::open(dir.path()).unwrap().migration_level(), 0);
+    // The view now holds the store as it is, for the migration to run again.
+    assert!(registry.list().iter().any(|held| held.name == "B"));
+    assert!(registry.generation() > generation);
+    assert!(registry.mark_migrated(1, &registry.records()).unwrap());
+    assert_eq!(Registry::open(dir.path()).unwrap().migration_level(), 1);
+
+    // A record changed under it counts the same as one added.
+    let dir = TempDir::new();
+    let mut registry = Registry::open(dir.path()).unwrap();
+    registry.register(record("A", "/a")).unwrap();
+    let read = registry.records();
+    let mut edited = record("A", "/a");
+    edited.alias = Some("edited".to_owned());
+    Registry::open(dir.path())
+        .unwrap()
+        .register(edited)
+        .unwrap();
+    assert!(!registry.mark_migrated(1, &read).unwrap());
+    assert_eq!(Registry::open(dir.path()).unwrap().migration_level(), 0);
+}
+
+#[test]
+fn a_store_written_without_a_migration_level_reads_as_unmigrated() {
+    let dir = TempDir::new();
+    let mut registry = Registry::open(dir.path()).unwrap();
+    registry.register(record("A", "/a")).unwrap();
+    registry.mark_migrated(1, &registry.records()).unwrap();
+
+    // What a build that predates the level writes back: the same store, no level.
+    let path = dir.path().join("models.json");
+    let mut store: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(store["migration_level"], 1);
+    store.as_object_mut().unwrap().remove("migration_level");
+    fs::write(&path, serde_json::to_vec(&store).unwrap()).unwrap();
+
+    let reopened = Registry::open(dir.path()).unwrap();
+    assert_eq!(reopened.migration_level(), 0);
+    assert_eq!(reopened.len(), 1);
+}

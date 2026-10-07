@@ -38,6 +38,41 @@ use crate::resolution::{ResolutionEngine, ResolutionExplanation};
 /// so the clamp is always applied.
 const IMPLICIT_MAX_TOKENS: i64 = 4096;
 
+/// The registry's migration level once the GGUF embedders an older shelf
+/// stranded have been resolved.
+const STRANDED_EMBEDDERS_MIGRATION: u32 = 1;
+
+/// How many times the first read of a shelf resolves its stranded embedders
+/// when another process keeps writing the store under it.
+const STRANDED_EMBEDDERS_ATTEMPTS: usize = 3;
+
+/// Resolve the GGUF embedders an older shelf stranded, unless the store says
+/// that already ran, and record that it did. It is recorded only when the
+/// pass read every file it looked for that is there, so one still being
+/// written is looked at again by the next process, and only over the store
+/// the pass read: one another process wrote meanwhile is migrated again.
+fn resolve_stranded_embedders(engine: &ResolutionEngine, registry: &mut Registry) {
+    for _ in 0..STRANDED_EMBEDDERS_ATTEMPTS {
+        if registry.migration_level() >= STRANDED_EMBEDDERS_MIGRATION {
+            return;
+        }
+        let mut migrated = registry.records();
+        let Ok(pass) = engine.resolve_stranded_embedders(registry) else {
+            return;
+        };
+        if pass.unread > 0 {
+            return;
+        }
+        for record in pass.changed {
+            migrated.insert(record.id.clone(), record);
+        }
+        match registry.mark_migrated(STRANDED_EMBEDDERS_MIGRATION, &migrated) {
+            Ok(false) => continue,
+            Ok(true) | Err(_) => return,
+        }
+    }
+}
+
 /// Why a kernel request could not be served.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum KernelError {
@@ -133,7 +168,7 @@ pub struct Kernel {
     scheduler: Arc<JobScheduler>,
     adapters: Vec<RegisteredAdapter>,
     default_prompt: StdMutex<Option<String>>,
-    tools_refolded: std::sync::atomic::AtomicBool,
+    shelf_migrated: std::sync::atomic::AtomicBool,
     identification_cache: Arc<IdentificationCache>,
     shelf_snapshot: StdMutex<Option<(u64, Arc<[ModelRecord]>)>>,
     manifest_runtimes: std::sync::OnceLock<StoreLoad>,
@@ -168,7 +203,7 @@ impl Kernel {
             scheduler,
             adapters,
             default_prompt: StdMutex::new(None),
-            tools_refolded: std::sync::atomic::AtomicBool::new(false),
+            shelf_migrated: std::sync::atomic::AtomicBool::new(false),
             identification_cache: Arc::new(IdentificationCache::new()),
             shelf_snapshot: StdMutex::new(None),
             manifest_runtimes: std::sync::OnceLock::new(),
@@ -247,6 +282,23 @@ impl Kernel {
     pub async fn voices(&self, model_id: &str) -> Result<Vec<String>, KernelError> {
         let record = self.record(model_id).await?;
         Ok(crate::sidecar::speech_voices(&record))
+    }
+
+    /// The most tokens one input to `record` may hold, for a model that only
+    /// embeds and whose runtime bounds what it reads: llama.cpp caps an
+    /// embedder's own window, and a decoder that pools by the last token takes
+    /// one token less than that. `None` for any other model, or one whose
+    /// runtime sets none.
+    pub fn embedding_window(&self, record: &ModelRecord) -> Option<i64> {
+        let claims = |capability: Capability| record.capabilities.contains(&capability);
+        if !claims(Capability::embed())
+            || claims(Capability::chat())
+            || claims(Capability::complete())
+        {
+            return None;
+        }
+        let entry = self.adapter_for(record, &Capability::embed()).ok()?;
+        effective_window(record, entry.adapter.as_ref(), None)
     }
 
     fn adapter_for(
@@ -411,17 +463,21 @@ impl Kernel {
     /// request via the gateway resolver.
     pub async fn shelf(&self) -> Arc<[ModelRecord]> {
         let mut registry = self.registry.lock().await;
-        // Once per process, migrate records that predate the `tools` capability
-        // (or a fold-rule change), and cross-encoders an older shelf registered
-        // as embedders, so an existing shelf is right without a manual rescan. On failure the shelf is served as-is, exactly as it
-        // would have been before the migration existed.
+        // Once per process, bring an older shelf up to date without a rescan:
+        // refold `tools` for records that predate it (or a fold-rule change)
+        // and take back the cross-encoders it registered as embedders. Once
+        // per shelf, resolve the GGUF embedders it left unresolved or served
+        // as chat models: that re-reads the header of every llama.cpp chat
+        // model, so the store records that it ran. A failed migration serves
+        // the shelf as it stands, exactly as before the migration existed.
         if !self
-            .tools_refolded
+            .shelf_migrated
             .swap(true, std::sync::atomic::Ordering::Relaxed)
         {
             let engine = self.engine();
             let _ = engine.refold_tool_capability(&mut registry);
             let _ = engine.reclassify_cross_encoders(&mut registry);
+            resolve_stranded_embedders(&engine, &mut registry);
         }
         let generation = registry.generation();
         // Built while the registry is still locked, so the generation read above
@@ -643,4 +699,111 @@ fn forward_job_stream(mut stream: JobStream) -> RunnerStream {
         }
     });
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use kernel::records::{Modality, ModelSource, ModelState, RuntimeId};
+    use kernel::resolution::{IdentifiedModel, RuntimeBid};
+
+    use super::*;
+
+    /// Writes the store through a handle of its own, as another process
+    /// would, each time the migration plans a record, until it has written
+    /// `writes` times.
+    struct Interloper {
+        id: RuntimeId,
+        store: PathBuf,
+        writes: usize,
+        planned: AtomicUsize,
+    }
+
+    impl RuntimeAdapter for Interloper {
+        fn id(&self) -> &RuntimeId {
+            &self.id
+        }
+
+        fn can_serve(&self, _record: &ModelRecord, _capability: &Capability) -> bool {
+            false
+        }
+
+        fn invoke(
+            &self,
+            _record: &ModelRecord,
+            _capability: Capability,
+            _payload: JsonValue,
+        ) -> ChunkStream {
+            ChunkStream::channel().1
+        }
+
+        fn bid(&self, _record: &ModelRecord, _identified: &IdentifiedModel) -> Option<RuntimeBid> {
+            let planned = self.planned.fetch_add(1, Ordering::Relaxed);
+            if planned < self.writes {
+                let name = format!("written-meanwhile-{planned}");
+                let mut other = Registry::open(&self.store).unwrap();
+                other.register(chat_record(&self.store, &name)).unwrap();
+            }
+            None
+        }
+    }
+
+    fn chat_record(store: &Path, name: &str) -> ModelRecord {
+        let path = store.join(name);
+        ModelRecord::new(
+            name,
+            Modality::text(),
+            vec![Capability::chat()],
+            ModelSource::new(SourceKind::file(), &path.to_string_lossy()),
+        )
+    }
+
+    /// Run the migration over a store holding one stranded embedder whose
+    /// file is gone, with another writer that writes `writes` times while it
+    /// runs. Returns how many passes planned that row and the level marked.
+    fn migrate_while_written(writes: usize) -> (usize, u32) {
+        let store = std::env::temp_dir().join(format!(
+            "hedos-facade-migration-{}-{writes}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&store);
+        let mut registry = Registry::open(&store).unwrap();
+        let mut stranded = ModelRecord::new(
+            "stranded.gguf",
+            Modality::embedding(),
+            vec![Capability::embed()],
+            ModelSource::new(
+                SourceKind::file(),
+                &store.join("stranded.gguf").to_string_lossy(),
+            ),
+        );
+        stranded.state = ModelState::Unresolved;
+        registry.register(stranded).unwrap();
+        let interloper = Arc::new(Interloper {
+            id: RuntimeId::from("interloper"),
+            store: store.clone(),
+            writes,
+            planned: AtomicUsize::new(0),
+        });
+        let engine = ResolutionEngine::new(vec![interloper.clone()]);
+        resolve_stranded_embedders(&engine, &mut registry);
+        let level = Registry::open(&store).unwrap().migration_level();
+        let _ = std::fs::remove_dir_all(&store);
+        (interloper.planned.load(Ordering::Relaxed), level)
+    }
+
+    #[test]
+    fn a_store_written_during_the_migration_is_migrated_again_then_marked() {
+        assert_eq!(migrate_while_written(0), (1, STRANDED_EMBEDDERS_MIGRATION));
+        assert_eq!(migrate_while_written(1), (2, STRANDED_EMBEDDERS_MIGRATION));
+    }
+
+    #[test]
+    fn a_store_written_on_every_pass_is_left_unmarked_after_the_last_attempt() {
+        let (planned, level) = migrate_while_written(usize::MAX);
+        assert_eq!(planned, STRANDED_EMBEDDERS_ATTEMPTS);
+        assert_eq!(level, 0);
+    }
 }

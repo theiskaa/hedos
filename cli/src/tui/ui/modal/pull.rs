@@ -128,9 +128,14 @@ pub(super) fn preview(plan: &InstallPlan, app: &App, inner: Rect) -> Vec<Line<'s
         row("download", download),
         Line::from(styled_field(
             "after",
-            format!(
-                "{} on disk",
-                text::bytes(app.facts.disk_bytes() + plan.remaining_bytes.unwrap_or(0))
+            app.facts.disk_bytes().map_or_else(
+                || "counting the disk".to_owned(),
+                |disk| {
+                    format!(
+                        "{} on disk",
+                        text::bytes(disk + plan.remaining_bytes.unwrap_or(0))
+                    )
+                },
             ),
             label_column(),
             DIM,
