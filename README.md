@@ -70,13 +70,17 @@ hedos bench                         # what every model does on this machine
 Every command takes `--json` when you want machine-readable output instead of formatted text. `hedos ls` shows a fit verdict — whether each model will actually run in this machine's memory — next to its capabilities.
 
 ## The shelf in the terminal
-![hedos shelf: the shelf of models, the selected model's detail, the machine's memory, the gateway, and the running tasks, in one terminal screen](assets/ui-shelf.png)
+![hedos shelf: the koala and wordmark over the figures (models, warm memory, gone, free memory, the gateway), the shelf of models with warm dots, the selected model's card with its fit gauge and gateway latency, the machine's memory split per loaded model, the gateway's requests over the day, and a download in the task strip](assets/ui-shelf.png)
 
 `hedos shelf` is the same shelf as a screen you keep open: every model with its runtime, store, and size; the selected one's fit, residency, and capabilities; what is loaded and by whom, with a memory bar per model; disk per store; and what the gateway served in the last day. The footer shows only the keys that apply to the model under the cursor, and every key is a subcommand: `p` pulls, `w` and `u` warm and unload, `x` removes with a preview, `S` serves.
 
 Press `t` and the shelf gives way to a conversation with the selected model. The reply streams in, keeps its markdown, scrolls with the wheel or the arrows and holds still while more text arrives, and the model stays warm for whatever comes next. `T` opens `hedos chat` in the plain terminal instead, `l` launches a coding harness on the model: the UI steps aside for anything that needs the terminal and is back the moment it ends, with a row in the task strip saying how it went.
 
-![The chat pane inside hedos shelf: the prompt in bold, the reply streaming in with its markdown, a download running in the task strip underneath](assets/ui-chat.png)
+![The try screen inside hedos shelf: your prompt in a bubble on the right, the reply with its code in a panel, and the session card with the model's residency, context used, and the reply's speed in big figures](assets/ui-chat.png)
+
+On a decision model (a judge such as laya) `t` opens a composer for typed questions instead: a situation, a question, and the options or levels it may answer with. The answer comes back as a distribution, a bar and a share for each outcome with the model's pick marked.
+
+![The judge screen inside hedos shelf: a choice between refund, replace, and apologize answered with replace at 77%, a yes-or-no statement answered yes at 69%, and the composer with its kind, situation, and statement fields](assets/ui-judge.png)
 
 Pulls download in the task strip while you keep working; `c` asks whether to pause or cancel one, and `P` opens a screen of every pull with the selected one's rate, estimate, and history. Every text field edits like a shell line (Ctrl-A/E, Ctrl-U, Ctrl-W, the arrows). It works over ssh and inside tmux. See the [`hedos shelf` reference](docs/cli.md#hedos-shelf).
 
