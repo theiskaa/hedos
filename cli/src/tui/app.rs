@@ -12,8 +12,10 @@ use ratatui::widgets::TableState;
 use runtime::bench::BenchPlan;
 use runtime::install::WorkerError;
 
+use kernel::install::plan::InstallPlan;
+
 use super::bench::BenchScreen;
-use super::chat::ChatPane;
+use super::chat::{ChatPane, Judged};
 use super::edit::LineEdit;
 use super::effect::{Effect, HandOff};
 use super::event::{Event, Key, Planned, Refreshed, Reply, ReplyStep, Searched};
@@ -21,8 +23,10 @@ use super::facts::Facts;
 use super::jobs::JobRow;
 use super::launch::LaunchModal;
 use super::layout;
+use super::motion::{Eased, EasedSet, Motion};
 use super::order::{Sort, order};
-use super::pull::{PullModal, Stage, already_downloading};
+use super::palette::Depth;
+use super::pull::{Enter, PullModal, Search, already_downloading};
 use super::pulls::PullsScreen;
 use super::state::UiState;
 use super::stop::{StopCard, StopChoice};
@@ -30,6 +34,7 @@ use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::bench_run::{machine_line, rows as bench_rows};
 use crate::support::install::find_installed;
+use crate::support::judge;
 use crate::support::residency::{Holder, warm_request};
 use crate::support::shelf_table::verdict;
 use crate::tui::bench_view::Board;
@@ -50,6 +55,20 @@ const PULL_IDLE_POLL_TICKS: u64 = 2 * TICKS_PER_SECOND;
 /// How far a page key moves the chat transcript, and a wheel notch.
 const PAGE_LINES: usize = 10;
 const WHEEL_LINES: usize = 3;
+/// How often a frame is drawn while something moves continuously: the
+/// koala, an intro, a figure easing.
+const MOTION_FRAME: Duration = Duration::from_millis(40);
+/// How often a frame is drawn for the gateway dot's pulse alone.
+const PULSE_FRAME: Duration = Duration::from_millis(100);
+/// How long after the selection moves its card is still settling: the
+/// name's reveal, the gauge's growth, the sparkline's rise.
+const SELECTION_SETTLE_MS: u64 = 400;
+/// How often a blinking cursor needs a frame.
+const BLINK_FRAME: Duration = Duration::from_millis(500);
+/// How long a card takes to open: the backdrop's fade and its grow.
+const CARD_OPEN_MS: u64 = 200;
+/// How long the launch's movements take, the body's fade the last of them.
+const INTRO_MS: u64 = 1200;
 /// How long a footer notice stays.
 const NOTICE_TICKS: u64 = 2 * TICKS_PER_SECOND;
 
@@ -91,6 +110,8 @@ enum Refusal {
 struct Notice {
     text: String,
     until: u64,
+    /// When it was raised, on the animation clock, for its reveal and fade.
+    shown_at: u64,
 }
 
 /// Everything the screen shows.
@@ -127,6 +148,20 @@ pub struct App {
     benches: u64,
     /// Whether the detail pane has the whole body.
     pub expanded: bool,
+    /// How many colours the terminal shows; the frame is mapped onto its
+    /// palette when that is 256.
+    pub depth: Depth,
+    /// The animation clock; settled unless the loop says otherwise, so a
+    /// test always sees a movement's final frame.
+    pub motion: Motion,
+    /// The header's big figures (models, warm, gone, free GiB), each easing
+    /// to its value.
+    pub header_figures: [Eased; 4],
+    /// The memory bar's segment per loaded model, each easing to its size.
+    pub resident_bars: EasedSet,
+    /// The conversation last closed while idle, so `t` on the same model
+    /// takes it up again.
+    kept_chat: Option<Box<ChatPane>>,
     /// A short message in the footer, until the tick it expires on.
     notice: Option<Notice>,
     /// A reference just pulled; the next refresh selects the record it became.
@@ -141,6 +176,13 @@ pub struct App {
     /// on the same row the hint was drawn on, and on a terminal too short for
     /// the whole strip that is fewer rows than the layout asked for.
     drawn_task_rows: std::cell::Cell<usize>,
+    /// The size the last frame was drawn at.
+    drawn_area: std::cell::Cell<ratatui::layout::Rect>,
+    /// The model the selection was on when last drawn, and when, on the
+    /// animation clock, it arrived there.
+    selection_seen: std::cell::RefCell<Option<(Option<String>, u64)>>,
+    /// Which kind of card was open when last drawn, and when it opened.
+    modal_seen: std::cell::Cell<Option<(std::mem::Discriminant<Modal>, u64)>>,
     /// The sequence of the last refresh applied, so older ones are dropped.
     applied_refresh: u64,
     dirty: bool,
@@ -165,12 +207,20 @@ impl App {
             bench: BenchScreen::default(),
             benches: 0,
             expanded: false,
+            depth: Depth::default(),
+            motion: Motion::settled(),
+            header_figures: Default::default(),
+            resident_bars: EasedSet::default(),
+            kept_chat: None,
             notice: None,
             select_pulled: None,
             ticks: 0,
             last_refresh: 0,
             last_pull_poll: 0,
             drawn_task_rows: std::cell::Cell::new(layout::MAX_TASK_ROWS as usize),
+            drawn_area: std::cell::Cell::new(ratatui::layout::Rect::default()),
+            selection_seen: std::cell::RefCell::new(None),
+            modal_seen: std::cell::Cell::new(None),
             applied_refresh: 0,
             dirty: true,
         }
@@ -274,6 +324,8 @@ impl App {
         }
         if Self::chat_capable(record).is_ok() {
             actions.extend(["l", "t", "T"]);
+        } else if judge::is_judge(record) {
+            actions.push("t");
         }
         if self.removable(record).is_ok() {
             actions.push("x");
@@ -365,6 +417,11 @@ impl App {
         self.notice.as_ref().map(|notice| notice.text.as_str())
     }
 
+    /// When the current notice was raised, on the animation clock.
+    pub fn notice_at(&self) -> Option<u64> {
+        self.notice.as_ref().map(|notice| notice.shown_at)
+    }
+
     /// Whether any task is still running.
     pub fn busy(&self) -> bool {
         self.tasks.busy()
@@ -390,6 +447,10 @@ impl App {
                 Vec::new()
             }
             Event::Tick => self.tick(),
+            Event::Frame => {
+                self.dirty = true;
+                Vec::new()
+            }
             Event::Pulls(rows) => self.pulls_polled(rows),
             Event::History { job, lines } => {
                 self.history(job, lines);
@@ -409,10 +470,7 @@ impl App {
                 self.searched(searched);
                 Vec::new()
             }
-            Event::Planned(planned) => {
-                self.planned(planned);
-                Vec::new()
-            }
+            Event::Planned(planned) => self.planned(planned),
             Event::Reply(reply) => self.reply(reply),
             Event::Bench { generation, step } => {
                 if self.bench.apply(generation, &step) && self.screen == Screen::Bench {
@@ -432,6 +490,14 @@ impl App {
         }
     }
 
+    /// The pull screen, while it is open.
+    pub fn pull_screen(&self) -> Option<&PullModal> {
+        match &self.modal {
+            Some(Modal::Pull(modal)) => Some(modal),
+            _ => None,
+        }
+    }
+
     /// The chat pane, while it is open.
     pub fn chat_pane(&self) -> Option<&ChatPane> {
         match &self.modal {
@@ -440,9 +506,153 @@ impl App {
         }
     }
 
-    /// Ticks since the loop started, for what animates on them.
-    pub fn ticks(&self) -> u64 {
-        self.ticks
+    /// Set the animation clock to `now_ms` since the screen first opened.
+    pub fn set_clock(&mut self, now_ms: u64) {
+        self.motion.set(now_ms);
+    }
+
+    /// Which frame a spinner shows now.
+    pub fn spin_frame(&self) -> u64 {
+        self.motion.spin_frame(self.ticks)
+    }
+
+    /// How soon something on screen changes on its own and needs a frame
+    /// drawn, or `None` when nothing moves until an event arrives.
+    pub fn frame_due(&self) -> Option<Duration> {
+        if !self.motion.is_live() {
+            return None;
+        }
+        let mut due: Option<Duration> = None;
+        let mut want = |interval: Duration| {
+            due = Some(due.map_or(interval, |due| due.min(interval)));
+        };
+        // The koala lives in the hero, or beside an empty shelf's copy when
+        // the header is one line.
+        let hero = layout::Panes::hero(self.drawn_area.get())
+            || (self.records.is_empty() && self.screen == Screen::Shelf);
+        let intro = self.motion.now_ms() < INTRO_MS;
+        // The try screen's name arrives a letter at a time as it opens.
+        let arriving = self
+            .chat_pane()
+            .is_some_and(|pane| self.motion.now_ms() < pane.opened_at + SELECTION_SETTLE_MS);
+        let easing = self
+            .header_figures
+            .iter()
+            .any(|figure| figure.moving(crate::tui::ui::FIGURES_MS, &self.motion))
+            || self
+                .resident_bars
+                .moving(crate::tui::ui::SEGMENT_MS, &self.motion);
+        let settling = self.motion.now_ms() < self.selected_at() + SELECTION_SETTLE_MS;
+        let noticing = self.notice.is_some();
+        let opening = self
+            .modal_at()
+            .is_some_and(|at| self.motion.now_ms() < at + CARD_OPEN_MS);
+        if intro || easing || settling || noticing || opening || arriving {
+            want(self.motion.scaled(MOTION_FRAME));
+        }
+        // Past the launch the koala only sways and breathes, which reads
+        // as smooth at the pulse's rate for less than half the frames.
+        if hero || self.facts.gateway_port.is_some() || self.breathing() {
+            want(self.motion.scaled(PULSE_FRAME));
+        }
+        if self.spinning() || self.chat_pane().is_some_and(ChatPane::streaming) {
+            want(self.motion.spin_interval());
+        }
+        if self.chat_pane().is_some() || self.pull_screen().is_some() {
+            // The input's cursor blinks.
+            want(self.motion.scaled(BLINK_FRAME));
+        }
+        // A download's bar shimmers, on the strip or on the pull screen.
+        if self.tasks.any_pulling() {
+            want(self.motion.scaled(MOTION_FRAME));
+        }
+        if let Some(modal) = self.pull_screen() {
+            let now = self.motion.now_ms();
+            let pressed = modal
+                .pressed_at
+                .is_some_and(|at| now < at + SELECTION_SETTLE_MS);
+            if now < modal.selected_at + SELECTION_SETTLE_MS || pressed {
+                want(self.motion.scaled(MOTION_FRAME));
+            }
+        }
+        due
+    }
+
+    /// When the selection arrived on the model it is on now, on the
+    /// animation clock. The selection the screen opens with counts as
+    /// arriving at the start, so it plays with the launch rather than after.
+    pub fn selected_at(&self) -> u64 {
+        let id = self.selected_record().map(|record| record.id.clone());
+        let mut seen = self.selection_seen.borrow_mut();
+        match &*seen {
+            Some((last, at)) if *last == id => *at,
+            Some(_) => {
+                let at = self.motion.now_ms();
+                *seen = Some((id, at));
+                at
+            }
+            None => {
+                *seen = Some((id, 0));
+                0
+            }
+        }
+    }
+
+    /// When the open card opened, on the animation clock; a card that
+    /// changes what it shows inside is still the card that opened.
+    pub fn modal_at(&self) -> Option<u64> {
+        // The chat pane takes the body rather than opening over it.
+        let Some(modal) = self
+            .modal
+            .as_ref()
+            .filter(|modal| !matches!(modal, Modal::Chat(_)))
+        else {
+            self.modal_seen.set(None);
+            return None;
+        };
+        let kind = std::mem::discriminant(modal);
+        match self.modal_seen.get() {
+            Some((seen, at)) if seen == kind => Some(at),
+            _ => {
+                let at = self.motion.now_ms();
+                self.modal_seen.set(Some((kind, at)));
+                Some(at)
+            }
+        }
+    }
+
+    /// Note the size the last frame was drawn at, which decides whether the
+    /// hero and its koala are on screen.
+    pub fn note_area(&self, area: ratatui::layout::Rect) {
+        self.drawn_area.set(area);
+    }
+
+    /// Whether something breathes on screen: a warm model's mark, or the
+    /// selected model's share of the fit gauge while it is only what warming
+    /// it would take.
+    fn breathing(&self) -> bool {
+        let warm = self
+            .records
+            .iter()
+            .any(|record| self.facts.is_warm(&record.id));
+        let gauge = self.selected_record().is_some_and(|record| {
+            record.serving_size().is_some()
+                && record.state != ModelState::Missing
+                && !self.facts.is_warm(&record.id)
+        });
+        self.screen == Screen::Shelf
+            && self.chat_pane().is_none()
+            && self.pull_screen().is_none()
+            && (warm || gauge)
+    }
+
+    /// Whether a spinner is on screen: a reply waited on, a plan being
+    /// made, a task on the strip, a bench running on its screen.
+    fn spinning(&self) -> bool {
+        self.chat_pane().is_some_and(ChatPane::waiting)
+            || self.tasks.busy()
+            || self.planning()
+            || (self.screen == Screen::Bench && self.bench.running())
     }
 
     /// The chat pane, mutably, while it is open.
@@ -535,48 +745,62 @@ impl App {
         Vec::new()
     }
 
+    /// The keys of the pull screen: typing searches, the arrows and the
+    /// wheel move, `tab` steps through the kinds, `enter` pulls, and `esc`
+    /// clears what was typed before it leaves.
     fn pull_key(&mut self, key: Key) -> Vec<Effect> {
         let now = self.ticks;
+        let at = self.motion.now_ms();
         let Some(Modal::Pull(modal)) = self.modal.as_mut() else {
             return Vec::new();
         };
-        match (&modal.stage, key) {
-            (Stage::Listing, Key::Escape) => self.close_modal(),
-            (Stage::Listing, Key::Up | Key::ScrollUp) => {
-                modal.step(-1);
-                self.dirty = true;
+        match key {
+            Key::Escape if !modal.input.is_empty() => modal.clear_query(now),
+            Key::Escape => self.close_modal(),
+            Key::Up | Key::ScrollUp => modal.step(-1, now, at),
+            Key::Down | Key::ScrollDown => modal.step(1, now, at),
+            Key::PageUp => modal.step(-(PAGE_LINES as isize), now, at),
+            Key::PageDown => modal.step(PAGE_LINES as isize, now, at),
+            Key::Top => modal.step(isize::MIN / 2, now, at),
+            Key::Bottom => modal.step(isize::MAX / 2, now, at),
+            Key::Tab => modal.cycle_kind(1, now, at),
+            Key::BackTab => modal.cycle_kind(-1, now, at),
+            Key::Char(_) | Key::Backspace | Key::Edit(_) => modal.edit(key, now),
+            Key::Enter => {
+                return match modal.enter() {
+                    Ok(Enter::Start(plan)) => self.start_pull(*plan),
+                    Ok(Enter::Armed) => {
+                        self.dirty = true;
+                        Vec::new()
+                    }
+                    Ok(Enter::Plan(provider, reference, ask)) => {
+                        self.dirty = true;
+                        vec![Effect::Plan(provider, reference, ask)]
+                    }
+                    Err(reason) => self.notify(reason),
+                };
             }
-            (Stage::Listing, Key::Down | Key::ScrollDown) => {
-                modal.step(1);
-                self.dirty = true;
-            }
-            (Stage::Listing, Key::Char(_) | Key::Backspace | Key::Edit(_)) => {
-                modal.edit(key, now);
-                self.dirty = true;
-            }
-            (Stage::Listing, Key::Enter) => match modal.choose() {
-                Ok((provider, reference, ask)) => {
-                    self.dirty = true;
-                    return vec![Effect::Plan(provider, reference, ask)];
-                }
-                Err(reason) => return self.notify(reason),
-            },
-            (Stage::Preview(plan), Key::Enter) => {
-                let plan = plan.clone();
-                if self.tasks.is_pulling(&plan.reference) {
-                    return self.notify(already_downloading(&plan.reference));
-                }
-                self.close_modal();
-                return vec![Effect::StartPull(Box::new(plan))];
-            }
-            (Stage::Preview(_) | Stage::Note(_), Key::Escape | Key::Backspace)
-            | (Stage::Planning(_), Key::Escape) => {
-                modal.back();
-                self.dirty = true;
-            }
-            _ => {}
+            Key::Clear | Key::Interrupt => return Vec::new(),
         }
+        self.dirty = true;
         Vec::new()
+    }
+
+    /// Hand `plan` to a worker, unless it is already downloading; the
+    /// screen stays, its button following the download.
+    fn start_pull(&mut self, plan: InstallPlan) -> Vec<Effect> {
+        if self.tasks.is_pulling(&plan.reference) {
+            return self.notify(already_downloading(&plan.reference));
+        }
+        if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
+            modal.pressed_at = Some(self.motion.now_ms());
+        }
+        let mut effects = self.notify(format!(
+            "pulling {} · it runs on if you quit",
+            plan.reference
+        ));
+        effects.push(Effect::StartPull(Box::new(plan)));
+        effects
     }
 
     fn filter_key(&mut self, key: Key) -> Vec<Effect> {
@@ -722,12 +946,21 @@ impl App {
         }
     }
 
-    /// Open the chat pane on the selected model.
+    /// Open the try screen on the selected model: a conversation, or the
+    /// judge's composer for a model that answers typed questions.
     fn open_chat(&mut self) -> Vec<Effect> {
-        match self.chatting_record() {
+        let trying = match self.selected_record() {
+            Some(record) if judge::is_judge(record) => Ok(record.clone()),
+            _ => self.chatting_record(),
+        };
+        match trying {
             Ok(record) => {
                 self.expanded = false;
-                self.open(Modal::Chat(Box::new(ChatPane::open(record))));
+                let pane = match self.kept_chat.take() {
+                    Some(kept) if kept.record.id == record.id => kept,
+                    _ => Box::new(ChatPane::open(record).opened(self.motion.now_ms())),
+                };
+                self.open(Modal::Chat(pane));
                 Vec::new()
             }
             Err(refusal) => self.refuse(refusal),
@@ -737,16 +970,37 @@ impl App {
     /// Keys while the chat pane is open: typing, sending, scrolling; escape
     /// or Ctrl-C stops a reply first and closes the pane second.
     fn chat_key(&mut self, key: Key) -> Vec<Effect> {
+        let now = self.motion.real_ms();
+        let wall = self.motion.wall_ms();
         let Some(Modal::Chat(pane)) = self.modal.as_mut() else {
             return Vec::new();
         };
         match key {
             Key::Escape | Key::Interrupt if pane.streaming() => {
-                pane.stop();
+                pane.stop(now);
                 self.dirty = true;
                 return vec![Effect::StopAsk];
             }
-            Key::Escape | Key::Interrupt => self.close_modal(),
+            Key::Escape | Key::Interrupt => {
+                // An idle conversation is kept, and so is what was typed and
+                // not yet sent, so coming back to the same model takes it up
+                // where it was left.
+                if let Some(Modal::Chat(pane)) = self.modal.take()
+                    && pane.worth_keeping()
+                {
+                    self.kept_chat = Some(pane);
+                }
+                self.dirty = true;
+            }
+            Key::Tab if pane.judging() => pane.next_field(1),
+            Key::BackTab if pane.judging() => pane.next_field(-1),
+            Key::Tab => {
+                pane.suggest();
+            }
+            Key::Clear => {
+                pane.clear();
+            }
+            Key::BackTab => return Vec::new(),
             Key::Char(_) | Key::Backspace | Key::Edit(_) => {
                 pane.edit(key);
                 self.dirty = true;
@@ -759,11 +1013,28 @@ impl App {
             Key::PageDown => pane.scroll_down(PAGE_LINES),
             Key::Top => pane.scroll_to_top(),
             Key::Bottom => pane.scroll_to_bottom(),
+            Key::Enter if pane.judging() => {
+                let warm = self.facts.is_warm(&pane.record.id);
+                let record_id = pane.record.id.clone();
+                self.dirty = true;
+                return match pane.judge_enter(now, wall, warm) {
+                    Judged::Moved => Vec::new(),
+                    Judged::Asked(payload, generation) => vec![Effect::Ask {
+                        record_id,
+                        capability: Capability::judge(),
+                        payload,
+                        generation,
+                    }],
+                    Judged::Refused(reason) => self.notify(reason),
+                };
+            }
             Key::Enter => {
-                if let Some((payload, generation)) = pane.submit() {
+                let warm = self.facts.is_warm(&pane.record.id);
+                if let Some((payload, generation)) = pane.submit(now, wall, warm) {
                     self.dirty = true;
                     return vec![Effect::Ask {
                         record_id: pane.record.id.clone(),
+                        capability: Capability::chat(),
                         payload,
                         generation,
                     }];
@@ -778,13 +1049,14 @@ impl App {
     /// A streamed reply moved; a finished one refreshes, since the model is
     /// warm now.
     fn reply(&mut self, reply: Reply) -> Vec<Effect> {
+        let now = self.motion.real_ms();
         let Some(Modal::Chat(pane)) = self.modal.as_mut() else {
             return Vec::new();
         };
         let applied = match reply.step {
-            ReplyStep::Text(text) => pane.append(reply.generation, &text),
-            ReplyStep::Done(stats) => pane.done(reply.generation, stats),
-            ReplyStep::Failed(reason) => pane.failed(reply.generation, reason),
+            ReplyStep::Text(text) => pane.append(reply.generation, &text, now),
+            ReplyStep::Done(stats) => pane.done(reply.generation, stats, now),
+            ReplyStep::Failed(reason) => pane.failed(reply.generation, reason, now),
         };
         if !applied {
             return Vec::new();
@@ -1228,7 +1500,7 @@ impl App {
         let Some(Modal::Pull(modal)) = self.modal.as_mut() else {
             return;
         };
-        let applied = modal.searched(&searched.query, &searched.hits);
+        let applied = modal.searched(&searched.query, &searched.hits, searched.note.clone());
         self.dirty = true;
         if applied
             && searched.hits.is_empty()
@@ -1238,10 +1510,21 @@ impl App {
         }
     }
 
-    fn planned(&mut self, planned: Planned) {
-        if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
-            modal.planned(planned.ask, planned.result);
-            self.dirty = true;
+    fn planned(&mut self, planned: Planned) -> Vec<Effect> {
+        let Some(Modal::Pull(modal)) = self.modal.as_mut() else {
+            return Vec::new();
+        };
+        let start = modal.planned(
+            &planned.provider,
+            &planned.reference,
+            planned.ask,
+            planned.result,
+        );
+        self.dirty = true;
+        match start {
+            Some(Ok(plan)) => self.start_pull(plan),
+            Some(Err(reason)) => self.notify(reason),
+            None => Vec::new(),
         }
     }
 
@@ -1280,6 +1563,7 @@ impl App {
         self.notice = Some(Notice {
             text,
             until: self.ticks + NOTICE_TICKS,
+            shown_at: self.motion.now_ms(),
         });
         self.dirty = true;
         Vec::new()
@@ -1290,19 +1574,25 @@ impl App {
         vec![Effect::Refresh]
     }
 
-    /// Whether the pull modal is waiting on a plan, its spinner turning.
+    /// Whether the pull screen is waiting on a plan or a search, its
+    /// spinner turning.
     fn planning(&self) -> bool {
-        matches!(&self.modal, Some(Modal::Pull(modal)) if matches!(modal.stage, Stage::Planning(_)))
+        matches!(&self.modal, Some(Modal::Pull(modal))
+            if modal.planning() || *modal.search() == Search::Asked)
     }
 
     fn tick(&mut self) -> Vec<Effect> {
         self.ticks += 1;
         let now = self.ticks;
         let mut effects = Vec::new();
-        if let Some(Modal::Pull(modal)) = self.modal.as_mut()
-            && let Some(query) = modal.search_due(now)
-        {
-            effects.push(Effect::Search(query));
+        if let Some(Modal::Pull(modal)) = self.modal.as_mut() {
+            if let Some(query) = modal.search_due(now) {
+                effects.push(Effect::Search(query));
+            }
+            if let Some((provider, reference, ask)) = modal.plan_due(now) {
+                effects.push(Effect::Plan(provider, reference, ask));
+                self.dirty = true;
+            }
         }
         if self
             .notice

@@ -8,8 +8,8 @@
 //! The shared helpers, in groups: measuring (`padded`, `right_aligned`,
 //! `widest`); the label column (`label_width`, `value_width`, `label`,
 //! `styled_field`, `field_line`); the one input (`edited`); the one key
-//! grammar (`key_spans`, `keys`); the frames (`pane`, `selected_row`);
-//! `bar`; `centered`; `spinner`. Every pane
+//! grammar (`key_spans`, `keys`); the frames (`card`, `section`,
+//! `selected_row`); `centered`; `spinner`. Every pane
 //! and card imports only these and the state modules under `tui`, never
 //! another pane.
 //!
@@ -19,29 +19,34 @@
 //! notice.
 
 mod bench;
+mod card;
 mod chat;
 mod detail;
 mod footer;
 mod header;
 mod machine;
 mod modal;
+mod pull;
 mod pulls;
 mod shelf;
 mod tasks;
 
+pub(crate) use header::FIGURES_MS;
+pub(crate) use machine::SEGMENT_MS;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Block;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, Screen};
 use super::edit::LineEdit;
 use super::layout::{Panes, stacks};
 use super::palette::{
-    ACCENT, BACKDROP, BAR_EMPTY, BAR_FILLED, BOLD, BORDER_COLUMNS, BORDER_ROWS, CAUTION, COOL,
-    CURSOR, DIM, EYEBROW, FAILED, ORANGE, SAND, SELECTED_MARK, SELECTED_ROW, TEAL, WARM, spinner,
+    ACCENT, ACCENT_MID, BACKDROP, BAR_EMPTY, BAR_FILLED, BOLD, BORDER_COLUMNS, BORDER_ROWS,
+    CAUTION, CURSOR, DIM, Depth, EYEBROW, FAILED, GROUND, INK, LINE, PAPER, SEGMENT_3,
+    SELECTED_MARK, SELECTED_ROW, SOFT, SURFACE, TRACK, WARM, mix, quantize, spinner,
 };
 use super::text;
 use crate::support::text::{padded, right_aligned};
@@ -105,19 +110,29 @@ fn edited(input: &LineEdit, mark: &str, width: usize, placeholder: &str) -> Vec<
     ]
 }
 
-/// The wordmark: `hedos` bold in the accent, the version dim.
+/// The wordmark: `hedos` bold, the version dim.
 fn wordmark() -> [Span<'static>; 2] {
     [
-        Span::styled(" hedos", ACCENT.add_modifier(Modifier::BOLD)),
+        Span::styled(" hedos", BOLD),
         Span::styled(format!(" v{}", env!("CARGO_PKG_VERSION")), DIM),
     ]
 }
 
-/// A pane's frame: its `name` as an eyebrow over dim borders.
-fn pane(name: &'static str) -> Block<'static> {
-    Block::bordered()
-        .title(Span::styled(name, EYEBROW))
-        .border_style(DIM)
+/// A section's heading over a run of rows: ` MEMORY ───────`, the rule
+/// running to `width`.
+fn section(name: &str, width: usize) -> Line<'static> {
+    let head = format!(" {name} ");
+    let rule = width.saturating_sub(head.width());
+    Line::from(vec![
+        Span::styled(head, EYEBROW),
+        Span::styled("─".repeat(rule), Style::new().fg(LINE)),
+    ])
+}
+
+/// A card titled with the pane's `name`, bold, for a pane that says no more
+/// than what it is.
+fn card(name: &str) -> card::Card {
+    card::Card::new(vec![Span::styled(name.trim().to_owned(), BOLD)])
 }
 
 /// `line` as the selected row of a card `width` cells wide: the gutter
@@ -128,23 +143,19 @@ fn selected_row(mut line: Line<'static>, width: usize) -> Line<'static> {
     if let Some(first) = line.spans.first_mut()
         && let Some(rest) = first.content.strip_prefix(' ')
     {
-        first.content = format!("{SELECTED_MARK}{rest}").into();
+        let style = first.style;
+        let rest = rest.to_owned();
+        line.spans.remove(0);
+        line.spans.insert(0, Span::styled(rest, style));
+        line.spans.insert(0, Span::styled(SELECTED_MARK, ACCENT));
     }
     let pad = width.saturating_sub(line.width());
     line.spans.push(Span::raw(" ".repeat(pad)));
     line.patch_style(SELECTED_ROW)
 }
 
-/// A bar of `width` cells, `filled` of them lit in `style`.
-fn bar(filled: usize, width: usize, style: Style) -> [Span<'static>; 2] {
-    let filled = filled.min(width);
-    [
-        Span::styled(BAR_FILLED.repeat(filled), style),
-        Span::styled(BAR_EMPTY.repeat(width - filled), DIM),
-    ]
-}
-
-/// `pairs` as spans: each key dim, its verb plain, two spaces after. Takes
+/// `pairs` as spans: each key bright and bold, its verb quiet, two spaces
+/// after, so the eye finds the letter to press first. Takes
 /// the keymap's [`Pair`](super::keymap::Pair)s and the pairs a pane
 /// phrases on the spot alike.
 fn key_spans(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
@@ -152,8 +163,8 @@ fn key_spans(pairs: &[(&str, &str)]) -> Vec<Span<'static>> {
         .iter()
         .flat_map(|(key, verb)| {
             [
-                Span::styled((*key).to_owned(), DIM),
-                Span::raw(format!(" {verb}  ")),
+                Span::styled((*key).to_owned(), BOLD),
+                Span::styled(format!(" {verb}  "), DIM),
             ]
         })
         .collect()
@@ -166,21 +177,58 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Draw one frame of `app`.
+/// Draw one frame of `app`: the ground first, every pane over it, and the
+/// whole frame mapped onto the terminal's palette when it has no more than
+/// 256 colours.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    app.note_area(area);
+    frame.buffer_mut().set_style(area, GROUND);
     let panes = match app.screen {
+        _ if app.pull_screen().is_some() => draw_pull(frame, app),
         Screen::Shelf => draw_shelf(frame, app),
         Screen::Pulls => draw_pulls(frame, app),
         Screen::Bench => draw_bench(frame, app),
     };
     tasks::draw(frame, panes.tasks, app);
     footer::draw(frame, panes.footer, app);
+    fade_in_body(frame.buffer_mut(), panes.header, &app.motion);
     if modal::draw(frame, frame.area(), app) && app.notice().is_some() {
         // The backdrop flattens the footer with the rest of the screen, and
         // a notice raised from inside a card has to read, so its row is
         // painted again over the backdrop.
         frame.buffer_mut().set_style(panes.footer, Style::reset());
+        frame.buffer_mut().set_style(panes.footer, GROUND);
         footer::draw(frame, panes.footer, app);
+    }
+    if app.depth == Depth::Indexed {
+        quantize(frame.buffer_mut());
+    }
+}
+
+/// When the body starts to come up at launch, and how long it takes.
+const BODY_FROM_MS: u64 = 0;
+const BODY_MS: u64 = 160;
+
+/// Everything under the header raised from the ground at launch, quickly,
+/// while the header arrives.
+fn fade_in_body(
+    buf: &mut ratatui::buffer::Buffer,
+    header: Rect,
+    motion: &crate::tui::motion::Motion,
+) {
+    let shown = motion.eased(BODY_FROM_MS, BODY_MS);
+    if shown >= 1.0 {
+        return;
+    }
+    let area = buf.area;
+    let top = header.bottom();
+    for y in top..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            cell.fg = mix(PAPER, cell.fg, shown);
+            cell.bg = mix(PAPER, cell.bg, shown);
+        }
     }
 }
 
@@ -188,12 +236,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// pane in the body's place.
 fn draw_shelf(frame: &mut Frame, app: &mut App) -> Panes {
     let stacked = stacks(frame.area());
+    let chatting = app.chat_pane().is_some();
+    // The try screen is the conversation alone: the task strip waits for the
+    // shelf, and a notice still reaches the footer.
     let panes = Panes::compute(
         frame.area(),
         app.order.len(),
-        machine::lines(&app.facts, stacked),
-        app.tasks.rows().len(),
-        app.expanded || app.chat_pane().is_some(),
+        machine::lines(stacked),
+        if chatting { 0 } else { app.tasks.rows().len() },
+        app.expanded || chatting,
     );
     header::draw(frame, panes.header, app, panes.machine.height > 0);
     if app.chat_pane().is_some() {
@@ -205,6 +256,16 @@ fn draw_shelf(frame: &mut Frame, app: &mut App) -> Panes {
         }
         detail::draw(frame, panes.detail, app);
     }
+    panes
+}
+
+/// The pull screen in the body, whichever screen it was opened from: the
+/// header, then the search and its results and preview. The task strip
+/// waits, since the screen shows the downloads itself.
+fn draw_pull(frame: &mut Frame, app: &mut App) -> Panes {
+    let panes = Panes::compute(frame.area(), 0, 0, 0, true);
+    header::draw(frame, panes.header, app, false);
+    pull::draw(frame, panes.detail, app);
     panes
 }
 
@@ -298,7 +359,86 @@ mod tests {
     #[test]
     fn the_spinner_cycles_by_tick() {
         assert_eq!(spinner(0), SPINNER[0]);
-        assert_eq!(spinner(7), SPINNER[1]);
+        assert_eq!(spinner(SPINNER.len() as u64 + 1), SPINNER[1]);
+    }
+
+    #[test]
+    fn keys_are_bright_and_their_verbs_quiet() {
+        let spans = key_spans(&[("p", "pull")]);
+        assert_eq!(spans[0].style, BOLD);
+        assert_eq!(spans[1].style, DIM);
+        assert_eq!(text(&Line::from(spans)), "p pull  ");
+    }
+
+    #[test]
+    fn the_ground_is_painted_under_every_cell() {
+        let mut app = App::new(vec![record("m")], Facts::default());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("a test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("a frame");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(99, 29)].bg, crate::tui::palette::PAPER);
+        app.depth = Depth::Indexed;
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("a frame");
+        let buffer = terminal.backend().buffer();
+        assert!(matches!(
+            buffer[(99, 29)].bg,
+            ratatui::style::Color::Indexed(_)
+        ));
+    }
+
+    /// Every screen and card, drawn whole at every size worth checking,
+    /// settled and with the clock live mid-launch, never panics.
+    #[test]
+    fn every_screen_draws_at_every_size() {
+        use crate::tui::motion::Motion;
+        let sizes = [
+            (1, 1),
+            (20, 5),
+            (40, 3),
+            (80, 24),
+            (95, 40),
+            (96, 40),
+            (99, 30),
+            (100, 30),
+            (120, 35),
+            (132, 39),
+            (132, 42),
+            (200, 60),
+        ];
+        let opens: [&[Key]; 6] = [
+            &[],
+            &[Key::Char('t')],
+            &[Key::Char('p')],
+            &[Key::Char('?')],
+            &[Key::Char('x')],
+            &[Key::Enter],
+        ];
+        for live in [false, true] {
+            for open in opens {
+                for (width, height) in sizes {
+                    let mut records: Vec<_> =
+                        (0..20).map(|index| record(&format!("m{index}"))).collect();
+                    records[3].state = kernel::records::ModelState::Missing;
+                    let mut app = App::new(records, Facts::default());
+                    if live {
+                        app.motion = Motion::from_env_value_for_tests(None);
+                        app.set_clock(700);
+                    }
+                    for key in open {
+                        app.reduce(Event::Key(*key));
+                    }
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(width, height)).expect("a test terminal");
+                    terminal
+                        .draw(|frame| draw(frame, &mut app))
+                        .expect("a frame");
+                }
+            }
+        }
     }
 
     #[test]
@@ -306,7 +446,7 @@ mod tests {
         let mut app = App::new(vec![record("m")], Facts::default());
         app.reduce(Event::Key(Key::Char('y')));
         assert_eq!(app.notice(), Some("m has no path"));
-        app.reduce(Event::Key(Key::Char('p')));
+        app.reduce(Event::Key(Key::Char('?')));
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("a test terminal");
         terminal
             .draw(|frame| draw(frame, &mut app))
@@ -316,12 +456,16 @@ mod tests {
         let notice: String = (0..buffer.area.width)
             .map(|x| buffer[(x, footer)].symbol())
             .collect();
-        assert!(notice.starts_with(" m has no path"), "{notice:?}");
+        assert!(notice.starts_with(" › m has no path"), "{notice:?}");
         assert_ne!(
-            buffer[(1, footer)].fg,
+            buffer[(3, footer)].fg,
             BACKDROP.fg.expect("the backdrop's grey")
         );
-        assert!(buffer[(1, footer)].modifier.contains(Modifier::BOLD));
+        assert!(
+            buffer[(3, footer)]
+                .modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
         assert_eq!(buffer[(1, 0)].fg, BACKDROP.fg.expect("the backdrop's grey"));
     }
 }

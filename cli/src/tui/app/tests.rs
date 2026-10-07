@@ -129,7 +129,7 @@ fn only_changes_mark_the_screen_dirty() {
     assert!(app.take_dirty());
     // A key a modal does not answer leaves the screen as it was.
     for (open, unhandled) in [
-        ('p', Key::PageUp),
+        ('p', Key::Clear),
         ('x', Key::Char('z')),
         ('l', Key::PageUp),
         ('?', Key::Char('j')),
@@ -335,34 +335,51 @@ fn a_refresh_keeps_the_selected_model() {
 }
 
 #[test]
-fn the_pull_modal_captures_keys_until_it_closes() {
+fn the_pull_screen_types_until_escape_twice() {
     let mut app = app(1);
     press(&mut app, Key::Char('p'));
     assert!(app.modal.is_some());
     assert!(press(&mut app, Key::Char('q')).is_empty());
     assert_eq!(pull(&app).input.as_str(), "q");
-    press(&mut app, Key::Backspace);
+    press(&mut app, Key::Escape);
+    assert!(
+        pull(&app).input.is_empty(),
+        "the first escape clears the query"
+    );
+    press(&mut app, Key::Tab);
+    assert_eq!(pull(&app).kind, 1);
+    press(&mut app, Key::BackTab);
+    for c in "someone/model".chars() {
+        press(&mut app, Key::Char(c));
+    }
     let effects = press(&mut app, Key::Enter);
-    assert!(matches!(effects.as_slice(), [Effect::Plan(_, _, _)]));
+    assert!(
+        matches!(effects.as_slice(), [Effect::Plan(_, _, _)]),
+        "{effects:?}"
+    );
+    let offer = pull(&app).selected_offer().expect("a row").clone();
+    assert!(pull(&app).armed(&offer));
     press(&mut app, Key::Escape);
-    assert_eq!(pull(&app).stage, Stage::Listing);
     press(&mut app, Key::Escape);
-    assert!(app.modal.is_none());
+    assert!(app.modal.is_none(), "the second leaves");
     assert_eq!(press(&mut app, Key::Interrupt), vec![Effect::Quit]);
 }
 
 #[test]
-fn ticks_turn_the_planning_spinner_and_nothing_else() {
+fn a_rested_row_is_planned_once() {
     let mut app = app(1);
     press(&mut app, Key::Char('p'));
     app.take_dirty();
     assert!(ticks(&mut app, 1).is_empty());
     assert!(!app.take_dirty());
-    press(&mut app, Key::Enter);
-    assert!(matches!(pull(&app).stage, Stage::Planning(_)));
-    app.take_dirty();
-    assert!(ticks(&mut app, 1).is_empty());
+    let effects = ticks(&mut app, 1);
+    assert!(
+        matches!(effects.as_slice(), [Effect::Plan(_, _, _)]),
+        "{effects:?}"
+    );
     assert!(app.take_dirty());
+    assert!(ticks(&mut app, 3).is_empty(), "asked once");
+    assert!(app.take_dirty(), "the planning spinner turns");
     press(&mut app, Key::Escape);
     app.take_dirty();
     ticks(&mut app, 1);
@@ -375,7 +392,14 @@ fn a_typed_query_is_searched_after_the_debounce() {
     press(&mut app, Key::Char('p'));
     press(&mut app, Key::Char('x'));
     assert!(ticks(&mut app, 1).is_empty());
-    assert_eq!(ticks(&mut app, 1), vec![Effect::Search("x".to_owned())]);
+    let effects = ticks(&mut app, 1);
+    assert_eq!(effects.first(), Some(&Effect::Search("x".to_owned())));
+    assert!(
+        effects[1..]
+            .iter()
+            .all(|effect| matches!(effect, Effect::Plan(_, _, _))),
+        "the row the cursor rests on is planned beside it: {effects:?}"
+    );
 }
 
 #[test]
@@ -440,11 +464,9 @@ fn stop_asks_first_and_targets_the_newest_pull_still_going() {
         TaskState::Status("queued".to_owned()),
     ));
 
-    let mut modal = PullModal::open(&[], 0, &[]);
     let mut replanned = plan("x");
     replanned.remaining_bytes = Some(5);
-    modal.stage = Stage::Preview(replanned);
-    app.modal = Some(Modal::Pull(Box::new(modal)));
+    app.modal = Some(Modal::Pull(Box::new(PullModal::ready(replanned))));
     assert!(press(&mut app, Key::Enter).is_empty());
     assert_eq!(app.notice(), Some("x is already downloading"));
 }
@@ -531,15 +553,20 @@ fn resume_targets_the_newest_pull_that_stopped() {
 #[test]
 fn starting_a_pull_hands_the_plan_to_a_worker() {
     let mut app = app(1);
-    let mut modal = PullModal::open(&[], 0, &[]);
     let plan = plan("gemma3");
-    modal.stage = Stage::Preview(plan.clone());
-    app.modal = Some(Modal::Pull(Box::new(modal)));
+    app.modal = Some(Modal::Pull(Box::new(PullModal::ready(plan.clone()))));
 
     let effects = press(&mut app, Key::Enter);
 
     assert_eq!(effects, vec![Effect::StartPull(Box::new(plan))]);
-    assert!(app.modal.is_none());
+    assert!(
+        matches!(app.modal, Some(Modal::Pull(_))),
+        "the screen stays, its button following the download"
+    );
+    assert_eq!(
+        app.notice(),
+        Some("pulling gemma3 · it runs on if you quit")
+    );
 }
 
 #[test]
@@ -824,6 +851,50 @@ fn reply(app: &mut App, generation: u64, step: ReplyStep) -> Vec<Effect> {
 }
 
 #[test]
+fn an_idle_conversation_waits_for_its_model_and_another_starts_fresh() {
+    let mut app = app(2);
+    let generation = ask(&mut app);
+    reply(&mut app, generation, ReplyStep::Text("yo".to_owned()));
+    reply(&mut app, generation, ReplyStep::Done(None));
+    press(&mut app, Key::Escape);
+    assert!(app.modal.is_none());
+    press(&mut app, Key::Char('t'));
+    let turns = app.chat_pane().map_or(0, |pane| pane.turns.len());
+    assert_eq!(turns, 2, "the same model takes the conversation up again");
+    press(&mut app, Key::Escape);
+    press(&mut app, Key::Down);
+    press(&mut app, Key::Char('t'));
+    let turns = app.chat_pane().map_or(9, |pane| pane.turns.len());
+    assert_eq!(turns, 0, "another model starts fresh");
+}
+
+#[test]
+fn tab_suggests_and_ctrl_l_starts_over_in_the_pane_only() {
+    let mut app = app(1);
+    assert!(press(&mut app, Key::Tab).is_empty());
+    assert!(press(&mut app, Key::Clear).is_empty());
+    assert!(press(&mut app, Key::BackTab).is_empty());
+    assert!(app.modal.is_none(), "the shelf ignores them");
+    press(&mut app, Key::Char('t'));
+    press(&mut app, Key::Tab);
+    let typed = app.chat_pane().map(|pane| pane.input.as_str().to_owned());
+    assert_eq!(typed.as_deref(), Some(crate::tui::chat::SUGGESTIONS[0]));
+    let generation = match press(&mut app, Key::Enter).as_slice() {
+        [Effect::Ask { generation, .. }] => *generation,
+        other => panic!("expected an ask, got {other:?}"),
+    };
+    press(&mut app, Key::Clear);
+    assert_eq!(
+        app.chat_pane().map(|pane| pane.turns.len()),
+        Some(2),
+        "not mid-reply"
+    );
+    reply(&mut app, generation, ReplyStep::Done(None));
+    press(&mut app, Key::Clear);
+    assert_eq!(app.chat_pane().map(|pane| pane.turns.len()), Some(0));
+}
+
+#[test]
 fn try_opens_the_chat_pane_and_enter_asks() {
     let mut app = app(1);
     press(&mut app, Key::Char('t'));
@@ -833,6 +904,60 @@ fn try_opens_the_chat_pane_and_enter_asks() {
     assert!(ask(&mut app) > 0);
     assert!(press(&mut app, Key::Char('q')).is_empty());
     assert!(matches!(app.modal, Some(Modal::Chat(_))));
+}
+
+#[test]
+fn only_a_live_clock_with_a_spinner_on_screen_asks_for_frames() {
+    let mut app = app(1);
+    assert_eq!(app.frame_due(), None);
+    ask(&mut app);
+    assert_eq!(app.frame_due(), None, "a settled clock never asks");
+    app.motion = crate::tui::motion::Motion::from_env_value_for_tests(None);
+    // Past the launch's movements, so only the spinner is left moving.
+    app.set_clock(60_000);
+    assert_eq!(app.frame_due(), Some(app.motion.spin_interval()));
+    let mut idle = self::app(1);
+    idle.motion = crate::tui::motion::Motion::from_env_value_for_tests(None);
+    idle.note_area(ratatui::layout::Rect::new(0, 0, 80, 24));
+    idle.set_clock(60_000);
+    assert_eq!(
+        idle.frame_due(),
+        None,
+        "nothing moves on an idle shelf under the hero's size"
+    );
+    idle.records[0].serving_bytes = Some(1 << 30);
+    assert_eq!(
+        idle.frame_due(),
+        Some(idle.motion.scaled(PULSE_FRAME)),
+        "a cold model's gauge breathes"
+    );
+    press(&mut idle, Key::Char('t'));
+    idle.set_clock(120_000);
+    assert_eq!(
+        idle.frame_due(),
+        Some(idle.motion.scaled(BLINK_FRAME)),
+        "behind the try screen only its cursor moves"
+    );
+    idle.note_area(ratatui::layout::Rect::new(0, 0, 132, 42));
+    assert_eq!(
+        idle.frame_due(),
+        Some(idle.motion.scaled(PULSE_FRAME)),
+        "the hero's koala sways at the pulse's rate"
+    );
+    idle.set_clock(0);
+    assert_eq!(
+        idle.frame_due(),
+        Some(idle.motion.scaled(MOTION_FRAME)),
+        "the launch moves"
+    );
+}
+
+#[test]
+fn a_frame_only_marks_the_screen_dirty() {
+    let mut app = app(1);
+    app.take_dirty();
+    assert!(app.reduce(Event::Frame).is_empty());
+    assert!(app.take_dirty());
 }
 
 #[test]
@@ -1186,9 +1311,7 @@ fn the_pulls_screen_starts_a_pull_and_forgets_an_ended_one() {
     // appears. A start that was refused names no job, so nothing is followed.
     press(&mut app, Key::Char('p'));
     assert!(matches!(app.modal, Some(Modal::Pull(_))));
-    let mut modal = PullModal::open(&[], 0, &[]);
-    modal.stage = Stage::Preview(plan("new"));
-    app.modal = Some(Modal::Pull(Box::new(modal)));
+    app.modal = Some(Modal::Pull(Box::new(PullModal::ready(plan("new")))));
     assert!(matches!(
         press(&mut app, Key::Enter).as_slice(),
         [Effect::StartPull(_)]
@@ -1483,4 +1606,31 @@ fn every_bench_binding_does_something_and_nothing_else_does() {
             "{c:?} opens a card on the bench screen"
         );
     }
+}
+
+#[test]
+fn a_judge_opens_on_its_composer_and_asks_as_a_judge() {
+    let mut app = app(1);
+    app.records[0].capabilities = vec![Capability::judge()];
+    app.reorder_in_place();
+    press(&mut app, Key::Char('t'));
+    assert!(app.chat_pane().is_some_and(ChatPane::judging));
+    press(&mut app, Key::Tab);
+    for c in "the reply is polite".chars() {
+        press(&mut app, Key::Char(c));
+    }
+    press(&mut app, Key::BackTab);
+    press(&mut app, Key::BackTab);
+    press(&mut app, Key::Char(' '));
+    press(&mut app, Key::Char(' '));
+    press(&mut app, Key::Tab);
+    press(&mut app, Key::Tab);
+    let effects = press(&mut app, Key::Enter);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Ask { capability, .. }] if *capability == Capability::judge()
+        ),
+        "{effects:?}"
+    );
 }

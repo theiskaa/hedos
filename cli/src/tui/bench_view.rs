@@ -5,12 +5,16 @@
 //! through the same functions, so a row reads the same wherever it appears.
 
 use kernel::bench::{self, ColdStart, Measure, Phase, Row, Status};
+use ratatui::buffer::Buffer;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use runtime::bench::BenchEvent;
 use unicode_width::UnicodeWidthStr;
 
-use super::palette::{ACCENT, BAR_FILLED, BOLD, CAUTION, COOL, DIM, EYEBROW, FAILED, spinner};
+use super::palette::{
+    self, ACCENT, BAR_EMPTY, BAR_FILLED, BOLD, CAUTION, DIM, EYEBROW, FAILED, INK, SOFT, TRACK,
+    spinner,
+};
 use crate::support::table;
 use crate::support::text::{self, padded, right_aligned};
 
@@ -195,7 +199,7 @@ pub(crate) fn row(row: &Row, columns: &Columns, fastest: Option<f64>, ticks: u64
         (columns.quant, row.quantization.as_deref()),
     ] {
         if width > 0 {
-            spans.push(Span::styled(padded(value.unwrap_or(DASH), width), COOL));
+            spans.push(Span::styled(padded(value.unwrap_or(DASH), width), SOFT));
             spans.push(Span::raw(" ".repeat(GAP)));
         }
     }
@@ -242,9 +246,14 @@ fn figures(row: &Row, columns: &Columns, fastest: Option<f64>) -> Vec<Span<'stat
 
     let mut spans = Vec::new();
     if columns.bar > 0 {
-        let (lit, rest) = bar_text(rate, fastest, columns.bar);
-        spans.push(Span::styled(lit, ACCENT));
-        spans.push(Span::raw(rest));
+        let filled = bench::filled_cells(rate, fastest.unwrap_or(rate), columns.bar);
+        // The fastest row's bar is the brightest; the rest read in ink.
+        let leading = fastest.is_some_and(|fastest| rate >= fastest);
+        spans.push(Span::styled(
+            BAR_FILLED.repeat(filled),
+            if leading { ACCENT } else { INK },
+        ));
+        spans.push(Span::styled(BAR_EMPTY.repeat(columns.bar - filled), TRACK));
         spans.push(Span::raw(" ".repeat(GAP)));
     }
     spans.push(rate_span(rate, figures.estimated_tokens));
@@ -278,10 +287,14 @@ fn rate_text(rate: f64, estimated: bool) -> String {
     format!("{mark}{rate:.1}")
 }
 
-/// The bar as both surfaces draw it: `filled` cells of `width` lit.
+/// The block a pipe's bar is made of. The drawn bar is a thin rule told
+/// from its track by colour, which a pipe has none of.
+const PLAIN_BAR: &str = "█";
+
+/// The bar as a pipe gets it: `filled` cells of `width` lit, the rest blank.
 fn bar_text(rate: f64, fastest: Option<f64>, width: usize) -> (String, String) {
     let filled = bench::filled_cells(rate, fastest.unwrap_or(rate), width);
-    (BAR_FILLED.repeat(filled), " ".repeat(width - filled))
+    (PLAIN_BAR.repeat(filled), " ".repeat(width - filled))
 }
 
 /// The rate in the drawn table, where the estimate mark also takes a hue.
@@ -591,6 +604,20 @@ pub(crate) fn first_visible(focus: Option<usize>, count: usize, room: usize) -> 
         .min(count - room)
 }
 
+/// The inline block's frame made to read where it is drawn: on the
+/// terminal's own ground, whatever its theme, and in the terminal's palette.
+pub(crate) fn fit_to_terminal(buffer: &mut Buffer, depth: palette::Depth) {
+    palette::onto_terminal_ground(buffer);
+    if depth == palette::Depth::Indexed {
+        palette::quantize(buffer);
+    }
+}
+
+/// How many colours the terminal the inline block is drawn on shows.
+pub(crate) fn terminal_depth() -> palette::Depth {
+    palette::Depth::detect()
+}
+
 /// The plain table a pipe gets: the settled columns, ranked, without styling.
 pub(crate) fn plain(rows: &[Row]) -> String {
     let fastest = bench::fastest(rows);
@@ -737,6 +764,39 @@ mod tests {
             .collect();
         assert!(text.contains("waiting"));
         assert!(!text.contains(BAR_FILLED), "{text}");
+        let measured = row(&rows[0], &columns, fastest, 0);
+        assert!(
+            measured
+                .spans
+                .iter()
+                .any(|span| span.content.contains(BAR_FILLED))
+        );
+        assert!(plain(&rows).contains(PLAIN_BAR));
+    }
+
+    /// The one literal pin on what a pipe gets, so a change to the drawn
+    /// table's look can never reach a script reading `hedos bench | cat`.
+    #[test]
+    fn the_plain_table_is_pinned() {
+        let rows = vec![measured("fast", 60, 1000), measured("slow", 30, 1000)];
+        let text = plain(&rows);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].contains("NAME") && lines[0].contains("TOK/S"),
+            "{text}"
+        );
+        assert!(
+            lines[1].contains("fast") && lines[1].contains(&PLAIN_BAR.repeat(BAR_WIDE)),
+            "{text}"
+        );
+        assert!(
+            lines[2].contains("slow") && lines[2].contains(&PLAIN_BAR.repeat(BAR_WIDE / 2)),
+            "{text}"
+        );
+        assert!(
+            !text.contains(BAR_FILLED) && !text.contains('\u{1b}'),
+            "{text}"
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::{MARGIN, card_width};
 use crate::tui::keymap;
-use crate::tui::ui::{BORDER_COLUMNS, BORDER_ROWS, DIM, EYEBROW, keys, padded};
+use crate::tui::ui::{BOLD, BORDER_COLUMNS, BORDER_ROWS, DIM, EYEBROW, SOFT, keys, padded};
 
 /// Bindings the help shows in one cell: side by side under a verb they
 /// share, or with `/` between the keys and ` / ` between the verbs. `Y`'s
@@ -232,8 +232,8 @@ fn table_lines(columns: &[Vec<HelpCell>]) -> Vec<Line<'static>> {
                     spans.push(Span::styled(fill(name, cell_width), EYEBROW));
                 }
                 Some(HelpCell::Row { key, gloss }) => {
-                    spans.push(Span::styled(padded(key, *key_width), DIM));
-                    spans.push(Span::raw(fill(gloss, *gloss_width)));
+                    spans.push(Span::styled(padded(key, *key_width), BOLD));
+                    spans.push(Span::styled(fill(gloss, *gloss_width), SOFT));
                 }
                 Some(HelpCell::Blank) | None => spans.push(Span::raw(fill("", cell_width))),
             }

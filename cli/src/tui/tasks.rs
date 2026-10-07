@@ -537,7 +537,12 @@ pub fn spawn_plan(
             .plan(&provider, &reference)
             .await
             .map_err(|error| error.to_string());
-        Event::Planned(Planned { ask, result })
+        Event::Planned(Planned {
+            ask,
+            provider,
+            reference,
+            result,
+        })
     });
 }
 
@@ -584,6 +589,7 @@ pub fn spawn_bench(
 /// replaces one still running. Every ask ends with a `Done` or `Failed` step.
 pub fn spawn_ask(
     record_id: String,
+    capability: Capability,
     payload: JsonValue,
     generation: u64,
     context: &Arc<TaskContext>,
@@ -600,7 +606,7 @@ pub fn spawn_ask(
         let stream = context
             .session
             .kernel
-            .invoke_with(&record_id, Capability::chat(), payload, None, None)
+            .invoke_with(&record_id, capability, payload, None, None)
             .await;
         let mut stream = match stream {
             Ok(stream) => stream,

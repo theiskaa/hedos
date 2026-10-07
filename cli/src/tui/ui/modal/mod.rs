@@ -6,26 +6,26 @@
 
 mod help;
 mod launch;
-mod pull;
 mod remove;
 mod stop;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
-use super::{ACCENT, BACKDROP, centered, label_width};
+use super::card::Card;
+use super::{ACCENT, BACKDROP, BORDER_ROWS, GROUND, centered, label_width};
 use crate::tui::app::{App, Modal};
+use crate::tui::palette::{BACKDROP_GROUND, BACKDROP_INK, FAINT_COLOR, LINE_STRONG, mix};
+use ratatui::style::Style;
 
 /// Cells kept clear on either side of a card when the terminal is narrower
 /// than it wants.
 const MARGIN: u16 = 2;
-/// The labels of the preview, remove and stop bodies; the column is as wide
+/// The labels of the remove and stop bodies; the column is as wide
 /// as the widest, plus a gap.
-const LABELS: [&str; 10] = [
-    "store", "on disk", "path", "after", "from", "to", "size", "fit", "download", "model",
-];
+const LABELS: [&str; 5] = ["store", "on disk", "path", "after", "model"];
 
 /// Draw the open card over `area`, if there is one; whether the screen
 /// under it was dimmed.
@@ -36,12 +36,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) -> bool {
     let (width, height, title, body): (u16, u16, String, Body) = match modal {
         // The chat pane is a body of its own, not something over the shelf.
         Modal::Chat(_) => return false,
-        Modal::Pull(modal) => (
-            pull::PULL_WIDTH,
-            pull::PULL_HEIGHT,
-            pull::pull_title(modal),
-            Box::new(move |inner| pull::pull(modal, app, inner)),
-        ),
+        // So is the pull screen.
+        Modal::Pull(_) => return false,
         Modal::Remove(preview) => (
             remove::REMOVE_WIDTH,
             remove::REMOVE_HEIGHT,
@@ -70,14 +66,55 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) -> bool {
             Box::new(move |inner| launch::launch(modal, inner)),
         ),
     };
-    frame.buffer_mut().set_style(area, BACKDROP);
-    let rect = centered(area, card_width(width, area.width), height);
-    let block = Block::bordered();
-    let inner = block.inner(rect);
+    let opened = app.modal_at().unwrap_or(0);
+    dim(
+        frame.buffer_mut(),
+        area,
+        app.motion.eased(opened, BACKDROP_MS),
+    );
+    // The card grows from three quarters of its height; its body is cut to
+    // the rows it has, so the key line at its foot arrives last.
+    let grown = app.motion.eased(opened, GROW_MS);
+    let shown = ((f32::from(height) * (GROW_FROM + (1.0 - GROW_FROM) * grown)).round() as u16)
+        .clamp(BORDER_ROWS.min(height), height);
+    let rect = centered(area, card_width(width, area.width), shown);
+    let inner = Card::inner(rect);
+    let full = Rect {
+        height: height.saturating_sub(BORDER_ROWS),
+        ..inner
+    };
     frame.render_widget(Clear, rect);
-    frame.render_widget(block.title(Span::styled(title, ACCENT)), rect);
-    frame.render_widget(Paragraph::new(body(inner)), inner);
+    frame.buffer_mut().set_style(rect, GROUND);
+    Card::new(vec![Span::styled(title.trim().to_owned(), ACCENT)])
+        .border(Style::new().fg(mix(LINE_STRONG, FAINT_COLOR, grown)))
+        .render(rect, frame.buffer_mut());
+    frame.render_widget(Paragraph::new(body(full)), inner);
     true
+}
+
+/// How long the screen behind a card takes to fade, and the card to grow,
+/// and how tall it starts.
+const BACKDROP_MS: u64 = 140;
+const GROW_MS: u64 = 160;
+const GROW_FROM: f32 = 0.75;
+
+/// The screen behind a card flattened toward near black by `amount`, its
+/// emphasis dropped past halfway; at 1 it is [`BACKDROP`] on every cell.
+fn dim(buf: &mut ratatui::buffer::Buffer, area: Rect, amount: f32) {
+    if amount >= 1.0 {
+        buf.set_style(area, BACKDROP);
+        return;
+    }
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            cell.fg = mix(cell.fg, BACKDROP_INK, amount);
+            cell.bg = mix(cell.bg, BACKDROP_GROUND, amount);
+            if amount > 0.5 {
+                cell.modifier.remove(ratatui::style::Modifier::BOLD);
+            }
+        }
+    }
 }
 
 /// A card's lines, given the rect inside its border.
@@ -104,15 +141,13 @@ mod tests {
 
     use crate::tui::facts::Facts;
     use crate::tui::launch::LaunchModal;
-    use crate::tui::pull::{PullModal, Stage};
     use crate::tui::stop::StopCard;
-    use crate::tui::testing::{deletion_preview, leading_label, plan, record_with, text, texts};
-    use crate::tui::ui::{BORDER_COLUMNS, BORDER_ROWS, DIM};
+    use crate::tui::testing::{deletion_preview, leading_label, record_with, text, texts};
+    use crate::tui::ui::{BORDER_COLUMNS, DIM};
 
     #[test]
     fn every_label_is_listed() {
         let preview = deletion_preview(vec!["/p".to_owned()]);
-        let app = App::new(Vec::new(), Facts::default());
         let inner = Rect::new(0, 0, 80, 9);
         let mut seen = Vec::new();
         let card = StopCard {
@@ -122,7 +157,6 @@ mod tests {
         };
         for line in remove::remove(&preview, &Facts::default(), inner)
             .iter()
-            .chain(&pull::preview(&plan("gemma3"), &app, inner))
             .chain(&stop::stop(&card, inner))
         {
             let is_label = line.spans.first().is_some_and(|span| {
@@ -141,6 +175,54 @@ mod tests {
                 "{label} never appears"
             );
         }
+    }
+
+    /// The rows the open card spans in a whole frame of `app`, and the
+    /// frame's top-left cell.
+    fn card_rows(app: &mut App) -> (std::ops::Range<u16>, ratatui::buffer::Cell) {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40))
+            .expect("a test terminal");
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, app))
+            .expect("a frame");
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String { (0..120).map(|x| buffer[(x, y)].symbol()).collect() };
+        let top = (0..40).find(|&y| row(y).contains("╭─ help ")).unwrap_or(0);
+        // `╭─ help`: the corner three cells before the title's first letter.
+        let left = (0..117)
+            .find(|&x| buffer[(x, top)].symbol() == "╭" && buffer[(x + 3, top)].symbol() == "h")
+            .unwrap_or(0);
+        let bottom = (top + 1..40)
+            .find(|&y| buffer[(left, y)].symbol() == "╰")
+            .unwrap_or(top);
+        (top..bottom + 1, buffer[(0, 0)].clone())
+    }
+
+    #[test]
+    fn a_card_grows_in_over_a_screen_that_fades() {
+        use crate::tui::event::{Event, Key};
+        let full = help::HelpLayout::at(120).height();
+        let mut settled = App::new(vec![record_with("m", Vec::new())], Facts::default());
+        settled.reduce(Event::Key(Key::Char('?')));
+        let (rows, corner) = card_rows(&mut settled);
+        assert_eq!(rows.len() as u16, full, "settled, the card is whole");
+        assert_eq!(corner.fg, BACKDROP.fg.expect("the backdrop's grey"));
+        assert_eq!(corner.bg, BACKDROP.bg.expect("the backdrop's ground"));
+
+        let mut live = App::new(vec![record_with("m", Vec::new())], Facts::default());
+        live.motion = crate::tui::motion::Motion::from_env_value_for_tests(None);
+        live.set_clock(10_000);
+        live.reduce(Event::Key(Key::Char('?')));
+        let (rows, corner) = card_rows(&mut live);
+        let opening = (f32::from(full) * GROW_FROM).round() as u16;
+        assert_eq!(
+            rows.len() as u16,
+            opening,
+            "just opened, it is three quarters"
+        );
+        assert_ne!(corner.fg, BACKDROP.fg.expect("the backdrop's grey"));
+        live.set_clock(10_000 + GROW_MS + BACKDROP_MS);
+        assert_eq!(card_rows(&mut live).0.len() as u16, full);
     }
 
     #[test]
@@ -186,38 +268,6 @@ mod tests {
         }
         let squeezed = help::HelpLayout::at(snug - 1);
         assert!(squeezed.inner < inner(squeezed.width));
-    }
-
-    #[test]
-    fn the_pull_card_fits_its_width() {
-        let app = App::new(Vec::new(), Facts::default());
-        let pull_inner = Rect::new(
-            0,
-            0,
-            inner(pull::PULL_WIDTH) as u16,
-            pull::PULL_HEIGHT - BORDER_ROWS,
-        );
-        fits(
-            &pull::preview(&plan("gemma3"), &app, pull_inner),
-            inner(pull::PULL_WIDTH),
-            "pull",
-        );
-        let mut modal = PullModal::open(&[], 64 << 30, &[]);
-        fits(
-            &pull::listing(&modal, 64 << 30, pull_inner),
-            inner(pull::PULL_WIDTH),
-            "pull listing",
-        );
-        modal.stage = Stage::Note("word ".repeat(40).trim_end().to_owned());
-        let note = pull::pull(&modal, &app, pull_inner);
-        fits(&note, inner(pull::PULL_WIDTH), "pull note");
-        assert!(
-            note.iter()
-                .filter(|line| text(line).contains("word"))
-                .count()
-                > 1
-        );
-        assert_eq!(text(&note[note.len() - 1]).trim_end(), " esc back");
     }
 
     #[test]

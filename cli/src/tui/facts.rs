@@ -46,6 +46,9 @@ pub struct Activity {
     pub total_requests: u64,
     /// When the newest request of any kind came in, in Unix milliseconds.
     pub last_request_millis: i64,
+    /// Requests served per hour over the last day, every model together,
+    /// oldest first.
+    pub hourly: [u32; HOURS],
 }
 
 impl Activity {
@@ -75,7 +78,14 @@ impl Activity {
                 activity.latency = percentiles(samples);
             }
         }
+        let mut hourly = [0; HOURS];
+        for activity in models.values() {
+            for (total, count) in hourly.iter_mut().zip(activity.hourly) {
+                *total += count;
+            }
+        }
         Self {
+            hourly,
             models,
             requests_last_minute: entries
                 .iter()
@@ -166,17 +176,6 @@ impl Facts {
         self.disk_by_store
             .as_ref()
             .map(|stores| stores.iter().map(|(_, bytes)| bytes).sum())
-    }
-
-    /// The gateway in a phrase: `on :11434 · 3 req/min`, or `off`.
-    pub fn gateway_state(&self) -> String {
-        match self.gateway_port {
-            Some(port) => format!(
-                "on :{port} · {} req/min",
-                self.activity.requests_last_minute
-            ),
-            None => "off".to_owned(),
-        }
     }
 }
 

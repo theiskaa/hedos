@@ -15,11 +15,14 @@ mod event;
 pub(crate) mod facts;
 mod jobs;
 mod keymap;
+mod koala;
 mod launch;
 mod layout;
 mod markup;
+mod motion;
 mod order;
 mod palette;
+mod pixel;
 mod pull;
 mod pulls;
 mod state;
@@ -35,7 +38,7 @@ mod wrap;
 use std::io::{self, Write};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use ratatui::crossterm::cursor::Show;
@@ -86,6 +89,11 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     }
     let tasks::Snapshot { records, facts } = context.snapshot().await;
     let mut app = App::new(records, facts);
+    app.depth = palette::Depth::detect();
+    app.motion = motion::Motion::from_env();
+    // One clock for the whole run: a hand-off steps out of the loop and back
+    // in, and the intro must not play again when it does.
+    let started = Instant::now();
     app.restore(&UiState::load(&state_dir));
     // `shelf_or_discover` already scanned an empty shelf; with still nothing
     // to show, the useful first screen is what could be pulled.
@@ -131,6 +139,7 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
             &mut rx,
             &mut ticks,
             &terminal_modes,
+            started,
         )
         .await
         {
@@ -188,6 +197,7 @@ async fn on_terminal(
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
     terminal_modes: &TerminalModes,
+    started: Instant,
 ) -> Result<Outcome, CliError> {
     // Whatever the last hand-off left the terminal in, the UI starts from
     // the modes the user's shell had, and those are what `restore` returns.
@@ -203,7 +213,7 @@ async fn on_terminal(
         }
     };
     let mouse = MouseCapture::enable();
-    let outcome = drive(&mut terminal, app, context, tx, rx, ticks).await;
+    let outcome = drive(&mut terminal, app, context, tx, rx, ticks, started).await;
     // Dropped, the terminal shows the cursor again and reports a failure to
     // stderr, which on a closed terminal fails in turn and aborts. One that
     // cannot be shown the cursor is gone, so it is let go without that.
@@ -340,8 +350,15 @@ async fn drive(
     tx: &mpsc::UnboundedSender<Event>,
     rx: &mut mpsc::UnboundedReceiver<Event>,
     ticks: &mut Interval,
+    started: Instant,
 ) -> Result<Outcome, CliError> {
+    let clock = |app: &mut App| {
+        app.set_clock(started.elapsed().as_millis() as u64);
+        app.motion.set_wall(kernel::time::now_millis());
+    };
+    let mut last_frame = tokio::time::Instant::now();
     loop {
+        clock(app);
         if app.take_dirty()
             && let Err(error) = terminal.draw(|frame| ui::draw(frame, app))
         {
@@ -361,7 +378,12 @@ async fn drive(
                 None => return Ok(Outcome::Quit),
             },
             _ = ticks.tick() => Event::Tick,
+            () = next_frame(app.frame_due(), last_frame) => {
+                last_frame = tokio::time::Instant::now();
+                Event::Frame
+            }
         };
+        clock(app);
         for effect in app.reduce(event) {
             match effect {
                 Effect::Quit => return Ok(Outcome::Quit),
@@ -384,9 +406,10 @@ async fn drive(
                 Effect::Copy(text) => copy_to_clipboard(&text),
                 Effect::Ask {
                     record_id,
+                    capability,
                     payload,
                     generation,
-                } => tasks::spawn_ask(record_id, payload, generation, context, tx),
+                } => tasks::spawn_ask(record_id, capability, payload, generation, context, tx),
                 Effect::StopAsk => context.stop_ask(),
                 Effect::StartBench(plan, generation) => {
                     tasks::spawn_bench(*plan, generation, context, tx);
@@ -394,6 +417,15 @@ async fn drive(
                 Effect::StopBench => context.stop_bench(),
             }
         }
+    }
+}
+
+/// Wait until `due` after the `last` frame, or forever when nothing on
+/// screen moves on its own.
+async fn next_frame(due: Option<Duration>, last: tokio::time::Instant) {
+    match due {
+        Some(due) => tokio::time::sleep_until(last + due).await,
+        None => std::future::pending().await,
     }
 }
 

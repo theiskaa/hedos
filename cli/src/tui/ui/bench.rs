@@ -8,11 +8,10 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
-use super::{
-    ACCENT, DIM, EYEBROW, centered, field_line, label_width, pane, selected_row, value_width,
-};
+use super::card::{Card, scroll_mark};
+use super::{DIM, EYEBROW, card, centered, field_line, label_width, selected_row, value_width};
 use crate::tui::app::App;
 use crate::tui::bench_view::{self, DASH, cold_detail, first_visible, phase, seconds, spread_text};
 use crate::tui::keymap;
@@ -49,11 +48,8 @@ fn label_column() -> usize {
 /// Draw the list of models into `area`, scrolled so the selection stays in
 /// view.
 pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::bordered()
-        .title(Span::styled(" bench ", ACCENT))
-        .border_style(DIM);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    card("bench").render(area, frame.buffer_mut());
+    let inner = Card::inner(area);
     let rows = app.bench.rows();
     if rows.is_empty() {
         let note = Line::from(Span::styled(empty_note(), DIM));
@@ -78,7 +74,7 @@ pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines = vec![bench_view::header(&columns)];
     lines.extend(ordered.iter().skip(first).take(visible).map(|row| {
-        let line = bench_view::row(row, &columns, fastest, app.ticks());
+        let line = bench_view::row(row, &columns, fastest, app.spin_frame());
         if Some(row.id.as_str()) == selected {
             selected_row(line, width)
         } else {
@@ -86,6 +82,7 @@ pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         }
     }));
     frame.render_widget(Paragraph::new(lines), inner);
+    scroll_mark(frame.buffer_mut(), area, first, visible, ordered.len());
 }
 
 /// The first row to draw so the selected one is on screen.
@@ -96,9 +93,8 @@ fn scroll(rows: &[&Row], selected: Option<&str>, visible: usize) -> usize {
 
 /// Draw the selected row's figures into `area`.
 pub(super) fn draw_detail(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane(" model ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    card("model").render(area, frame.buffer_mut());
+    let inner = Card::text_inner(area);
     let Some(row) = app.bench.selected_row() else {
         return;
     };

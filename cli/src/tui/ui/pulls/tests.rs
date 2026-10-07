@@ -102,7 +102,7 @@ fn the_detail_reads_the_record_and_the_history_newest_last() {
     assert!(shown[5].starts_with(" to") && shown[5].ends_with("/models/Qwen/Qwen3-8B"));
     assert!(shown.iter().any(|line| line.ends_with("3m ago")));
     assert!(!shown.iter().any(|line| line.starts_with(" rate")));
-    assert!(shown.contains(&" HISTORY".to_owned()));
+    assert!(shown.iter().any(|line| line.starts_with(" HISTORY ─")));
     assert!(shown.last().is_some_and(|line| line.ends_with("event 6")));
     assert!(all.iter().all(|line| line.width() <= 60));
 
@@ -115,7 +115,7 @@ fn the_detail_reads_the_record_and_the_history_newest_last() {
     // Ten: no room for a line under the heading, so the heading goes too.
     let none = texts(&lines(&row, &app.pulls, 60, 10));
     assert_eq!(none.len(), 8);
-    assert!(!none.contains(&" HISTORY".to_owned()));
+    assert!(!none.iter().any(|line| line.starts_with(" HISTORY")));
 }
 
 #[test]

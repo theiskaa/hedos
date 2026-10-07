@@ -21,7 +21,7 @@ use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::session::{self, Session};
 use crate::support::signals::Interrupts;
-use crate::tui::bench_view::{Board, plain, windowed};
+use crate::tui::bench_view::{Board, fit_to_terminal, plain, terminal_depth, windowed};
 
 /// How often the live block redraws for its own sake, so the spinner turns
 /// while a slow model is still on its first token.
@@ -216,6 +216,7 @@ fn redraw(
             let lines = board.lines(area.width as usize, ticks, settled);
             let lines = windowed(lines, area.height as usize, board.running());
             frame.render_widget(Paragraph::new(lines), area);
+            fit_to_terminal(frame.buffer_mut(), terminal_depth());
         })
         .map(|_| ())
         .map_err(|error| CliError::new(format!("terminal error: {error}")))

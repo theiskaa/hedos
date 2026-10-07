@@ -6,6 +6,18 @@ use crate::tui::testing::{
 };
 use gateway::stats::LatencyPercentiles;
 
+/// Whether `line` starts with a label from the label column, as a row does
+/// and a heading, the name, or the chips do not.
+fn labelled(line: &Line) -> bool {
+    line.spans
+        .first()
+        .is_some_and(|span| span.style == DIM && span.content.width() == label_column() + 1)
+}
+
+fn settled() -> Motion {
+    Motion::settled()
+}
+
 #[test]
 fn every_label_is_listed() {
     let mut record = record_with("m", vec![Capability::chat()]);
@@ -29,17 +41,22 @@ fn every_label_is_listed() {
         },
     );
     let mut seen = 0;
-    for line in full_lines(&record, &facts, true, 80) {
+    let motion = settled();
+    for line in full_lines(&record, &facts, true, 80, &Look::settled(&motion)) {
+        if !labelled(&line) {
+            continue;
+        }
         let label = leading_label(&line, label_column());
-        if label.is_empty() || label.chars().all(|c| c.is_uppercase()) {
+        if label.is_empty() {
             continue;
         }
         assert!(LABELS.contains(&label.as_str()), "{label} is not listed");
         seen += 1;
     }
     // Every label drawn is listed, and with the alias, path, and gateway
-    // traffic set, the expanded pane draws every label listed.
-    assert_eq!(seen, LABELS.len());
+    // traffic set, the expanded card draws every label listed but the size,
+    // which only the stacked card's pathless row uses.
+    assert_eq!(seen, LABELS.len() - 1);
 }
 
 #[test]
@@ -49,7 +66,8 @@ fn a_gone_record_says_so_on_path_and_fit() {
     record.primary_weight_path = Some("/models/m.gguf".to_owned());
     record.state = ModelState::Missing;
     let facts = facts_with_memory(64);
-    let lines = full_lines(&record, &facts, false, 80);
+    let motion = settled();
+    let lines = full_lines(&record, &facts, false, 80, &Look::settled(&motion));
     let path = lines
         .iter()
         .find(|line| text(line).starts_with(" path"))
@@ -93,7 +111,8 @@ fn long_values_are_clipped_to_the_pane() {
         ],
         ..facts_with_memory(64)
     };
-    let lines = full_lines(&record, &facts, true, 40);
+    let motion = settled();
+    let lines = full_lines(&record, &facts, true, 40, &Look::settled(&motion));
     for line in &lines {
         assert!(line.width() <= 40, "{:?} runs past the pane", text(line));
     }
@@ -104,11 +123,23 @@ fn long_values_are_clipped_to_the_pane() {
             .find(|line| line.starts_with(&format!(" {label}")))
             .unwrap_or_default()
     };
-    assert!(find("caps").ends_with('…'));
+    let chips = lines
+        .iter()
+        .map(text)
+        .find(|line| line.contains(" chat "))
+        .unwrap_or_default();
+    assert!(
+        chips.contains(" complete ") && !chips.contains("transcribe"),
+        "{chips:?}"
+    );
     assert!(find("fit").ends_with('…'));
     assert!(find("residency").contains("warm") && find("residency").ends_with('…'));
     assert!(find("path").contains('…') && find("path").ends_with(".gguf"));
-    assert!(texts(&lines).contains(&" RECORD".to_owned()));
+    assert!(
+        texts(&lines)
+            .iter()
+            .any(|line| line.starts_with(" RECORD ─"))
+    );
 }
 
 #[test]
@@ -156,10 +187,12 @@ fn the_compact_detail_skips_what_the_row_shows() {
     );
     assert!(text(&pathless[3]).contains("4.3 GB"));
 
-    let full = full_lines(&record, &facts, false, 80);
-    assert!(labels_of(&full).contains(&"runtime".to_owned()));
+    let motion = settled();
+    let full = full_lines(&record, &facts, false, 80, &Look::settled(&motion));
+    assert!(!labels_of(&full).contains(&"runtime".to_owned()));
+    assert_eq!(text(&full[2]), " no runtime · ollama · 4.3 GB");
     assert!(full.len() > STACKED_DETAIL_ROWS as usize);
-    assert!(!texts(&full).contains(&" RECORD".to_owned()));
+    assert!(!texts(&full).iter().any(|line| line.starts_with(" RECORD")));
 }
 
 #[test]
@@ -192,4 +225,56 @@ fn the_title_escapes_the_name() {
     let mut record = record_with("m", vec![Capability::chat()]);
     record.alias = Some("evil\u{1b}[31mred bidi\u{202e}gpj".to_owned());
     assert_eq!(title(&record), " evil\\u{1b}[31mred bidi\\u{202e}gpj ");
+}
+
+#[test]
+fn the_card_opens_with_the_name_its_facts_and_its_chips() {
+    let mut record = record_with("qwen", vec![Capability::chat(), Capability::from("tools")]);
+    record.footprint_bytes = Some(4_300_000_000);
+    record.context_length = Some(32_768);
+    let motion = settled();
+    let lines = full_lines(
+        &record,
+        &facts_with_memory(64),
+        false,
+        60,
+        &Look::settled(&motion),
+    );
+    assert_eq!(text(&lines[1]), " qwen");
+    assert_eq!(lines[1].spans[1].style, BOLD);
+    assert_eq!(text(&lines[2]), " no runtime · ollama · 4.3 GB · ctx 32k");
+    assert_eq!(text(&lines[4]), "  chat   tools ");
+    assert_eq!(lines[4].spans[1].style.bg, Some(RAISED));
+    assert!(text(&lines[6]).starts_with(" MEMORY ─"));
+}
+
+#[test]
+fn the_gauge_shows_what_warming_would_take_beside_what_is_loaded() {
+    let mut record = record_with("m", vec![Capability::chat()]);
+    record.footprint_bytes = Some(8 << 30);
+    let facts = Facts {
+        residents: vec![resident_with_bytes("other", Holder::Local, 16 << 30)],
+        ..facts_with_memory(64)
+    };
+    let motion = settled();
+    let look = Look::settled(&motion);
+    let gauge = gauge_row(&record, &facts, 50, &look).expect("a gauge");
+    let cells = 50 - GAUGE_SUFFIX;
+    let bar: String = gauge.spans[1..4]
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert_eq!(bar.chars().count(), cells);
+    assert_eq!(
+        gauge.spans[1].content.chars().count(),
+        cells / 4,
+        "a quarter is the other model"
+    );
+    assert_eq!(
+        gauge.spans[2].content.chars().count(),
+        cells / 8,
+        "an eighth is this one"
+    );
+    assert!(text(&gauge).ends_with("if warmed"));
+    assert!(gauge_row(&record_with("m", Vec::new()), &facts, 50, &look).is_none());
 }

@@ -19,24 +19,75 @@ pub struct Run {
     pub emphasis: Emphasis,
 }
 
-/// `text` as wrapped lines of runs, `width` cells each at most. A fence line
-/// (```` ``` ````) opens or closes a code block and is not shown itself.
-pub fn lines(text: &str, width: usize) -> Vec<Vec<Run>> {
-    let mut lines = Vec::new();
-    let mut fenced = false;
+/// A reply read into what it is made of: prose, wrapped, and code, kept as
+/// written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Block {
+    /// A paragraph as wrapped lines of runs.
+    Prose(Vec<Vec<Run>>),
+    /// A fenced block: its language, its lines unwrapped, and whether its
+    /// closing fence has arrived yet.
+    Code {
+        lang: String,
+        lines: Vec<String>,
+        open: bool,
+    },
+}
+
+/// `text` as blocks, prose wrapped to `width` cells. A fence line
+/// (```` ``` ````) opens or closes a code block and is not shown itself; the
+/// word after an opening fence is the block's language. A code block is not
+/// wrapped, so a command keeps its shape; the drawer clips it.
+pub fn blocks(text: &str, width: usize) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let mut code: Option<(String, Vec<String>)> = None;
     for paragraph in text.split('\n') {
-        if paragraph.trim_start().starts_with("```") {
-            fenced = !fenced;
+        if let Some(rest) = paragraph.trim_start().strip_prefix("```") {
+            match code.take() {
+                Some((lang, lines)) => blocks.push(Block::Code {
+                    lang,
+                    lines,
+                    open: false,
+                }),
+                None => code = Some((rest.trim().to_owned(), Vec::new())),
+            }
             continue;
         }
-        let cells = if fenced {
-            cells(paragraph, Emphasis::Code)
-        } else {
-            prose(paragraph)
-        };
-        lines.extend(wrap_cells(cells, width).into_iter().map(runs));
+        match &mut code {
+            Some((_, lines)) => lines.push(paragraph.replace('\t', "    ").replace('\r', "")),
+            None => blocks.push(Block::Prose(
+                wrap_cells(prose(paragraph), width)
+                    .into_iter()
+                    .map(runs)
+                    .collect(),
+            )),
+        }
     }
-    lines
+    if let Some((lang, lines)) = code {
+        blocks.push(Block::Code {
+            lang,
+            lines,
+            open: true,
+        });
+    }
+    blocks
+}
+
+/// `text` as wrapped lines of runs, code included as code runs, for reading
+/// a reply back in a test.
+#[cfg(test)]
+fn lines(text: &str, width: usize) -> Vec<Vec<Run>> {
+    blocks(text, width)
+        .into_iter()
+        .flat_map(|block| match block {
+            Block::Prose(lines) => lines,
+            Block::Code { lines, .. } => lines
+                .into_iter()
+                .flat_map(|line| wrap_cells(cells(&line, Emphasis::Code), width))
+                .map(runs)
+                .collect(),
+        })
+        .collect()
 }
 
 /// One paragraph of prose as cells: a heading is bold throughout, otherwise
@@ -198,6 +249,33 @@ mod tests {
         assert_eq!(
             flat(&lines("#notatag", 40)),
             [vec![("#notatag", Emphasis::Plain)]]
+        );
+    }
+
+    #[test]
+    fn a_code_block_keeps_its_language_and_its_shape() {
+        let read = blocks(
+            "say\n```sh\ncurl -s localhost:11434/v1/chat/completions\n```\nend",
+            10,
+        );
+        assert_eq!(read.len(), 3);
+        assert!(matches!(&read[0], Block::Prose(lines) if lines.len() == 1));
+        assert_eq!(
+            read[1],
+            Block::Code {
+                lang: "sh".to_owned(),
+                lines: vec!["curl -s localhost:11434/v1/chat/completions".to_owned()],
+                open: false,
+            }
+        );
+        let streaming = blocks("```\nlet x", 40);
+        assert_eq!(
+            streaming,
+            [Block::Code {
+                lang: String::new(),
+                lines: vec!["let x".to_owned()],
+                open: true,
+            }]
         );
     }
 }

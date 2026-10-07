@@ -9,27 +9,31 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use unicode_width::UnicodeWidthStr;
 
+use super::card::{Card, scroll_mark};
 use super::{
-    ACCENT, BOLD, BORDER_COLUMNS, CAUTION, COOL, DIM, EYEBROW, SELECTED_MARK, SELECTED_ROW, WARM,
-    centered, edited, keys, pane,
+    ACCENT, BOLD, BORDER_COLUMNS, CAUTION, DIM, EYEBROW, SELECTED_MARK, SOFT, card, centered,
+    edited, keys, spinner,
 };
-use crate::support::banner::{KOALA, KOALA_WIDTH};
+use crate::support::banner::KOALA_WIDTH;
 use crate::support::shelf_table::{marker, runtime_label, verdict, verdict_label};
 use crate::support::table::DASH;
 use crate::support::text::printable;
 use crate::tui::app::App;
 use crate::tui::keymap;
-use crate::tui::order::Sort;
+use crate::tui::koala;
+use crate::tui::layout::Panes;
+use crate::tui::motion::Motion;
+use crate::tui::palette::{OLIVE, OLIVE_DIM, SEL, SURFACE, mix};
 use crate::tui::text;
 
 /// The column headers, in order: gutter, name, runtime, store, size.
 const HEADERS: [&str; 5] = ["", "NAME", "RUNTIME", "STORE", "SIZE"];
 /// The column index of the model name, the one that flexes.
 const NAME: usize = 1;
-/// The column indices of the runtime and the store, the two in the cool hue.
+/// The column indices of the runtime and the store, the two read soft.
 const RUNTIME: usize = 2;
 const STORE: usize = 3;
 /// The column index of the size, the one that is right-aligned.
@@ -51,67 +55,108 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let shown: Vec<&ModelRecord> = app.shown().collect();
     let rows: Vec<ShelfRow> = shown
         .iter()
-        .map(|record| ShelfRow::new(record, app.facts.is_warm(&record.id), budget))
+        .map(|record| {
+            ShelfRow::new(record, app.facts.is_warm(&record.id), budget)
+                .busy(app.tasks.running_on(&record.id))
+        })
         .collect();
     let no_match = shown.is_empty();
     let column_widths = widths(&rows);
     let columns = fitting_columns(&column_widths, area.width);
     let selected = app.selected();
 
+    let marks = Marks {
+        motion: &app.motion,
+        spin_frame: app.spin_frame(),
+    };
     let body = rows
         .iter()
         .enumerate()
-        .map(|(index, row)| body_row(row, index == selected, columns));
+        .map(|(index, row)| body_row(row, index == selected, index, columns, &marks));
 
     let header = Row::new(columns.iter().map(|&column| match column {
         SIZE => Cell::from(Line::from(HEADERS[SIZE]).right_aligned()),
         _ => Cell::from(HEADERS[column]),
     }))
     .style(EYEBROW);
-    let block = Block::bordered().title(title(app)).border_style(DIM);
-    let body_area = block.inner(area);
+    let total = rows.len();
+    Card::new(title(app))
+        .right(sort_label(app))
+        .render(area, frame.buffer_mut());
+    let body_area = Card::inner(area);
+    // The selection's tint comes up over a moment when it moves, so the eye
+    // follows it.
+    let lifted = app.motion.eased(app.selected_at(), SELECTION_FADE_MS);
     let table = Table::new(body, constraints(&column_widths, columns))
         .header(header)
         .column_spacing(COLUMN_SPACING)
-        .row_highlight_style(SELECTED_ROW)
-        .block(block);
-    frame.render_stateful_widget(table, area, &mut app.shelf);
+        .row_highlight_style(Style::new().bg(mix(SURFACE, SEL, lifted)));
+    frame.render_stateful_widget(table, body_area, &mut app.shelf);
+    let visible = body_area.height.saturating_sub(1) as usize;
+    scroll_mark(frame.buffer_mut(), area, app.shelf.offset(), visible, total);
     if no_match {
         draw_no_match(frame, body_area);
     }
 }
 
-/// One shelf row over `columns`: dim when it can't run here, bold when warm,
-/// the gutter marked when `selected`, the runtime and store in the cool hue
-/// unless the row is dim, and the size in the caution hue on a tight fit.
-fn body_row(row: &ShelfRow, selected: bool, columns: &[usize]) -> Row<'static> {
-    let style = if row.dim() {
-        DIM
-    } else if row.warm {
-        BOLD
-    } else {
-        Style::new()
-    };
+/// How long the selection's tint takes to come up.
+const SELECTION_FADE_MS: u64 = 120;
+
+/// What the state marks need to move: the clock, and the spinner's frame.
+struct Marks<'a> {
+    motion: &'a Motion,
+    spin_frame: u64,
+}
+
+impl Marks<'_> {
+    /// A warm model's dot, breathing with its own phase so a column of them
+    /// never pulses in step.
+    fn warm(&self, index: usize) -> Style {
+        let breath = self
+            .motion
+            .age(0)
+            .map_or(1.0, |age| 0.5 + 0.5 * (age * 2.1 + index as f32).sin());
+        Style::new().fg(mix(OLIVE_DIM, OLIVE, 0.55 + 0.45 * breath))
+    }
+}
+
+/// One shelf row over `columns`: dim when it can't run here, the name bold
+/// when warm or `selected`, the gutter marked when selected, the runtime
+/// and store quieter than the name unless the row is dim, and the size in
+/// the caution hue on a tight fit. While a task runs on the model, its
+/// mark is a spinner.
+fn body_row(
+    row: &ShelfRow,
+    selected: bool,
+    index: usize,
+    columns: &[usize],
+    marks: &Marks,
+) -> Row<'static> {
+    let style = if row.dim() { DIM } else { Style::new() };
     // A row that won't fit is already dim; red is kept for what failed.
     let size_style = match row.verdict {
         Some(FitVerdict::TightFit) => CAUTION,
         _ => Style::new(),
     };
-    let marker = |mark: &str| {
-        let text = format!("{mark}{}", row.cells[0]);
-        if row.warm {
-            Cell::from(Span::styled(text, WARM))
+    let marker = |mark: &'static str| {
+        let state = if row.busy {
+            Span::styled(format!("{} ", spinner(marks.spin_frame)), ACCENT)
+        } else if row.warm {
+            Span::styled(row.cells[0].clone(), marks.warm(index))
         } else {
-            Cell::from(text)
-        }
+            Span::raw(row.cells[0].clone())
+        };
+        Cell::from(Line::from(vec![Span::styled(mark, ACCENT), state]))
     };
+    let loud = (row.warm || selected) && !row.dim();
     let cells = columns.iter().map(|&column| match column {
         0 if selected => marker(SELECTED_MARK),
         0 => marker(" "),
+        NAME if loud => Cell::from(Span::styled(row.cells[NAME].clone(), BOLD)),
         SIZE => Cell::from(
             Line::from(Span::styled(row.cells[SIZE].clone(), size_style)).right_aligned(),
         ),
-        RUNTIME | STORE if !row.dim() => Cell::from(Span::styled(row.cells[column].clone(), COOL)),
+        RUNTIME | STORE if !row.dim() => Cell::from(Span::styled(row.cells[column].clone(), SOFT)),
         _ => Cell::from(row.cells[column].clone()),
     });
     Row::new(cells).style(style)
@@ -138,6 +183,8 @@ struct ShelfRow {
     warm: bool,
     /// Whether the record's weights are gone from disk.
     gone: bool,
+    /// Whether a task is under way on the model: a warm, an unload, a removal.
+    busy: bool,
 }
 
 impl ShelfRow {
@@ -169,7 +216,14 @@ impl ShelfRow {
             verdict,
             warm,
             gone,
+            busy: false,
         }
+    }
+
+    /// The same row, its mark a spinner while `busy`.
+    fn busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
+        self
     }
 
     /// Whether the row draws dim: too big for the machine, or gone.
@@ -201,10 +255,18 @@ fn fitting_columns(column_widths: &[usize; 5], width: u16) -> &'static [usize] {
         .unwrap_or(COLUMN_SETS[COLUMN_SETS.len() - 1])
 }
 
+/// The most a name counts for when choosing the columns: past it the name
+/// is clipped, so one long repo name never costs every row its runtime and
+/// store.
+const NAME_SHARE: usize = 28;
+
 fn natural_width(column_widths: &[usize; 5], columns: &[usize]) -> usize {
     columns
         .iter()
-        .map(|&column| column_widths[column])
+        .map(|&column| match column {
+            NAME => column_widths[column].min(NAME_SHARE),
+            _ => column_widths[column],
+        })
         .sum::<usize>()
         + COLUMN_SPACING as usize * columns.len().saturating_sub(1)
         + BORDER_COLUMNS as usize
@@ -230,49 +292,72 @@ const FILTER_WIDTH: usize = 36;
 /// What the filter matches on, shown while it is blank.
 const FILTER_PLACEHOLDER: &str = "name, store, runtime, capability";
 
-/// ` shelf `, or the filter as it is typed with how many rows it keeps, plus
-/// the sort when it is not the shelf's own order.
-fn title(app: &App) -> Line<'static> {
+/// `shelf · 15`, or the filter as it is typed with how many rows it keeps.
+fn title(app: &App) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if app.filtering || !app.filter.is_empty() {
         if app.filtering {
-            spans.extend(edited(&app.filter, " / ", FILTER_WIDTH, FILTER_PLACEHOLDER));
+            spans.extend(edited(&app.filter, "/ ", FILTER_WIDTH, FILTER_PLACEHOLDER));
         } else {
-            spans.push(Span::styled(" / ", ACCENT));
+            spans.push(Span::styled("/ ", ACCENT));
             spans.push(Span::raw(app.filter.as_str().to_owned()));
         }
         spans.push(Span::styled(
-            format!(" {} of {} ", app.order.len(), app.records.len()),
+            format!(" · {} of {}", app.order.len(), app.records.len()),
             DIM,
         ));
     } else {
-        spans.push(Span::styled(" shelf ", EYEBROW));
+        spans.push(Span::styled("shelf", BOLD));
+        spans.push(Span::styled(format!(" · {}", app.records.len()), DIM));
     }
-    if app.sort != Sort::Name {
-        spans.push(Span::styled(format!("· by {} ", app.sort.label()), DIM));
-    }
-    Line::from(spans)
+    spans
 }
 
-/// The koala and where to start, for a shelf with nothing on it yet.
-fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
-    let block = pane(" shelf ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+/// `by name` on the card's right edge: the order the shelf is in.
+fn sort_label(app: &App) -> Vec<Span<'static>> {
+    vec![Span::styled(format!("by {}", app.sort.label()), DIM)]
+}
 
+/// Where to start, for a shelf with nothing on it yet: the copy, with the
+/// koala beside it when the header is one line. With the hero showing, its
+/// koala is already on screen, and one living koala is enough.
+fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
+    card("shelf").render(area, frame.buffer_mut());
+    let inner = Card::inner(area);
     let copy = empty_copy(app.facts.memory_bytes);
-    let width = KOALA_WIDTH + 2 + copy.iter().map(Line::width).max().unwrap_or(0) as u16;
-    let lines: Vec<Line> = KOALA
-        .iter()
-        .zip(copy)
-        .map(|(koala, line)| {
-            let mut spans = vec![Span::styled(format!("{koala}  "), EYEBROW)];
-            spans.extend(line.spans);
-            Line::from(spans)
-        })
-        .collect();
-    let centered = centered(inner, width, KOALA.len() as u16);
-    frame.render_widget(Paragraph::new(lines), centered);
+    let copy_width = copy.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let with_koala = !Panes::hero(frame.area());
+    let width = if with_koala {
+        KOALA_WIDTH + 2 + copy_width
+    } else {
+        copy_width
+    };
+    let rect = centered(inner, width, copy.len() as u16);
+    frame.render_widget(
+        Paragraph::new(copy.to_vec()),
+        Rect {
+            x: rect.x + if with_koala { KOALA_WIDTH + 2 } else { 0 },
+            width: rect
+                .width
+                .saturating_sub(if with_koala { KOALA_WIDTH + 2 } else { 0 }),
+            ..rect
+        },
+    );
+    if !with_koala {
+        return;
+    }
+    let buf = frame.buffer_mut();
+    for (row, cells) in koala::frame(&app.motion).into_iter().enumerate() {
+        for (column, cell) in cells.into_iter().enumerate() {
+            let (x, y) = (rect.x + column as u16, rect.y + row as u16);
+            if let Some(cell) = cell
+                && x < inner.right()
+                && y < inner.bottom()
+            {
+                buf[(x, y)].set_char(cell.glyph).set_fg(cell.fg);
+            }
+        }
+    }
 }
 
 /// The copy beside the koala, one line per koala row: what the shelf is,
