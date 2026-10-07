@@ -15,6 +15,7 @@
 //! about, the manifest's declared modality and capabilities are backfilled onto
 //! it: the manifest is the only thing that knows what such a model does.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -77,6 +78,17 @@ impl ResolutionExplanation {
     }
 }
 
+/// What one pass of [`ResolutionEngine::resolve_stranded_embedders`] did.
+#[derive(Debug, Clone, Default)]
+pub struct StrandedEmbedders {
+    /// The records it changed.
+    pub changed: Vec<ModelRecord>,
+    /// The rows whose file is there but could not be read, one still being
+    /// written among them: a later pass may yet rescue them. A file that is
+    /// gone is not counted, since it has nothing to migrate.
+    pub unread: usize,
+}
+
 /// Ranks adapter bids and resolves records to their runtimes.
 pub struct ResolutionEngine {
     adapters: Vec<Arc<dyn RuntimeAdapter>>,
@@ -125,11 +137,87 @@ impl ResolutionEngine {
         registry: &mut Registry,
         kinds: Option<&HashSet<SourceKind>>,
     ) -> Result<Vec<ModelRecord>, RegistryError> {
+        self.resolve_where(
+            registry,
+            |record| kinds.is_none_or(|kinds| kinds.contains(&record.source.kind)),
+            |_, _| true,
+        )
+    }
+
+    /// Resolve the GGUF embedders a shelf written before llama.cpp served
+    /// embeddings got wrong: the encoders it left unresolved claiming `embed`,
+    /// and the decoders converted to embed or rank (Qwen3-Embedding,
+    /// Qwen3-Reranker) it put on llama.cpp as chat models, so long as neither
+    /// is downloading or pinned by the user. A re-identification is taken only
+    /// when it claims neither chat nor completion: this exists to rescue
+    /// embedders, and a file gone or unreadable since the scan reads as a
+    /// generic chat GGUF, which would hand a stranded row capabilities it never
+    /// had. Every other record is left exactly as it is, so this is safe to run
+    /// on first sight of a shelf. Reports the records that changed, and how
+    /// many rows went unread because a GGUF that is there could not be read.
+    pub fn resolve_stranded_embedders(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<StrandedEmbedders, RegistryError> {
+        let unread = Cell::new(0usize);
+        let changed = self.resolve_where(
+            registry,
+            |record| {
+                let stranded = record.state == ModelState::Unresolved
+                    && record.capabilities.contains(&Capability::embed());
+                let served_as_chat = record.runtime.id == Some(RuntimeId::llama_cpp())
+                    && record.capabilities.contains(&Capability::chat());
+                (stranded || served_as_chat)
+                    && !record.downloading
+                    && record.runtime.resolved != Resolution::User
+            },
+            |record, plan| {
+                let identified = &plan.identified;
+                let claims = &identified.capabilities;
+                let embeds = identified.format == ModelFormat::Gguf
+                    && !claims.contains(&Capability::chat())
+                    && !claims.contains(&Capability::complete());
+                // A GGUF whose header was read carries an answer on its chat
+                // template, so one with none was never read. A file that is
+                // gone has nothing to migrate and the next scan marks it
+                // missing, so only one still there (unreadable, or still being
+                // written) is worth another pass.
+                let weights = record
+                    .primary_weight_path
+                    .as_deref()
+                    .unwrap_or(&record.source.path);
+                if !embeds
+                    && identified.format == ModelFormat::Gguf
+                    && identified.has_chat_template.is_none()
+                    && Path::new(weights).exists()
+                {
+                    unread.set(unread.get() + 1);
+                }
+                embeds
+            },
+        )?;
+        Ok(StrandedEmbedders {
+            changed,
+            unread: unread.get(),
+        })
+    }
+
+    /// Plan every record `select` admits, keep the plans `keep` admits, and
+    /// write the winners back through the shared guards in [`Self::applied`].
+    fn resolve_where(
+        &self,
+        registry: &mut Registry,
+        select: impl Fn(&ModelRecord) -> bool,
+        keep: impl Fn(&ModelRecord, &ResolutionPlan) -> bool,
+    ) -> Result<Vec<ModelRecord>, RegistryError> {
         let plans: HashMap<String, ResolutionPlan> = registry
             .list()
             .into_iter()
-            .filter(|record| kinds.is_none_or(|kinds| kinds.contains(&record.source.kind)))
-            .filter_map(|record| self.plan(record).map(|plan| (record.id.clone(), plan)))
+            .filter(|record| select(record))
+            .filter_map(|record| {
+                let plan = self.plan(record)?;
+                keep(record, &plan).then(|| (record.id.clone(), plan))
+            })
             .collect();
         if plans.is_empty() {
             return Ok(Vec::new());

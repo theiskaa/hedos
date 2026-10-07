@@ -13,7 +13,7 @@ use kernel::records::{
 };
 use runtime::adapters::{
     ChunkStream, LlamaBackend, LlamaServerAdapter, LlamaServerPool, RuntimeAdapter, RuntimeError,
-    ServerProcess, ServerSpawner,
+    ServerMode, ServerProcess, ServerSpawner,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::AbortHandle;
@@ -23,6 +23,7 @@ use tokio::task::AbortHandle;
 /// tests can simulate a crash.
 struct MockSpawner {
     count: Arc<AtomicUsize>,
+    modes: Arc<Mutex<Vec<ServerMode>>>,
     healthy: bool,
     alive_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     health_flags: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
@@ -32,6 +33,7 @@ impl MockSpawner {
     fn new(healthy: bool) -> Self {
         Self {
             count: Arc::new(AtomicUsize::new(0)),
+            modes: Arc::new(Mutex::new(Vec::new())),
             healthy,
             alive_flags: Arc::new(Mutex::new(Vec::new())),
             health_flags: Arc::new(Mutex::new(Vec::new())),
@@ -45,8 +47,10 @@ impl ServerSpawner for MockSpawner {
         _gguf_path: &str,
         port: u16,
         _context_tokens: i64,
+        mode: ServerMode,
     ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
         self.count.fetch_add(1, Ordering::SeqCst);
+        self.modes.lock().unwrap().push(mode);
         let std_listener = std::net::TcpListener::bind(("127.0.0.1", port))
             .map_err(|error| RuntimeError::Unavailable(error.to_string()))?;
         std_listener
@@ -101,6 +105,12 @@ async fn serve(stream: &mut tokio::net::TcpStream, healthy: &AtomicBool) {
         } else {
             (503, "loading".to_owned())
         }
+    } else if path == "/v1/embeddings" {
+        (
+            200,
+            r#"{"data":[{"index":0,"embedding":[0.5,0.25]}],"usage":{"prompt_tokens":2}}"#
+                .to_owned(),
+        )
     } else if path == "/v1/chat/completions" {
         (
             200,
@@ -154,7 +164,10 @@ async fn spawns_a_ready_server_and_returns_its_url() {
     let spawner = Arc::new(MockSpawner::new(true));
     let pool = fast_pool(Arc::clone(&spawner));
 
-    let base = pool.base_url(&record("a"), 4096).await.expect("ready");
+    let base = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert!(base.starts_with("http://127.0.0.1:"));
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
 }
@@ -165,8 +178,14 @@ async fn reuses_a_running_server_for_the_same_model() {
     let pool = fast_pool(Arc::clone(&spawner));
     let rec = record("a");
 
-    let first = pool.base_url(&rec, 4096).await.expect("ready");
-    let second = pool.base_url(&rec, 4096).await.expect("ready");
+    let first = pool
+        .base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
+    let second = pool
+        .base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert_eq!(first, second);
     // Only one process was ever spawned.
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
@@ -178,14 +197,20 @@ async fn respawns_a_wedged_but_alive_server() {
     let pool = fast_pool(Arc::clone(&spawner));
     let rec = record("a");
 
-    let first = pool.base_url(&rec, 4096).await.expect("ready");
+    let first = pool
+        .base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
 
     // The server wedges: its process stays alive but `/health` stops answering.
     spawner.health_flags.lock().unwrap()[0].store(false, Ordering::SeqCst);
 
     // The next request must not recycle it — a fresh (healthy) server is spawned.
-    let second = pool.base_url(&rec, 4096).await.expect("respawn");
+    let second = pool
+        .base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("respawn");
     assert_ne!(first, second);
     assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
 }
@@ -195,8 +220,14 @@ async fn spawns_a_separate_server_per_model() {
     let spawner = Arc::new(MockSpawner::new(true));
     let pool = fast_pool(Arc::clone(&spawner));
 
-    let a = pool.base_url(&record("a"), 4096).await.expect("ready");
-    let b = pool.base_url(&record("b"), 4096).await.expect("ready");
+    let a = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
+    let b = pool
+        .base_url(&record("b"), 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert_ne!(a, b);
     assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
 }
@@ -206,7 +237,10 @@ async fn an_unhealthy_server_times_out_as_unavailable() {
     let spawner = Arc::new(MockSpawner::new(false));
     // Short timeout so the never-ready server fails fast.
     let pool = LlamaServerPool::new(spawner).with_ready_timeout(Duration::from_millis(400));
-    let error = pool.base_url(&record("a"), 4096).await.unwrap_err();
+    let error = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .unwrap_err();
     assert!(matches!(error, RuntimeError::Unavailable(_)));
 }
 
@@ -216,11 +250,15 @@ async fn a_dead_process_is_respawned() {
     let pool = fast_pool(Arc::clone(&spawner));
     let rec = record("a");
 
-    pool.base_url(&rec, 4096).await.expect("ready");
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
     // Simulate the server crashing: flip its alive flag.
     spawner.alive_flags.lock().unwrap()[0].store(false, Ordering::SeqCst);
-    pool.base_url(&rec, 4096).await.expect("respawn");
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("respawn");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
 }
 
@@ -234,11 +272,11 @@ async fn concurrent_requests_for_one_model_spawn_exactly_once() {
     let (a, b) = tokio::join!(
         {
             let pool = Arc::clone(&pool);
-            async move { pool.base_url(&record("a"), 4096).await }
+            async move { pool.base_url(&record("a"), 4096, ServerMode::Chat).await }
         },
         {
             let pool = Arc::clone(&pool);
-            async move { pool.base_url(&record("a"), 4096).await }
+            async move { pool.base_url(&record("a"), 4096, ServerMode::Chat).await }
         },
     );
     assert_eq!(a.expect("ready"), b.expect("ready"));
@@ -251,14 +289,55 @@ async fn a_larger_context_request_respawns_but_a_covered_one_reuses() {
     let pool = fast_pool(Arc::clone(&spawner));
     let rec = record("a");
 
-    pool.base_url(&rec, 2048).await.expect("ready");
+    pool.base_url(&rec, 2048, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
     // A larger window than the running 2048 → respawn.
-    pool.base_url(&rec, 4096).await.expect("respawn");
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("respawn");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
     // A smaller window is covered by the running 4096 → reuse.
-    pool.base_url(&rec, 1024).await.expect("reuse");
+    pool.base_url(&rec, 1024, ServerMode::Chat)
+        .await
+        .expect("reuse");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn an_embedding_request_launches_an_embedding_server() {
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+
+    pool.base_url(&record("e"), 2048, ServerMode::Embedding)
+        .await
+        .expect("ready");
+    assert_eq!(*spawner.modes.lock().unwrap(), [ServerMode::Embedding]);
+}
+
+#[tokio::test]
+async fn a_server_in_the_other_mode_is_replaced_not_reused() {
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+    let rec = record("a");
+
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
+    pool.base_url(&rec, 4096, ServerMode::Embedding)
+        .await
+        .expect("respawn");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
+
+    pool.base_url(&rec, 4096, ServerMode::Embedding)
+        .await
+        .expect("reuse");
+    assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *spawner.modes.lock().unwrap(),
+        [ServerMode::Chat, ServerMode::Embedding]
+    );
 }
 
 #[tokio::test]
@@ -267,10 +346,14 @@ async fn evict_forces_a_respawn() {
     let pool = fast_pool(Arc::clone(&spawner));
     let rec = record("a");
 
-    pool.base_url(&rec, 4096).await.expect("ready");
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("ready");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 1);
     pool.evict(&rec.id).await;
-    pool.base_url(&rec, 4096).await.expect("respawn");
+    pool.base_url(&rec, 4096, ServerMode::Chat)
+        .await
+        .expect("respawn");
     assert_eq!(spawner.count.load(Ordering::SeqCst), 2);
 }
 
@@ -283,6 +366,7 @@ async fn a_process_dead_on_arrival_is_unavailable() {
             _gguf: &str,
             _port: u16,
             _ctx: i64,
+            _mode: ServerMode,
         ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
             Ok(Box::new(DeadProcess))
         }
@@ -296,7 +380,10 @@ async fn a_process_dead_on_arrival_is_unavailable() {
     // The readiness poll sees the process already exited → Unavailable, fast.
     let pool =
         LlamaServerPool::new(Arc::new(DeadSpawner)).with_ready_timeout(Duration::from_secs(5));
-    let error = pool.base_url(&record("a"), 4096).await.unwrap_err();
+    let error = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .unwrap_err();
     assert!(matches!(error, RuntimeError::Unavailable(_)));
 }
 
@@ -309,12 +396,16 @@ async fn a_spawn_failure_is_forwarded() {
             _gguf: &str,
             _port: u16,
             _ctx: i64,
+            _mode: ServerMode,
         ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
             Err(RuntimeError::Unavailable("no binary".to_owned()))
         }
     }
     let pool = LlamaServerPool::new(Arc::new(FailingSpawner));
-    let error = pool.base_url(&record("a"), 4096).await.unwrap_err();
+    let error = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .unwrap_err();
     assert!(matches!(error, RuntimeError::Unavailable(_)));
 }
 
@@ -342,6 +433,31 @@ async fn the_adapter_serves_a_chat_end_to_end_through_the_pool() {
     let (chunks, error) = collect(adapter.invoke(&record("a"), Capability::chat(), payload)).await;
     assert!(error.is_none());
     assert_eq!(chunks[0], CapabilityChunk::Text("hi".to_owned()));
+}
+
+#[tokio::test]
+async fn the_adapter_serves_an_embedding_end_to_end_through_the_pool() {
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+    let adapter = LlamaServerAdapter::new(Arc::new(pool));
+
+    let mut rec = ModelRecord::new(
+        "e",
+        Modality::embedding(),
+        vec![Capability::embed()],
+        ModelSource::new(SourceKind::file(), "/models/e.gguf"),
+    );
+    rec.runtime.id = Some(RuntimeId::llama_cpp());
+    let payload = JsonValue::Object(
+        [("input".to_owned(), JsonValue::String("hello".to_owned()))]
+            .into_iter()
+            .collect(),
+    );
+    let (chunks, error) = collect(adapter.invoke(&rec, Capability::embed(), payload)).await;
+    assert!(error.is_none(), "error: {error:?}");
+    assert_eq!(chunks[0], CapabilityChunk::Vector(vec![0.5, 0.25]));
+    assert!(matches!(chunks[1], CapabilityChunk::Done(Some(_))));
+    assert_eq!(*spawner.modes.lock().unwrap(), [ServerMode::Embedding]);
 }
 
 async fn collect(mut stream: ChunkStream) -> (Vec<CapabilityChunk>, Option<RuntimeError>) {

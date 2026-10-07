@@ -53,3 +53,38 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
+
+/// A GGUF string: its little-endian length, then its bytes.
+fn gguf_string(value: &str) -> Vec<u8> {
+    let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(value.as_bytes());
+    bytes
+}
+
+/// A GGUF header key holding a string.
+pub fn kv_string(key: &str, value: &str) -> Vec<u8> {
+    let mut bytes = gguf_string(key);
+    bytes.extend_from_slice(&8u32.to_le_bytes());
+    bytes.extend(gguf_string(value));
+    bytes
+}
+
+/// A GGUF header key holding a `u32`.
+pub fn kv_u32(key: &str, value: u32) -> Vec<u8> {
+    let mut bytes = gguf_string(key);
+    bytes.extend_from_slice(&4u32.to_le_bytes());
+    bytes.extend_from_slice(&value.to_le_bytes());
+    bytes
+}
+
+/// A version 3 GGUF header with no tensors and the given key-value pairs.
+pub fn gguf(kvs: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+    for kv in kvs {
+        bytes.extend_from_slice(kv);
+    }
+    bytes
+}

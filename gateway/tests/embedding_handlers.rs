@@ -4,6 +4,7 @@
 mod common;
 
 use common::MockPort;
+use gateway::error::GatewayErrorKind;
 use gateway::handlers::GatewayHandling;
 use gateway::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
 use gateway::identity::GatewayIdentity;
@@ -197,4 +198,71 @@ async fn ollama_legacy_embeddings_returns_a_single_embedding() {
     // The legacy endpoint returns a flat `embedding`, not an `embeddings` array.
     assert_eq!(value["embedding"][0], 0.5);
     assert!(value.get("embeddings").is_none());
+}
+
+#[tokio::test]
+async fn a_batch_over_the_limit_is_refused_before_any_work() {
+    let port = embed_port(vec![vec![0.1]]);
+    let inputs: Vec<String> = (0..2049).map(|n| format!("text {n}")).collect();
+    for (uri, key) in [("/v1/embeddings", "input"), ("/api/embed", "input")] {
+        let body = serde_json::json!({ "model": "embedder", key: inputs }).to_string();
+        let (responder, _rx) = GatewayResponder::new();
+        let request = request(uri, &body);
+        let identity = identity();
+        let handling = if uri == "/api/embed" {
+            OllamaEmbedHandler.handle(&request, &identity, &port, &responder)
+        } else {
+            OpenAIEmbeddingsHandler.handle(&request, &identity, &port, &responder)
+        };
+        let error = handling.await.unwrap_err();
+        assert_eq!(error.status(), 400, "{uri}");
+        assert_eq!(
+            error.message,
+            "the input holds 2049 items, more than the 2048 one request may embed"
+        );
+    }
+    assert!(port.invoked.lock().unwrap().is_empty());
+
+    let at_limit: Vec<String> = (0..2048).map(|n| format!("text {n}")).collect();
+    let body = serde_json::json!({ "model": "embedder", "input": at_limit }).to_string();
+    let (responder, _rx) = GatewayResponder::new();
+    let error = OpenAIEmbeddingsHandler
+        .handle(
+            &request("/v1/embeddings", &body),
+            &identity(),
+            &port,
+            &responder,
+        )
+        .await
+        .unwrap_err();
+    // Past the limit check: the mock answers one vector for 2048 inputs.
+    assert!(
+        error.message.contains("embeddings for"),
+        "{}",
+        error.message
+    );
+}
+
+#[tokio::test]
+async fn a_client_gone_before_the_vectors_are_in_lets_the_batch_go() {
+    let (mut port, _id) = MockPort::with_ready_model("embedder");
+    port.chunks = vec![CapabilityChunk::Vector(vec![0.1])];
+    port.open_streams = Some(std::sync::Mutex::new(Vec::new()));
+    let (responder, rx) = GatewayResponder::new();
+    drop(rx);
+    let body = r#"{"model":"embedder","input":["a","b"]}"#;
+    let error = OpenAIEmbeddingsHandler
+        .handle(
+            &request("/v1/embeddings", body),
+            &identity(),
+            &port,
+            &responder,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, GatewayErrorKind::ClientClosed);
+    assert_eq!(error.audit_outcome(), "cancelled");
+    let open = port.open_streams.as_ref().unwrap().lock().unwrap();
+    assert_eq!(open.len(), 1);
+    assert!(open[0].is_closed(), "the runtime's stream was kept");
 }

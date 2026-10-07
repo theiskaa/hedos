@@ -52,7 +52,7 @@ async fn a_chat_request_reaches_the_chat_handler() {
         br#"{"model":"llama3","messages":[{"role":"user","content":"hi"}],"stream":false}"#
             .to_vec(),
     );
-    router(port).dispatch(request, &responder).await;
+    router(port).dispatch(&request, &responder).await;
     let (status, out) = collect(rx);
     assert_eq!(status, Some(200));
     assert!(out.contains("chat.completion"));
@@ -63,7 +63,7 @@ async fn models_are_listed_through_the_router() {
     let (port, _id) = MockPort::with_ready_model("llama3");
     let (responder, rx) = GatewayResponder::new();
     let request = GatewayRequest::new("GET", "/v1/models", Vec::new(), Vec::new());
-    router(port).dispatch(request, &responder).await;
+    router(port).dispatch(&request, &responder).await;
     let (status, out) = collect(rx);
     assert_eq!(status, Some(200));
     assert!(out.contains("llama3"));
@@ -74,7 +74,7 @@ async fn an_unknown_path_renders_404() {
     let (port, _id) = MockPort::with_ready_model("llama3");
     let (responder, rx) = GatewayResponder::new();
     let request = GatewayRequest::new("GET", "/nope", Vec::new(), Vec::new());
-    router(port).dispatch(request, &responder).await;
+    router(port).dispatch(&request, &responder).await;
     let (status, out) = collect(rx);
     assert_eq!(status, Some(404));
     assert!(out.contains("no route"));
@@ -86,7 +86,7 @@ async fn a_wrong_method_renders_405() {
     let (responder, rx) = GatewayResponder::new();
     // /v1/chat/completions only answers POST.
     let request = GatewayRequest::new("GET", "/v1/chat/completions", Vec::new(), Vec::new());
-    router(port).dispatch(request, &responder).await;
+    router(port).dispatch(&request, &responder).await;
     let (status, _out) = collect(rx);
     assert_eq!(status, Some(405));
 }
@@ -96,7 +96,7 @@ async fn the_version_handshake_is_served() {
     let (responder, rx) = GatewayResponder::new();
     let request = GatewayRequest::new("GET", "/api/version", Vec::new(), Vec::new());
     router(MockPort::default())
-        .dispatch(request, &responder)
+        .dispatch(&request, &responder)
         .await;
     let (status, out) = collect(rx);
     assert_eq!(status, Some(200));

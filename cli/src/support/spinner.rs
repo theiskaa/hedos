@@ -3,7 +3,7 @@
 //! rather than frozen. Wraps `indicatif`, which ticks on its own thread and so
 //! keeps animating while the command is blocked awaiting the next status.
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::time::Duration;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -54,7 +54,7 @@ impl Spinner {
         if let Some(bar) = &self.bar {
             bar.set_message(message.to_owned());
         } else if !self.silent && self.last.as_deref() != Some(message) {
-            eprintln!("{message}");
+            let _ = writeln!(std::io::stderr(), "{message}");
             self.last = Some(message.to_owned());
         }
     }

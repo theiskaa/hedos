@@ -7,6 +7,7 @@
 use runtime::facade::KernelError;
 use serde_json::{Value, json};
 
+use crate::identity::CANCELLED_OUTCOME;
 use crate::surface::GatewaySurface;
 
 /// The class of failure, which fixes the HTTP status and the wire vocabulary.
@@ -30,6 +31,10 @@ pub enum GatewayErrorKind {
     Timeout,
     /// An unexpected internal failure (500).
     ServerError,
+    /// The client went away before the answer was ready (499, as nginx
+    /// records it). Never sent, since nobody is left to read it: it is what
+    /// the audit log records for a request its client abandoned.
+    ClientClosed,
 }
 
 impl GatewayErrorKind {
@@ -45,6 +50,7 @@ impl GatewayErrorKind {
             Self::Overloaded => "overloaded",
             Self::Timeout => "timeout_error",
             Self::ServerError => "api_error",
+            Self::ClientClosed => "client_closed",
         }
     }
 
@@ -59,7 +65,7 @@ impl GatewayErrorKind {
             Self::Forbidden => "permission_error",
             Self::NotFound => "not_found_error",
             Self::Overloaded => "overloaded_error",
-            Self::Timeout | Self::ServerError => "api_error",
+            Self::Timeout | Self::ServerError | Self::ClientClosed => "api_error",
         }
     }
 
@@ -75,6 +81,7 @@ impl GatewayErrorKind {
             Self::Overloaded => 503,
             Self::Timeout => 504,
             Self::ServerError => 500,
+            Self::ClientClosed => 499,
         }
     }
 
@@ -89,6 +96,7 @@ impl GatewayErrorKind {
             Self::Overloaded => "saturated",
             Self::Timeout => "timeout",
             Self::ServerError => "error",
+            Self::ClientClosed => CANCELLED_OUTCOME,
         }
     }
 
@@ -99,9 +107,11 @@ impl GatewayErrorKind {
             Self::Unauthorized => "authentication_error",
             Self::Forbidden => "permission_error",
             Self::NotFound => "not_found_error",
-            Self::NotSupported | Self::Overloaded | Self::Timeout | Self::ServerError => {
-                "api_error"
-            }
+            Self::NotSupported
+            | Self::Overloaded
+            | Self::Timeout
+            | Self::ServerError
+            | Self::ClientClosed => "api_error",
         }
     }
 
@@ -116,7 +126,8 @@ impl GatewayErrorKind {
             | Self::Unauthorized
             | Self::Forbidden
             | Self::NotFound
-            | Self::ServerError => None,
+            | Self::ServerError
+            | Self::ClientClosed => None,
         }
     }
 }

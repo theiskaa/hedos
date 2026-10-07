@@ -13,7 +13,7 @@ use crate::support::judge;
 use crate::support::output::Out;
 use crate::support::payload;
 use crate::support::session::Session;
-use crate::support::signals;
+use crate::support::signals::Interrupts;
 use crate::support::spinner::Spinner;
 
 /// Arguments for `run`.
@@ -168,6 +168,7 @@ async fn collect_judgment(
     let mut text = String::new();
     let mut cancelled = false;
     let mut spinner = Spinner::start(out);
+    let mut interrupts = Interrupts::new();
     loop {
         tokio::select! {
             received = stream.recv() => match received {
@@ -178,7 +179,7 @@ async fn collect_judgment(
                 },
                 None => break,
             },
-            () = signals::wait_for_ctrl_c() => {
+            () = interrupts.next() => {
                 cancelled = true;
                 break;
             }
@@ -204,6 +205,9 @@ async fn stream_answer(
 
     let mut text = String::new();
     let mut spinner = Spinner::start(out);
+    // One listener for the whole reply: a press between two turns of the
+    // loop would otherwise land on no listener and be lost.
+    let mut interrupts = Interrupts::new();
     loop {
         tokio::select! {
             received = stream.recv() => match received {
@@ -220,7 +224,7 @@ async fn stream_answer(
                 None => break,
             },
             // Ctrl-C cuts the answer short; what streamed so far stands.
-            () = signals::wait_for_ctrl_c() => break,
+            () = interrupts.next() => break,
         }
     }
     spinner.clear();

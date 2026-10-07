@@ -15,7 +15,7 @@ use crate::records::{
     RuntimeId, SourceKind,
 };
 use crate::resolution::format::{
-    GgufFacts, ModelFormat, gguf_architecture_profile, ollama_profile,
+    GgufFacts, GgufPooling, ModelFormat, gguf_architecture_profile, ollama_profile,
 };
 use crate::resolution::gguf::{gguf_facts, has_ggml_magic, has_gguf_magic};
 use crate::resolution::pipelines::{
@@ -244,44 +244,70 @@ fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
         );
     }
     let facts = gguf_facts(base);
-    if let Some(architecture) = facts
-        .as_ref()
-        .and_then(|facts| facts.architecture.as_deref())
-        && let Some(profile) = gguf_architecture_profile(architecture)
-    {
-        let mut capabilities = profile.capabilities;
-        if !has_projector {
-            // The architecture can see, but no image encoder came with these
-            // weights, so nothing here can read a picture. Sight is the
-            // pairing, not the architecture.
-            capabilities.retain(|capability| *capability != Capability::see());
+    let decision = facts.as_ref().is_some_and(|facts| facts.decision.is_some());
+    let pooling = facts.as_ref().and_then(|facts| facts.pooling);
+    let (modality, capabilities, execution) = match pooling {
+        // A header that pools its states into one vector is an embedder,
+        // whatever its architecture: llama.cpp writes the pooling of a decoder
+        // converted to embed (Qwen3-Embedding) under the decoder's own name,
+        // chat template and all. A decision model is never one.
+        Some(GgufPooling::Mean | GgufPooling::Cls | GgufPooling::Last) if !decision => (
+            Modality::embedding(),
+            vec![Capability::embed()],
+            ExecutionMode::Stream,
+        ),
+        // One relevance score per pair: a reranker, read the way a
+        // cross-encoder in safetensors is.
+        Some(GgufPooling::Rank) if !decision => {
+            (Modality::text(), Vec::new(), ExecutionMode::Stream)
         }
-        let mut model = IdentifiedModel::new(
-            ModelFormat::Gguf,
-            Some(profile.modality),
-            capabilities,
-            profile.execution,
-        );
-        apply_facts(&mut model, facts.as_ref());
-        return model;
-    }
-    let capabilities = if has_projector {
-        vec![
-            Capability::chat(),
-            Capability::complete(),
-            Capability::see(),
-        ]
-    } else {
-        vec![Capability::chat(), Capability::complete()]
+        _ => profiled(facts.as_ref(), has_projector),
     };
-    let mut model = IdentifiedModel::new(
-        ModelFormat::Gguf,
-        Some(Modality::text()),
-        capabilities,
-        ExecutionMode::Stream,
-    );
+    let mut model =
+        IdentifiedModel::new(ModelFormat::Gguf, Some(modality), capabilities, execution);
     apply_facts(&mut model, facts.as_ref());
     model
+}
+
+/// What a GGUF whose header pools nothing into one vector is: its
+/// architecture's profile, or a text chat model when the table does not know
+/// the architecture.
+fn profiled(
+    facts: Option<&GgufFacts>,
+    has_projector: bool,
+) -> (Modality, Vec<Capability>, ExecutionMode) {
+    let Some(profile) = facts
+        .and_then(|facts| facts.architecture.as_deref())
+        .and_then(gguf_architecture_profile)
+    else {
+        let mut capabilities = vec![Capability::chat(), Capability::complete()];
+        if has_projector {
+            capabilities.push(Capability::see());
+        }
+        return (Modality::text(), capabilities, ExecutionMode::Stream);
+    };
+    let mut capabilities = profile.capabilities;
+    let mut modality = profile.modality;
+    if !has_projector {
+        // The architecture can see, but no image encoder came with these
+        // weights, so nothing here can read a picture. Sight is the pairing,
+        // not the architecture.
+        capabilities.retain(|capability| *capability != Capability::see());
+    }
+    if capabilities == [Capability::embed()] {
+        // An encoder that pools nothing into one vector cannot embed through
+        // llama.cpp, which pools nothing when the header names no pooling. One
+        // carrying a decision head (Laya) scores typed questions and, until
+        // decision models are served, claims nothing; so does one carrying a
+        // classifier head, a reranker converted without its pooling. What is
+        // left returns a state per token, as the text encoder of a diffusion
+        // pipeline does: a component.
+        capabilities.clear();
+        if facts.is_some_and(|facts| facts.decision.is_some() || facts.has_classifier_head) {
+            modality = Modality::text();
+        }
+    }
+    (modality, capabilities, profile.execution)
 }
 
 fn identify_safetensors(

@@ -23,7 +23,7 @@ use kernel::records::ModelRecord;
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::RuntimeError;
-use super::llama_server::{BackendFuture, LlamaBackend, model_gguf_path};
+use super::llama_server::{BackendFuture, EmbedderKind, LlamaBackend, ServerMode, model_gguf_path};
 
 const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -38,15 +38,60 @@ pub trait ServerProcess: Send + Sync {
 /// Spawns a `llama-server`-compatible process bound to a port. Injected so the pool
 /// is testable without the real binary.
 pub trait ServerSpawner: Send + Sync {
-    /// Spawn a server for `gguf_path`, bound to `port`, sized to `context_tokens`.
-    /// The production implementation uses `tokio::process`, so it must be called
-    /// from within a Tokio runtime (the pool always calls it from an async task).
+    /// Spawn a server for `gguf_path` in `mode`, bound to `port`, sized to
+    /// `context_tokens`. The production implementation uses `tokio::process`, so
+    /// it must be called from within a Tokio runtime (the pool always calls it
+    /// from an async task).
     fn spawn(
         &self,
         gguf_path: &str,
         port: u16,
         context_tokens: i64,
+        mode: ServerMode,
     ) -> Result<Box<dyn ServerProcess>, RuntimeError>;
+}
+
+/// The `llama-server` arguments that load `gguf_path` on `port` with a
+/// `context_tokens` window: for chat, or for embeddings when `embedder` names
+/// the kind of embedder it is. `--pooling` is never passed, so an embedder
+/// pools the way its own header says.
+fn launch_args(
+    gguf_path: &str,
+    port: u16,
+    context_tokens: i64,
+    embedder: Option<EmbedderKind>,
+) -> Vec<String> {
+    let context = context_tokens.to_string();
+    let mut args = vec![
+        "--model".to_owned(),
+        gguf_path.to_owned(),
+        "--port".to_owned(),
+        port.to_string(),
+        "--host".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--ctx-size".to_owned(),
+        context.clone(),
+    ];
+    if let Some(kind) = embedder {
+        // A non-causal encoder reads a whole input in one physical batch, so a
+        // batch smaller than the window fails any longer input outright.
+        args.extend([
+            "--embedding".to_owned(),
+            "--ubatch-size".to_owned(),
+            context.clone(),
+            "--batch-size".to_owned(),
+            context,
+        ]);
+        // A cached embedder's slots share one KV cache of the window's size:
+        // inputs that fit it alone overflow it together, which llama-server
+        // answers by crashing. llama.cpp keeps no memory for an encoder such
+        // as BERT, so its server keeps llama-server's slots, which embed
+        // several short inputs at once.
+        if matches!(kind, EmbedderKind::Decoder { .. }) {
+            args.extend(["--parallel".to_owned(), "1".to_owned()]);
+        }
+    }
+    args
 }
 
 /// The production spawner: runs the `llama-server` binary.
@@ -92,16 +137,11 @@ impl ServerSpawner for LlamaServerSpawner {
         gguf_path: &str,
         port: u16,
         context_tokens: i64,
+        mode: ServerMode,
     ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+        let embedder = (mode == ServerMode::Embedding).then(|| EmbedderKind::of(gguf_path));
         let child = tokio::process::Command::new(&self.binary)
-            .arg("--model")
-            .arg(gguf_path)
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--ctx-size")
-            .arg(context_tokens.to_string())
+            .args(launch_args(gguf_path, port, context_tokens, embedder))
             .args(&self.extra_args)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -146,6 +186,9 @@ struct Running {
     /// The `--ctx-size` this server was launched with. A request needing a larger
     /// window respawns rather than reusing a too-small server.
     context_tokens: i64,
+    /// What the server was launched to do; a request for the other mode
+    /// replaces it.
+    mode: ServerMode,
     process: Box<dyn ServerProcess>,
 }
 
@@ -191,53 +234,65 @@ impl LlamaServerPool {
 }
 
 impl LlamaBackend for LlamaServerPool {
-    fn base_url(&self, record: &ModelRecord, context_tokens: i64) -> BackendFuture {
+    fn base_url(
+        &self,
+        record: &ModelRecord,
+        context_tokens: i64,
+        mode: ServerMode,
+    ) -> BackendFuture {
         let spawner = Arc::clone(&self.spawner);
         let client = self.client.clone();
         let slots = Arc::clone(&self.slots);
         let ready_timeout = self.ready_timeout;
         // Clone only what `ensure` needs, not the whole record.
-        let model_id = record.id.clone();
-        let gguf = model_gguf_path(record).to_owned();
-        Box::pin(async move {
-            ensure(
-                &spawner,
-                &client,
-                &slots,
-                ready_timeout,
-                &model_id,
-                &gguf,
-                context_tokens,
-            )
-            .await
-        })
+        let wanted = Wanted {
+            model_id: record.id.clone(),
+            gguf: model_gguf_path(record).to_owned(),
+            context_tokens,
+            mode,
+        };
+        Box::pin(async move { ensure(&spawner, &client, &slots, ready_timeout, &wanted).await })
     }
 }
 
-/// Ensure a ready server exists for `model_id` (weights at `gguf`), returning its
-/// base URL. Reuses a live server whose context window covers `context_tokens`
-/// and still answers `/health`; otherwise allocates a port, spawns, and waits for
-/// readiness (a too-small or wedged server is replaced — dropping the old
-/// `Running` reaps it).
+/// The server a request needs: whose weights, how large a window, which mode.
+struct Wanted {
+    model_id: String,
+    gguf: String,
+    context_tokens: i64,
+    mode: ServerMode,
+}
+
+/// Ensure a ready server exists for the `wanted` model in its mode, returning
+/// its base URL. Reuses a live server in that mode whose context window covers
+/// the one wanted and still answers `/health`; otherwise allocates a port,
+/// spawns, and waits for readiness (a too-small, other-mode, or wedged server is
+/// replaced, and dropping the old `Running` reaps it).
 async fn ensure(
     spawner: &Arc<dyn ServerSpawner>,
     client: &reqwest::Client,
     slots: &StdMutex<HashMap<String, Arc<Slot>>>,
     ready_timeout: Duration,
-    model_id: &str,
-    gguf: &str,
-    context_tokens: i64,
+    wanted: &Wanted,
 ) -> Result<String, RuntimeError> {
+    let Wanted {
+        model_id,
+        gguf,
+        context_tokens,
+        mode,
+    } = wanted;
+    let (context_tokens, mode) = (*context_tokens, *mode);
     // Brief lock to get-or-create this model's slot; not held across the spawn.
     let slot = {
         let mut slots = slots
             .lock()
             .map_err(|_| RuntimeError::Failed("llama pool lock poisoned".to_owned()))?;
-        Arc::clone(slots.entry(model_id.to_owned()).or_default())
+        Arc::clone(slots.entry(model_id.clone()).or_default())
     };
     let mut guard = slot.server.lock().await;
     if let Some(running) = guard.as_ref()
         && running.process.is_alive()
+        && running.mode == mode
         && running.context_tokens >= context_tokens
         && healthy_for_reuse(client, &running.base_url).await
     {
@@ -245,13 +300,14 @@ async fn ensure(
     }
 
     let port = free_port()?;
-    let process = spawner.spawn(gguf, port, context_tokens)?;
+    let process = spawner.spawn(gguf, port, context_tokens, mode)?;
     let base_url = format!("http://127.0.0.1:{port}");
     // If readiness fails, `process` drops here → the OS reaps it (kill_on_drop).
     wait_ready(client, &base_url, process.as_ref(), ready_timeout).await?;
     *guard = Some(Running {
         base_url: base_url.clone(),
         context_tokens,
+        mode,
         process,
     });
     Ok(base_url)
@@ -331,7 +387,7 @@ mod tests {
         // A bare command name that isn't on PATH: the OS returns ENOENT, which
         // must not reach the user verbatim.
         let spawner = LlamaServerSpawner::new("llama-server-definitely-not-installed");
-        match spawner.spawn("/tmp/model.gguf", 61234, 2048) {
+        match spawner.spawn("/tmp/model.gguf", 61234, 2048, ServerMode::Chat) {
             Err(RuntimeError::Unavailable(message)) => {
                 assert!(message.contains("isn't installed"), "message: {message}");
                 assert!(message.contains("PATH"), "message: {message}");
@@ -339,6 +395,65 @@ mod tests {
             }
             Err(other) => panic!("expected Unavailable, got {other:?}"),
             Ok(_) => panic!("spawning a missing binary must fail"),
+        }
+    }
+
+    #[test]
+    fn chat_launch_args_are_unchanged() {
+        assert_eq!(
+            launch_args("/m.gguf", 8080, 4096, None),
+            [
+                "--model",
+                "/m.gguf",
+                "--port",
+                "8080",
+                "--host",
+                "127.0.0.1",
+                "--ctx-size",
+                "4096",
+            ]
+        );
+    }
+
+    #[test]
+    fn embedding_launch_args_size_the_batch_to_the_window_with_one_slot_for_a_decoder() {
+        let decoders = [
+            EmbedderKind::Decoder { pools_last: true },
+            EmbedderKind::Decoder { pools_last: false },
+        ];
+        for kind in decoders.into_iter().chain([EmbedderKind::Encoder]) {
+            let args = launch_args("/e.gguf", 8080, 2048, Some(kind));
+            assert!(args.contains(&"--embedding".to_owned()));
+            let after = |flag: &str| {
+                args.iter()
+                    .position(|arg| arg == flag)
+                    .and_then(|index| args.get(index + 1))
+                    .map(String::as_str)
+            };
+            assert_eq!(after("--ubatch-size"), Some("2048"), "{kind:?}");
+            assert_eq!(after("--batch-size"), Some("2048"), "{kind:?}");
+            assert_eq!(after("--ctx-size"), Some("2048"), "{kind:?}");
+            let one_slot = (kind != EmbedderKind::Encoder).then_some("1");
+            assert_eq!(after("--parallel"), one_slot, "{kind:?}");
+            assert!(!args.iter().any(|arg| arg == "--pooling"));
+        }
+    }
+
+    #[test]
+    fn only_an_embedder_llama_cpp_keeps_no_memory_for_keeps_its_slots() {
+        let parallel = |architecture: &str| {
+            let kind = EmbedderKind::from_header(Some(architecture), None);
+            let args = launch_args("/e.gguf", 8080, 2048, Some(kind));
+            args.iter()
+                .position(|arg| arg == "--parallel")
+                .and_then(|index| args.get(index + 1))
+                .cloned()
+        };
+        for cached in ["llama-embed", "t5encoder", "qwen3"] {
+            assert_eq!(parallel(cached).as_deref(), Some("1"), "{cached}");
+        }
+        for memoryless in ["bert", "nomic-bert", "gemma-embedding"] {
+            assert_eq!(parallel(memoryless), None, "{memoryless}");
         }
     }
 

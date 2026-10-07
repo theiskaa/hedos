@@ -55,7 +55,7 @@ An interactive session that reads turns from stdin and streams each reply. Press
 
 ### `hedos serve`
 
-Start the OpenAI-, Ollama-, and Anthropic-compatible gateway on loopback and block until Ctrl-C. Prints the base URL. See the [gateway guide](gateway.md).
+Start the OpenAI-, Ollama-, and Anthropic-compatible gateway on loopback and block until Ctrl-C, SIGTERM, or SIGHUP. Prints the base URL. Ctrl-C waits for the requests in flight and a second Ctrl-C ends them; a termination waits 5 seconds. See the [gateway guide](gateway.md).
 
 - `-p, --port <n>` overrides the port (the default comes from settings, else `43367`).
 

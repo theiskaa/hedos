@@ -53,6 +53,10 @@ impl GatewayIdentity {
 /// and cannot silently drift apart.
 pub(crate) const OK_OUTCOME: &str = "ok";
 
+/// The audit outcome label written for a request its client abandoned before
+/// the answer was ready, which neither the gateway nor the model failed.
+pub(crate) const CANCELLED_OUTCOME: &str = "cancelled";
+
 /// The result a handler reports for the audit log: the HTTP status, an outcome
 /// label, and the model and capability that were served.
 #[derive(Debug, Clone, PartialEq, Eq)]

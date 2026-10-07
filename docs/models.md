@@ -39,7 +39,7 @@ The preview is honest about what remains. If duplicate copies of the same weight
 
 A model resolves to whichever of these fits it, and each serves only when its backend is present:
 
-- **local GGUF** through a `llama-server` subprocess, for `.gguf` files.
+- **local GGUF** through a `llama-server` subprocess, for `.gguf` files: chat models, and the models that only embed, which answer on `/v1/embeddings` and `/api/embed` from a server started for embeddings. A GGUF embeds when its header pools its output to one vector (mean, cls, or last), whatever its architecture: the encoders (BERT, nomic-bert, jina, and similar) and the decoders converted to embed (Qwen3-Embedding) alike, and such a model never chats. One whose header ranks (a reranker such as Qwen3-Reranker), an encoder that names no pooling (a diffusion pipeline's text encoder, or a reranker converted without its pooling), and one that carries a decision head are not embedders and stay unresolved.
 - **Ollama** for models the daemon manages.
 - **OpenAI-compatible endpoints** for remote models reached by URL and key.
 - **Python sidecars** for mlx-lm, mlx-vlm, speech, embeddings, diffusers, and mflux.

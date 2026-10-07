@@ -85,6 +85,13 @@ pub trait GatewayPort: Send + Sync {
         id: &'a str,
     ) -> PortFuture<'a, Result<Option<Vec<u8>>, KernelError>>;
 
+    /// The context window to advertise for `record`: what it is served at
+    /// when that is narrower than its own (for an embedder, the most tokens
+    /// one input may hold), otherwise the one it declares.
+    fn served_window(&self, record: &ModelRecord) -> Option<i64> {
+        record.context_length
+    }
+
     /// Whether the machine can admit a request for a model of the given
     /// footprint and work kind right now.
     fn admission_state<'a>(

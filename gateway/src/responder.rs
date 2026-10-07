@@ -50,6 +50,12 @@ impl GatewayResponder {
         self.started.load(Ordering::Acquire)
     }
 
+    /// Resolve once nothing reads the response any more: the client went
+    /// away, or the server stopped waiting on it.
+    pub async fn closed(&self) {
+        self.tx.closed().await;
+    }
+
     /// Claim the right to send the head; `true` for the first caller only.
     fn start(&self) -> bool {
         !self.started.swap(true, Ordering::AcqRel)

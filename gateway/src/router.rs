@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use kernel::records::JsonValue;
+
 use crate::admission::GatewayCounter;
 use crate::audit::{Auditing, GatewayAuditEntry};
 use crate::auth::Authenticating;
@@ -215,15 +217,15 @@ impl GatewayRouter {
     }
 
     /// Serve one request: authenticate, route, audit, and render an error if the
-    /// handler failed before it began responding.
-    pub async fn dispatch(&self, request: GatewayRequest, responder: &GatewayResponder) {
+    /// handler failed before it began responding and its client is still there.
+    pub async fn dispatch(&self, request: &GatewayRequest, responder: &GatewayResponder) {
         let started = now_unix_millis();
         let surface = GatewaySurface::for_path(&request.path);
 
-        let identity = match self.auth.authenticate(&request).await {
+        let identity = match self.auth.authenticate(request).await {
             Ok(identity) => identity,
             Err(error) => {
-                let entry = self.error_entry(&request, None, &error, started);
+                let entry = self.error_entry(request, None, &error, started);
                 if error.status() == 401 {
                     self.audit.append_unauthorized(entry);
                 } else {
@@ -234,14 +236,14 @@ impl GatewayRouter {
             }
         };
 
-        match self.route(&request, &identity, responder).await {
+        match self.route(request, &identity, responder).await {
             Ok(outcome) => self
                 .audit
-                .append(self.ok_entry(&request, &identity, &outcome, started)),
+                .append(self.ok_entry(request, &identity, &outcome, started)),
             Err(error) => {
                 self.audit
-                    .append(self.error_entry(&request, Some(&identity), &error, started));
-                if !responder.has_started() {
+                    .append(self.error_entry(request, Some(&identity), &error, started));
+                if !responder.has_started() && error.kind != GatewayErrorKind::ClientClosed {
                     self.render(&error, surface, responder);
                 }
             }
@@ -294,6 +296,30 @@ impl GatewayRouter {
             .await
     }
 
+    /// End `request`, dispatched at `started`, that the gateway stopped
+    /// serving before it was done. One not answered yet gets a `503` in the
+    /// dialect of the route it came to; a streamed answer has already started
+    /// and simply ends. Either way the audit log records it as cut short by
+    /// the stop, which is the only record of it an operator has, with the
+    /// client its credentials name and the model its body asked for, where
+    /// those can be read.
+    pub async fn stopped(
+        &self,
+        request: &GatewayRequest,
+        started: i64,
+        responder: &GatewayResponder,
+    ) {
+        let error = GatewayError::new(GatewayErrorKind::Overloaded, "the gateway is stopping");
+        let identity = self.auth.authenticate(request).await.ok();
+        let mut entry = self.error_entry(request, identity.as_ref(), &error, started);
+        entry.model = requested_model(request);
+        entry.detail = Some(error.message.clone());
+        self.audit.append(entry);
+        if !responder.has_started() {
+            self.render(&error, GatewaySurface::for_path(&request.path), responder);
+        }
+    }
+
     fn render(&self, error: &GatewayError, surface: GatewaySurface, responder: &GatewayResponder) {
         let mut extra_headers = Vec::new();
         if let Some(retry) = error.retry_after_seconds {
@@ -339,8 +365,13 @@ impl GatewayRouter {
     ) -> GatewayAuditEntry {
         let now = now_unix_millis();
         // A server error's message can carry internals; keep it only in the audit
-        // detail, never on the wire.
-        let detail = (error.kind == GatewayErrorKind::ServerError).then(|| error.message.clone());
+        // detail, never on the wire. Why a client's request ended is never
+        // sent at all, so the audit is the only place it is kept.
+        let detail = matches!(
+            error.kind,
+            GatewayErrorKind::ServerError | GatewayErrorKind::ClientClosed
+        )
+        .then(|| error.message.clone());
         GatewayAuditEntry {
             ts_millis: now,
             client: identity.map(|identity| identity.client_id.clone()),
@@ -354,5 +385,13 @@ impl GatewayRouter {
             duration_ms: now - started,
             detail,
         }
+    }
+}
+
+/// The model a JSON request body names, if it names one.
+fn requested_model(request: &GatewayRequest) -> Option<String> {
+    match request.decoded_json().ok()?.remove("model")? {
+        JsonValue::String(model) => Some(model),
+        _ => None,
     }
 }

@@ -88,7 +88,7 @@ async fn post(port: &Arc<MockPort>, body: &str) -> Response {
     ];
     let request = GatewayRequest::new("POST", "/v1/systemone", headers, body.as_bytes().to_vec());
     let (responder, mut rx) = GatewayResponder::new();
-    router.dispatch(request, &responder).await;
+    router.dispatch(&request, &responder).await;
     let mut response = Response {
         status: None,
         headers: Vec::new(),

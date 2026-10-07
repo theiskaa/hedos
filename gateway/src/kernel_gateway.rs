@@ -101,6 +101,12 @@ impl GatewayPort for KernelGateway {
         Box::pin(self.kernel.artifact_data(id))
     }
 
+    fn served_window(&self, record: &ModelRecord) -> Option<i64> {
+        self.kernel
+            .embedding_window(record)
+            .or(record.context_length)
+    }
+
     fn admission_state<'a>(
         &'a self,
         model_id: &'a str,

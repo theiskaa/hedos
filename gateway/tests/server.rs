@@ -89,6 +89,16 @@ async fn an_unknown_route_is_404_over_http() {
     assert_eq!(response.status(), 404);
 }
 
+/// An audit sink that keeps every entry.
+#[derive(Clone, Default)]
+struct KeptAudit(Arc<std::sync::Mutex<Vec<GatewayAuditEntry>>>);
+
+impl Auditing for KeptAudit {
+    fn append(&self, entry: GatewayAuditEntry) {
+        self.0.lock().unwrap().push(entry);
+    }
+}
+
 /// A `flush`-recording audit sink.
 struct FlagAudit(Arc<AtomicBool>);
 
@@ -115,4 +125,88 @@ async fn a_graceful_shutdown_flushes_the_audit_log() {
         .await
         .unwrap();
     assert!(flushed.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn a_cut_answers_what_is_unanswered_and_closes_what_streams() {
+    let (mut port, _id) = MockPort::with_ready_model("llama3");
+    port.chunks = vec![CapabilityChunk::Text("hel".to_owned())];
+    port.open_streams = Some(std::sync::Mutex::new(Vec::new()));
+    let port = Arc::new(port);
+    let audit = KeptAudit::default();
+    let router = Arc::new(GatewayRouter::new(
+        Arc::clone(&port) as Arc<dyn GatewayPort>,
+        Box::new(OpenAuth),
+        Box::new(audit.clone()),
+        standard_routes(),
+        4,
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let (cut, cut_off) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(server::serve_with_cut(
+        listener,
+        router,
+        async {
+            let _ = stopped.await;
+        },
+        async {
+            let _ = cut_off.await;
+        },
+    ));
+
+    let client = reqwest::Client::new();
+    let chat = |stream: bool| {
+        client
+            .post(format!("{base}/v1/chat/completions"))
+            .header("Content-Type", "application/json")
+            .body(format!(
+                r#"{{"model":"llama3","messages":[{{"role":"user","content":"hi"}}],"stream":{stream}}}"#
+            ))
+            .send()
+    };
+    let streamed = chat(true).await.unwrap();
+    assert_eq!(streamed.status(), 200);
+    let unanswered = tokio::spawn(chat(false));
+    let open = || port.open_streams.as_ref().unwrap().lock().unwrap().len();
+    let both_open = async {
+        while open() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), both_open)
+        .await
+        .expect("both requests reached the model");
+
+    let _ = stop.send(());
+    let _ = cut.send(());
+    let body = streamed
+        .text()
+        .await
+        .expect("a streamed body that ends cleanly");
+    assert!(body.contains("hel"), "{body}");
+    let unanswered = unanswered.await.unwrap().unwrap();
+    assert_eq!(unanswered.status(), 503);
+    let refusal: serde_json::Value = unanswered.json().await.unwrap();
+    assert_eq!(refusal["error"]["message"], "the gateway is stopping");
+    tokio::time::timeout(std::time::Duration::from_secs(5), serving)
+        .await
+        .expect("the server ends once the cut requests are answered")
+        .unwrap()
+        .unwrap();
+    let streams = port.open_streams.as_ref().unwrap().lock().unwrap();
+    assert!(
+        streams.iter().all(|sender| sender.is_closed()),
+        "the work behind a cut request was kept"
+    );
+    let entries = audit.0.lock().unwrap();
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    for entry in entries.iter() {
+        assert_eq!(entry.route, "/v1/chat/completions");
+        assert_eq!((entry.status, entry.outcome.as_str()), (503, "saturated"));
+        assert_eq!(entry.detail.as_deref(), Some("the gateway is stopping"));
+        assert_eq!(entry.model.as_deref(), Some("llama3"));
+        assert_eq!(entry.client.as_deref(), Some("local"));
+    }
 }

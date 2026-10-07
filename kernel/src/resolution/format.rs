@@ -54,6 +54,49 @@ pub struct GgufFacts {
     /// The weight type `general.file_type` names, as llama.cpp spells it
     /// (`Q4_K_M`, `Q8_0`, `F16`), when the header carries a known one.
     pub quantization: Option<String>,
+    /// How the model pools its token states into one output, from
+    /// `{arch}.pooling_type`, when the header names a value llama.cpp knows.
+    pub pooling: Option<GgufPooling>,
+    /// The `{arch}.decision.type` a decision model's header names (`clef`,
+    /// `laya`): a model that answers typed questions with probabilities, and
+    /// neither chats nor embeds whatever its architecture.
+    pub decision: Option<String>,
+    /// Whether the weights carry a classification head (a `cls.weight` or
+    /// `cls.output.weight` tensor), which is what a reranker scores a pair with.
+    pub has_classifier_head: bool,
+}
+
+/// How a model pools its per-token states into one output, as llama.cpp's
+/// `llama_pooling_type` names it. Which one a GGUF declares decides what
+/// llama-server can hand back for it, whether the model is an encoder or a
+/// decoder converted to embed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GgufPooling {
+    /// No pooling: the model returns a state per token, never one vector.
+    None,
+    /// The mean of the token states.
+    Mean,
+    /// The state of the leading classification token.
+    Cls,
+    /// The state of the last token.
+    Last,
+    /// A relevance score for a query and document pair: a reranker.
+    Rank,
+}
+
+impl GgufPooling {
+    /// The pooling a `{arch}.pooling_type` value names; `None` for a value
+    /// llama.cpp does not define, its `unspecified` (-1) included.
+    pub(crate) fn from_llama(value: i64) -> Option<Self> {
+        Some(match value {
+            0 => Self::None,
+            1 => Self::Mean,
+            2 => Self::Cls,
+            3 => Self::Last,
+            4 => Self::Rank,
+            _ => return None,
+        })
+    }
 }
 
 /// The known-architecture profile for a GGUF `general.architecture` value.
