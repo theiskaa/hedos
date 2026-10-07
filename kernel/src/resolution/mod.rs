@@ -15,7 +15,7 @@ pub use format::{
 };
 pub use gguf::{gguf_facts, gguf_general_architecture, has_ggml_magic, has_gguf_magic};
 pub use identification_cache::IdentificationCache;
-pub use identity::{IdentifiedModel, RuntimeBid, identify};
+pub use identity::{IdentifiedModel, RuntimeBid, identify, projector_for};
 pub use pipelines::{
     DiffusersPipelineProfile, PipelineFamily, PipelineFamilyRegistry, PipelineRefinement,
     SchedulerFacts,

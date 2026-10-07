@@ -30,7 +30,7 @@ use crate::adapters::{ChunkStream, JobRunning, JobStream, RuntimeAdapter, Runtim
 use crate::governor::MemoryGovernor;
 use crate::jobs::{JobError, JobScheduler, Runner, RunnerStream};
 use crate::manifests::StoreLoad;
-use crate::resolution::{ResolutionEngine, ResolutionExplanation};
+use crate::resolution::{ResolutionEngine, ResolutionExplanation, StrandedModels};
 
 /// A model window's implicit completion length when the caller sets no
 /// `max_tokens`. A clamp at or above this is only written back when the caller
@@ -42,31 +42,41 @@ const IMPLICIT_MAX_TOKENS: i64 = 4096;
 /// stranded have been resolved.
 const STRANDED_EMBEDDERS_MIGRATION: u32 = 1;
 
-/// How many times the first read of a shelf resolves its stranded embedders
-/// when another process keeps writing the store under it.
-const STRANDED_EMBEDDERS_ATTEMPTS: usize = 3;
+/// The registry's migration level once the decision GGUFs an older shelf
+/// served as chat models or left unresolved have been resolved as judges.
+const DECISION_MODELS_MIGRATION: u32 = 2;
 
-/// Resolve the GGUF embedders an older shelf stranded, unless the store says
-/// that already ran, and record that it did. It is recorded only when the
-/// pass read every file it looked for that is there, so one still being
-/// written is looked at again by the next process, and only over the store
-/// the pass read: one another process wrote meanwhile is migrated again.
-fn resolve_stranded_embedders(engine: &ResolutionEngine, registry: &mut Registry) {
-    for _ in 0..STRANDED_EMBEDDERS_ATTEMPTS {
-        if registry.migration_level() >= STRANDED_EMBEDDERS_MIGRATION {
+/// How many times the first read of a shelf runs one migration when another
+/// process keeps writing the store under it.
+const MIGRATION_ATTEMPTS: usize = 3;
+
+/// One stranded-model pass of the resolution engine.
+type StrandedPass = fn(&ResolutionEngine, &mut Registry) -> Result<StrandedModels, RegistryError>;
+
+/// Run `pass` to bring the store to migration `level`, unless it is there
+/// already, and record that it did. The pass changes what it can whatever
+/// level the store is at, so a file a lower level could not read never holds
+/// up this one's rows. The level is recorded only over the one below it, only
+/// when the pass read every file it looked for that is there, so one still
+/// being written is looked at again by the next process, and only over the
+/// store the pass read: one another process wrote meanwhile is migrated again.
+fn migrate(engine: &ResolutionEngine, registry: &mut Registry, level: u32, pass: StrandedPass) {
+    for _ in 0..MIGRATION_ATTEMPTS {
+        let reached = registry.migration_level();
+        if reached >= level {
             return;
         }
         let mut migrated = registry.records();
-        let Ok(pass) = engine.resolve_stranded_embedders(registry) else {
+        let Ok(pass) = pass(engine, registry) else {
             return;
         };
-        if pass.unread > 0 {
+        if pass.unread > 0 || reached + 1 < level {
             return;
         }
         for record in pass.changed {
             migrated.insert(record.id.clone(), record);
         }
-        match registry.mark_migrated(STRANDED_EMBEDDERS_MIGRATION, &migrated) {
+        match registry.mark_migrated(level, &migrated) {
             Ok(false) => continue,
             Ok(true) | Err(_) => return,
         }
@@ -467,9 +477,11 @@ impl Kernel {
         // refold `tools` for records that predate it (or a fold-rule change)
         // and take back the cross-encoders it registered as embedders. Once
         // per shelf, resolve the GGUF embedders it left unresolved or served
-        // as chat models: that re-reads the header of every llama.cpp chat
-        // model, so the store records that it ran. A failed migration serves
-        // the shelf as it stands, exactly as before the migration existed.
+        // as chat models, then the decision GGUFs it did the same to. Both
+        // re-read the header of every llama.cpp chat model, and the second
+        // also re-identifies every unresolved record, so the store records
+        // that each ran. A failed migration serves the shelf as it stands,
+        // exactly as before the migration existed.
         if !self
             .shelf_migrated
             .swap(true, std::sync::atomic::Ordering::Relaxed)
@@ -477,7 +489,18 @@ impl Kernel {
             let engine = self.engine();
             let _ = engine.refold_tool_capability(&mut registry);
             let _ = engine.reclassify_cross_encoders(&mut registry);
-            resolve_stranded_embedders(&engine, &mut registry);
+            migrate(
+                &engine,
+                &mut registry,
+                STRANDED_EMBEDDERS_MIGRATION,
+                ResolutionEngine::resolve_stranded_embedders,
+            );
+            migrate(
+                &engine,
+                &mut registry,
+                DECISION_MODELS_MIGRATION,
+                ResolutionEngine::resolve_stranded_judges,
+            );
         }
         let generation = registry.generation();
         // Built while the registry is still locked, so the generation read above
@@ -750,22 +773,26 @@ mod tests {
         }
     }
 
+    /// A ready chat model, which neither migration selects.
     fn chat_record(store: &Path, name: &str) -> ModelRecord {
         let path = store.join(name);
-        ModelRecord::new(
+        let mut record = ModelRecord::new(
             name,
             Modality::text(),
             vec![Capability::chat()],
             ModelSource::new(SourceKind::file(), &path.to_string_lossy()),
-        )
+        );
+        record.state = ModelState::Ready;
+        record
     }
 
-    /// Run the migration over a store holding one stranded embedder whose
-    /// file is gone, with another writer that writes `writes` times while it
-    /// runs. Returns how many passes planned that row and the level marked.
-    fn migrate_while_written(writes: usize) -> (usize, u32) {
+    /// Run migration `level` by `pass` over a store at the level below it
+    /// holding one stranded embedder whose file is gone, with another writer
+    /// that writes `writes` times while it runs. Returns how many passes
+    /// planned that row and the level marked.
+    fn migrate_while_written(level: u32, pass: StrandedPass, writes: usize) -> (usize, u32) {
         let store = std::env::temp_dir().join(format!(
-            "hedos-facade-migration-{}-{writes}",
+            "hedos-facade-migration-{}-{level}-{writes}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&store);
@@ -781,6 +808,10 @@ mod tests {
         );
         stranded.state = ModelState::Unresolved;
         registry.register(stranded).unwrap();
+        if level > 1 {
+            let records = registry.records();
+            assert!(registry.mark_migrated(level - 1, &records).unwrap());
+        }
         let interloper = Arc::new(Interloper {
             id: RuntimeId::from("interloper"),
             store: store.clone(),
@@ -788,22 +819,38 @@ mod tests {
             planned: AtomicUsize::new(0),
         });
         let engine = ResolutionEngine::new(vec![interloper.clone()]);
-        resolve_stranded_embedders(&engine, &mut registry);
-        let level = Registry::open(&store).unwrap().migration_level();
+        migrate(&engine, &mut registry, level, pass);
+        let reached = Registry::open(&store).unwrap().migration_level();
         let _ = std::fs::remove_dir_all(&store);
-        (interloper.planned.load(Ordering::Relaxed), level)
+        (interloper.planned.load(Ordering::Relaxed), reached)
     }
+
+    /// Each migration level with the pass that reaches it.
+    const LEVELS: [(u32, StrandedPass); 2] = [
+        (
+            STRANDED_EMBEDDERS_MIGRATION,
+            ResolutionEngine::resolve_stranded_embedders,
+        ),
+        (
+            DECISION_MODELS_MIGRATION,
+            ResolutionEngine::resolve_stranded_judges,
+        ),
+    ];
 
     #[test]
     fn a_store_written_during_the_migration_is_migrated_again_then_marked() {
-        assert_eq!(migrate_while_written(0), (1, STRANDED_EMBEDDERS_MIGRATION));
-        assert_eq!(migrate_while_written(1), (2, STRANDED_EMBEDDERS_MIGRATION));
+        for (level, pass) in LEVELS {
+            assert_eq!(migrate_while_written(level, pass, 0), (1, level));
+            assert_eq!(migrate_while_written(level, pass, 1), (2, level));
+        }
     }
 
     #[test]
     fn a_store_written_on_every_pass_is_left_unmarked_after_the_last_attempt() {
-        let (planned, level) = migrate_while_written(usize::MAX);
-        assert_eq!(planned, STRANDED_EMBEDDERS_ATTEMPTS);
-        assert_eq!(level, 0);
+        for (level, pass) in LEVELS {
+            let (planned, reached) = migrate_while_written(level, pass, usize::MAX);
+            assert_eq!(planned, MIGRATION_ATTEMPTS, "{level}");
+            assert_eq!(reached, level - 1, "{level}");
+        }
     }
 }

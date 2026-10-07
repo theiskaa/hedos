@@ -12,7 +12,7 @@ use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 use tokio::sync::mpsc;
 
 use super::{
-    ChunkStream, MAX_EMBEDDINGS_BYTES, MAX_ERROR_BYTES, RuntimeAdapter, RuntimeError, capped_body,
+    ChunkStream, MAX_ERROR_BYTES, MAX_JSON_BODY_BYTES, RuntimeAdapter, RuntimeError, capped_body,
 };
 
 /// Where a local Ollama daemon listens unless told otherwise.
@@ -309,7 +309,7 @@ async fn stream_embed(
     tx: &mpsc::UnboundedSender<Result<CapabilityChunk, RuntimeError>>,
 ) {
     let status = response.status();
-    let bytes = match capped_body(&mut response, MAX_EMBEDDINGS_BYTES, "ollama").await {
+    let bytes = match capped_body(&mut response, MAX_JSON_BODY_BYTES, "ollama").await {
         Ok(bytes) => bytes,
         Err(err) => {
             let _ = tx.send(Err(err));

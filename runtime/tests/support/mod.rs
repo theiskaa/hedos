@@ -88,3 +88,25 @@ pub fn gguf(kvs: &[Vec<u8>]) -> Vec<u8> {
     }
     bytes
 }
+
+/// A vision projector llama.cpp could load: its header marks an image encoder
+/// and lists one tensor `width` wide, whose data follows, `padding` bytes and
+/// one more.
+pub fn projector_gguf(width: u64, padding: usize) -> Vec<u8> {
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    bytes.extend_from_slice(&2u64.to_le_bytes());
+    bytes.extend(kv_string("general.architecture", "clip"));
+    bytes.extend(gguf_string("clip.has_vision_encoder"));
+    bytes.extend_from_slice(&7u32.to_le_bytes());
+    bytes.push(1);
+    bytes.extend(gguf_string("mm.2.weight"));
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&width.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.resize(bytes.len().div_ceil(32) * 32 + padding + 1, 0);
+    bytes
+}

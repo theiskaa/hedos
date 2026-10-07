@@ -2,8 +2,9 @@
 //! in-process FFI engine. `llama-server` speaks the OpenAI API, so this adapter
 //! ensures a server is running for the model's GGUF, then proxies the request
 //! through the shared OpenAI streaming path. A GGUF that only embeds is served
-//! from its own embedding-mode server over `/v1/embeddings`; a chat model is
-//! never asked to embed, nor an embedder to chat.
+//! from its own embedding-mode server over `/v1/embeddings`, and a decision
+//! model (clef, laya, kev, openjev, lev) from a decision server over
+//! `/v1/systemone`; no model is asked for what its mode does not serve.
 //!
 //! Rather than running llama.cpp in-process over a Metal FFI binding, this takes
 //! the subprocess route and avoids the FFI: the non-streaming surface
@@ -24,9 +25,11 @@ use kernel::resolution::{GgufPooling, IdentifiedModel, ModelFormat, RuntimeBid, 
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
 use tokio::sync::mpsc;
 
+use super::llama_decision;
+use super::llama_pool::exited_during_startup;
 use super::openai::{
-    EmbeddingsFailure, OPTION_KEYS, embeddings_body, post_embeddings, request_body,
-    stream_completions,
+    OPTION_KEYS, PostFailure, embeddings_body, post_embeddings, request_body, stream_completions,
+    tokens_before,
 };
 use super::{ChunkStream, RuntimeAdapter, RuntimeError};
 
@@ -42,10 +45,11 @@ const MIN_CONTEXT: i64 = 512;
 /// and jina v2 are trained with, so the long-input encoders lose nothing.
 const MAX_EMBEDDING_CONTEXT: i64 = 8192;
 
-/// The embedding architectures llama.cpp keeps no KV cache for
-/// (`llama_model::create_memory` returns none). `llama-embed` and `t5encoder`
-/// embed too, but get a cache like any decoder.
-const MEMORYLESS_EMBEDDERS: [&str; 10] = [
+/// The architectures llama.cpp keeps no KV cache for
+/// (`llama_model::create_memory` returns none): encoders that embed, or that
+/// score typed questions as `modern-bert` (laya) does. The encoders
+/// `llama-embed` and `t5encoder` get a cache like any decoder.
+const MEMORYLESS_ARCHITECTURES: [&str; 10] = [
     "bert",
     "jina-bert-v2",
     "jina-bert-v3",
@@ -73,6 +77,13 @@ const EMBEDDING_CHUNK_INPUTS: usize = 64;
 /// An input longer than the budget still goes, alone.
 const EMBEDDING_CHUNK_BYTES_PER_TOKEN: usize = 4;
 
+/// The widest window a decision server is launched with. llama.cpp reads a
+/// laya, kev or clef prompt in one physical batch, so the batch is the window
+/// and costs compute memory whatever the prompt; clef's reference code encodes
+/// at most 16384 tokens, and the qwen35 decision models declare 262144, far
+/// past what one batch should hold.
+const MAX_DECISION_CONTEXT: i64 = 16384;
+
 /// A future returning a running server's OpenAI base URL (or why it couldn't be
 /// started).
 pub type BackendFuture = Pin<Box<dyn Future<Output = Result<String, RuntimeError>> + Send>>;
@@ -86,6 +97,9 @@ pub enum ServerMode {
     Chat,
     /// Embeddings over `/v1/embeddings`, started with `--embedding`.
     Embedding,
+    /// Typed questions over `/v1/systemone`, for a decision model, started
+    /// with a batch that holds the whole prompt.
+    Decision,
 }
 
 /// A file's modification time and size, which change when it is rewritten.
@@ -108,6 +122,15 @@ pub(crate) enum EmbedderKind {
     },
 }
 
+/// Whether llama.cpp keeps a KV cache for the GGUF at `path`, as its header
+/// names the architecture. A header that cannot be read is taken to keep one,
+/// which launches safely.
+pub(crate) fn keeps_kv_cache(path: &str) -> bool {
+    gguf_facts(Path::new(path))
+        .and_then(|facts| facts.architecture)
+        .is_none_or(|name| !MEMORYLESS_ARCHITECTURES.contains(&name.as_str()))
+}
+
 impl EmbedderKind {
     /// The kind of the GGUF at `path`, read from its header. A header that
     /// cannot be read is taken for a decoder that does not pool by the last
@@ -123,7 +146,7 @@ impl EmbedderKind {
     /// encoder when llama.cpp's `create_memory` gives the architecture no
     /// memory, a decoder otherwise.
     pub(crate) fn from_header(architecture: Option<&str>, pooling: Option<GgufPooling>) -> Self {
-        if architecture.is_some_and(|name| MEMORYLESS_EMBEDDERS.contains(&name)) {
+        if architecture.is_some_and(|name| MEMORYLESS_ARCHITECTURES.contains(&name)) {
             Self::Encoder
         } else {
             Self::Decoder {
@@ -145,14 +168,17 @@ impl EmbedderKind {
 }
 
 impl ServerMode {
-    /// The mode `record` is served in: embedding for a record that claims
-    /// `embed` and neither chat nor completion; chat for one that claims chat
-    /// or completion, or nothing at all (a pin over an unidentified file);
-    /// and none for a record whose claims no mode answers.
+    /// The mode `record` is served in: chat for one that claims chat or
+    /// completion, or nothing at all (a pin over an unidentified file);
+    /// decision for one that claims `judge` and neither; embedding for one
+    /// that claims `embed` and none of those; and none for a record whose
+    /// claims no mode answers.
     pub(crate) fn of(record: &ModelRecord) -> Option<Self> {
         let claims = |capability: Capability| record.capabilities.contains(&capability);
         if claims(Capability::chat()) || claims(Capability::complete()) {
             Some(Self::Chat)
+        } else if claims(Capability::judge()) {
+            Some(Self::Decision)
         } else if claims(Capability::embed()) {
             Some(Self::Embedding)
         } else if record.capabilities.is_empty() {
@@ -169,7 +195,15 @@ impl ServerMode {
                 *capability == Capability::chat() || *capability == Capability::complete()
             }
             Self::Embedding => *capability == Capability::embed(),
+            Self::Decision => *capability == Capability::judge(),
         }
+    }
+
+    /// Whether a server in this mode for `record` reads images: a chat or
+    /// decision server for a record that claims sight is launched with its
+    /// projector. An embedding server never reads one.
+    pub(crate) fn reads_images(self, record: &ModelRecord) -> bool {
+        self != Self::Embedding && record.capabilities.contains(&Capability::see())
     }
 }
 
@@ -337,6 +371,83 @@ impl LlamaServerAdapter {
         Self::effective_context_tokens(record, None).min(MAX_EMBEDDING_CONTEXT)
     }
 
+    /// Put the typed question `payload` carries to a decision server and send
+    /// back its System One envelope whole, as one text chunk. The question
+    /// goes as the caller wrote it, so no key moves. A consumer that goes away
+    /// drops the request in flight.
+    fn invoke_decision(&self, record: &ModelRecord, payload: &JsonValue) -> ChunkStream {
+        let (tx, stream) = ChunkStream::channel();
+        let question = match llama_decision::question_text(payload) {
+            Ok(question) => question,
+            Err(err) => {
+                let _ = tx.send(Err(err));
+                return stream;
+            }
+        };
+        let window = Self::decision_context_tokens(record);
+        let backend = Arc::clone(&self.backend);
+        let client = self.client.clone();
+        let record = record.clone();
+
+        tokio::spawn(async move {
+            let name = record.name.as_str();
+            let starting = backend.base_url(&record, window, ServerMode::Decision);
+            let base = tokio::select! {
+                result = starting => match result {
+                    Ok(base) => base,
+                    // An older llama.cpp dies on a decision architecture it
+                    // does not know, and its stderr is not kept, so the likely
+                    // reason is offered beside what is known.
+                    Err(err) if exited_during_startup(&err) => {
+                        let _ = tx.send(Err(RuntimeError::Unavailable(format!(
+                            "{err}. {}; an older one exits loading it",
+                            llama_decision::upgrade_hint(name)
+                        ))));
+                        return;
+                    }
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
+                        return;
+                    }
+                },
+                _ = tx.closed() => return,
+            };
+            let asked = llama_decision::ask(&client, &base, &question, "llama-server");
+            let Some(asked) = unless_abandoned(&tx, asked).await else {
+                return;
+            };
+            let answer = match asked {
+                Ok(answer) => answer,
+                Err(PostFailure::Runtime(err)) => {
+                    let _ = tx.send(Err(err));
+                    return;
+                }
+                Err(PostFailure::Answered(status, body)) => {
+                    let _ = tx.send(Err(llama_decision::refusal(
+                        status, body, &question, window, name,
+                    )));
+                    return;
+                }
+            };
+            if tx.send(Ok(CapabilityChunk::Text(answer.envelope))).is_err() {
+                return;
+            }
+            let stats = GenerationStats {
+                prompt_tokens: answer.input_tokens,
+                ..Default::default()
+            };
+            let _ = tx.send(Ok(CapabilityChunk::Done(Some(stats))));
+        });
+        stream
+    }
+
+    /// The window a decision server for `record` is launched with: its
+    /// declared window, capped at [`MAX_DECISION_CONTEXT`]. A judge takes no
+    /// options, so nothing a request says changes it.
+    pub(crate) fn decision_context_tokens(record: &ModelRecord) -> i64 {
+        Self::effective_context_tokens(record, None).min(MAX_DECISION_CONTEXT)
+    }
+
     /// The effective context window: the requested size (or a capped default)
     /// clamped into `[min(512, base), base]`, where `base` is the model's declared
     /// context length or 4096.
@@ -360,17 +471,27 @@ impl RuntimeAdapter for LlamaServerAdapter {
         true
     }
 
+    /// The capabilities of the one mode `record` is served in, and sight for a
+    /// record that claims it, since its chat or decision server is launched
+    /// with its projector.
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
-        record.runtime.id.as_ref() == Some(&self.id)
-            && ServerMode::of(record).is_some_and(|mode| mode.serves(capability))
+        if record.runtime.id.as_ref() != Some(&self.id) {
+            return false;
+        }
+        let Some(mode) = ServerMode::of(record) else {
+            return false;
+        };
+        mode.serves(capability) || (*capability == Capability::see() && mode.reads_images(record))
     }
 
-    /// A GGUF that chats, or one that embeds. A GGUF that claims neither (a
-    /// projector, a vocoder, a model whose header pools nothing or ranks) draws
-    /// no bid, since no server mode would answer for it.
+    /// A GGUF that chats, one that embeds, or a decision model that judges. A
+    /// GGUF that claims none of those (a projector, a vocoder, a model whose
+    /// header pools nothing or ranks) draws no bid, since no server mode would
+    /// answer for it.
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
-        let servable = identified.capabilities.contains(&Capability::chat())
-            || identified.capabilities.contains(&Capability::embed());
+        let servable = [Capability::chat(), Capability::embed(), Capability::judge()]
+            .iter()
+            .any(|capability| identified.capabilities.contains(capability));
         if identified.format != ModelFormat::Gguf || !servable {
             return None;
         }
@@ -386,6 +507,7 @@ impl RuntimeAdapter for LlamaServerAdapter {
             Some(ServerMode::Embedding) => self
                 .embedder_kind(model_gguf_path(record))
                 .most_tokens(Self::embedding_context_tokens(record)),
+            Some(ServerMode::Decision) => Self::decision_context_tokens(record),
             _ => Self::effective_context_tokens(record, requested),
         })
     }
@@ -398,6 +520,9 @@ impl RuntimeAdapter for LlamaServerAdapter {
     ) -> ChunkStream {
         if capability == Capability::embed() {
             return self.invoke_embed(record, payload);
+        }
+        if capability == Capability::judge() {
+            return self.invoke_decision(record, &payload);
         }
         let (tx, stream) = ChunkStream::channel();
         let requested = payload
@@ -425,7 +550,8 @@ impl RuntimeAdapter for LlamaServerAdapter {
                 },
                 _ = tx.closed() => return,
             };
-            let body = match request_body(&model, &payload) {
+            let sees = ServerMode::Chat.reads_images(&record);
+            let body = match request_body(&model, &payload, sees) {
                 Ok(body) => body,
                 Err(err) => {
                     let _ = tx.send(Err(err));
@@ -596,15 +722,15 @@ impl TooLong {
 /// llama-server's advice to grow the batch or the context is for whoever
 /// launched it, so the message is rewritten. Anything else it answers, a
 /// model that pools nothing included, is the server's failure.
-fn refused(failure: EmbeddingsFailure, window: i64, name: &str) -> Refused {
+fn refused(failure: PostFailure, window: i64, name: &str) -> Refused {
     let (status, body) = match failure {
-        EmbeddingsFailure::Runtime(err) => return Refused::Failed(err),
-        EmbeddingsFailure::Answered(status, body) => (status, body),
+        PostFailure::Runtime(err) => return Refused::Failed(err),
+        PostFailure::Answered(status, body) => (status, body),
     };
     let message = body.message.as_deref().unwrap_or_default();
     match status {
         500 => {
-            if let Some(tokens) = too_long_input(message, "input (", "is too large to process") {
+            if let Some(tokens) = tokens_before(message, "input (", "is too large to process") {
                 return Refused::TooLong(TooLong {
                     tokens,
                     most: window,
@@ -613,7 +739,7 @@ fn refused(failure: EmbeddingsFailure, window: i64, name: &str) -> Refused {
         }
         400 if body.kind.as_deref() == Some("exceed_context_size_error") => {
             return Refused::TooLong(TooLong {
-                tokens: too_long_input(message, "request (", "exceeds the available context size")
+                tokens: tokens_before(message, "request (", "exceeds the available context size")
                     .flatten(),
                 most: window - 1,
             });
@@ -629,15 +755,6 @@ fn refused(failure: EmbeddingsFailure, window: i64, name: &str) -> Refused {
         body.message
             .unwrap_or_else(|| format!("llama-server answered with HTTP {status}")),
     ))
-}
-
-/// Whether `message` reads `{lead}N tokens) {verdict}...`: `Some` with the
-/// token count `N` when it parses, and `None` when the message is another one.
-fn too_long_input(message: &str, lead: &str, verdict: &str) -> Option<Option<u64>> {
-    let (count, rest) = message.strip_prefix(lead)?.split_once(" tokens)")?;
-    rest.trim_start()
-        .starts_with(verdict)
-        .then(|| count.parse().ok())
 }
 
 /// The wire model name `llama-server` is asked for. The server serves whatever
@@ -683,8 +800,8 @@ mod tests {
         assert_eq!(wire_model_name(&rec), "org/model");
     }
 
-    fn answered(status: u16, message: &str, kind: &str) -> EmbeddingsFailure {
-        EmbeddingsFailure::Answered(
+    fn answered(status: u16, message: &str, kind: &str) -> PostFailure {
+        PostFailure::Answered(
             status,
             crate::adapters::openai::ErrorBody {
                 message: Some(message.to_owned()),
@@ -770,7 +887,7 @@ mod tests {
                 "a failure became the caller's"
             );
         }
-        let unreachable = EmbeddingsFailure::Runtime(RuntimeError::Unavailable("down".to_owned()));
+        let unreachable = PostFailure::Runtime(RuntimeError::Unavailable("down".to_owned()));
         assert!(matches!(
             refused(unreachable, 2048, "m"),
             Refused::Failed(RuntimeError::Unavailable(_))
@@ -808,10 +925,43 @@ mod tests {
         );
         assert_eq!(with(vec![Capability::complete()]), Some(ServerMode::Chat));
         assert_eq!(with(Vec::new()), Some(ServerMode::Chat));
-        assert_eq!(with(vec![Capability::judge()]), None);
+        assert_eq!(with(vec![Capability::judge()]), Some(ServerMode::Decision));
+        assert_eq!(
+            with(vec![Capability::judge(), Capability::see()]),
+            Some(ServerMode::Decision)
+        );
+        assert_eq!(
+            with(vec![Capability::chat(), Capability::judge()]),
+            Some(ServerMode::Chat)
+        );
+        assert_eq!(with(vec![Capability::see()]), None);
         assert!(!ServerMode::Chat.serves(&Capability::embed()));
+        assert!(!ServerMode::Chat.serves(&Capability::judge()));
         assert!(!ServerMode::Embedding.serves(&Capability::chat()));
+        assert!(!ServerMode::Embedding.serves(&Capability::judge()));
         assert!(ServerMode::Embedding.serves(&Capability::embed()));
+        assert!(ServerMode::Decision.serves(&Capability::judge()));
+        for other in [
+            Capability::chat(),
+            Capability::complete(),
+            Capability::embed(),
+            Capability::see(),
+        ] {
+            assert!(!ServerMode::Decision.serves(&other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn a_decision_window_is_the_declared_one_capped_at_16384_whatever_is_asked() {
+        let window = |declared: Option<i64>| {
+            let mut rec = record();
+            rec.capabilities = vec![Capability::judge()];
+            rec.context_length = declared;
+            LlamaServerAdapter::decision_context_tokens(&rec)
+        };
+        assert_eq!(window(Some(262_144)), 16384);
+        assert_eq!(window(Some(8192)), 8192);
+        assert_eq!(window(None), 4096);
     }
 
     #[test]

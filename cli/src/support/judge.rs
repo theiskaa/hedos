@@ -375,6 +375,43 @@ fn plain(value: Option<&serde_json::Value>) -> String {
     }
 }
 
+/// `question` with `images`, each a data URL, spliced in as its first member,
+/// every other byte as written so no option moves. A question that is not a
+/// JSON object, or that already has an `images` member, is refused rather than
+/// guessed at: a second member of that name would leave the one the model
+/// reads to whichever its parser keeps.
+pub(crate) fn with_images(question: &str, images: &[String]) -> Result<String, CliError> {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(question).ok();
+    let (Some(fields), Some(open)) = (
+        parsed.as_ref().and_then(serde_json::Value::as_object),
+        question.find('{'),
+    ) else {
+        return Err(CliError::new(
+            "a question given with --image must be a JSON object",
+        ));
+    };
+    match fields.get("images") {
+        None => {}
+        Some(serde_json::Value::Null) => {
+            return Err(CliError::new(
+                "the question has an `images` member set to null; drop it to give images with --image",
+            ));
+        }
+        Some(_) => {
+            return Err(CliError::new(
+                "the question already lists its images; give them there or with --image, not both",
+            ));
+        }
+    }
+    let listed: Vec<String> = images.iter().map(|url| quoted(url)).collect();
+    let separator = if fields.is_empty() { "" } else { "," };
+    let (head, rest) = question.split_at(open + 1);
+    Ok(format!(
+        "{head}\"images\":[{}]{separator}{rest}",
+        listed.join(",")
+    ))
+}
+
 /// A JSON string literal for `value`. Encoding a string cannot fail; the empty
 /// literal stands in rather than a panic if it ever did.
 fn quoted(value: &str) -> String {
@@ -531,6 +568,42 @@ fn percent(fraction: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_go_first_and_every_other_byte_stays_as_written() {
+        let question = r#"{"state":{"z":1,"a":2},"questions":{"q":{"type":"choice","instructions":"i","criteria":{"zeta":null,"alpha":null}}}}"#;
+        let spliced = with_images(question, &["data:image/png;base64,AA==".to_owned()]).unwrap();
+        assert_eq!(
+            spliced,
+            r#"{"images":["data:image/png;base64,AA=="],"state":{"z":1,"a":2},"questions":{"q":{"type":"choice","instructions":"i","criteria":{"zeta":null,"alpha":null}}}}"#
+        );
+        let spaced = with_images(
+            "  { \"state\": 1 }",
+            &["data:image/png;base64,AA==".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(
+            spaced,
+            r#"  {"images":["data:image/png;base64,AA=="], "state": 1 }"#
+        );
+        assert_eq!(
+            with_images("{}", &["data:image/png;base64,AA==".to_owned()]).unwrap(),
+            r#"{"images":["data:image/png;base64,AA=="]}"#
+        );
+    }
+
+    #[test]
+    fn images_are_refused_for_a_question_that_is_not_an_object_or_lists_its_own() {
+        let url = ["data:image/png;base64,AA==".to_owned()];
+        for question in [
+            "not json",
+            "[1]",
+            r#"{"state":1,"images":[]}"#,
+            r#"{"state":1,"images":null}"#,
+        ] {
+            assert!(with_images(question, &url).is_err(), "{question}");
+        }
+    }
 
     fn choice() -> Question {
         Question {

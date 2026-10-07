@@ -127,7 +127,23 @@ curl http://127.0.0.1:43367/v1/systemone \
 
 The response is the System One envelope, `{"model", "answers", "usage"}`, exactly as the model wrote it. The `questions` and `state` reach the model as the text you sent, never re-encoded, because the order of a choice's options changes the probabilities it gets.
 
-The model has to be one that declares the `judge` capability (`hedos ls --capability judge`). A name that does not resolve, `jev-latest` included, is a `404` and a model that only chats is a `400`; both name the models that would do, and nothing else on the shelf answers in their place. A malformed request, or one the model refuses (laya raises when a question's options overrun its 192-token budget for them), is a `400` with the reason in `error.message`, which is where the SDK reads it. A bearer token is ignored like on every other route, so a real TypeSafe key in the environment does no harm. There is no streamed form. The SDK's default timeout is 10 seconds and a cold model takes longer than that to load, so `hedos warm <model>` first.
+The model has to be one that declares the `judge` capability (`hedos ls --capability judge`): a decision GGUF served by llama.cpp (clef, clef-flash, OpenJev, Kev, lev, Laya, Julia-1; llama.cpp 0.6.0 or newer), or a manifest runtime such as `python:laya` or `python:zerank`. A name that does not resolve, `jev-latest` included, is a `404` and a model that only chats is a `400`; both name the models that would do, and nothing else on the shelf answers in their place. A malformed request, or one the model refuses (laya raises when a question's options overrun its 192-token budget for them), is a `400` with the reason in `error.message`, which is where the SDK reads it. A bearer token is ignored like on every other route, so a real TypeSafe key in the environment does no harm. There is no streamed form. The SDK's default timeout is 10 seconds and a cold model takes longer than that to load, so `hedos warm <model>` first.
+
+A decision GGUF reads its whole question in one batch of its window, which is the model's declared context capped at 16384 tokens. A question longer than that is a `400` naming the window (`the question takes 30138 tokens, more than the 16384-token window Clef-Flash-Q4_K_M is served with`). On a llama.cpp older than 0.6.0 the request fails with a message naming the version it needs.
+
+Images go to a judge that sees (clef or OpenJev with its projector) in `images`, a list of image data URLs, or as `image_url` parts of a `state` made of chat messages:
+
+```sh
+curl http://127.0.0.1:43367/v1/systemone \
+  -d '{
+    "model": "Clef-Flash-Q4_K_M",
+    "state": "The document accounting received this morning.",
+    "questions": {"table": {"type": "noul", "instructions": "Does the image contain a table?"}},
+    "images": ["data:image/png;base64,iVBORw0KGgo..."]
+  }'
+```
+
+`images` that are not data URLs are a `400` before any model is asked, and images to a judge that does not see are a `400` naming the ones that do. A request on this route may be up to 32 MiB.
 
 ## Embeddings
 

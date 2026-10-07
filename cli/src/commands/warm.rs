@@ -44,7 +44,7 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     // failing it there would be refusing a model that warms perfectly well
     // here just because a gateway happens to be up.
     if let Some(live) = live_gateway(&session, args.port).await
-        && residency::gateway_warm_body(record).is_some()
+        && residency::gateway_warm(record).is_some()
     {
         let outcome = residency::warm_via_gateway(record, live)
             .await

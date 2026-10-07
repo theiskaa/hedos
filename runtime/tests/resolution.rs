@@ -7,7 +7,8 @@ mod support;
 use std::sync::Arc;
 
 use kernel::records::{
-    Capability, Modality, ModelRecord, ModelSource, Resolution, RunTier, RuntimeId, SourceKind,
+    Capability, Modality, ModelRecord, ModelSource, ModelState, Resolution, RunTier, RuntimeId,
+    SourceKind,
 };
 use kernel::registry::Registry;
 use kernel::resolution::{IdentificationCache, IdentifiedModel, RuntimeBid};
@@ -585,6 +586,63 @@ fn refold_withholds_tools_from_a_record_on_a_non_wiring_runtime() {
     let changed = engine.refold_tool_capability(&mut reg).unwrap();
     assert_eq!(changed.len(), 1);
     assert!(!changed[0].capabilities.contains(&Capability::tools()));
+}
+
+#[test]
+fn resolve_stranded_judges_takes_only_decision_ggufs_and_skips_a_downloading_or_user_pinned_one() {
+    let (dir, mut reg) = registry();
+    let engine = ResolutionEngine::new(vec![FakeAdapter::arced(
+        RuntimeId::llama_cpp(),
+        Some(RuntimeBid::new(RunTier::Native, 20)),
+    )]);
+    let laya = support::gguf(&[
+        support::kv_string("general.architecture", "modern-bert"),
+        support::kv_string("modern-bert.decision.type", "laya"),
+    ]);
+    let chat = support::gguf(&[
+        support::kv_string("general.architecture", "llama"),
+        support::kv_string("tokenizer.chat_template", "{{ x }}"),
+    ]);
+    let unresolved = |name: &str, header: &[u8]| {
+        let path = dir.path().join(format!("{name}.gguf"));
+        std::fs::write(&path, header).unwrap();
+        let mut record = ModelRecord::new(
+            name,
+            Modality::text(),
+            Vec::new(),
+            ModelSource::new(SourceKind::file(), &path.to_string_lossy()),
+        );
+        record.state = ModelState::Unresolved;
+        record
+    };
+    let plain = unresolved("laya", &laya);
+    let mut downloading = unresolved("downloading", &laya);
+    downloading.downloading = true;
+    let mut pinned = unresolved("pinned", &laya);
+    pinned.runtime.resolved = Resolution::User;
+    pinned.runtime.id = Some(RuntimeId::from("gone"));
+    let not_a_judge = unresolved("llama", &chat);
+    for record in [&plain, &downloading, &pinned, &not_a_judge] {
+        reg.register(record.clone()).unwrap();
+    }
+    let before: Vec<ModelRecord> = [&downloading, &pinned, &not_a_judge]
+        .iter()
+        .map(|record| reg.get(&record.id).cloned().unwrap())
+        .collect();
+
+    let pass = engine.resolve_stranded_judges(&mut reg).unwrap();
+    assert_eq!(pass.unread, 0);
+    let ids: Vec<&str> = pass
+        .changed
+        .iter()
+        .map(|record| record.id.as_str())
+        .collect();
+    assert_eq!(ids, [plain.id.as_str()]);
+    assert_eq!(pass.changed[0].capabilities, vec![Capability::judge()]);
+    assert_eq!(pass.changed[0].runtime.id, Some(RuntimeId::llama_cpp()));
+    for untouched in &before {
+        assert_eq!(reg.get(&untouched.id), Some(untouched));
+    }
 }
 
 #[test]

@@ -151,11 +151,7 @@ async fn option_order_reaches_the_model_as_the_client_wrote_it() {
 
     let invoked = port.invoked.lock().unwrap();
     let (capability, payload) = invoked.first().expect("one invoke");
-    assert_eq!(
-        *capability,
-        Capability::chat(),
-        "the wire the sidecar speaks"
-    );
+    assert_eq!(*capability, Capability::judge());
     let messages = payload.as_object().unwrap()["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     let content = messages[0].as_object().unwrap()["content"]
@@ -252,4 +248,128 @@ async fn a_reply_that_is_not_an_envelope_is_the_gateways_fault() {
         error_message(&response),
         "the model's reply was not a System One envelope"
     );
+}
+
+/// clef-flash as a decision GGUF leaves it: a judge that sees, and nothing else.
+fn clef() -> ModelRecord {
+    let mut record = capable_model("clef-flash", Capability::judge());
+    record.capabilities.push(Capability::see());
+    record
+}
+
+const CLEF_REPLY: &str = r#"{"model":"clef","answers":{"table":{"type":"noul","noul":0.91}},"usage":{"input_tokens":300,"output_tokens":0}}"#;
+
+#[tokio::test]
+async fn a_model_that_only_judges_is_asked_as_a_judge() {
+    let port = port(
+        vec![capable_model("laya-gguf", Capability::judge())],
+        LAYA_REPLY,
+    );
+    let response = post(
+        &port,
+        &ROUTING_QUESTION.replace("\"laya\"", "\"laya-gguf\""),
+    )
+    .await;
+    assert_eq!(response.status, Some(200), "{}", response.body);
+    assert_eq!(response.body, LAYA_REPLY);
+    let invoked = port.invoked.lock().unwrap();
+    assert_eq!(invoked.len(), 1);
+    assert_eq!(invoked[0].0, Capability::judge());
+}
+
+#[tokio::test]
+async fn images_reach_a_judge_that_sees_as_the_client_wrote_them() {
+    let body = r#"{"model":"clef-flash","state":"The scan from accounting.","questions":{"table":{"type":"noul","instructions":"Does it hold a table?"}},"images":["data:image/png;base64,iVBORw0KGgo="]}"#;
+    let port = port(vec![clef()], CLEF_REPLY);
+    let response = post(&port, body).await;
+    assert_eq!(response.status, Some(200), "{}", response.body);
+    assert_eq!(response.body, CLEF_REPLY);
+
+    let invoked = port.invoked.lock().unwrap();
+    let messages = invoked[0].1.as_object().unwrap()["messages"]
+        .as_array()
+        .unwrap();
+    let content = messages[0].as_object().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        content,
+        r#"{"state":"The scan from accounting.","questions":{"table":{"type":"noul","instructions":"Does it hold a table?"}},"images":["data:image/png;base64,iVBORw0KGgo="]}"#
+    );
+}
+
+#[tokio::test]
+async fn images_to_a_judge_that_does_not_see_are_refused_with_one_that_does() {
+    let port = port(vec![laya(), clef()], LAYA_REPLY);
+    let listed = r#"{"model":"laya","state":"s","questions":{"q":{"type":"noul","instructions":"i"}},"images":["data:image/png;base64,AA=="]}"#;
+    let in_state = r#"{"model":"laya","state":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}],"questions":{"q":{"type":"noul","instructions":"i"}}}"#;
+    for body in [listed, in_state] {
+        let response = post(&port, body).await;
+        assert_eq!(response.status, Some(400), "{body}");
+        assert_eq!(
+            error_message(&response),
+            "laya does not read images; the models that answer typed questions about images here: clef-flash"
+        );
+    }
+    assert!(port.invoked.lock().unwrap().is_empty());
+
+    // No images, or `null` for none, is a plain question.
+    for images in [r#","images":[]"#, r#","images":null"#] {
+        let body = format!(
+            r#"{{"model":"laya","state":"s","questions":{{"q":{{"type":"noul","instructions":"i"}}}}{images}}}"#
+        );
+        assert_eq!(post(&port, &body).await.status, Some(200), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn images_that_are_not_data_urls_are_a_400_before_any_model() {
+    let port = port(vec![clef()], CLEF_REPLY);
+    for (images, reason) in [
+        (
+            r#""data:image/png;base64,AA==""#,
+            "a list of image data URLs",
+        ),
+        (
+            r#"["https://example.com/a.png"]"#,
+            "image 0 must be a data URL",
+        ),
+        (
+            r#"["data:image/png;base64,AA==",7]"#,
+            "image 1 must be a data URL",
+        ),
+    ] {
+        let body = format!(
+            r#"{{"model":"clef-flash","state":"s","questions":{{"q":{{"type":"noul","instructions":"i"}}}},"images":{images}}}"#
+        );
+        let response = post(&port, &body).await;
+        assert_eq!(response.status, Some(400), "{body}");
+        assert!(error_message(&response).contains(reason), "{body}");
+    }
+    assert!(port.invoked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_route_takes_a_body_large_enough_for_images() {
+    let router = GatewayRouter::new(
+        Arc::new(MockPort::default()) as Arc<dyn GatewayPort>,
+        Box::new(OpenAuth),
+        Box::new(NoopAudit),
+        standard_routes(),
+        4,
+    );
+    assert_eq!(
+        router.body_limit("/v1/systemone", 2_097_152),
+        32 * 1024 * 1024
+    );
+}
+
+#[tokio::test]
+async fn a_state_that_only_names_an_image_url_is_a_plain_question() {
+    // A product record is not an image: only an `image_url` part of a message
+    // in a state made of chat messages is one.
+    let port = port(vec![laya()], LAYA_REPLY);
+    let body = r#"{"model":"laya","state":{"title":"Blue cotton shirt","image_url":"https://cdn.example.com/shirt.png"},"questions":{"q":{"type":"noul","instructions":"Is it clothing?"}}}"#;
+    let response = post(&port, body).await;
+    assert_eq!(response.status, Some(200), "{}", response.body);
 }

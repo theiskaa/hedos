@@ -211,7 +211,9 @@ impl RuntimeAdapter for OpenAiEndpointAdapter {
                 )));
                 return;
             };
-            let body = match request_body(&model, &payload) {
+            // An endpoint is never served for sight, so a message's images
+            // are not sent.
+            let body = match request_body(&model, &payload, false) {
                 Ok(body) => body,
                 Err(err) => {
                     let _ = tx.send(Err(err));
@@ -368,9 +370,9 @@ pub(crate) fn parse_embeddings(bytes: &[u8]) -> Result<(Vec<Vec<f64>>, Option<i6
     Ok((vectors, prompt_tokens))
 }
 
-/// Why an embeddings request got no vectors back.
+/// Why a JSON request to a local server got nothing back to read.
 #[derive(Debug)]
-pub(crate) enum EmbeddingsFailure {
+pub(crate) enum PostFailure {
     /// The server answered with a failing status and this body. What it
     /// means is the server's to say.
     Answered(u16, ErrorBody),
@@ -378,23 +380,24 @@ pub(crate) enum EmbeddingsFailure {
     Runtime(RuntimeError),
 }
 
-/// Post one embeddings request to `{base}/v1/embeddings` and read back its
-/// vectors, in input order, with the prompt token count when reported. `label`
-/// names the server in an error, which never carries its address.
-pub(crate) async fn post_embeddings(
+/// Post the JSON `body` to `url` and read back a successful answer's body,
+/// at most `cap` bytes of it. `label` names the server in an error, which
+/// never carries its address.
+pub(crate) async fn post_capped(
     client: &reqwest::Client,
-    base: &str,
+    url: &str,
     body: Vec<u8>,
+    cap: usize,
     label: &str,
-) -> Result<(Vec<Vec<f64>>, Option<i64>), EmbeddingsFailure> {
+) -> Result<Vec<u8>, PostFailure> {
     let sent = client
-        .post(format!("{base}/v1/embeddings"))
+        .post(url)
         .header("content-type", "application/json")
         .body(body)
         .send()
         .await;
     let mut response = sent.map_err(|err| {
-        EmbeddingsFailure::Runtime(if err.is_connect() || err.is_timeout() {
+        PostFailure::Runtime(if err.is_connect() || err.is_timeout() {
             RuntimeError::Unavailable(format!("{label} isn't reachable"))
         } else {
             RuntimeError::Failed(format!("{label} stopped before answering"))
@@ -405,15 +408,37 @@ pub(crate) async fn post_embeddings(
         let body = super::capped_body(&mut response, super::MAX_ERROR_BYTES, label)
             .await
             .unwrap_or_default();
-        return Err(EmbeddingsFailure::Answered(
+        return Err(PostFailure::Answered(
             status.as_u16(),
             ErrorBody::read(&body),
         ));
     }
-    let bytes = super::capped_body(&mut response, super::MAX_EMBEDDINGS_BYTES, label)
+    super::capped_body(&mut response, cap, label)
         .await
-        .map_err(EmbeddingsFailure::Runtime)?;
-    parse_embeddings(&bytes).map_err(EmbeddingsFailure::Runtime)
+        .map_err(PostFailure::Runtime)
+}
+
+/// Post one embeddings request to `{base}/v1/embeddings` and read back its
+/// vectors, in input order, with the prompt token count when reported.
+pub(crate) async fn post_embeddings(
+    client: &reqwest::Client,
+    base: &str,
+    body: Vec<u8>,
+    label: &str,
+) -> Result<(Vec<Vec<f64>>, Option<i64>), PostFailure> {
+    let url = format!("{base}/v1/embeddings");
+    let bytes = post_capped(client, &url, body, super::MAX_JSON_BODY_BYTES, label).await?;
+    parse_embeddings(&bytes).map_err(PostFailure::Runtime)
+}
+
+/// Whether `message` reads `{lead}N tokens) {verdict}...`, the way
+/// llama-server words a prompt longer than it reads: `Some` with the token
+/// count `N` when it parses, and `None` when the message is another one.
+pub(crate) fn tokens_before(message: &str, lead: &str, verdict: &str) -> Option<Option<u64>> {
+    let (count, rest) = message.strip_prefix(lead)?.split_once(" tokens)")?;
+    rest.trim_start()
+        .starts_with(verdict)
+        .then(|| count.parse().ok())
 }
 
 /// What an OpenAI-shaped error body says, as `{"error":{"message","type"}}`
@@ -476,8 +501,13 @@ fn normalized_base(raw: &str) -> String {
 
 /// Build the `/v1/chat/completions` request body: a streaming request carrying the
 /// model, the wire-shaped messages (or a prompt), any tools, and the honored
-/// sampling options.
-pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, RuntimeError> {
+/// sampling options. A message's images go as `image_url` parts when the model
+/// `sees`, and are left out when it does not.
+pub(crate) fn request_body(
+    model: &str,
+    payload: &JsonValue,
+    sees: bool,
+) -> Result<Vec<u8>, RuntimeError> {
     let JsonValue::Object(object) = payload else {
         return Err(RuntimeError::Failed(
             "chat payload must be an object".to_owned(),
@@ -492,7 +522,7 @@ pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, 
     );
 
     if let Some(messages) = object.get("messages") {
-        body.insert("messages".to_owned(), wire_messages(messages));
+        body.insert("messages".to_owned(), wire_messages(messages, sees));
     } else if let Some(JsonValue::String(prompt)) = object.get("prompt") {
         body.insert(
             "messages".to_owned(),
@@ -540,7 +570,7 @@ pub(crate) fn request_body(model: &str, payload: &JsonValue) -> Result<Vec<u8>, 
 /// Reshape internal messages into OpenAI wire form: tool calls become
 /// `{type:function, function:{name, arguments:<json string>}}`, an empty assistant
 /// `content` alongside tool calls becomes `null`, and `tool_name` becomes `name`.
-fn wire_messages(messages: &JsonValue) -> JsonValue {
+fn wire_messages(messages: &JsonValue, sees: bool) -> JsonValue {
     let JsonValue::Array(entries) = messages else {
         return messages.clone();
     };
@@ -598,10 +628,66 @@ fn wire_messages(messages: &JsonValue) -> JsonValue {
             if let Some(tool_name) = fields.remove("tool_name") {
                 fields.insert("name".to_owned(), tool_name);
             }
+            // A model served without sight is never sent an image, even one
+            // from earlier in the conversation, which its server would refuse
+            // the whole request for.
+            if let Some(JsonValue::Array(images)) = fields.remove("images")
+                && sees
+                && !images.is_empty()
+            {
+                let text = fields.remove("content");
+                fields.insert("content".to_owned(), image_parts(&images, text));
+            }
             JsonValue::Object(fields)
         })
         .collect();
     JsonValue::Array(mapped)
+}
+
+/// A message's content as OpenAI content parts: each of its `images` (base64,
+/// the shape a chat payload carries them in) as an `image_url` data URL, then
+/// its text. The images come first, where a vision model is trained to find
+/// them.
+fn image_parts(images: &[JsonValue], text: Option<JsonValue>) -> JsonValue {
+    let mut parts: Vec<JsonValue> = images
+        .iter()
+        .filter_map(JsonValue::as_str)
+        .map(|data| {
+            super::object_of([
+                ("type", JsonValue::String("image_url".to_owned())),
+                (
+                    "image_url",
+                    super::object_of([(
+                        "url",
+                        JsonValue::String(format!("data:{};base64,{data}", image_mime(data))),
+                    )]),
+                ),
+            ])
+        })
+        .collect();
+    if let Some(JsonValue::String(text)) = text
+        && !text.is_empty()
+    {
+        parts.push(super::object_of([
+            ("type", JsonValue::String("text".to_owned())),
+            ("text", JsonValue::String(text)),
+        ]));
+    }
+    JsonValue::Array(parts)
+}
+
+/// The MIME type of a base64-encoded image, read off the encoding of its
+/// magic bytes; PNG when they name none of the formats a vision server reads.
+fn image_mime(data: &str) -> &'static str {
+    if data.starts_with("/9j/") {
+        "image/jpeg"
+    } else if data.starts_with("R0lGOD") {
+        "image/gif"
+    } else if data.starts_with("UklGR") {
+        "image/webp"
+    } else {
+        "image/png"
+    }
 }
 
 /// An accumulating parser for the OpenAI SSE stream. Tool-call fragments arrive
@@ -804,6 +890,111 @@ mod tests {
                 .map(|(key, value)| ((*key).to_owned(), value.clone()))
                 .collect(),
         )
+    }
+
+    fn string(value: &str) -> JsonValue {
+        JsonValue::String(value.to_owned())
+    }
+
+    #[test]
+    fn a_messages_images_go_as_image_url_parts_before_its_text() {
+        let png = "iVBORw0KGgoAAAA";
+        let jpeg = "/9j/4AAQSkZJRg";
+        let payload = object(&[(
+            "messages",
+            JsonValue::Array(vec![
+                object(&[("role", string("system")), ("content", string("be brief"))]),
+                object(&[
+                    ("role", string("user")),
+                    ("content", string("what is this?")),
+                    ("images", JsonValue::Array(vec![string(png), string(jpeg)])),
+                ]),
+            ]),
+        )]);
+        let body = decoded(&request_body("m", &payload, true).expect("body"));
+        let messages = body.as_object().unwrap()["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[0].as_object().unwrap()["content"],
+            string("be brief")
+        );
+        let user = messages[1].as_object().expect("user");
+        assert!(!user.contains_key("images"));
+        assert_eq!(
+            user["content"],
+            JsonValue::Array(vec![
+                object(&[
+                    ("type", string("image_url")),
+                    (
+                        "image_url",
+                        object(&[("url", string(&format!("data:image/png;base64,{png}")))])
+                    ),
+                ]),
+                object(&[
+                    ("type", string("image_url")),
+                    (
+                        "image_url",
+                        object(&[("url", string(&format!("data:image/jpeg;base64,{jpeg}")))])
+                    ),
+                ]),
+                object(&[("type", string("text")), ("text", string("what is this?"))]),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_model_that_does_not_see_is_sent_no_image_from_any_message() {
+        let payload = object(&[(
+            "messages",
+            JsonValue::Array(vec![
+                object(&[
+                    ("role", string("user")),
+                    ("content", string("look")),
+                    ("images", JsonValue::Array(vec![string("iVBORw0KGgo")])),
+                ]),
+                object(&[("role", string("assistant")), ("content", string("a cat"))]),
+                object(&[("role", string("user")), ("content", string("and now?"))]),
+            ]),
+        )]);
+        let body = decoded(&request_body("m", &payload, false).expect("body"));
+        let messages = body.as_object().unwrap()["messages"].as_array().unwrap();
+        let first = messages[0].as_object().unwrap();
+        assert_eq!(first["content"], string("look"));
+        assert!(!first.contains_key("images"));
+    }
+
+    #[test]
+    fn an_image_with_no_text_is_sent_alone_and_no_images_change_nothing() {
+        let payload = object(&[(
+            "messages",
+            JsonValue::Array(vec![
+                object(&[
+                    ("role", string("user")),
+                    ("content", string("")),
+                    ("images", JsonValue::Array(vec![string("UklGRgAA")])),
+                ]),
+                object(&[
+                    ("role", string("user")),
+                    ("content", string("hi")),
+                    ("images", JsonValue::Array(Vec::new())),
+                ]),
+            ]),
+        )]);
+        let body = decoded(&request_body("m", &payload, true).expect("body"));
+        let messages = body.as_object().unwrap()["messages"].as_array().unwrap();
+        let first = messages[0].as_object().unwrap();
+        assert_eq!(
+            first["content"],
+            JsonValue::Array(vec![object(&[
+                ("type", string("image_url")),
+                (
+                    "image_url",
+                    object(&[("url", string("data:image/webp;base64,UklGRgAA"))])
+                ),
+            ])])
+        );
+        let second = messages[1].as_object().unwrap();
+        assert_eq!(second["content"], string("hi"));
+        assert!(!second.contains_key("images"));
     }
 
     #[test]

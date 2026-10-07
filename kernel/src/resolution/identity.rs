@@ -159,8 +159,9 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
         );
     }
 
-    if extension.as_deref() == Some("gguf") || has_gguf_magic(base) {
-        return identify_gguf(base, has_mmproj_companion(base));
+    if is_gguf_file(base) {
+        let has_projector = !projectors_of(base, mmproj_companions(base)).is_empty();
+        return identify_gguf(base, has_projector);
     }
 
     let model_index = container.join("model_index.json");
@@ -223,7 +224,8 @@ fn gguf_weights(container: &Path, primary: Option<&str>) -> Option<(PathBuf, boo
     }
     let tree = gguf_tree(container);
     let weights = primary_of(&tree.weights)?;
-    Some((weights, tree.has_projector()))
+    let has_projector = !projectors_of(&weights, tree.projectors).is_empty();
+    Some((weights, has_projector))
 }
 
 /// What a GGUF is, from its header. `has_projector` says whether a multimodal
@@ -244,29 +246,50 @@ fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
         );
     }
     let facts = gguf_facts(base);
-    let decision = facts.as_ref().is_some_and(|facts| facts.decision.is_some());
+    let decision = facts.as_ref().and_then(|facts| facts.decision.as_deref());
     let pooling = facts.as_ref().and_then(|facts| facts.pooling);
-    let (modality, capabilities, execution) = match pooling {
+    let (modality, capabilities, execution) = match (decision, pooling) {
+        // A decision model answers typed questions with probabilities and
+        // nothing else, whatever its architecture, chat template or pooling
+        // says: llama.cpp serves every decision type on `/v1/systemone` only.
+        (Some(decision), _) => (
+            Modality::text(),
+            decision_capabilities(decision, has_projector),
+            ExecutionMode::Stream,
+        ),
         // A header that pools its states into one vector is an embedder,
         // whatever its architecture: llama.cpp writes the pooling of a decoder
         // converted to embed (Qwen3-Embedding) under the decoder's own name,
-        // chat template and all. A decision model is never one.
-        Some(GgufPooling::Mean | GgufPooling::Cls | GgufPooling::Last) if !decision => (
+        // chat template and all.
+        (None, Some(GgufPooling::Mean | GgufPooling::Cls | GgufPooling::Last)) => (
             Modality::embedding(),
             vec![Capability::embed()],
             ExecutionMode::Stream,
         ),
         // One relevance score per pair: a reranker, read the way a
         // cross-encoder in safetensors is.
-        Some(GgufPooling::Rank) if !decision => {
-            (Modality::text(), Vec::new(), ExecutionMode::Stream)
-        }
+        (None, Some(GgufPooling::Rank)) => (Modality::text(), Vec::new(), ExecutionMode::Stream),
         _ => profiled(facts.as_ref(), has_projector),
     };
     let mut model =
         IdentifiedModel::new(ModelFormat::Gguf, Some(modality), capabilities, execution);
     apply_facts(&mut model, facts.as_ref());
     model
+}
+
+/// The decision types whose prompt has a place for images, as llama.cpp's
+/// `server_decision_context::can_use_images` names them. The others read text
+/// alone, with or without a projector beside them.
+const IMAGE_DECISION_TYPES: [&str; 2] = ["openjev", "clef"];
+
+/// What a decision model of type `decision` does: it judges, and it sees when
+/// its type reads images and a projector came with it.
+fn decision_capabilities(decision: &str, has_projector: bool) -> Vec<Capability> {
+    let mut capabilities = vec![Capability::judge()];
+    if has_projector && IMAGE_DECISION_TYPES.contains(&decision) {
+        capabilities.push(Capability::see());
+    }
+    capabilities
 }
 
 /// What a GGUF whose header pools nothing into one vector is: its
@@ -297,13 +320,11 @@ fn profiled(
     if capabilities == [Capability::embed()] {
         // An encoder that pools nothing into one vector cannot embed through
         // llama.cpp, which pools nothing when the header names no pooling. One
-        // carrying a decision head (Laya) scores typed questions and, until
-        // decision models are served, claims nothing; so does one carrying a
-        // classifier head, a reranker converted without its pooling. What is
-        // left returns a state per token, as the text encoder of a diffusion
-        // pipeline does: a component.
+        // carrying a classifier head is a reranker converted without its
+        // pooling and claims nothing. What is left returns a state per token,
+        // as the text encoder of a diffusion pipeline does: a component.
         capabilities.clear();
-        if facts.is_some_and(|facts| facts.decision.is_some() || facts.has_classifier_head) {
+        if facts.is_some_and(|facts| facts.has_classifier_head) {
             modality = Modality::text();
         }
     }
@@ -406,26 +427,163 @@ fn manifest_has_projector_layer(path: &str) -> bool {
     })
 }
 
-/// Whether a sibling `mmproj` GGUF (a vision projector) sits beside `base`.
-fn has_mmproj_companion(base: &Path) -> bool {
+/// Each sibling `mmproj` GGUF beside `base`, with its size in bytes.
+fn mmproj_companions(base: &Path) -> Vec<(PathBuf, u64)> {
     let Some(directory) = base.parent() else {
-        return false;
+        return Vec::new();
     };
     let base_name = base.file_name().and_then(|name| name.to_str());
     let Ok(entries) = std::fs::read_dir(directory) else {
-        return false;
+        return Vec::new();
     };
-    entries.flatten().any(|entry| {
-        let path = entry.path();
-        let name = path.file_name().and_then(|name| name.to_str());
-        name != base_name
-            // Skip hidden files.
-            && name.is_some_and(|name| !name.starts_with('.') && is_mmproj_name(name))
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-    })
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            let name = path.file_name().and_then(|name| name.to_str());
+            name != base_name
+                // Skip hidden files.
+                && name.is_some_and(|name| !name.starts_with('.') && is_mmproj_name(name))
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+        })
+        .map(|path| {
+            let bytes = std::fs::metadata(&path).map_or(0, |meta| meta.len());
+            (path, bytes)
+        })
+        .collect()
+}
+
+/// Whether `base` is a GGUF file, by its extension or its magic.
+fn is_gguf_file(base: &Path) -> bool {
+    base.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+        || has_gguf_magic(base)
+}
+
+/// How a projector stands to the weights beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectorFit {
+    /// It encodes images, one of its tensors has the weights' width, and the
+    /// file holds its data: llama-server can load it with them.
+    Fits,
+    /// Its header or its tensors could not be read, or the file stops short
+    /// of its data, as an unfinished download does.
+    Unread,
+    /// It encodes no images (an audio projector), or none of its tensors has
+    /// the weights' width, so it belongs to another model.
+    Misfit,
+}
+
+/// How `projector` stands to weights `width` wide. llama.cpp checks a
+/// projector by the width of the tensors it outputs, not by any header key,
+/// and an older converter wrote CLIP's own width (or 0) where a newer one
+/// writes the text model's; so the width is looked for among the tensors.
+fn projector_fit(width: Option<i64>, projector: &Path) -> ProjectorFit {
+    let Some(facts) = gguf_facts(projector).filter(|facts| facts.architecture.is_some()) else {
+        return ProjectorFit::Unread;
+    };
+    if !facts.has_vision_encoder {
+        return ProjectorFit::Misfit;
+    }
+    let Some(dimensions) = facts.tensor_dimensions else {
+        return ProjectorFit::Unread;
+    };
+    if let Some(width) = width.and_then(|width| u64::try_from(width).ok())
+        && !dimensions.contains(&width)
+    {
+        return ProjectorFit::Misfit;
+    }
+    if facts.tensors_present {
+        ProjectorFit::Fits
+    } else {
+        ProjectorFit::Unread
+    }
+}
+
+/// The projectors among `candidates` that may be `weights`' sight, each with
+/// how it fits them: every one but a misfit. One that could not be read is
+/// kept, as its name is all identification has to go on, but never loaded.
+fn projectors_of(
+    weights: &Path,
+    candidates: Vec<(PathBuf, u64)>,
+) -> Vec<(PathBuf, u64, ProjectorFit)> {
+    let width = gguf_facts(weights).and_then(|facts| facts.embedding_length);
+    candidates
+        .into_iter()
+        .map(|(path, bytes)| {
+            let fit = projector_fit(width, &path);
+            (path, bytes, fit)
+        })
+        .filter(|(_, _, fit)| *fit != ProjectorFit::Misfit)
+        .collect()
+}
+
+/// The multimodal projector a server loads with `record`'s GGUF weights, found
+/// where identification looks for one, so the projector that made the record
+/// see is the one it is served with: beside a loose file, or anywhere in a
+/// snapshot's tree, and only one that fits the weights and holds its data. Among several (a repo
+/// that ships the projector at more than one precision), the one named for the
+/// weights' own quantization, else the smallest, since a projector's precision
+/// costs memory and barely changes what it reads. `None` for a record that is
+/// not a GGUF file or snapshot, or one with no projector.
+pub fn projector_for(record: &ModelRecord) -> Option<PathBuf> {
+    let kind = &record.source.kind;
+    if *kind == SourceKind::ollama()
+        || *kind == SourceKind::builtin()
+        || *kind == SourceKind::endpoint()
+    {
+        return None;
+    }
+    let base = Path::new(&record.source.path);
+    let (weights, candidates) = if is_gguf_file(base) {
+        (base.to_path_buf(), mmproj_companions(base))
+    } else {
+        let tree = gguf_tree(&container_url(base, record));
+        let weights = match &record.primary_weight_path {
+            Some(path) => PathBuf::from(path),
+            None => primary_of(&tree.weights)?,
+        };
+        (weights, tree.projectors)
+    };
+    let loadable: Vec<(PathBuf, u64)> = projectors_of(&weights, candidates)
+        .into_iter()
+        .filter(|(_, _, fit)| *fit == ProjectorFit::Fits)
+        .map(|(path, bytes, _)| (path, bytes))
+        .collect();
+    choose_projector(&loadable, record.quantization.as_deref())
+}
+
+/// The projector [`projector_for`] takes out of `projectors` for weights of
+/// `quantization`. The quantization has to be a whole part of the name between
+/// dashes and dots, so `BF16` weights never take an `F16` projector.
+fn choose_projector(projectors: &[(PathBuf, u64)], quantization: Option<&str>) -> Option<PathBuf> {
+    let named_for_weights = |path: &Path| {
+        let (Some(quantization), Some(name)) = (
+            quantization,
+            path.file_name().and_then(|name| name.to_str()),
+        ) else {
+            return false;
+        };
+        name.split(['-', '.'])
+            .any(|part| part.eq_ignore_ascii_case(quantization))
+    };
+    let smallest = |candidates: &mut dyn Iterator<Item = &(PathBuf, u64)>| {
+        candidates
+            .min_by(|(left_path, left), (right_path, right)| {
+                left.cmp(right).then_with(|| left_path.cmp(right_path))
+            })
+            .map(|(path, _)| path.clone())
+    };
+    smallest(
+        &mut projectors
+            .iter()
+            .filter(|(path, _)| named_for_weights(path)),
+    )
+    .or_else(|| smallest(&mut projectors.iter()))
 }
 
 /// Identify a diffusers bundle from its `model_index.json` and the pipeline-family

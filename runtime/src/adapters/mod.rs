@@ -17,6 +17,7 @@ mod diffusers;
 mod embeddings;
 mod grammar;
 mod line_stream;
+mod llama_decision;
 mod llama_pool;
 mod llama_server;
 mod manifest_command;
@@ -47,7 +48,9 @@ pub use grammar::{
     CALL_CLOSE, CALL_OPEN, GENERIC_JSON_GRAMMAR, ToolGrammarError, grammar_for_response_format,
     tool_grammar, tool_system_block,
 };
-pub use llama_pool::{LlamaServerPool, LlamaServerSpawner, ServerProcess, ServerSpawner};
+pub use llama_pool::{
+    LlamaServerPool, LlamaServerSpawner, ServerLaunch, ServerProcess, ServerSpawner,
+};
 pub use llama_server::{BackendFuture, LlamaBackend, LlamaServerAdapter, ServerMode};
 pub use manifest_command::ManifestCommandAdapter;
 pub use manifest_sidecar::ManifestSidecarAdapter;
@@ -224,9 +227,9 @@ pub(crate) fn object_of<const N: usize>(pairs: [(&str, JsonValue); N]) -> JsonVa
     )
 }
 
-/// The most an embeddings response may carry: a batch of wide vectors written
-/// out as decimal text.
-pub(crate) const MAX_EMBEDDINGS_BYTES: usize = 32 * 1024 * 1024;
+/// The most a JSON response from a local server may carry, sized for the
+/// largest: a batch of wide embedding vectors written out as decimal text.
+pub(crate) const MAX_JSON_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// The most of a failed response's body read for the message it carries.
 pub(crate) const MAX_ERROR_BYTES: usize = 64 * 1024;

@@ -2,13 +2,13 @@
 //! noul) and a model name in, an envelope of typed answers out.
 //!
 //! Nothing here models the questions or the answers. The model that answers
-//! them already speaks this shape on both sides, so the request's `questions`
-//! and `state` are carried to it as the exact text the client wrote, and its
-//! reply goes back as the exact text it produced. That is for correctness more
-//! than economy: the order of a choice question's options changes the
-//! probabilities the model gives them, a client that cares writes its body by
-//! hand to keep that order, and every JSON object this crate parses comes out
-//! sorted by key. The parsed copy below exists only to be checked.
+//! them already speaks this shape on both sides, so the request's `questions`,
+//! `state` and `images` are carried to it as the exact text the client wrote,
+//! and its reply goes back as the exact text it produced. That is for
+//! correctness more than economy: the order of a choice question's options
+//! changes the probabilities the model gives them, a client that cares writes
+//! its body by hand to keep that order, and every JSON object this crate parses
+//! comes out sorted by key. The parsed copy below exists only to be checked.
 
 use std::collections::BTreeMap;
 
@@ -29,6 +29,7 @@ pub struct SystemOneRequest<'a> {
     pub model: String,
     questions: &'a RawValue,
     state: &'a RawValue,
+    images: Option<&'a RawValue>,
 }
 
 #[derive(Deserialize)]
@@ -38,6 +39,8 @@ struct RawRequest<'a> {
     questions: Option<&'a RawValue>,
     #[serde(borrow, default, deserialize_with = "present")]
     state: Option<&'a RawValue>,
+    #[serde(borrow, default, deserialize_with = "present")]
+    images: Option<&'a RawValue>,
 }
 
 /// Deserialize a field that is there, `null` included. A plain `Option` reads
@@ -64,11 +67,38 @@ pub fn decode_request(body: &[u8]) -> Result<SystemOneRequest<'_>, GatewayError>
         .ok_or_else(|| bad_request("questions is required"))?;
     let state = raw.state.ok_or_else(|| bad_request("state is required"))?;
     check_questions(questions)?;
+    // `null` is no images, as a client that leaves the field unset may write it.
+    let images = raw.images.filter(|images| images.get() != "null");
+    if let Some(images) = images {
+        check_images(images)?;
+    }
     Ok(SystemOneRequest {
         model,
         questions,
         state,
+        images,
     })
+}
+
+/// Images go as a list of data URLs, the only form a local model is handed
+/// one in; a URL to fetch is not.
+fn check_images(images: &RawValue) -> Result<(), GatewayError> {
+    let parsed: JsonValue = serde_json::from_str(images.get())
+        .map_err(|_| bad_request("images must be a list of image data URLs"))?;
+    let urls = parsed
+        .as_array()
+        .ok_or_else(|| bad_request("images must be a list of image data URLs"))?;
+    for (index, url) in urls.iter().enumerate() {
+        let is_data_url = url
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/"));
+        if !is_data_url {
+            return Err(bad_request(format!(
+                "image {index} must be a data URL (data:image/...;base64,...)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn check_questions(questions: &RawValue) -> Result<(), GatewayError> {
@@ -124,27 +154,33 @@ fn check_criteria(id: &str, fields: &BTreeMap<String, JsonValue>) -> Result<(), 
 }
 
 impl SystemOneRequest<'_> {
-    /// The question as the model reads it: `{"state": …, "questions": …}`, with
-    /// both values spliced in as the client's own text so that no key moves.
+    /// The question as the model reads it: `{"state": …, "questions": …}`, and
+    /// its `images` when it carries some, each value spliced in as the
+    /// client's own text so that no key moves.
     pub fn question_text(&self) -> String {
+        let images = self
+            .images
+            .map(|images| format!(",\"images\":{}", images.get()))
+            .unwrap_or_default();
         format!(
-            "{{\"state\":{},\"questions\":{}}}",
+            "{{\"state\":{},\"questions\":{}{images}}}",
             self.state.get(),
             self.questions.get()
         )
     }
+}
 
-    /// The chat payload that carries [`question_text`](Self::question_text) to
-    /// the model as a single user message.
-    pub fn chat_payload(&self) -> JsonValue {
-        JsonValue::object([(
-            "messages",
-            JsonValue::Array(vec![JsonValue::object([
-                ("role", JsonValue::String("user".to_owned())),
-                ("content", JsonValue::String(self.question_text())),
-            ])]),
-        )])
-    }
+/// The chat payload that carries `question`, a request's
+/// [`question_text`](SystemOneRequest::question_text), to the model as a
+/// single user message.
+pub fn chat_payload(question: &str) -> JsonValue {
+    JsonValue::object([(
+        "messages",
+        JsonValue::Array(vec![JsonValue::object([
+            ("role", JsonValue::String("user".to_owned())),
+            ("content", JsonValue::String(question.to_owned())),
+        ])]),
+    )])
 }
 
 /// The response body for a model's `reply`: the reply itself, byte for byte,
@@ -168,6 +204,8 @@ pub fn envelope(reply: &str) -> Result<Vec<u8>, GatewayError> {
 
 #[cfg(test)]
 mod tests {
+    use kernel::capabilities::question_carries_images;
+
     use super::*;
     use crate::error::GatewayErrorKind;
 
@@ -186,7 +224,7 @@ mod tests {
     #[test]
     fn the_chat_payload_is_one_user_message_holding_the_question_text() {
         let request = decode_request(CHOICE.as_bytes()).unwrap();
-        let payload = request.chat_payload();
+        let payload = chat_payload(&request.question_text());
         let messages = payload.as_object().unwrap()["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
         let message = messages[0].as_object().unwrap();
@@ -195,6 +233,33 @@ mod tests {
             message["content"].as_str(),
             Some(request.question_text().as_str())
         );
+    }
+
+    #[test]
+    fn images_follow_the_questions_as_the_client_wrote_them() {
+        let body = r#"{"images":["data:image/png;base64,AA=="],"model":"clef","questions":{"q":{"type":"noul","instructions":"ok?"}},"state":"s"}"#;
+        let request = decode_request(body.as_bytes()).unwrap();
+        assert_eq!(
+            request.question_text(),
+            r#"{"state":"s","questions":{"q":{"type":"noul","instructions":"ok?"}},"images":["data:image/png;base64,AA=="]}"#
+        );
+        assert!(question_carries_images(&request.question_text()));
+    }
+
+    #[test]
+    fn a_question_carries_images_only_when_it_lists_some_or_its_state_holds_one() {
+        let carries = |rest: &str| {
+            let body = format!(
+                r#"{{"model":"m","questions":{{"q":{{"type":"noul","instructions":"i"}}}},{rest}}}"#
+            );
+            question_carries_images(&decode_request(body.as_bytes()).unwrap().question_text())
+        };
+        assert!(!carries(r#""state":"s""#));
+        assert!(!carries(r#""state":"s","images":[]"#));
+        assert!(!carries(r#""state":"s","images":null"#));
+        assert!(carries(
+            r#""state":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]"#
+        ));
     }
 
     #[test]

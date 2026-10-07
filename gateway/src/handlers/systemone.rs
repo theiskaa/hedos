@@ -1,11 +1,15 @@
 //! The System One handler: TypeSafe's `POST /v1/systemone`, so a TypeSafe SDK
 //! pointed at this gateway reaches a local model with no change on its side.
 //!
-//! The route is a translation at the edge of the chat path. A model that answers
-//! typed questions here takes them as JSON in a user message and replies with
-//! the System One envelope as text, so the handler wraps the request's question
-//! in one message, runs it as chat, and returns the reply as the body. There is
-//! no streamed form: System One is one request and one envelope.
+//! The handler hands the question to whatever serves `judge` for the model
+//! named: a llama.cpp decision server, or a manifest runtime such as laya's.
+//! Each takes it as JSON in one user message and replies with the System One
+//! envelope as text, which goes back as the body. There is no streamed form:
+//! System One is one request and one envelope.
+//!
+//! **Images** go as data URLs in `images`, or as `image_url` parts of a state
+//! made of chat messages, and only to a model that sees; any other is refused
+//! with the judges that would read them.
 //!
 //! **Model routing.** The name in the body has to resolve, and to a model that
 //! declares the `judge` capability. Anything else is refused with the names of
@@ -18,6 +22,7 @@
 //! **Errors** keep the OpenAI shape, `{"error": {"message": …}}`. The SDK reads
 //! `error.message` out of a failed response, so it shows the text written here.
 
+use kernel::capabilities::question_carries_images;
 use kernel::records::{Capability, ModelRecord, ModelState};
 
 use super::{GatewayHandling, HandlerFuture, bad_request, collect_completion, completion_id};
@@ -47,14 +52,25 @@ impl GatewayHandling for SystemOneHandler {
     ) -> HandlerFuture<'a> {
         Box::pin(async move {
             let question = typesafe::decode_request(&request.body)?;
-            let record = judge_named(port, identity, &question.model).await?;
+            let shelf = port.shelf().await;
+            let record = judge_named(&shelf, identity, &question.model)?;
             identity.require(&record.id, &Capability::judge())?;
+            let text = question.question_text();
+            if question_carries_images(&text) && !record.capabilities.contains(&Capability::see()) {
+                return Err(bad_request(format!(
+                    "{} does not read images; {}",
+                    record.display_name(),
+                    judges_listed(&shelf, identity, true)
+                )));
+            }
             require_admission(port, &record, GatewayWorkKind::Stream).await?;
 
-            // The question travels as chat because that is the wire the model's
-            // runtime speaks; `judge` says the model can answer, not how.
             let mut stream = port
-                .invoke(&record.id, Capability::chat(), question.chat_payload())
+                .invoke(
+                    &record.id,
+                    Capability::judge(),
+                    typesafe::chat_payload(&text),
+                )
                 .await?;
             let (reply, _, _) = collect_completion(&mut stream).await?;
             responder.respond(
@@ -71,34 +87,17 @@ impl GatewayHandling for SystemOneHandler {
     }
 }
 
-/// The ready, in-scope model `requested` names, provided it answers typed
-/// questions. A name that resolves to nothing is a `404` and one that resolves
-/// to a model without `judge` is a `400`; both name the models that would do.
-async fn judge_named(
-    port: &dyn GatewayPort,
+/// The ready, in-scope model on `shelf` that `requested` names, provided it
+/// answers typed questions. A name that resolves to nothing is a `404` and one
+/// that resolves to a model without `judge` is a `400`; both name the models
+/// that would do.
+fn judge_named(
+    shelf: &[ModelRecord],
     identity: &GatewayIdentity,
     requested: &str,
 ) -> Result<ModelRecord, GatewayError> {
-    let shelf = port.shelf().await;
-    let judges = || {
-        let mut names: Vec<&str> = shelf
-            .iter()
-            .filter(|record| record.state == ModelState::Ready)
-            .filter(|record| identity.scopes.permits_model(&record.id))
-            .filter(|record| record.capabilities.contains(&Capability::judge()))
-            .map(ModelRecord::display_name)
-            .collect();
-        names.sort_unstable();
-        if names.is_empty() {
-            "no model on this machine answers typed questions".to_owned()
-        } else {
-            format!(
-                "the models that answer typed questions here: {}",
-                names.join(", ")
-            )
-        }
-    };
-    match resolve(requested, &shelf, &identity.scopes) {
+    let judges = || judges_listed(shelf, identity, false);
+    match resolve(requested, shelf, &identity.scopes) {
         Ok(record) if record.capabilities.contains(&Capability::judge()) => Ok(record),
         Ok(record) => Err(bad_request(format!(
             "{} does not answer typed questions; {}",
@@ -110,5 +109,28 @@ async fn judge_named(
             format!("{}; {}", error.message, judges()),
         )),
         Err(error) => Err(error),
+    }
+}
+
+/// The ready, in-scope models on `shelf` that answer typed questions, those
+/// that also read images when `seeing`, named for a refusal.
+fn judges_listed(shelf: &[ModelRecord], identity: &GatewayIdentity, seeing: bool) -> String {
+    let mut names: Vec<&str> = shelf
+        .iter()
+        .filter(|record| record.state == ModelState::Ready)
+        .filter(|record| identity.scopes.permits_model(&record.id))
+        .filter(|record| record.capabilities.contains(&Capability::judge()))
+        .filter(|record| !seeing || record.capabilities.contains(&Capability::see()))
+        .map(ModelRecord::display_name)
+        .collect();
+    names.sort_unstable();
+    let about = if seeing { " about images" } else { "" };
+    if names.is_empty() {
+        format!("no model on this machine answers typed questions{about}")
+    } else {
+        format!(
+            "the models that answer typed questions{about} here: {}",
+            names.join(", ")
+        )
     }
 }
