@@ -2,6 +2,7 @@
 
 pub mod bench;
 pub mod chat;
+pub mod disk_count;
 pub mod image;
 pub mod launch;
 pub mod ls;

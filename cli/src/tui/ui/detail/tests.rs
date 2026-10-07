@@ -186,3 +186,10 @@ fn the_size_row_has_no_disk_suffix_when_they_agree() {
     record.serving_bytes = Some(4_300_000_000);
     assert!(!text(&size_line(&record, 80)).contains("on disk"));
 }
+
+#[test]
+fn the_title_escapes_the_name() {
+    let mut record = record_with("m", vec![Capability::chat()]);
+    record.alias = Some("evil\u{1b}[31mred bidi\u{202e}gpj".to_owned());
+    assert_eq!(title(&record), " evil\\u{1b}[31mred bidi\\u{202e}gpj ");
+}

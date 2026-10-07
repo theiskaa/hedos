@@ -19,7 +19,11 @@ fn the_card_budgets_every_row_of_a_grouped_listing() {
 
 #[test]
 fn the_preview_elides_its_destination() {
-    let app = App::new(Vec::new(), facts_with_memory(64));
+    let counted = crate::tui::facts::Facts {
+        disk_by_store: Some(Vec::new()),
+        ..facts_with_memory(64)
+    };
+    let app = App::new(Vec::new(), counted);
     let mut long = plan("gemma3");
     long.destination = format!("/var/lib/ollama/models/blobs/{}", "a".repeat(120));
     long.total_bytes = Some(4_000_000_000);
@@ -53,6 +57,12 @@ fn the_preview_elides_its_destination() {
         lines
             .iter()
             .any(|line| line.starts_with(" after") && line.ends_with("1 GB on disk"))
+    );
+    let counting = App::new(Vec::new(), facts_with_memory(64));
+    assert!(
+        texts(&preview(&long, &counting, inner))
+            .iter()
+            .any(|line| line.starts_with(" after") && line.ends_with("counting the disk"))
     );
     let mut fresh = long.clone();
     fresh.remaining_bytes = Some(4_000_000_000);

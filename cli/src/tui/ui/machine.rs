@@ -225,12 +225,17 @@ fn clipped(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
     Line::from(kept)
 }
 
-/// `disk    40.3 GB · ollama 27.8 · hf 12.4`.
+/// `disk    40.3 GB · ollama 27.8 · hf 12.4`, or `disk    counting` until
+/// the first count finishes.
 fn disk_line(facts: &Facts, labels: usize) -> Line<'static> {
     let mut spans = vec![label("disk", labels)];
-    spans.push(Span::styled(text::bytes(facts.disk_bytes()), BOLD));
-    let stores: Vec<String> = facts
-        .disk_by_store
+    let Some(stores) = &facts.disk_by_store else {
+        spans.push(Span::styled("counting", DIM));
+        return Line::from(spans);
+    };
+    let total: i64 = stores.iter().map(|(_, bytes)| bytes).sum();
+    spans.push(Span::styled(text::bytes(total), BOLD));
+    let stores: Vec<String> = stores
         .iter()
         .filter(|(_, bytes)| *bytes > 0)
         .map(|(kind, bytes)| format!("{} {}", text::short_store(kind), text::bytes(*bytes)))
@@ -254,7 +259,7 @@ mod tests {
     fn every_label_is_listed() {
         let facts = Facts {
             residents: vec![resident_with_bytes("m", Holder::Local, 4 << 30)],
-            disk_by_store: vec![("ollama".to_owned(), 1 << 30)],
+            disk_by_store: Some(vec![("ollama".to_owned(), 1 << 30)]),
             ..facts_with_memory(64)
         };
         let listed = super::labels(true);
@@ -279,7 +284,10 @@ mod tests {
     fn the_label_column_widens_for_the_gateway_only_when_stacked() {
         assert_eq!(label_column(false), "memory".len() + 1);
         assert_eq!(label_column(true), "gateway".len() + 1);
-        let facts = Facts::default();
+        let facts = Facts {
+            disk_by_store: Some(Vec::new()),
+            ..Facts::default()
+        };
         let disk = text::bytes(0);
         assert_eq!(
             text(&disk_line(&facts, label_column(false))),
@@ -288,6 +296,14 @@ mod tests {
         assert_eq!(
             text(&disk_line(&facts, label_column(true))),
             format!(" disk    {disk}")
+        );
+    }
+
+    #[test]
+    fn the_disk_line_says_it_is_counting_until_the_first_count() {
+        assert_eq!(
+            text(&disk_line(&Facts::default(), label_column(false))),
+            " disk   counting"
         );
     }
 

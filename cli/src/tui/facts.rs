@@ -1,11 +1,14 @@
 //! The machine facts the screen shows, gathered once per refresh: memory,
 //! what is loaded and by whom, disk by store, and what the gateway served.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use gateway::audit::GatewayAuditEntry;
 use gateway::stats::{LatencyPercentiles, percentiles};
-use kernel::records::{ModelRecord, ModelState};
+use kernel::discovery;
+use kernel::records::ModelRecord;
 use kernel::time::now_millis;
 
 use crate::support::machine;
@@ -106,8 +109,9 @@ pub struct Facts {
     pub residents: Vec<Resident>,
     /// The port a running gateway answered on, if any.
     pub gateway_port: Option<u16>,
-    /// Bytes on disk per store kind, largest first.
-    pub disk_by_store: Vec<(String, i64)>,
+    /// Bytes on disk per store kind, largest first, each file counted once
+    /// as `hedos scan` counts it. `None` until the first count finishes.
+    pub disk_by_store: Option<Vec<(String, i64)>>,
     /// What the gateway has served, from its audit log.
     pub activity: Activity,
     /// When these facts were read, in Unix milliseconds; ages are measured
@@ -116,20 +120,22 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// Gather the facts for `records` from `session`, the gateway probe, and
-    /// the audit `entries`.
+    /// Gather the facts for `records` from `session`, the gateway probe, the
+    /// audit `entries`, and the disk figures `disk` last counted.
     pub async fn collect(
         session: &Session,
         records: &[ModelRecord],
         entries: &[GatewayAuditEntry],
+        disk: &DiskCount,
     ) -> Self {
         let now = now_millis();
         let loaded = residency::loaded(session, records).await;
+        let disk = disk.figures(records).await;
         Self {
             memory_bytes: machine::memory_budget_bytes(),
             residents: loaded.residents,
             gateway_port: loaded.gateway_port,
-            disk_by_store: disk_by_store(records),
+            disk_by_store: disk,
             activity: Activity::from_entries(entries, now),
             collected_at_millis: now,
         }
@@ -155,9 +161,11 @@ impl Facts {
         self.memory_bytes as i64 - self.resident_bytes()
     }
 
-    /// Bytes on disk across every store.
-    pub fn disk_bytes(&self) -> i64 {
-        self.disk_by_store.iter().map(|(_, bytes)| bytes).sum()
+    /// Bytes on disk across every store, once a count has finished.
+    pub fn disk_bytes(&self) -> Option<i64> {
+        self.disk_by_store
+            .as_ref()
+            .map(|stores| stores.iter().map(|(_, bytes)| bytes).sum())
     }
 
     /// The gateway in a phrase: `on :11434 · 3 req/min`, or `off`.
@@ -172,21 +180,174 @@ impl Facts {
     }
 }
 
-/// Footprints summed per store kind, largest first, ties by name. A record
-/// whose weights are gone holds no disk.
-fn disk_by_store(records: &[ModelRecord]) -> Vec<(String, i64)> {
-    let mut totals: BTreeMap<&str, i64> = BTreeMap::new();
-    for record in records {
-        if record.state == ModelState::Missing {
-            continue;
-        }
-        *totals.entry(record.source.kind.as_str()).or_default() +=
-            record.size_on_disk().unwrap_or(0);
+/// How long a refresh waits for the disk count it started before it shows
+/// the last figures instead.
+const DISK_WAIT: Duration = Duration::from_millis(500);
+
+/// Counts the shelf's bytes on disk for the machine pane, one count at a
+/// time. Counting stats every model file, which a stalled mount can hold up
+/// for as long as it likes, so a refresh never waits on it past
+/// [`DISK_WAIT`]: it shows the last figures a count finished with, and starts
+/// no new count while one is still running, so a stall holds up one count
+/// however many refreshes pass. Each count runs on a thread of its own that
+/// leaving the shelf never waits for, and that thread has a `hedos
+/// disk-count` process do the stats: a process with a thread stuck in a stat
+/// on such a mount cannot finish exiting, so the child is the one left
+/// behind, not the shelf.
+pub struct DiskCount {
+    count: Counter,
+    wait: Duration,
+    state: Arc<Mutex<DiskState>>,
+}
+
+/// Bytes on disk per store kind, largest first.
+type Figures = Vec<(String, i64)>;
+
+/// What counts the bytes on disk per store of a shelf, or `None` when the
+/// count failed.
+type Counter = Arc<dyn Fn(&[ModelRecord]) -> Option<Figures> + Send + Sync>;
+
+#[derive(Default)]
+struct DiskState {
+    last: Option<Figures>,
+    running: bool,
+}
+
+impl Default for DiskCount {
+    fn default() -> Self {
+        Self::new(Arc::new(count_apart), DISK_WAIT)
     }
-    let mut stores: Vec<(String, i64)> = totals
-        .into_iter()
-        .map(|(kind, bytes)| (kind.to_owned(), bytes))
-        .collect();
+}
+
+impl DiskCount {
+    fn new(count: Counter, wait: Duration) -> Self {
+        Self {
+            count,
+            wait,
+            state: Arc::new(Mutex::new(DiskState::default())),
+        }
+    }
+
+    /// The bytes on disk per store of `records`: a count started now when
+    /// none is running and it finishes in time, else the last one that
+    /// finished, else `None` while the first is still counting.
+    pub async fn figures(&self, records: &[ModelRecord]) -> Option<Figures> {
+        if let Some(done) = self.start(records)
+            && let Ok(Ok(Some(figures))) = tokio::time::timeout(self.wait, done).await
+        {
+            return Some(figures);
+        }
+        self.lock().last.clone()
+    }
+
+    /// Start a count of `records` on a thread of its own, unless one is
+    /// running: the receiver hears what it found.
+    fn start(
+        &self,
+        records: &[ModelRecord],
+    ) -> Option<tokio::sync::oneshot::Receiver<Option<Figures>>> {
+        {
+            let mut state = self.lock();
+            if state.running {
+                return None;
+            }
+            state.running = true;
+        }
+        let (found, done) = tokio::sync::oneshot::channel();
+        let count = Arc::clone(&self.count);
+        let running = Running {
+            state: Arc::clone(&self.state),
+            found: Some(found),
+        };
+        let shelf = records.to_vec();
+        // A thread that cannot be started drops `running`, which marks the
+        // count finished again; the lock is not held here for that reason.
+        std::thread::Builder::new()
+            .name("disk-count".to_owned())
+            .spawn(move || running.finish(count(&shelf)))
+            .ok()
+            .map(|_| done)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, DiskState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A running count's hold on the state and on the refresh waiting for it.
+/// Dropped, as when the count panics, it marks the count finished before the
+/// refresh hears of it, so the next refresh is free to start another.
+struct Running {
+    state: Arc<Mutex<DiskState>>,
+    found: Option<tokio::sync::oneshot::Sender<Option<Figures>>>,
+}
+
+impl Running {
+    /// Keep what the count found, when it found anything, and hand it to
+    /// the refresh waiting for it.
+    fn finish(mut self, figures: Option<Figures>) {
+        {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(figures) = &figures {
+                state.last = Some(figures.clone());
+            }
+            state.running = false;
+        }
+        if let Some(found) = self.found.take() {
+            let _ = found.send(figures);
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        // After `finish` the flag may already belong to the next count.
+        if self.found.is_some() {
+            self.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .running = false;
+        }
+    }
+}
+
+/// Count the bytes on disk per store of `records` in a `hedos disk-count`
+/// process, handing it the records on stdin. `None` when the process cannot
+/// be started or says nothing that reads as figures.
+fn count_apart(records: &[ModelRecord]) -> Option<Figures> {
+    let input = serde_json::to_vec(records).ok()?;
+    let mut child = std::process::Command::new(std::env::current_exe().ok()?)
+        .arg("disk-count")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let written = child
+        .stdin
+        .take()
+        .map(|mut stdin| std::io::Write::write_all(&mut stdin, &input));
+    let output = child.wait_with_output().ok()?;
+    if !matches!(written, Some(Ok(()))) || !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
+}
+
+/// Bytes on disk per store kind, largest first, ties by name: each file
+/// counted once by device and inode, so two Ollama tags over one blob or a
+/// hard link add nothing after the first. A record whose weights are gone
+/// holds no disk. `hedos disk-count` prints these.
+pub(crate) fn disk_by_store(records: &[ModelRecord]) -> Figures {
+    largest_first(
+        discovery::disk_by_store(records)
+            .into_iter()
+            .map(|(kind, bytes)| (kind.as_str().to_owned(), bytes))
+            .collect(),
+    )
+}
+
+fn largest_first(mut stores: Figures) -> Figures {
     stores.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     stores
 }
@@ -195,7 +356,7 @@ fn disk_by_store(records: &[ModelRecord]) -> Vec<(String, i64)> {
 mod tests {
     use super::*;
     use crate::support::residency::Holder;
-    use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+    use kernel::records::{Capability, Modality, ModelSource, ModelState, SourceKind};
 
     fn record(name: &str, kind: SourceKind, footprint_bytes: Option<i64>) -> ModelRecord {
         let mut record = ModelRecord::new(
@@ -232,6 +393,139 @@ mod tests {
         assert_eq!(stores[2], ("file".to_owned(), 0));
     }
 
+    /// A count that stalls, as a stat on a mount that stopped answering
+    /// does, until `release` is sent, counting each start in `starts`.
+    fn stalled(
+        figures: Vec<(String, i64)>,
+    ) -> (
+        Counter,
+        std::sync::mpsc::Sender<()>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let (release, stall) = std::sync::mpsc::channel::<()>();
+        let stall = Mutex::new(stall);
+        let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started = Arc::clone(&starts);
+        let count: Counter = Arc::new(move |_: &[ModelRecord]| {
+            started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let _ = stall.lock().unwrap_or_else(PoisonError::into_inner).recv();
+            Some(figures.clone())
+        });
+        (count, release, starts)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stalled_disk_count_never_holds_a_refresh_or_runs_twice() {
+        let (count, release, starts) = stalled(vec![("ollama".to_owned(), 7)]);
+        let disk = DiskCount::new(count, Duration::from_millis(50));
+        let records = [record("a", SourceKind::ollama(), Some(3))];
+        let before = std::time::Instant::now();
+        assert_eq!(disk.figures(&records).await, None, "still counting");
+        assert_eq!(disk.figures(&records).await, None);
+        assert!(before.elapsed() < Duration::from_secs(2));
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        release.send(()).unwrap();
+        let mut figures = None;
+        for _ in 0..200 {
+            figures = disk.figures(&records).await;
+            if figures.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            figures,
+            Some(vec![("ollama".to_owned(), 7)]),
+            "the last count is kept"
+        );
+    }
+
+    #[test]
+    fn leaving_never_waits_for_a_stalled_disk_count() {
+        let (count, release, starts) = stalled(vec![("file".to_owned(), 1)]);
+        let disk = DiskCount::new(count, Duration::from_millis(20));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(runtime.block_on(disk.figures(&[])), None);
+        let before = std::time::Instant::now();
+        drop(runtime);
+        assert!(
+            before.elapsed() < Duration::from_secs(1),
+            "dropping the runtime waited on the count"
+        );
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        release.send(()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_disk_count_that_finishes_in_time_is_shown_at_once() {
+        let disk = DiskCount::new(
+            Arc::new(|_: &[ModelRecord]| Some(vec![("file".to_owned(), 9)])),
+            Duration::from_secs(5),
+        );
+        assert_eq!(disk.figures(&[]).await, Some(vec![("file".to_owned(), 9)]));
+    }
+
+    #[tokio::test]
+    async fn a_failed_or_panicking_count_leaves_the_next_one_free_to_run() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let called = Arc::clone(&calls);
+        let disk = DiskCount::new(
+            Arc::new(move |_: &[ModelRecord]| {
+                match called.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => Some(vec![("file".to_owned(), 4)]),
+                    1 => None,
+                    2 => panic!("a count that panics"),
+                    _ => Some(vec![("file".to_owned(), 5)]),
+                }
+            }),
+            Duration::from_secs(5),
+        );
+        assert_eq!(disk.figures(&[]).await, Some(vec![("file".to_owned(), 4)]));
+        assert_eq!(
+            disk.figures(&[]).await,
+            Some(vec![("file".to_owned(), 4)]),
+            "a failed count keeps the last figures"
+        );
+        assert_eq!(disk.figures(&[]).await, Some(vec![("file".to_owned(), 4)]));
+        assert_eq!(disk.figures(&[]).await, Some(vec![("file".to_owned(), 5)]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_counts_a_file_two_records_reach_once() {
+        let dir = std::env::temp_dir().join(format!(
+            "hedos-facts-disk-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.gguf");
+        let linked = dir.join("b.gguf");
+        let own = dir.join("c.gguf");
+        std::fs::write(&file, [1u8; 700]).unwrap();
+        std::fs::write(&own, [2u8; 200]).unwrap();
+        let _ = std::fs::remove_file(&linked);
+        std::fs::hard_link(&file, &linked).unwrap();
+        let at = |path: &std::path::Path| {
+            let mut record = record("m", SourceKind::file(), Some(700));
+            record.source = ModelSource::new(SourceKind::file(), &path.to_string_lossy());
+            record
+        };
+        let mut studio = at(&linked);
+        studio.source.kind = SourceKind::lm_studio();
+        let stores = disk_by_store(&[at(&file), studio, at(&own)]);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            stores,
+            vec![("lm-studio".to_owned(), 700), ("file".to_owned(), 200)],
+            "the hard link counts under the first store, lm-studio"
+        );
+    }
+
     #[test]
     fn the_disk_total_still_counts_every_quant() {
         let mut multi = record("multi", SourceKind::huggingface_cache(), Some(300));
@@ -263,12 +557,13 @@ mod tests {
                 },
             ],
             gateway_port: None,
-            disk_by_store: vec![("ollama".into(), 7), ("file".into(), 3)],
+            disk_by_store: Some(vec![("ollama".into(), 7), ("file".into(), 3)]),
             activity: Activity::default(),
             collected_at_millis: 0,
         };
         assert_eq!(facts.resident_bytes(), 15);
-        assert_eq!(facts.disk_bytes(), 10);
+        assert_eq!(facts.disk_bytes(), Some(10));
+        assert_eq!(Facts::default().disk_bytes(), None);
         assert_eq!(facts.resident("b").map(|r| r.holder), Some(Holder::Gateway));
     }
 

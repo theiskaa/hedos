@@ -8,8 +8,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::discovery::duplicates::{
-    DEFAULT_THRESHOLD, DuplicateGroup, content_fingerprint, detect,
+    DEFAULT_THRESHOLD, DuplicateCandidate, DuplicateGroup, DuplicateMember, content_fingerprint,
+    find, passed_links,
 };
+use crate::discovery::on_disk::{bytes_by_store, linked_reach, removal_roots, removal_set};
 use crate::discovery::scanner::{DiscoveredModel, StoreScanner};
 use crate::records::byte_format::BYTES_PER_MIB;
 use crate::records::{Modality, ModelRecord, ModelState, SourceKind, format_bytes, stable_id};
@@ -20,7 +22,10 @@ use crate::registry::{Registry, RegistryError};
 pub struct KindStat {
     /// How many models were found.
     pub count: usize,
-    /// Their combined on-disk size in bytes.
+    /// The bytes their files take on disk, each file counted once across
+    /// every store: a file two models reach (a hard link, a shared Ollama
+    /// blob) counts under the first store, in [`DiscoverySummary::stores`]
+    /// order, that reaches it.
     pub bytes: i64,
 }
 
@@ -30,12 +35,20 @@ pub struct KindStat {
 pub struct DiscoverySummary {
     /// Per source-kind stats.
     pub per_kind: BTreeMap<SourceKind, KindStat>,
-    /// Total models found across all stores.
+    /// Total models found across all stores, a model two scanners both
+    /// report counted once.
     pub total_count: usize,
-    /// Total bytes across all found models.
+    /// Total bytes on disk across all found models, each file counted once,
+    /// as [`KindStat::bytes`] counts it.
     pub total_bytes: i64,
-    /// Groups of duplicate weight files.
+    /// The record id of every model found, once each.
+    pub found_ids: BTreeSet<String>,
+    /// Each copy to keep, with the models that can go in its favour.
     pub duplicates: Vec<DuplicateGroup>,
+    /// What removing every copy the duplicate groups offer frees, each file
+    /// counted once: the sum of the groups', and more when copies in two
+    /// groups share a file through a hard link.
+    pub reclaimable_bytes: i64,
     /// Non-fatal issues surfaced during the scan.
     pub issues: Vec<String>,
     /// Store kinds whose scan failed wholesale.
@@ -48,20 +61,13 @@ impl DiscoverySummary {
         if self.total_count == 0 {
             return "No models found on this Mac yet.".to_owned();
         }
-        let ordered = [
-            (SourceKind::ollama(), "in Ollama"),
-            (SourceKind::huggingface_cache(), "in the Hugging Face cache"),
-            (SourceKind::lm_studio(), "in LM Studio"),
-            (SourceKind::builtin(), "built in"),
-        ];
-        let mut parts = Vec::new();
-        for (kind, label) in ordered {
-            if let Some(stat) = self.per_kind.get(&kind)
-                && stat.count > 0
-            {
-                parts.push(format!("{} {label}", stat.count));
-            }
-        }
+        let mut parts: Vec<String> = self
+            .stores()
+            .into_iter()
+            .filter_map(|(kind, stat)| {
+                headline_label(&kind).map(|label| format!("{} {label}", stat.count))
+            })
+            .collect();
         let loose = self.kind_count(&SourceKind::file()) + self.kind_count(&SourceKind::folder());
         if loose == 1 {
             parts.push("1 loose file".to_owned());
@@ -76,7 +82,7 @@ impl DiscoverySummary {
         let breakdown = if parts.is_empty() {
             String::new()
         } else {
-            format!(" — {}", parts.join(", "))
+            format!(" ({})", parts.join(", "))
         };
         format!(
             "Found {models} on this Mac{breakdown}. Total: {}.",
@@ -84,9 +90,49 @@ impl DiscoverySummary {
         )
     }
 
+    /// Every store that holds a model, with its count and bytes: Ollama, the
+    /// Hugging Face cache, LM Studio and the built-in models first, in the
+    /// order the headline names them, then any other store by kind.
+    pub fn stores(&self) -> Vec<(SourceKind, KindStat)> {
+        let mut stores: Vec<(SourceKind, KindStat)> = self
+            .per_kind
+            .iter()
+            .filter(|(_, stat)| stat.count > 0)
+            .map(|(kind, stat)| (kind.clone(), *stat))
+            .collect();
+        stores.sort_by_key(|(kind, _)| store_rank(kind));
+        stores
+    }
+
     fn kind_count(&self, kind: &SourceKind) -> usize {
         self.per_kind.get(kind).map_or(0, |stat| stat.count)
     }
+}
+
+/// The stores the headline names, in the order it names them.
+fn named_stores() -> [(SourceKind, &'static str); 4] {
+    [
+        (SourceKind::ollama(), "in Ollama"),
+        (SourceKind::huggingface_cache(), "in the Hugging Face cache"),
+        (SourceKind::lm_studio(), "in LM Studio"),
+        (SourceKind::builtin(), "built in"),
+    ]
+}
+
+/// Where `kind` sorts among the stores: its place among the named ones, or
+/// after all of them.
+pub(crate) fn store_rank(kind: &SourceKind) -> usize {
+    named_stores()
+        .iter()
+        .position(|(named, _)| named == kind)
+        .unwrap_or(usize::MAX)
+}
+
+fn headline_label(kind: &SourceKind) -> Option<&'static str> {
+    named_stores()
+        .into_iter()
+        .find(|(named, _)| named == kind)
+        .map(|(_, label)| label)
 }
 
 /// Runs a set of scanners and reconciles their findings into a registry.
@@ -117,7 +163,9 @@ impl DiscoveryService {
         let mut discovered: Vec<DiscoveredModel> = Vec::new();
         let mut issues: Vec<String> = Vec::new();
         let mut failed_kinds: BTreeSet<SourceKind> = BTreeSet::new();
+        let mut watched: Vec<PathBuf> = Vec::new();
         for scanner in &self.scanners {
+            watched.extend(scanner.watched_directories());
             let result = scanner.scan();
             discovered.extend(result.discovered);
             issues.extend(result.issues);
@@ -125,7 +173,7 @@ impl DiscoveryService {
         }
         for kind in &failed_kinds {
             issues.push(format!(
-                "skipped the missing check for {} — its store could not be read",
+                "skipped the missing check for {}: its store could not be read",
                 kind.as_str()
             ));
         }
@@ -137,6 +185,7 @@ impl DiscoveryService {
             .collect();
 
         let mut seen_ids: HashSet<String> = HashSet::new();
+        let mut found: Vec<&DiscoveredModel> = Vec::new();
         let mut to_register: Vec<ModelRecord> = Vec::new();
         let mut new_record_ids: HashSet<String> = HashSet::new();
 
@@ -145,6 +194,7 @@ impl DiscoveryService {
             if !seen_ids.insert(id.clone()) {
                 continue;
             }
+            found.push(model);
             match existing_by_id.get(id.as_str()) {
                 Some(existing_record) => {
                     let mut record = (*existing_record).clone();
@@ -248,36 +298,148 @@ impl DiscoveryService {
             .into_iter()
             .filter(|record| !migrated_away.contains(&record.id))
             .collect();
+        // A record this scan found is never `Missing` (reconciliation resets
+        // it), so the seen ids alone keep the stale records out.
+        let mut duplicate_candidates: Vec<(DuplicateCandidate, Vec<PathBuf>)> = keep
+            .iter()
+            .filter(|record| seen_ids.contains(&record.id) && !record.downloading)
+            .filter_map(|record| {
+                let set = removal_set(record)?;
+                let strings = |files: Vec<PathBuf>| -> Vec<String> {
+                    files
+                        .iter()
+                        .map(|file| file.to_string_lossy().into_owned())
+                        .collect()
+                };
+                // A model with no weight file of its own (an Ollama cloud tag
+                // holding only a template) is still listed, so a blob it
+                // shares is not counted as freed with the other.
+                let path = record
+                    .primary_weight_path
+                    .clone()
+                    .unwrap_or_else(|| record.source.path.clone());
+                let candidate = DuplicateCandidate {
+                    member: DuplicateMember {
+                        id: record.id.clone(),
+                        name: record.display_name().to_owned(),
+                        kind: record.source.kind.clone(),
+                        path,
+                    },
+                    files: strings(set.content),
+                    bookkeeping: strings(set.bookkeeping),
+                    pinned_by: Vec::new(),
+                };
+                Some((candidate, removal_roots(record)))
+            })
+            .collect();
         registry.register_all(keep)?;
         for id in &migrated_away {
             registry.unregister(id)?;
         }
-
-        let mut per_kind: BTreeMap<SourceKind, KindStat> = BTreeMap::new();
-        for model in &discovered {
-            let stat = per_kind.entry(model.source.kind.clone()).or_default();
-            stat.count += 1;
-            stat.bytes += model.footprint_bytes;
-        }
-        let duplicate_candidates: Vec<(String, PathBuf)> = discovered
-            .iter()
-            .filter_map(|model| {
-                model
-                    .primary_weight_path
-                    .as_ref()
-                    .map(|path| (model.name.clone(), PathBuf::from(path)))
-            })
+        pin(&mut duplicate_candidates, &registry.list(), &watched);
+        let duplicate_candidates: Vec<DuplicateCandidate> = duplicate_candidates
+            .into_iter()
+            .map(|(candidate, _)| candidate)
             .collect();
 
+        let per_kind = store_stats(&found);
+        let (duplicates, reclaimable_bytes) = find(&duplicate_candidates, self.duplicate_threshold);
         Ok(DiscoverySummary {
-            total_count: discovered.len(),
-            total_bytes: discovered.iter().map(|model| model.footprint_bytes).sum(),
-            duplicates: detect(&duplicate_candidates, self.duplicate_threshold),
+            total_count: found.len(),
+            total_bytes: per_kind.values().map(|stat| stat.bytes).sum(),
+            found_ids: seen_ids.into_iter().collect(),
+            duplicates,
+            reclaimable_bytes,
             per_kind,
             issues,
             failed_kinds: failed_kinds.into_iter().collect(),
         })
     }
+}
+
+/// Fill each candidate's [`DuplicateCandidate::pinned_by`] from `shelf`:
+/// every other model that reaches, through a symlink, an entry the
+/// candidate's removal deletes (its `roots`) or one above it, and every
+/// model that is no candidate whose own removal would delete such an entry.
+/// A model whose weights are gone pins nothing. A `watched` directory pins a
+/// candidate whose removal deletes it or a symlink on the way to it, under a
+/// name no model has.
+fn pin(
+    candidates: &mut [(DuplicateCandidate, Vec<PathBuf>)],
+    shelf: &[&ModelRecord],
+    watched: &[PathBuf],
+) {
+    let listed: HashSet<&str> = candidates
+        .iter()
+        .map(|(candidate, _)| candidate.member.id.as_str())
+        .collect();
+    let reaches: Vec<(&str, Vec<PathBuf>)> = shelf
+        .iter()
+        .filter(|record| record.state != ModelState::Missing)
+        .filter_map(|record| {
+            let own = removal_roots(record);
+            let mut reach = linked_reach(record, &own);
+            if !listed.contains(record.id.as_str()) {
+                reach.extend(own);
+            }
+            (!reach.is_empty()).then_some((record.id.as_str(), reach))
+        })
+        .collect();
+    let watched_reach: Vec<(String, Vec<PathBuf>)> = watched
+        .iter()
+        .map(|directory| {
+            (
+                format!("watched folder {}", directory.display()),
+                passed_links(directory),
+            )
+        })
+        .collect();
+    for (candidate, roots) in candidates.iter_mut() {
+        candidate.pinned_by = reaches
+            .iter()
+            .filter(|(id, reach)| {
+                *id != candidate.member.id
+                    && reach.iter().any(|entry| {
+                        roots
+                            .iter()
+                            .any(|root| entry.starts_with(root) || root.starts_with(entry))
+                    })
+            })
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        candidate.pinned_by.extend(
+            watched_reach
+                .iter()
+                .filter(|(_, reach)| {
+                    reach
+                        .iter()
+                        .any(|entry| roots.iter().any(|root| entry.starts_with(root)))
+                })
+                .map(|(name, _)| name.clone()),
+        );
+    }
+}
+
+/// The count and bytes per store of `found`, each file counted once, as
+/// [`bytes_by_store`] counts it. A model whose scanner lists no files counts
+/// its footprint as it is.
+fn store_stats(found: &[&DiscoveredModel]) -> BTreeMap<SourceKind, KindStat> {
+    let mut per_kind: BTreeMap<SourceKind, KindStat> = BTreeMap::new();
+    for model in found {
+        per_kind.entry(model.source.kind.clone()).or_default().count += 1;
+    }
+    let listed = found
+        .iter()
+        .map(|model| {
+            let files =
+                (!model.files.is_empty()).then(|| model.files.iter().map(PathBuf::from).collect());
+            (model.source.kind.clone(), files, model.footprint_bytes)
+        })
+        .collect();
+    for (kind, bytes) in bytes_by_store(listed) {
+        per_kind.entry(kind).or_default().bytes = bytes;
+    }
+    per_kind
 }
 
 /// Whether a record's weights are still on disk: its primary weight, as a

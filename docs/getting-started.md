@@ -30,7 +30,7 @@ hedos does not download anything to get started. It reads the models already on 
 hedos scan
 ```
 
-This scans the Ollama store, the Hugging Face cache, LM Studio's library, and loose GGUF or safetensors files in the usual folders, then reconciles them into a registry and resolves each to a runtime. It prints a short summary and any issues it found.
+This scans the Ollama store, the Hugging Face cache, LM Studio's library, and loose GGUF or safetensors files in the usual folders, then reconciles them into a registry and resolves each to a runtime. It prints a short summary with how the models split across those stores and the space their files take, any model that can go because another model keeps everything it holds, with the space removing it frees, and any issues it found.
 
 ```sh
 hedos ls

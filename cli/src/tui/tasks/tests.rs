@@ -55,8 +55,7 @@ fn a_scan_summary_speaks_the_strip_register() {
         .per_kind
         .insert(SourceKind::lm_studio(), KindStat { count: 0, bytes: 0 });
     let line = scan_summary(&summary);
-    assert!(line.starts_with("found 12 models · "));
-    assert!(line.contains("3 ollama") && line.contains("9 hf"));
+    assert!(line.starts_with("found 12 models · 3 ollama · 9 hf · "));
     assert!(line.ends_with(" · 2 issues"));
     assert!(!line.contains("lm studio"));
     assert!(!line.contains('\u{2014}') && !line.contains(", "));

@@ -84,11 +84,9 @@ fn a_shard_set_missing_its_first_part_is_an_issue() {
 
     let result = LMStudioScanner::single(dir.path()).scan();
     assert!(result.discovered.is_empty());
-    assert!(
-        result
-            .issues
-            .iter()
-            .any(|issue| issue.contains("missing its first part"))
+    assert_eq!(
+        result.issues,
+        vec!["sharded model m is missing its first part, so it was skipped".to_owned()]
     );
 }
 
@@ -253,4 +251,36 @@ fn a_link_to_a_directory_named_like_a_gguf_is_not_a_model() {
 
     let result = LMStudioScanner::single(dir.path()).scan();
     assert!(result.discovered.is_empty(), "{:?}", result.discovered);
+}
+
+/// The files `model`'s footprint counts as its scanner listed them, and as
+/// the shelf lists them again from the record it becomes, each sorted.
+fn listed_both_ways(model: &DiscoveredModel) -> (Vec<String>, Vec<String>) {
+    let record = kernel::records::ModelRecord::new(
+        &model.name,
+        kernel::records::Modality::text(),
+        Vec::new(),
+        model.source.clone(),
+    );
+    let mut scanned = model.files.clone();
+    scanned.sort();
+    let mut again: Vec<String> = kernel::discovery::footprint_files(&record)
+        .unwrap_or_default()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    again.sort();
+    (scanned, again)
+}
+
+#[test]
+fn lists_a_model_file_the_way_the_shelf_lists_it() {
+    let dir = TempDir::new();
+    gguf(dir.path(), "TheBloke/Llama-3/weights.gguf", 2048);
+
+    let result = LMStudioScanner::single(dir.path()).scan();
+    let (scanned, again) = listed_both_ways(find(&result, "weights"));
+    let file = dir.path().join("TheBloke/Llama-3/weights.gguf");
+    assert_eq!(scanned, vec![file.to_string_lossy().into_owned()]);
+    assert_eq!(again, scanned);
 }

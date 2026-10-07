@@ -52,14 +52,14 @@ impl StoreScanner for AppleFoundationScanner {
             }
             BuiltinAvailability::NotEnabled => ScanResult {
                 issues: vec![
-                    "Apple Intelligence is turned off — turn it on in System Settings to put Apple's model on the shelf."
+                    "Apple Intelligence is turned off. Turn it on in System Settings to put Apple's model on the shelf."
                         .to_owned(),
                 ],
                 ..ScanResult::default()
             },
             BuiltinAvailability::NotReady => ScanResult {
                 issues: vec![
-                    "Apple's model is still downloading — it will appear on the shelf when it's ready."
+                    "Apple's model is still downloading. It will appear on the shelf when it's ready."
                         .to_owned(),
                 ],
                 ..ScanResult::default()
@@ -132,6 +132,10 @@ mod tests {
             let result = scan(availability);
             assert!(result.discovered.is_empty());
             assert_eq!(result.issues.len(), 1, "for {availability:?}");
+            assert!(
+                !result.issues[0].contains('\u{2014}'),
+                "for {availability:?}"
+            );
             assert!(result.failed_kinds.is_empty());
         }
         assert!(scan(BuiltinAvailability::NotEnabled).issues[0].contains("System Settings"));

@@ -3,6 +3,8 @@
 //! it found as [`DiscoveredModel`] hints, plus any per-store issues, in a
 //! [`ScanResult`]. Identification later turns these hints into full records.
 
+use std::path::PathBuf;
+
 use crate::records::{Capability, ExecutionMode, Modality, ModelSource, SourceKind};
 
 /// A model a scanner found on disk, as hints (not yet a resolved record). The
@@ -26,6 +28,10 @@ pub struct DiscoveredModel {
     pub serving_bytes: Option<i64>,
     /// The primary weight file, if identified.
     pub primary_weight_path: Option<String>,
+    /// Every file the footprint counts, so a summary can count a file two
+    /// models share once. Empty when the scanner does not list them, and the
+    /// footprint is then taken as it is.
+    pub files: Vec<String>,
     /// Free-text notes about this specific model.
     pub diagnostics: Vec<String>,
     /// A context-window hint, if the store recorded one.
@@ -53,6 +59,7 @@ impl DiscoveredModel {
             footprint_bytes: 0,
             serving_bytes: None,
             primary_weight_path: None,
+            files: Vec::new(),
             diagnostics: Vec::new(),
             context_length_hint: None,
             has_chat_template_hint: None,
@@ -85,4 +92,11 @@ pub trait StoreScanner: Send {
 
     /// Scan the store, returning everything found plus any issues.
     fn scan(&self) -> ScanResult;
+
+    /// The directories the person configured this scanner to watch. No model
+    /// is offered for removal when removing it would delete one of them, or
+    /// a symlink on the way to one.
+    fn watched_directories(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }

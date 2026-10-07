@@ -1,5 +1,8 @@
 //! Whether a model fits in a machine's memory: a coarse runs-well / tight-fit /
-//! too-large verdict from the model's footprint and the total RAM.
+//! too-large verdict from the model's footprint and the total RAM, and the
+//! count of each verdict across a shelf.
+
+use crate::records::{ModelRecord, ModelState};
 
 /// How well a model is expected to run given available memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,9 +65,49 @@ impl FitVerdict {
     }
 }
 
+/// How many models on a shelf come out at each verdict, judged by what
+/// serving each loads, as `hedos ls` and the shelf judge them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FitTally {
+    /// Models that run well.
+    pub runs_well: usize,
+    /// Models that fit with little headroom.
+    pub tight_fit: usize,
+    /// Models too large for the memory.
+    pub too_large: usize,
+    /// Models with no serving size to judge.
+    pub unknown: usize,
+}
+
+impl FitTally {
+    /// Tally `records` against `total_memory_bytes`. A model whose weights
+    /// are gone is left out: it has no verdict, only that it is gone.
+    pub fn over<'a>(
+        records: impl IntoIterator<Item = &'a ModelRecord>,
+        total_memory_bytes: u64,
+    ) -> Self {
+        let mut tally = Self::default();
+        for record in records {
+            if record.state == ModelState::Missing {
+                continue;
+            }
+            let verdict = FitVerdict::assess(record.serving_size(), total_memory_bytes)
+                .map(|fit| fit.verdict);
+            match verdict {
+                Some(FitVerdict::RunsWell) => tally.runs_well += 1,
+                Some(FitVerdict::TightFit) => tally.tight_fit += 1,
+                Some(FitVerdict::TooLarge) => tally.too_large += 1,
+                None => tally.unknown += 1,
+            }
+        }
+        tally
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::records::{Modality, ModelSource, SourceKind};
 
     const GIB: i64 = 1 << 30;
     const MEMORY: u64 = 16 * (1 << 30);
@@ -97,6 +140,61 @@ mod tests {
         assert_eq!(FitVerdict::RunsWell.as_str(), "runs_well");
         assert_eq!(FitVerdict::TightFit.as_str(), "tight_fit");
         assert_eq!(FitVerdict::TooLarge.as_str(), "too_large");
+    }
+
+    fn sized(name: &str, footprint_bytes: Option<i64>) -> ModelRecord {
+        let mut record = ModelRecord::new(
+            name,
+            Modality::text(),
+            Vec::new(),
+            ModelSource::new(SourceKind::file(), name),
+        );
+        record.footprint_bytes = footprint_bytes;
+        record
+    }
+
+    #[test]
+    fn a_tally_counts_each_verdict() {
+        let records = [
+            sized("small", Some(GIB)),
+            sized("tight", Some(12 * GIB)),
+            sized("huge", Some(16 * GIB)),
+            sized("unsized", None),
+        ];
+        let tally = FitTally::over(&records, MEMORY);
+        assert_eq!(
+            tally,
+            FitTally {
+                runs_well: 1,
+                tight_fit: 1,
+                too_large: 1,
+                unknown: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_tally_judges_what_serving_loads_not_the_disk() {
+        let mut repo = sized("repo", Some(40 * GIB));
+        repo.serving_bytes = Some(GIB);
+        assert_eq!(FitTally::over([&repo], MEMORY).runs_well, 1);
+    }
+
+    #[test]
+    fn a_tally_skips_a_model_whose_weights_are_gone() {
+        let mut gone = sized("gone", Some(16 * GIB));
+        gone.state = ModelState::Missing;
+        let mut unsized_gone = sized("unsized-gone", None);
+        unsized_gone.state = ModelState::Missing;
+        assert_eq!(
+            FitTally::over([&gone, &unsized_gone], MEMORY),
+            FitTally::default()
+        );
+    }
+
+    #[test]
+    fn a_tally_over_nothing_is_empty() {
+        assert_eq!(FitTally::over(&[], MEMORY), FitTally::default());
     }
 
     #[test]

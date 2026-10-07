@@ -12,7 +12,7 @@ mod chat;
 mod edit;
 mod effect;
 mod event;
-mod facts;
+pub(crate) mod facts;
 mod jobs;
 mod keymap;
 mod launch;

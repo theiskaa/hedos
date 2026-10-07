@@ -47,9 +47,14 @@ pub(super) fn remove(
     lines.push(Line::from(format!(" {what}")));
     lines.push(Line::from(styled_field(
         "after",
-        format!(
-            "{} on disk",
-            text::bytes((facts.disk_bytes() - preview.bytes_estimate).max(0))
+        facts.disk_bytes().map_or_else(
+            || "counting the disk".to_owned(),
+            |disk| {
+                format!(
+                    "{} on disk",
+                    text::bytes((disk - preview.bytes_estimate).max(0))
+                )
+            },
         ),
         label_column(),
         DIM,
@@ -72,7 +77,11 @@ mod tests {
         assert_eq!(path.len(), 120);
         let preview = deletion_preview(vec![path]);
         let inner = Rect::new(0, 0, 80, 9);
-        let lines = remove(&preview, &Facts::default(), inner);
+        let counted = Facts {
+            disk_by_store: Some(Vec::new()),
+            ..Facts::default()
+        };
+        let lines = remove(&preview, &counted, inner);
         assert_eq!(lines.len() as u16, REMOVE_HEIGHT - BORDER_ROWS);
         let path_line = lines
             .iter()
@@ -90,6 +99,14 @@ mod tests {
             .unwrap_or_default();
         assert!(after.starts_with(" after") && after.ends_with("on disk"));
         assert!(!after.contains(':'));
+        let counting = remove(&preview, &Facts::default(), inner);
+        assert_eq!(counting.len(), lines.len());
+        assert!(
+            counting
+                .iter()
+                .map(text)
+                .any(|line| line.starts_with(" after") && line.ends_with("counting the disk"))
+        );
     }
 
     #[test]
