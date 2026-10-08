@@ -25,7 +25,7 @@ use super::launch::LaunchModal;
 use super::layout;
 use super::motion::{Eased, EasedSet, Motion};
 use super::order::{Sort, order};
-use super::palette::Depth;
+use super::palette::{Depth, Ground};
 use super::pull::{Enter, PullModal, Search, already_downloading};
 use super::pulls::PullsScreen;
 use super::state::UiState;
@@ -151,6 +151,8 @@ pub struct App {
     /// How many colours the terminal shows; the frame is mapped onto its
     /// palette when that is 256.
     pub depth: Depth,
+    /// The terminal's own ground, which the finished frame is handed to.
+    pub ground: Ground,
     /// The animation clock; settled unless the loop says otherwise, so a
     /// test always sees a movement's final frame.
     pub motion: Motion,
@@ -208,6 +210,7 @@ impl App {
             benches: 0,
             expanded: false,
             depth: Depth::default(),
+            ground: Ground::default(),
             motion: Motion::settled(),
             header_figures: Default::default(),
             resident_bars: EasedSet::default(),

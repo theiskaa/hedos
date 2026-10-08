@@ -26,7 +26,7 @@ use crate::tui::keymap;
 use crate::tui::koala;
 use crate::tui::layout::Panes;
 use crate::tui::motion::Motion;
-use crate::tui::palette::{OLIVE, OLIVE_DIM, SEL, SURFACE, mix};
+use crate::tui::palette::{OLIVE, OLIVE_DIM, PAPER, SEL, mix};
 use crate::tui::text;
 
 /// The column headers, in order: gutter, name, runtime, store, size.
@@ -90,7 +90,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(body, constraints(&column_widths, columns))
         .header(header)
         .column_spacing(COLUMN_SPACING)
-        .row_highlight_style(Style::new().bg(mix(SURFACE, SEL, lifted)));
+        .row_highlight_style(Style::new().bg(mix(PAPER, SEL, lifted)));
     frame.render_stateful_widget(table, body_area, &mut app.shelf);
     let visible = body_area.height.saturating_sub(1) as usize;
     scroll_mark(frame.buffer_mut(), area, app.shelf.offset(), visible, total);

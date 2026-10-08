@@ -26,7 +26,7 @@ Between runs, the shelf remembers the selected model and which failed pulls you 
 
 ## Layout
 
-From top to bottom the screen has a header, a body of cards, a task strip when there is background work, and a one-line footer of keys. The UI paints its own dark ground.
+From top to bottom the screen has a header, a body of cards, a task strip when there is background work, and a one-line footer of keys. The UI paints no ground of its own: it draws on your terminal's background (see [colour](#colour)).
 
 The try screen and the pull screen take the whole body in the shelf's place and hide the task strip; the pull screen keeps its own downloads card instead. The pulls and bench screens keep the header, the strip and the footer, with their list where the shelf goes and the selected row's detail where the model card goes.
 
@@ -36,17 +36,15 @@ On a terminal of at least 96 columns and 40 rows, the header is the hero:
 
 - the koala on the left,
 - the `hedos` wordmark in pixel type with the version, the tagline `one home for every local model on your machine`, and `ἕδος · the place where something comes to rest` under it,
-- and on the right, the shelf in big figures:
+- and on the right, the gateway's pulse:
+  - `● GATEWAY ON  127.0.0.1:43367` with its requests a minute at the right, or `○ GATEWAY OFF` and `S serve`,
+  - under it, the requests it served over the last day as two rows of bars, oldest at the left, each column a half hour on a wide terminal and up to about an hour on the narrowest. The busiest column fills both rows, a quiet stretch is a low rule, and while the gateway is on, the newest column is the brightest once it has served something. While it is off the day stays, greyed, with its quiet half hours left empty,
+  - then `24h ago` and `now` under the bars,
+- and on the tagline's rows, against the right edge, the shelf and the memory:
+  - `19 models · 3 warm · 3 gone`, the gone count only when something is gone,
+  - `18.6 GiB held · 45 GiB free of 64`: what the loaded models hold, or `nothing held`, then the free memory of the machine's total when hedos knows it.
 
-| Figure | What it counts | The line under it |
-| --- | --- | --- |
-| MODELS | Every model on the shelf. | How many stores they come from. |
-| WARM | Models loaded right now. | The GiB they hold, or `none held`. |
-| GONE | Models whose weights are gone from disk. Drawn quieter: a note, not a boast. | `missing` |
-| FREE | Free memory, in GiB. | `GiB of` the machine's total. |
-| GATEWAY | `● on` and its port while a gateway serves, or `○ off`. | Requests a minute while on, or `S serve` while off. |
-
-When the row is too short for all five, the figures leave in this order: GONE, then WARM, then MODELS. FREE and GATEWAY stay. The figures count up from zero when the screen opens and ease to each new value.
+On a short row the badge drops the address to the port, then the word `GATEWAY`, and only then the rate. The tagline and the gloss are each cut short before they run into the count line beside them. The counts count up from zero when the screen opens and ease to each new value.
 
 On a smaller terminal, the header is one line: the wordmark and version, then `12 models · 3 warm · 1 too big · 2 gone` (the last two only when they count something), and against the right edge the gateway (`● :43367`, or `○ gateway off`). When no machine card is on screen, it adds the free memory. On a narrow terminal the too-big and gone counts go first, so the right side always survives.
 
@@ -490,7 +488,7 @@ Only one bench runs at a time, and `t` is refused while one runs.
 
 ## Motion
 
-The screen moves to mark a change: a spinner while you wait, a figure easing to its new value, a name arriving letter by letter, a card opening, a download's bar shimmering. It also keeps a few quiet signs of life: the koala sways and breathes in the hero, the gateway's dot pulses while it serves, and warm models' dots breathe.
+The screen moves to mark a change: a spinner while you wait, a figure easing to its new value, a name arriving letter by letter, a card opening, a download's bar shimmering. The pulse's bars rise once when the screen opens. It also keeps a few quiet signs of life: the koala sways and breathes in the hero, the gateway's dot pulses while it serves, and warm models' dots breathe.
 
 `HEDOS_MOTION` changes that:
 
@@ -504,9 +502,25 @@ The screen moves to mark a change: a spinner while you wait, a figure easing to 
 HEDOS_MOTION=off hedos shelf
 ```
 
-## Colour depth
+## Colour
 
-The UI paints its own dark ground. It draws in 24-bit colour when `COLORTERM` is `truecolor` or `24bit`, the only reliable sign of more than 256 colours. With any other value, or none, every colour is mapped to the nearest one in the 256-colour palette.
+The UI paints no ground of its own: every cell keeps your terminal's background, and a card is its border. Only a few things are filled: the selected row, a chip, your words and code in the try screen, a button. hedos asks the terminal for its background once when the screen opens, and its lightness says whether the terminal is light or dark. On a dark background lighter than near black, the colours are laid between your background and white, so a border, a label or a fill stands as far off it as it does off near black; on a darker one they stay as they are. On a light terminal every colour turns its lightness over, so ink reads dark and the hierarchy and the state colours stay the same.
+
+A terminal that does not answer (`screen`, mosh, an old tmux) gets the UI's own near-black ground painted under everything, so the screen reads whatever its colours are. `HEDOS_THEME` says which kind of background it is instead:
+
+| Value | Effect |
+| --- | --- |
+| `light` | Draw on a light background, even when the terminal does not answer. |
+| `dark` | Draw on a dark background, even when the terminal does not answer. |
+| anything else, or unset | Go by the terminal's answer. |
+
+hedos still asks for the exact colour when `HEDOS_THEME` is set. When the terminal does not say it, the colours are the ones chosen for near black (or, turned over, near white).
+
+```sh
+HEDOS_THEME=light hedos shelf
+```
+
+It draws in 24-bit colour when `COLORTERM` is `truecolor` or `24bit`, the only reliable sign of more than 256 colours. With any other value, or none, every colour is mapped to the nearest one in the 256-colour palette.
 
 If your terminal shows 24-bit colour but the variable does not reach hedos (ssh, for one, does not pass it on by default), set it yourself:
 
@@ -520,7 +534,7 @@ The shelf needs nothing but a terminal, so it runs the same over ssh and inside 
 
 - **The wheel** works through mouse reporting, which the shelf turns on while it runs and off when it leaves.
 - **Copying** with `y` and `Y` reaches the clipboard of the terminal you sit at by OSC 52. tmux relays it only with `set -g set-clipboard on`. See [Copying](#copying).
-- **Colour** may need `COLORTERM` set by hand; see [Colour depth](#colour-depth).
+- **Colour** may need `COLORTERM` set by hand; see [Colour](#colour).
 - **Pulls** run in workers of their own and outlive the terminal that started them. One whose worker died anyway (a closed laptop, a killed session) is started again the next time the shelf opens, when `pull.auto_resume` is on.
 
 ## Quitting

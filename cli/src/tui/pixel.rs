@@ -80,6 +80,7 @@ pub(crate) fn columns(text: &str, font: Font, gap: usize) -> Vec<Column> {
 }
 
 /// How many cells `text` takes in `font`.
+#[cfg(test)]
 pub(crate) fn width(text: &str, font: Font, gap: usize) -> u16 {
     columns(text, font, gap).len() as u16
 }

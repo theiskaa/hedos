@@ -49,6 +49,20 @@ pub fn hold() -> PromptModes {
     PromptModes::hold_on(libc::STDIN_FILENO)
 }
 
+/// Drop whatever the terminal has sent that nothing has read yet: a reply to
+/// a query that came after the asker stopped waiting, or keys pressed while a
+/// screen was opening, which would otherwise be read as the first keys.
+pub fn discard_input() {
+    if !std::io::stdin().is_terminal() {
+        return;
+    }
+    // SAFETY: `tcflush` only reads the descriptor and the queue selector, and
+    // stdin stays open for the life of the process.
+    unsafe {
+        libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
+}
+
 /// A live hold on the terminal's modes, released when it is dropped.
 pub struct PromptModes {
     held: bool,

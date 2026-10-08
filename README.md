@@ -81,7 +81,7 @@ A model name does not have to be exact on the command line: a unique part of it 
 New here? [docs/getting-started.md](docs/getting-started.md) walks through the first five minutes.
 
 ## The shelf in the terminal
-![hedos shelf: the koala and wordmark over the figures (models, warm memory, gone, free memory, the gateway), the shelf of models with warm dots, the selected model's card with its fit gauge and gateway latency, the machine's memory split per loaded model, the gateway's requests over the day, and a download in the task strip](assets/ui-shelf.png)
+![hedos shelf: the koala and wordmark beside the gateway's pulse (its requests over the last day as bars) and the counts of models, warm memory and free memory, the shelf of models with warm dots, the selected model's card with its fit gauge and gateway latency, the machine's memory split per loaded model, the gateway's requests over the day, and a download in the task strip](assets/ui-shelf.png)
 
 `hedos shelf` is the same shelf as a screen you keep open. It shows every model with its runtime, store, and size; the selected one's fit, residency, and capabilities; what is loaded and by whom, with a memory bar per model; disk per store; and what the gateway served in the last day.
 

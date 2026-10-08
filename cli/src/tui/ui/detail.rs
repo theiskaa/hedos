@@ -26,8 +26,8 @@ use crate::tui::facts::{Facts, HOURS, ModelActivity};
 use crate::tui::layout::STACKED_DETAIL_ROWS;
 use crate::tui::motion::Motion;
 use crate::tui::palette::{
-    ACCENT_DIM, BRIGHT, FAINT_COLOR, GHOST, INK_COLOR, LINE, LINE_STRONG, OLIVE, OLIVE_DIM, RAISED,
-    SOFT_COLOR, mix,
+    ACCENT_DIM, BRIGHT, FAINT_COLOR, GHOST, INK_COLOR, LEVELS, LINE, LINE_STRONG, OLIVE, OLIVE_DIM,
+    RAISED, SOFT_COLOR, mix,
 };
 use crate::tui::text;
 
@@ -63,8 +63,6 @@ const GAUGE_SUFFIX: usize = 10;
 /// How the sparkline's bars rise: each hour a step behind the last.
 const SPARK_STEP_MS: u64 = 3;
 const SPARK_RISE_MS: u64 = 150;
-/// The bar heights a sparkline cell can take.
-const LEVELS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 /// The words beside a non-expanded sparkline.
 const SPARK_AXIS: &str = "  24h ago … now";
 

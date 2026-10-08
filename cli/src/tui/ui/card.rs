@@ -1,27 +1,26 @@
-//! The card every pane is drawn in: a rounded border on a surface a step up
-//! from the ground, a title on its top edge at the left (`╭─ shelf · 15 ─`)
-//! and a quieter label at the right (`─ by name ─╮`). On a card too narrow
-//! for both, the title keeps the room and the label goes.
+//! The card every pane is drawn in: a rounded border over the ground, with
+//! nothing painted inside it, a title on its top edge at the left
+//! (`╭─ shelf · 15 ─`) and a quieter label at the right (`─ by name ─╮`). On a
+//! card too narrow for both, the title keeps the room and the label goes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use super::{DIM, INK, SURFACE};
+use super::{DIM, INK};
 use crate::tui::text;
 
 /// Columns of air between a card's border and the text inside it.
 const CARD_PAD: u16 = 1;
 
-/// A card: its title, its right label, and how its border and ground read.
+/// A card: its title, its right label, and how its border reads.
 pub(super) struct Card {
     title: Vec<Span<'static>>,
     right: Vec<Span<'static>>,
     border: Style,
-    ground: Color,
 }
 
 impl Card {
@@ -31,7 +30,6 @@ impl Card {
             title,
             right: Vec::new(),
             border: Style::new().fg(super::LINE),
-            ground: SURFACE,
         }
     }
 
@@ -72,7 +70,6 @@ impl Card {
         Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(self.border)
-            .style(Style::new().bg(self.ground))
             .render(area, buf);
         // Titles run between the corner's rule and the other corner's, each
         // padded with a space, so the edge reads `╭─ title ─── label ─╮`.
@@ -196,11 +193,12 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_and_the_insets() {
+    fn the_ground_shows_through_and_the_insets() {
         let area = Rect::new(0, 0, 20, 5);
         let mut buffer = Buffer::empty(area);
+        buffer.set_style(area, super::super::GROUND);
         Card::new(Vec::new()).render(area, &mut buffer);
-        assert_eq!(buffer[(5, 2)].bg, SURFACE);
+        assert_eq!(buffer[(5, 2)].bg, crate::tui::palette::PAPER);
         assert_eq!(Card::inner(area), Rect::new(1, 1, 18, 3));
         assert_eq!(Card::text_inner(area), Rect::new(2, 1, 16, 3));
     }

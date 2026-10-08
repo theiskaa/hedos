@@ -20,6 +20,9 @@ const DAY_MILLIS: i64 = 24 * HOUR_MILLIS;
 const MINUTE_MILLIS: i64 = 60_000;
 /// Hourly buckets in the activity sparkline.
 pub const HOURS: usize = 24;
+/// Quarter-hour buckets in the header's pulse: a day of them.
+pub const PULSE_SLOTS: usize = 96;
+const SLOT_MILLIS: i64 = DAY_MILLIS / PULSE_SLOTS as i64;
 
 /// One model's slice of the gateway's recent history. Only served requests
 /// count: the gateway records no model on the ones it rejects.
@@ -36,7 +39,7 @@ pub struct ModelActivity {
 }
 
 /// What the gateway has been doing, from its audit log.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Activity {
     /// Per model, keyed by the id the gateway resolved the request to.
     pub models: HashMap<String, ModelActivity>,
@@ -49,6 +52,23 @@ pub struct Activity {
     /// Requests served per hour over the last day, every model together,
     /// oldest first.
     pub hourly: [u32; HOURS],
+    /// The same requests per quarter hour over the last day, oldest first,
+    /// for the header's pulse. Boxed: the facts ride every refresh event,
+    /// and a day of quarter hours would make that the largest of them.
+    pub pulse: Box<[u32; PULSE_SLOTS]>,
+}
+
+impl Default for Activity {
+    fn default() -> Self {
+        Self {
+            models: HashMap::new(),
+            requests_last_minute: 0,
+            total_requests: 0,
+            last_request_millis: 0,
+            hourly: [0; HOURS],
+            pulse: Box::new([0; PULSE_SLOTS]),
+        }
+    }
 }
 
 impl Activity {
@@ -57,6 +77,7 @@ impl Activity {
         let day_ago = now - DAY_MILLIS;
         let mut models: HashMap<String, ModelActivity> = HashMap::new();
         let mut durations: HashMap<String, Vec<i64>> = HashMap::new();
+        let mut pulse = [0; PULSE_SLOTS];
         for entry in entries {
             let Some(model) = &entry.model else {
                 continue;
@@ -67,6 +88,8 @@ impl Activity {
                 activity.requests += 1;
                 let age = (now - entry.ts_millis).max(0) / HOUR_MILLIS;
                 activity.hourly[(HOURS - 1).saturating_sub(age as usize)] += 1;
+                let slot = (now - entry.ts_millis).max(0) / SLOT_MILLIS;
+                pulse[(PULSE_SLOTS - 1).saturating_sub(slot as usize)] += 1;
                 durations
                     .entry(model.clone())
                     .or_default()
@@ -86,6 +109,7 @@ impl Activity {
         }
         Self {
             hourly,
+            pulse: Box::new(pulse),
             models,
             requests_last_minute: entries
                 .iter()
@@ -597,6 +621,9 @@ mod tests {
         assert_eq!(model.hourly[HOURS - 1], 1);
         assert_eq!(model.hourly[HOURS - 3], 1);
         assert_eq!(model.hourly.iter().sum::<u32>(), 2);
+        assert_eq!(activity.pulse[PULSE_SLOTS - 1], 1);
+        assert_eq!(activity.pulse[PULSE_SLOTS - 9], 1, "two hours back");
+        assert_eq!(activity.pulse.iter().sum::<u32>(), 2);
         assert_eq!(model.last_seen_millis, now - 10);
         assert_eq!(activity.requests_last_minute, 1);
     }

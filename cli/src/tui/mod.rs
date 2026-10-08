@@ -90,6 +90,7 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     let tasks::Snapshot { records, facts } = context.snapshot().await;
     let mut app = App::new(records, facts);
     app.depth = palette::Depth::detect();
+    app.ground = palette::Ground::detect();
     app.motion = motion::Motion::from_env();
     // One clock for the whole run: a hand-off steps out of the loop and back
     // in, and the intro must not play again when it does.

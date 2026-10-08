@@ -10,7 +10,7 @@ use ratatui::widgets::Paragraph;
 
 use super::card::Card;
 use super::detail::{Look, sparkline};
-use super::header::pulse;
+use super::header::live_dot;
 use super::{
     ACCENT_MID, BAR_EMPTY, BAR_FILLED, BOLD, DIM, SEGMENT_3, SOFT, TRACK, card, label, label_width,
 };
@@ -150,7 +150,7 @@ fn draw_gateway(frame: &mut Frame, area: Rect, app: &App) {
 fn gateway_state(facts: &Facts, motion: &Motion) -> Vec<Span<'static>> {
     match facts.gateway_port {
         Some(port) => vec![
-            Span::styled("●", Style::new().fg(pulse(motion))),
+            Span::styled("●", Style::new().fg(live_dot(motion))),
             Span::styled(" on", BOLD),
             Span::styled(
                 format!(
@@ -190,7 +190,7 @@ fn gateway_line(facts: &Facts, labels: usize, motion: &Motion) -> Line<'static> 
     let mut spans = vec![label(GATEWAY_LABEL, labels)];
     match facts.gateway_port {
         Some(port) => {
-            spans.push(Span::styled("●", Style::new().fg(pulse(motion))));
+            spans.push(Span::styled("●", Style::new().fg(live_dot(motion))));
             spans.push(Span::styled(" on", BOLD));
             spans.push(Span::styled(
                 format!(" :{port} · {} req/min", facts.activity.requests_last_minute),

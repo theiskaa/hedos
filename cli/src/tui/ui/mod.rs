@@ -46,7 +46,7 @@ use super::layout::{Panes, stacks};
 use super::palette::{
     ACCENT, ACCENT_MID, BACKDROP, BAR_EMPTY, BAR_FILLED, BOLD, BORDER_COLUMNS, BORDER_ROWS,
     CAUTION, CURSOR, DIM, Depth, EYEBROW, FAILED, GROUND, INK, LINE, PAPER, SEGMENT_3,
-    SELECTED_MARK, SELECTED_ROW, SOFT, SURFACE, TRACK, WARM, mix, quantize, spinner,
+    SELECTED_MARK, SELECTED_ROW, SOFT, TRACK, WARM, mix, onto_ground, quantize, spinner,
 };
 use super::text;
 use crate::support::text::{padded, right_aligned};
@@ -177,9 +177,9 @@ fn keys(pairs: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Draw one frame of `app`: the ground first, every pane over it, and the
-/// whole frame mapped onto the terminal's palette when it has no more than
-/// 256 colours.
+/// Draw one frame of `app`: the ground first, every pane over it, then the
+/// whole frame handed to the terminal's own ground and mapped onto its
+/// palette when it has no more than 256 colours.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     app.note_area(area);
@@ -201,6 +201,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.buffer_mut().set_style(panes.footer, GROUND);
         footer::draw(frame, panes.footer, app);
     }
+    onto_ground(frame.buffer_mut(), app.ground);
     if app.depth == Depth::Indexed {
         quantize(frame.buffer_mut());
     }
@@ -371,23 +372,54 @@ mod tests {
     }
 
     #[test]
-    fn the_ground_is_painted_under_every_cell() {
+    fn the_terminal_keeps_its_own_ground_under_every_cell() {
+        use crate::tui::palette::{Ground, INK_COLOR, PAPER, RAISED, SEL};
+        use ratatui::style::Color;
         let mut app = App::new(vec![record("m")], Facts::default());
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("a test terminal");
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("a frame");
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(99, 29)].bg, crate::tui::palette::PAPER);
-        app.depth = Depth::Indexed;
+        assert_eq!(
+            terminal.backend().buffer()[(99, 29)].bg,
+            PAPER,
+            "a terminal that never said what its ground is gets the painted one"
+        );
+        app.ground = Ground::Terminal {
+            light: false,
+            rgb: None,
+        };
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("a frame");
         let buffer = terminal.backend().buffer();
-        assert!(matches!(
-            buffer[(99, 29)].bg,
-            ratatui::style::Color::Indexed(_)
-        ));
+        assert_eq!(buffer[(99, 29)].bg, Color::Reset);
+        assert!(
+            buffer
+                .content
+                .iter()
+                .all(|cell| matches!(cell.bg, Color::Reset | SEL | RAISED)),
+            "only the selected row and the chips keep a fill"
+        );
+        app.depth = Depth::Indexed;
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("a frame");
+        assert_eq!(terminal.backend().buffer()[(99, 29)].bg, Color::Reset);
+        app.ground = Ground::Terminal {
+            light: true,
+            rgb: None,
+        };
+        app.depth = Depth::True;
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("a frame");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(99, 29)].bg, Color::Reset);
+        assert!(
+            buffer.content.iter().all(|cell| cell.fg != INK_COLOR),
+            "a light ground has no pale ink"
+        );
     }
 
     /// Every screen and card, drawn whole at every size worth checking,

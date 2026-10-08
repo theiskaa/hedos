@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::Look;
 use crate::tui::app::App;
-use crate::tui::palette::{AMBER, INK_COLOR, LINE_STRONG, SEL, SOFT_COLOR, SURFACE, mix};
+use crate::tui::palette::{AMBER, INK_COLOR, LINE_STRONG, PAPER, SEL, SOFT_COLOR, mix};
 use crate::tui::pull::{Kind, ListingRow, Offer, OnShelf, PullModal, Search};
 use crate::tui::tasks::TaskState;
 use crate::tui::text;
@@ -158,7 +158,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, modal: &PullModal, app: &App, 
                     let used = line.width();
                     line.spans
                         .push(Span::raw(" ".repeat(width.saturating_sub(used))));
-                    line = line.patch_style(Style::new().bg(mix(SURFACE, SEL, lifted)));
+                    line = line.patch_style(Style::new().bg(mix(PAPER, SEL, lifted)));
                 }
                 line
             }

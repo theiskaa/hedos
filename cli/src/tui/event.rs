@@ -194,6 +194,7 @@ impl Input {
             while matches!(event::poll(Duration::ZERO), Ok(true)) {
                 let _ = event::read();
             }
+            let mut replies = LateReplies::default();
             loop {
                 if flag.load(Ordering::Relaxed) {
                     return;
@@ -207,6 +208,7 @@ impl Input {
                     }
                 }
                 let forwarded = match event::read() {
+                    Ok(event::Event::Key(key)) if replies.swallows(&key) => None,
                     Ok(event::Event::Key(key)) => translate(key).map(Event::Key),
                     Ok(event::Event::Mouse(mouse)) => match mouse.kind {
                         MouseEventKind::ScrollUp => Some(Event::Key(Key::ScrollUp)),
@@ -245,6 +247,46 @@ impl Drop for Input {
     }
 }
 
+/// A terminal's answer to the colour query at launch that came too late to
+/// be read as one. crossterm hands `ESC ] 11;rgb:2828/2c2c/3434 BEL` over as
+/// Alt+`]`, the answer's characters as plain keys, and Ctrl+G (or Alt+`\`
+/// for an `ESC \` ending); left in, those characters would press the
+/// shelf's keys. An answer is taken from its Alt+`]` to its ending, or to
+/// the first key no answer holds.
+#[derive(Debug, Default)]
+struct LateReplies {
+    inside: bool,
+}
+
+impl LateReplies {
+    /// Whether `key` is part of a late answer rather than a key pressed.
+    fn swallows(&mut self, key: &KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let answer_char = |c: char| c.is_ascii_hexdigit() || "rgb;:/?".contains(c);
+        match key.code {
+            KeyCode::Char(']') if alt => {
+                self.inside = true;
+                true
+            }
+            _ if !self.inside => false,
+            KeyCode::Char('g') if ctrl => {
+                self.inside = false;
+                true
+            }
+            KeyCode::Char('\\') if alt => {
+                self.inside = false;
+                true
+            }
+            KeyCode::Char(c) if !ctrl && !alt && answer_char(c) => true,
+            _ => {
+                self.inside = false;
+                false
+            }
+        }
+    }
+}
+
 fn translate(key: KeyEvent) -> Option<Key> {
     if !key.kind.is_press() {
         return None;
@@ -280,4 +322,55 @@ fn translate(key: KeyEvent) -> Option<Key> {
         KeyCode::Char(c) if !ctrl && !alt => Key::Char(c),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `text` as crossterm hands it over: each byte a key, `ESC x` an Alt+x,
+    /// a control byte a Ctrl key.
+    fn keys(text: &str) -> Vec<KeyEvent> {
+        let mut keys = Vec::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            keys.push(match c {
+                '\x1b' => KeyEvent::new(
+                    KeyCode::Char(chars.next().expect("a key after ESC")),
+                    KeyModifiers::ALT,
+                ),
+                '\x07' => KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+                c => KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            });
+        }
+        keys
+    }
+
+    /// What of `text` reaches the shelf as typed characters.
+    fn passed(text: &str) -> String {
+        let mut replies = LateReplies::default();
+        keys(text)
+            .into_iter()
+            .filter(|key| !replies.swallows(key))
+            .filter_map(|key| match key.code {
+                KeyCode::Char(c) => Some(c),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_late_colour_answer_never_reaches_the_shelf_as_keys() {
+        assert_eq!(passed("\x1b]11;rgb:2828/2c2c/3434\x07j"), "j");
+        assert_eq!(
+            passed("\x1b]10;rgb:abab/b2b2/bfbf\x1b\\\x1b]11;rgb:2828/2c2c/3434\x1b\\k"),
+            "k"
+        );
+    }
+
+    #[test]
+    fn keys_outside_an_answer_pass() {
+        assert_eq!(passed("bcdrg/"), "bcdrg/");
+        assert_eq!(passed("\x1b]x b"), "x b", "a key no answer holds ends it");
+    }
 }

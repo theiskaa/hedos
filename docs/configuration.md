@@ -165,6 +165,7 @@ The Python sidecars do not inherit your whole environment. They get an allowlist
 |---|---|
 | `HEDOS_MOTION` | `off`, `0`, `false` or `no` turns the shelf's animation off: every movement shows its final frame. `slow` plays every movement ten times slower. Anything else, or unset, animates normally. |
 | `COLORTERM` | `truecolor` or `24bit` draws the shelf in 24-bit colour. Otherwise colours are mapped to the 256-colour palette. |
+| `HEDOS_THEME` | `light` or `dark` says which kind of background the terminal has, and the shelf draws on it even when the terminal does not answer the colour query. Anything else, or unset, goes by the terminal's answer; a terminal that does not answer gets the shelf's own painted dark ground. See [Colour](shelf.md#colour). |
 
 The Ollama daemon and the image daemons (ComfyUI, AUTOMATIC1111) are reached over HTTP on their standard local ports. If Ollama is installed but not running, hedos starts it.
 
