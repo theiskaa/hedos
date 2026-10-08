@@ -3,9 +3,48 @@ use super::*;
 use kernel::install::pulls::PullState;
 use ratatui::style::Style;
 
+use crate::tui::motion::Motion;
 use crate::tui::strip::{HintTargets, TaskStrip};
 use crate::tui::tasks::{TaskEvent, TaskId, TaskLabel};
 use crate::tui::testing::{downloading, job_row, text};
+
+static SETTLED: std::sync::LazyLock<Motion> = std::sync::LazyLock::new(Motion::settled);
+
+/// `text` with every run of padding read as the two spaces between columns,
+/// so a check reads what a row says rather than where its keys were pushed.
+fn squeeze(text: &str) -> String {
+    let mut out = String::new();
+    let mut spaces = 0;
+    for c in text.chars() {
+        if c == ' ' {
+            spaces += 1;
+            continue;
+        }
+        let gap = if spaces > 1 && !out.is_empty() {
+            2
+        } else {
+            spaces
+        };
+        out.push_str(&" ".repeat(gap));
+        spaces = 0;
+        out.push(c);
+    }
+    out
+}
+
+/// The row as it reads settled, with no rate measured.
+fn line(row: &TaskRow, width: usize, hinted: RowHints) -> Line<'static> {
+    super::line(
+        row,
+        width,
+        hinted,
+        &Look {
+            motion: &SETTLED,
+            spin_frame: 0,
+        },
+        None,
+    )
+}
 
 fn recorded(state: TaskState) -> TaskRow {
     let mut strip = TaskStrip::default();
@@ -88,10 +127,13 @@ fn a_failed_row_keeps_the_reason_plain_and_offers_dismiss() {
         ..RowHints::default()
     };
     let line = line(&row, 120, hinted);
-    assert_eq!(
-        text(&line).trim_end(),
-        " remove mistral  is warm; unload it first  d dismiss"
+    let read = text(&line);
+    assert!(
+        read.starts_with(" remove mistral  is warm; unload it first  "),
+        "{read:?}"
     );
+    assert!(read.ends_with("d dismiss"), "{read:?}");
+    assert_eq!(line.width(), 120, "the key sits against the edge");
     assert_eq!(line.spans[0].style, FAILED);
     let reason = line
         .spans
@@ -110,7 +152,7 @@ fn a_long_reason_is_cut_to_the_row_after_the_key_that_dismisses_it() {
     };
     let painted = line(&row, 60, hinted);
     assert!(painted.width() <= 60, "{}", text(&painted));
-    assert!(text(&painted).trim_end().ends_with("…  d dismiss"));
+    assert!(squeeze(&text(&painted)).ends_with("…  d dismiss"));
     let bare = line(&row, 60, RowHints::default());
     assert!(bare.width() <= 60);
     assert!(text(&bare).trim_end().ends_with('…'));
@@ -123,14 +165,27 @@ fn a_download_offers_stop_from_the_keymap() {
         total_bytes: Some(4_000_000_000),
         ..InstallProgress::default()
     };
-    let line = Line::from(download(&progress, 120, hints(&["c"])));
-    assert!(
-        text(&line).ends_with(&format!("  c {}  ", keymap::verb("c"))),
-        "{:?}",
-        text(&line)
+    let mut strip = TaskStrip::default();
+    strip.sync_pulls(
+        vec![job_row(
+            "gemma3",
+            PullState::Running,
+            TaskState::Downloading(progress),
+        )],
+        0,
     );
-    let quiet = Line::from(download(&progress, 120, Vec::new()));
-    assert!(!text(&quiet).contains(keymap::verb("c")));
+    let row = strip.rows()[0].clone();
+    let stoppable = RowHints {
+        stoppable: true,
+        ..RowHints::default()
+    };
+    let offered = text(&line(&row, 120, stoppable));
+    assert!(
+        offered.ends_with(&format!("c {}", keymap::verb("c"))),
+        "{offered:?}"
+    );
+    let quiet = text(&line(&row, 120, RowHints::default()));
+    assert!(!quiet.contains(keymap::verb("c")));
 }
 
 #[test]
@@ -157,27 +212,24 @@ fn the_bar_shrinks_with_the_strip() {
     let bar_cells = |width| {
         let line = line(&row, width, stoppable);
         assert!(line.width() <= width, "{:?} runs past {width}", text(&line));
-        text(&line)
-            .chars()
-            .filter(|c| *c == '█' || *c == '░')
-            .count()
+        text(&line).chars().filter(|c| *c == '━').count()
     };
     // The row's fixed cells: the verb column, the subject, the percent,
     // the figures, the stop hint, and the gaps between them.
     let head = 1 + label_width(&TaskKind::VERBS, 0) + 1 + row.label.subject.width() + 2;
     let figures = "2 GB of 4 GB";
     let stop: usize = hints(&["c"]).iter().map(Span::width).sum();
-    let fixed = PERCENT_WIDTH + 2 + figures.len() + 2 + stop;
+    let fixed = 2 + PERCENT_WIDTH + 2 + figures.len() + stop;
     let floor = head + fixed + MIN_BAR_WIDTH as usize;
-    assert_eq!(bar_cells(120), MAX_BAR_WIDTH as usize);
-    assert!(text(&line(&row, 120, stoppable)).contains(&format!("  50%  {figures}")));
+    assert_eq!(bar_cells(140), MAX_BAR_WIDTH as usize);
+    assert!(text(&line(&row, 140, stoppable)).contains(&format!("  50%  {figures}")));
     let medium = bar_cells(floor + 4);
     let bounds = MIN_BAR_WIDTH as usize..MAX_BAR_WIDTH as usize;
     assert!(bounds.contains(&medium), "{medium}");
     assert_eq!(bar_cells(floor), MIN_BAR_WIDTH as usize);
     assert_eq!(bar_cells(floor - 1), 0);
     let compact = text(&line(&row, floor - 1, stoppable));
-    assert!(compact.contains(&format!("50% · {figures}  c stop")));
+    assert!(compact.contains(&format!("50% · {figures}")) && compact.ends_with("c stop"));
     let bare = format!("50% · {figures}").width();
     let shed = text(&line(&row, head + bare + stop - 1, stoppable));
     assert!(shed.contains(&format!("50% · {figures}")) && !shed.contains("c stop"));
@@ -196,14 +248,14 @@ fn a_stopped_pull_says_how_it_stopped_with_or_without_the_key() {
     );
     let row = &strip.rows()[0];
 
-    let offered = text(&line(
+    let offered = squeeze(&text(&line(
         row,
         120,
         RowHints {
             resumable: true,
             ..RowHints::default()
         },
-    ));
+    )));
     assert!(
         offered.trim_end().ends_with("paused  R resume"),
         "{offered:?}"
@@ -228,11 +280,8 @@ fn a_done_pull_hints_only_while_it_is_selected() {
     );
     let shown = strip.shown(10);
     let selected = strip.hint_targets(10, |reference| reference == "gemma3");
-    let line_for = |targets: HintTargets| {
-        text(&line(shown[0], 120, targets.for_row(shown[0])))
-            .trim_end()
-            .to_owned()
-    };
+    let line_for =
+        |targets: HintTargets| squeeze(&text(&line(shown[0], 120, targets.for_row(shown[0]))));
     assert!(line_for(selected).ends_with("pulled gemma3  w warm  l launch"));
     let elsewhere = strip.hint_targets(10, |reference| reference == "llava");
     assert!(line_for(elsewhere).ends_with("pulled gemma3"));
@@ -276,11 +325,7 @@ fn rendered(strip: &TaskStrip, height: usize) -> Vec<String> {
     let targets = strip.hint_targets(height, |_| false);
     shown
         .iter()
-        .map(|row| {
-            text(&line(row, 120, targets.for_row(row)))
-                .trim_end()
-                .to_owned()
-        })
+        .map(|row| squeeze(&text(&line(row, 120, targets.for_row(row)))))
         .collect()
 }
 
@@ -299,7 +344,7 @@ fn stop_sits_on_the_newest_pull_even_while_it_is_only_queued() {
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("pull-0") && !lines[0].contains("stop"));
     assert!(
-        lines[1].ends_with("pull-b  queued  c stop"),
+        lines[1].contains("pull-b  ") && lines[1].ends_with(" queued  c stop"),
         "{:?}",
         lines[1]
     );

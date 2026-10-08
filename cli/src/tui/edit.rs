@@ -138,6 +138,39 @@ impl LineEdit {
         self.cursor + end
     }
 
+    /// The text broken into lines of at most `width` cells, grapheme by
+    /// grapheme, with the cursor's row and column; a cursor at the end of a
+    /// full line sits at the start of the next.
+    pub fn wrapped(&self, width: usize) -> (Vec<String>, (usize, usize)) {
+        let width = width.max(1);
+        let mut lines = vec![String::new()];
+        let mut used = 0;
+        let mut cursor = None;
+        for (offset, grapheme) in self.text.grapheme_indices(true) {
+            let cells = grapheme.width().max(1);
+            if used + cells > width {
+                lines.push(String::new());
+                used = 0;
+            }
+            if offset == self.cursor {
+                cursor = Some((lines.len() - 1, used));
+            }
+            if let Some(line) = lines.last_mut() {
+                line.push_str(grapheme);
+            }
+            used += cells;
+        }
+        let cursor = cursor.unwrap_or_else(|| {
+            if used >= width {
+                lines.push(String::new());
+                (lines.len() - 1, 0)
+            } else {
+                (lines.len() - 1, used)
+            }
+        });
+        (lines, cursor)
+    }
+
     /// The text before and after the cursor, windowed to `width` cells so the
     /// cursor is always on screen: the window fills backwards from the cursor
     /// first, then forwards with what room is left.
@@ -274,5 +307,35 @@ mod tests {
         assert_eq!(line.view(20), ("ab".to_owned(), "cdefgh".to_owned()));
         assert_eq!(line.view(0), (String::new(), String::new()));
         assert_eq!(LineEdit::default().view(4), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn a_long_line_wraps_and_the_cursor_follows_it() {
+        let mut edit = LineEdit::default();
+        for c in "abcdefg".chars() {
+            edit.apply(Key::Char(c));
+        }
+        assert_eq!(
+            edit.wrapped(3),
+            (
+                vec!["abc".to_owned(), "def".to_owned(), "g".to_owned()],
+                (2, 1)
+            )
+        );
+        edit.apply(Key::Edit(Edit::Start));
+        assert_eq!(edit.wrapped(3).1, (0, 0));
+        edit.apply(Key::Edit(Edit::End));
+        edit.apply(Key::Backspace);
+        assert_eq!(
+            edit.wrapped(3),
+            (
+                vec!["abc".to_owned(), "def".to_owned(), String::new()],
+                (2, 0)
+            )
+        );
+        assert_eq!(
+            LineEdit::default().wrapped(5),
+            (vec![String::new()], (0, 0))
+        );
     }
 }

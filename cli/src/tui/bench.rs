@@ -108,18 +108,41 @@ impl BenchScreen {
         moved
     }
 
-    /// Move the selection by `delta` rows; whether it moved.
+    /// Move the selection by `delta` rows as they are drawn; whether it
+    /// moved.
     pub(crate) fn step(&mut self, delta: isize) -> bool {
-        let selected = self.selected() as isize + delta;
-        self.select(selected.max(0) as usize)
+        let shown = self.shown();
+        let at = shown
+            .iter()
+            .position(|index| *index == self.selected())
+            .unwrap_or(0) as isize;
+        self.select((at + delta).max(0) as usize)
     }
 
-    /// Put the selection on `index`, clamped to the last row; whether it moved.
-    /// A key did this, so the screen stops following the bench: a jump to the
-    /// end of the list that the next token event undid would be no jump.
+    /// Put the selection on the `index`th row as drawn, clamped to the last;
+    /// whether it moved. A key did this, so the screen stops following the
+    /// bench: a jump to the end of the list that the next token event undid
+    /// would be no jump.
     pub(crate) fn select(&mut self, index: usize) -> bool {
         self.following = false;
-        self.place(index)
+        let shown = self.shown();
+        let Some(last) = shown.len().checked_sub(1) else {
+            return false;
+        };
+        self.place(shown[index.min(last)])
+    }
+
+    /// The rows' indices in the order they are drawn: as queued while the
+    /// bench runs, fastest first once it has settled.
+    fn shown(&self) -> Vec<usize> {
+        let Some(board) = self.board.as_ref() else {
+            return Vec::new();
+        };
+        board
+            .ordered(!self.running)
+            .into_iter()
+            .filter_map(|row| board.rows.iter().position(|each| std::ptr::eq(each, row)))
+            .collect()
     }
 
     /// Put the selection on `index` without changing whose selection it is.
@@ -329,5 +352,44 @@ mod tests {
         assert!(screen.rows().is_empty());
         assert!(screen.selected_row().is_none());
         assert!(!screen.running());
+    }
+
+    #[test]
+    fn a_settled_table_is_walked_in_the_order_it_is_drawn() {
+        let mut screen = screen(&["slow", "fast"]);
+        for (id, decode_ms) in [("slow", 4_000), ("fast", 1_000)] {
+            let sample = kernel::bench::Sample {
+                completion_tokens: 100,
+                prompt_tokens: None,
+                ttft_ms: 50,
+                decode_ms,
+                prompt_ms: None,
+                estimated_tokens: false,
+                source: kernel::bench::TimingSource::Backend,
+            };
+            let status = Status::Done(Box::new(Figures::summarize(
+                ColdStart::Measured(900),
+                vec![sample],
+            )));
+            screen.apply(
+                1,
+                &BenchEvent::Settled {
+                    id: id.to_owned(),
+                    status: Box::new(status),
+                },
+            );
+        }
+        assert!(!screen.running());
+        assert!(screen.select(0));
+        assert_eq!(
+            screen.selected_row().map(|row| row.id.as_str()),
+            Some("fast"),
+            "the top row drawn is the fastest"
+        );
+        assert!(screen.step(1));
+        assert_eq!(
+            screen.selected_row().map(|row| row.id.as_str()),
+            Some("slow")
+        );
     }
 }

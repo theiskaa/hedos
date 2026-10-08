@@ -315,6 +315,19 @@ impl TaskStrip {
         self.rows.iter().filter(|row| row.pull_going())
     }
 
+    /// The newest row of a pull of `reference`, whatever state it is in.
+    pub fn pull_for(&self, reference: &str) -> Option<&TaskRow> {
+        self.rows
+            .iter()
+            .rev()
+            .find(|row| row.job().is_some() && row.label.subject.eq_ignore_ascii_case(reference))
+    }
+
+    /// Every pull's row, oldest first.
+    pub fn pull_rows(&self) -> impl Iterator<Item = &TaskRow> {
+        self.rows.iter().filter(|row| row.job().is_some())
+    }
+
     /// The row showing pull `job`, whatever state it is in.
     pub fn pull_row(&self, job: &str) -> Option<&TaskRow> {
         self.rows.iter().find(|row| row.job() == Some(job))

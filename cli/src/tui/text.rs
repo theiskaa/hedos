@@ -3,7 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use kernel::capabilities::GenerationStats;
 use kernel::install::event::InstallProgress;
 use kernel::profiles::{FitAssessment, FitVerdict};
 use kernel::records::byte_format::{format_bytes, one_decimal};
@@ -14,20 +13,6 @@ pub use crate::support::text::{clip, count, elide_middle, gib, short_runtime};
 /// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
     format_bytes(bytes)
-}
-
-/// `buckets` as one bar per bucket, scaled to the largest; a flat line when
-/// every bucket is empty.
-pub fn sparkline(buckets: &[u32]) -> String {
-    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-    let top = buckets.iter().copied().max().unwrap_or(0).max(1) as f64;
-    buckets
-        .iter()
-        .map(|&count| {
-            let level = ((count as f64 / top) * (BARS.len() - 1) as f64).round() as usize;
-            BARS[level.min(BARS.len() - 1)]
-        })
-        .collect()
 }
 
 /// A store kind as the shelf shows it.
@@ -58,12 +43,7 @@ pub fn at_home(path: &str) -> String {
 }
 
 /// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
-/// footprint is unknown: the shape the detail and the pull preview share.
-pub fn fit_summary(footprint_bytes: Option<i64>, memory_bytes: u64) -> String {
-    fit_parts(footprint_bytes, memory_bytes).0
-}
-
-/// [`fit_summary`] and, when the model fits at all, the bytes it needs.
+/// footprint is unknown, and when the model fits at all, the bytes it needs.
 pub fn fit_parts(footprint_bytes: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
     match FitVerdict::assess(footprint_bytes, memory_bytes) {
         None => ("unknown footprint".to_owned(), None),
@@ -120,26 +100,6 @@ pub fn compact(count: i64) -> String {
     }
 }
 
-/// `~120 tokens · 40 tok/s · first in 0.4s`, from whatever a reply reported.
-pub fn stats(stats: &GenerationStats) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(tokens) = stats.completion_tokens {
-        let estimated = if stats.token_counts_estimated {
-            "~"
-        } else {
-            ""
-        };
-        parts.push(format!("{estimated}{tokens} tokens"));
-        if let Some(ms) = stats.duration_ms.filter(|ms| *ms > 0) {
-            parts.push(format!("{:.0} tok/s", tokens as f64 * 1000.0 / ms as f64));
-        }
-    }
-    if let Some(ms) = stats.ttft_ms {
-        parts.push(format!("first in {:.1}s", ms as f64 / 1000.0));
-    }
-    (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
 /// A context length as `4k`, `32k`, `128k`, or the plain count under 1000.
 pub fn tokens(count: i64) -> String {
     if count >= 1000 {
@@ -168,45 +128,11 @@ mod tests {
     }
 
     #[test]
-    fn stats_read_as_one_dim_line() {
-        let reported = GenerationStats {
-            completion_tokens: Some(120),
-            duration_ms: Some(3000),
-            ttft_ms: Some(420),
-            ..GenerationStats::default()
-        };
-        assert_eq!(
-            stats(&reported).as_deref(),
-            Some("120 tokens · 40 tok/s · first in 0.4s")
-        );
-        let estimated = GenerationStats {
-            completion_tokens: Some(7),
-            duration_ms: Some(0),
-            token_counts_estimated: true,
-            ..GenerationStats::default()
-        };
-        assert_eq!(stats(&estimated).as_deref(), Some("~7 tokens"));
-        let first_only = GenerationStats {
-            ttft_ms: Some(1500),
-            ..GenerationStats::default()
-        };
-        assert_eq!(stats(&first_only).as_deref(), Some("first in 1.5s"));
-        assert_eq!(stats(&GenerationStats::default()), None);
-    }
-
-    #[test]
     fn gib_keeps_one_decimal_and_trims_zero() {
         assert_eq!(gib(64 * (1 << 30)), "64");
         assert_eq!(gib(14_200_000_000), "13.2");
         assert_eq!(gib(0), "0");
         assert_eq!(gib(-1), "0");
-    }
-
-    #[test]
-    fn sparklines_scale_to_the_busiest_bucket() {
-        assert_eq!(sparkline(&[0, 0, 0]), "▁▁▁");
-        assert_eq!(sparkline(&[1, 4, 8]), "▂▅█");
-        assert_eq!(sparkline(&[]), "");
     }
 
     #[test]

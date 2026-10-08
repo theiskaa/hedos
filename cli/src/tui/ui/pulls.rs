@@ -8,12 +8,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Cell, Paragraph, Row, Table};
 use unicode_width::UnicodeWidthStr;
 
+use super::card::{Card, scroll_mark};
 use super::{
-    ACCENT, BOLD, BORDER_COLUMNS, BORDER_ROWS, CAUTION, DIM, EYEBROW, FAILED, SELECTED_MARK,
-    SELECTED_ROW, WARM, centered, field_line, label_width, pane, styled_field, value_width, widest,
+    ACCENT, BOLD, BORDER_COLUMNS, CAUTION, DIM, EYEBROW, FAILED, SELECTED_MARK, SELECTED_ROW,
+    TRACK, WARM, card, centered, field_line, label_width, section, styled_field, value_width,
+    widest,
 };
 use crate::support::clock;
 use crate::support::pulls::progress;
@@ -51,12 +53,15 @@ fn label_column() -> usize {
 
 /// Draw the list into `area`, scrolled so the selection stays in view.
 pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    let block = Block::bordered()
-        .title(Span::styled(" pulls ", ACCENT))
-        .border_style(DIM);
+    let count = app.pulls.rows().len();
+    Card::new(vec![
+        Span::styled("pulls", BOLD),
+        Span::styled(format!(" · {count}"), DIM),
+    ])
+    .right(vec![Span::styled("newest first", DIM)])
+    .render(area, frame.buffer_mut());
+    let inner = Card::inner(area);
     if app.pulls.rows().is_empty() {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let note = Line::from(Span::styled(empty_note(), DIM));
         let rect = centered(inner, note.width() as u16, 1);
         frame.render_widget(Paragraph::new(note), rect);
@@ -66,6 +71,24 @@ pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let widths = column_widths(&cells);
     let columns = fitting_columns(&widths, area.width);
     let selected = app.pulls.selected();
+    // The table cuts a cell short without saying so; the reference is
+    // clipped to the room it gets first, so a cut one ends in `…`.
+    let others: u16 = columns
+        .iter()
+        .filter(|&&column| column != REFERENCE)
+        .map(|&column| widths[column])
+        .sum();
+    let reference_room = inner
+        .width
+        .saturating_sub(others + COLUMN_SPACING * (columns.len() as u16).saturating_sub(1))
+        as usize;
+    let cells: Vec<[String; 4]> = cells
+        .into_iter()
+        .map(|mut row| {
+            row[REFERENCE] = text::clip(&row[REFERENCE], reference_room);
+            row
+        })
+        .collect();
     let body = app
         .pulls
         .rows()
@@ -81,9 +104,11 @@ pub(super) fn draw_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let table = Table::new(body, constraints)
         .header(header)
         .column_spacing(COLUMN_SPACING)
-        .row_highlight_style(SELECTED_ROW)
-        .block(block);
-    frame.render_stateful_widget(table, area, &mut app.pulls.table);
+        .row_highlight_style(SELECTED_ROW);
+    frame.render_stateful_widget(table, inner, &mut app.pulls.table);
+    let visible = inner.height.saturating_sub(1) as usize;
+    let first = app.pulls.table.offset();
+    scroll_mark(frame.buffer_mut(), area, first, visible, count);
 }
 
 /// A row's cells: the gutter, the reference, the state, and the progress as
@@ -132,7 +157,7 @@ fn body_row(row: &JobRow, cells: &[String; 4], selected: bool, columns: &[usize]
     let ended = row.pull_state.is_terminal();
     let style = if ended { DIM } else { Style::new() };
     let cells = columns.iter().map(|&column| match column {
-        0 if selected => Cell::from(SELECTED_MARK),
+        0 if selected => Cell::from(Span::styled(SELECTED_MARK, ACCENT)),
         0 => Cell::from(" "),
         STATE => Cell::from(Span::styled(
             cells[STATE].clone(),
@@ -141,6 +166,19 @@ fn body_row(row: &JobRow, cells: &[String; 4], selected: bool, columns: &[usize]
         column => Cell::from(cells[column].clone()),
     });
     Row::new(cells).style(style)
+}
+
+/// The pull's progress across the card: a thin rule filled to `fraction`
+/// on its track.
+fn progress_bar(fraction: f64, width: usize) -> Line<'static> {
+    // The cell before the rule is air.
+    let width = width.saturating_sub(1);
+    let filled = ((fraction.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled("━".repeat(filled), ACCENT),
+        Span::styled("━".repeat(width - filled), TRACK),
+    ])
 }
 
 /// The hue a state wears: in motion, stopped with bytes worth keeping, landed,
@@ -159,19 +197,17 @@ fn state_style(state: PullState) -> Style {
 /// its history as fits, newest last.
 pub(super) fn draw_detail(frame: &mut Frame, area: Rect, app: &App) {
     let Some(row) = app.pulls.selected_row() else {
-        frame.render_widget(pane(" pull "), area);
+        card("pull").render(area, frame.buffer_mut());
         return;
     };
-    let block = Block::bordered()
-        .title(Span::styled(
-            format!(" {} ", row.descriptor.display_name),
-            BOLD,
-        ))
-        .border_style(DIM);
-    let width = area.width.saturating_sub(BORDER_COLUMNS) as usize;
-    let height = area.height.saturating_sub(BORDER_ROWS) as usize;
-    let lines = lines(row, &app.pulls, width, height);
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    Card::new(vec![Span::styled(
+        row.descriptor.display_name.clone(),
+        BOLD,
+    )])
+    .render(area, frame.buffer_mut());
+    let inner = Card::text_inner(area);
+    let lines = lines(row, &app.pulls, inner.width as usize, inner.height as usize);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The detail's lines at `width` cells, at most `height` of them: where the
@@ -194,6 +230,9 @@ fn lines(row: &JobRow, screen: &PullsScreen, width: usize, height: usize) -> Vec
         )),
         field("progress", progress(&row.status)),
     ];
+    if let Some(fraction) = row.status.progress.fraction() {
+        lines.push(progress_bar(fraction, width.saturating_sub(1)));
+    }
     if let Some(rate) = screen.rate(&row.job, &row.status.progress) {
         let left = rate
             .left_ms
@@ -227,7 +266,7 @@ fn lines(row: &JobRow, screen: &PullsScreen, width: usize, height: usize) -> Vec
         return lines;
     }
     lines.push(Line::default());
-    lines.push(Line::from(Span::styled(" HISTORY", EYEBROW)));
+    lines.push(section("HISTORY", width));
     let skipped = history.len().saturating_sub(room);
     lines.extend(history.iter().skip(skipped).map(|line| {
         Line::from(Span::styled(

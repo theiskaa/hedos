@@ -4,6 +4,7 @@ These guides go deeper than the top-level [README](../README.md). Start with get
 
 - **[Getting started](getting-started.md)** builds hedos, discovers your models, and runs your first completion.
 - **[CLI reference](cli.md)** documents every `hedos` command, its flags, and its output.
+- **[Shelf](shelf.md)** is a guide to `hedos shelf`, the terminal screen: its layout, every key, the try, pull, pulls and bench screens, and running it over ssh or in tmux.
 - **[Gateway](gateway.md)** covers the local HTTP server: the OpenAI, Ollama, and Anthropic endpoints, and how to point tools at it.
 - **[Models](models.md)** explains discovery, installing, and removing models, and how weights are handled.
 - **[Configuration](configuration.md)** lists the settings file, the data directory, and the environment variables hedos reads.

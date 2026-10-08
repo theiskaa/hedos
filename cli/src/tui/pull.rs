@@ -1,15 +1,17 @@
-//! The pull modal's state: what was typed, what matched it, and the plan
-//! preview before a download starts. Pure, like the rest of the app state; the
-//! searches and plans it asks for run as tasks.
+//! The pull screen's state: what was typed, which kind of model is shown,
+//! what matched, and the plan of the row the cursor rests on, fetched while
+//! it rests so the preview is there before `enter`. Pure, like the rest of
+//! the app state; the searches and plans it asks for run as tasks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use kernel::install::catalog::{InstallCatalogEntry, InstallCategory, recommended};
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::install::provider::InstallProviderId;
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
 use kernel::profiles::FitVerdict;
-use kernel::records::ModelRecord;
+use kernel::records::{ModelRecord, ModelState};
 
 use super::edit::LineEdit;
 use super::event::Key;
@@ -19,6 +21,9 @@ use crate::support::shelf_table::verdict;
 
 /// How many quiet ticks after a keystroke before the typed query is searched.
 pub(crate) const SEARCH_DEBOUNCE_TICKS: u64 = 2;
+/// How many ticks the cursor rests on a row before its plan is asked for:
+/// long enough that scrolling past a row asks nothing.
+pub(crate) const PLAN_SETTLE_TICKS: u64 = 2;
 /// The most matches the list keeps; search hits always keep their places.
 /// The grouped catalog can fill it: up to three per category.
 pub(crate) const MAX_MATCHES: usize = 12;
@@ -26,11 +31,59 @@ pub(crate) const MAX_MATCHES: usize = 12;
 pub(crate) const SEARCH_LIMIT: usize = 8;
 /// The catalog's groups, in the order the list shows them.
 pub(crate) const CATEGORIES: [InstallCategory; 4] = [
-    InstallCategory::Code,
     InstallCategory::Chat,
+    InstallCategory::Code,
     InstallCategory::Voice,
     InstallCategory::Image,
 ];
+
+/// Which models the list shows: all of them, or one of the catalog's kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Every match.
+    All,
+    /// The matches of one catalog category.
+    Of(InstallCategory),
+}
+
+/// The kinds, in the order `tab` steps through them.
+pub(crate) const KINDS: [Kind; 5] = [
+    Kind::All,
+    Kind::Of(InstallCategory::Chat),
+    Kind::Of(InstallCategory::Code),
+    Kind::Of(InstallCategory::Voice),
+    Kind::Of(InstallCategory::Image),
+];
+
+impl Kind {
+    /// How the kind reads on its chip.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::All => "all",
+            Kind::Of(InstallCategory::Chat) => "chat",
+            Kind::Of(InstallCategory::Code) => "code",
+            Kind::Of(InstallCategory::Voice) => "speech",
+            Kind::Of(InstallCategory::Image) => "image",
+        }
+    }
+
+    fn admits(self, offer: &Offer) -> bool {
+        match self {
+            Kind::All => true,
+            Kind::Of(category) => offer.category == Some(category),
+        }
+    }
+}
+
+/// Whether an offer is already on the shelf, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnShelf {
+    /// There, with its weights.
+    Present,
+    /// Its record is there but its weights are gone; pulling again
+    /// restores it.
+    Gone,
+}
 
 /// One installable model the list offers.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,11 +94,14 @@ pub struct Offer {
     pub bytes: Option<i64>,
     /// A one-line note: the catalog blurb, or the hit's popularity.
     pub note: String,
-    /// The catalog group; set only on a blank query, where the list is
-    /// grouped, so an eyebrow goes wherever it changes.
+    /// The catalog kind; search hits and a typed reference have none.
     pub category: Option<InstallCategory>,
     /// Whether a pull of it is already running.
     pub pulling: bool,
+    /// Whether it is on the shelf already.
+    pub shelf: Option<OnShelf>,
+    /// How many times a search hit was downloaded, when the hub says.
+    pub downloads: Option<i64>,
 }
 
 impl Offer {
@@ -57,14 +113,16 @@ impl Offer {
             note,
             category: None,
             pulling: false,
+            shelf: None,
+            downloads: None,
         }
     }
 
-    fn from_catalog(entry: &InstallCatalogEntry, grouped: bool) -> Self {
+    fn from_catalog(entry: &InstallCatalogEntry) -> Self {
         Self {
             // The catalog's sizes are the hubs' decimal gigabytes.
             bytes: Some((entry.size_gb * 1e9) as i64),
-            category: grouped.then_some(entry.category),
+            category: Some(entry.category),
             ..Self::new(
                 entry.provider.clone(),
                 entry.reference.clone(),
@@ -81,7 +139,10 @@ impl Offer {
         if let Some(likes) = hit.likes {
             note.push(format!("♥{}", text::compact(likes)));
         }
-        Self::new(hit.provider.clone(), hit.reference.clone(), note.join("  "))
+        Self {
+            downloads: hit.downloads,
+            ..Self::new(hit.provider.clone(), hit.reference.clone(), note.join("  "))
+        }
     }
 
     /// A row for a reference typed in full: `owner/repo` or `name:tag`. A bare
@@ -91,54 +152,110 @@ impl Offer {
             Some(repo) => (InstallProviderId::huggingface(), repo),
             None => (InstallProviderId::ollama(), ollama_direct_tag(query)?),
         };
-        Some(Self::new(provider, reference, "as typed".to_owned()))
+        Some(Self::new(provider, reference, DIRECT_NOTE.to_owned()))
     }
 
     /// How the model fits in `memory_bytes`, when its size is known.
     pub fn fit(&self, memory_bytes: u64) -> Option<FitVerdict> {
         verdict(self.bytes, memory_bytes)
     }
+
+    fn key(&self) -> PlanKey {
+        (
+            self.provider.as_str().to_owned(),
+            self.reference.to_lowercase(),
+        )
+    }
 }
 
-/// Where the modal is in its flow.
+/// A plan as the screen holds it.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Stage {
-    /// Typing and choosing from the list.
-    Listing,
-    /// Waiting for the plan of the chosen match.
-    Planning(String),
-    /// The plan came back; confirm or step back.
-    Preview(InstallPlan),
-    /// Something to read before going back to the list.
-    Note(String),
+pub enum Plan {
+    /// Asked for; the number of the ask, so an answer to an older one never
+    /// lands.
+    Pending(u64),
+    /// Back, ready to pull.
+    Ready(InstallPlan),
+    /// The repository is gated; a token is needed first.
+    Gated,
+    /// The provider could not plan it, and why.
+    Failed(String),
 }
 
-/// The pull modal.
+/// A plan's key: the provider and the lowercased reference.
+type PlanKey = (String, String);
+
+/// Plans are numbered across every screen of the run, so an answer that
+/// outlives the screen it was asked from never lands in the next one.
+static NEXT_PLAN: AtomicU64 = AtomicU64::new(1);
+
+/// Where a search of the query is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Search {
+    /// Nothing typed, or nothing to ask.
+    Idle,
+    /// Asked for once the query sits still until this tick.
+    Due(u64),
+    /// Asked; waiting for the answer.
+    Asked,
+    /// Answered.
+    Done,
+    /// The provider could not be asked, and why.
+    Failed(String),
+}
+
+/// The note on the row for the reference exactly as typed.
+const DIRECT_NOTE: &str = "as typed";
+
+/// What `enter` did.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Enter {
+    /// The plan is ready: start the pull.
+    Start(Box<InstallPlan>),
+    /// The plan is on its way; the pull starts when it lands.
+    Armed,
+    /// The plan had not been asked for; ask it, and start when it lands.
+    Plan(InstallProviderId, String, u64),
+}
+
+/// The pull screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PullModal {
+    /// The query being typed.
     pub input: LineEdit,
+    /// The rows shown: the matches of the kind on screen.
     pub matches: Vec<Offer>,
+    /// The index of the highlighted match.
     pub selected: usize,
-    pub stage: Stage,
+    /// Which of [`KINDS`] is shown.
+    pub kind: usize,
     /// The typed reference, normalised, when it names a model already on the
-    /// shelf; the list leaves that row out and the listing says so instead
-    /// of going quiet.
+    /// shelf.
     pub direct_installed: Option<String>,
-    /// How many plans have been asked for; the newest is the only one whose
-    /// answer counts.
-    ask: u64,
-    /// The tick a search of `input` falls due, if one is pending.
-    search_due: Option<u64>,
+    /// When the selection last moved, on the animation clock, for its
+    /// arrival.
+    pub selected_at: u64,
+    /// When `enter` last started a pull, on the animation clock, for the
+    /// button's flash.
+    pub pressed_at: Option<u64>,
+    /// Every match before the kind narrows it, for the chips' counts.
+    all: Vec<Offer>,
+    search: Search,
     /// Hits from the last search; dropped on the next edit.
     hits: Vec<Offer>,
     installed: HashSet<String>,
-    /// Lowercased references with a pull already running, shown but not
-    /// choosable.
+    gone: HashSet<String>,
+    /// Lowercased references with a pull already running.
     pulling: HashSet<String>,
     memory_bytes: u64,
+    plans: HashMap<PlanKey, Plan>,
+    /// The tick the selection last moved on, for when its plan comes due.
+    moved_at: u64,
+    /// The row `enter` was pressed on while its plan was on its way.
+    armed: Option<PlanKey>,
 }
 
-/// A line of the listing: a category eyebrow, a match by its index, or the
+/// A line of the listing: a category heading, a match by its index, or the
 /// blank that keeps one category off the next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListingRow {
@@ -148,47 +265,66 @@ pub enum ListingRow {
 }
 
 impl PullModal {
-    /// A fresh modal offering the machine's recommendations; `pulling` names
-    /// the references already downloading.
+    /// A fresh screen offering the machine's recommendations; `pulling`
+    /// names the references already downloading.
     pub fn open(shelf: &[ModelRecord], memory_bytes: u64, pulling: &[String]) -> Self {
         let mut modal = Self {
             input: LineEdit::default(),
-            ask: 0,
             matches: Vec::new(),
             selected: 0,
-            stage: Stage::Listing,
+            kind: 0,
             direct_installed: None,
-            search_due: None,
+            selected_at: 0,
+            pressed_at: None,
+            all: Vec::new(),
+            search: Search::Idle,
             hits: Vec::new(),
             installed: installed_names(shelf),
+            gone: gone_names(shelf),
             pulling: lowercased(pulling),
             memory_bytes,
+            plans: HashMap::new(),
+            moved_at: 0,
+            armed: None,
         };
         modal.rematch();
         modal
     }
 
-    /// The shelf or the running pulls changed under the open modal.
+    /// The shelf or the running pulls changed under the open screen.
     pub fn refresh(&mut self, shelf: &[ModelRecord], pulling: &[String]) {
         self.installed = installed_names(shelf);
+        self.gone = gone_names(shelf);
         self.pulling = lowercased(pulling);
         self.rematch();
     }
 
-    /// The matches with an eyebrow wherever the category changes, and a
-    /// blank before every eyebrow but the first.
+    /// The kind shown.
+    pub fn kind(&self) -> Kind {
+        KINDS[self.kind % KINDS.len()]
+    }
+
+    /// How many matches `kind` has, whatever is shown.
+    pub fn count(&self, kind: Kind) -> usize {
+        self.all.iter().filter(|offer| kind.admits(offer)).count()
+    }
+
+    /// The matches with a heading wherever the category changes, and a
+    /// blank before every heading but the first, when the list is the
+    /// catalog's recommendations of every kind.
     pub fn rows(&self) -> Vec<ListingRow> {
+        let grouped = self.input.trimmed().is_empty() && self.kind() == Kind::All;
         let mut rows = Vec::new();
         let mut current = None;
         for (index, offer) in self.matches.iter().enumerate() {
-            if offer.category.is_some() && offer.category != current {
+            if grouped && offer.category.is_some() && offer.category != current {
                 if current.is_some() {
                     rows.push(ListingRow::Blank);
                 }
                 current = offer.category;
-                rows.push(ListingRow::Eyebrow(
-                    offer.category.unwrap_or(InstallCategory::Chat),
-                ));
+                if let Some(category) = offer.category {
+                    rows.push(ListingRow::Eyebrow(category));
+                }
             }
             rows.push(ListingRow::Match(index));
         }
@@ -200,89 +336,256 @@ impl PullModal {
         self.matches.get(self.selected)
     }
 
-    /// Edit the query with `key`; a change re-matches and re-arms the search.
+    /// The plan held for `offer`, if one was asked for.
+    pub fn plan(&self, offer: &Offer) -> Option<&Plan> {
+        self.plans.get(&offer.key())
+    }
+
+    /// `offer`'s size: the catalog's, or its plan's once that has come back.
+    pub fn size(&self, offer: &Offer) -> Option<i64> {
+        offer.bytes.or_else(|| match self.plans.get(&offer.key()) {
+            Some(Plan::Ready(plan)) => plan.total_bytes,
+            _ => None,
+        })
+    }
+
+    /// How `offer` fits this machine, by [`Self::size`].
+    pub fn fit(&self, offer: &Offer) -> Option<FitVerdict> {
+        verdict(self.size(offer), self.memory_bytes)
+    }
+
+    /// Whether `enter` is waiting on `offer`'s plan.
+    pub fn armed(&self, offer: &Offer) -> bool {
+        self.armed.as_ref() == Some(&offer.key())
+    }
+
+    /// Where the search of the query is.
+    pub fn search(&self) -> &Search {
+        &self.search
+    }
+
+    /// The machine's memory, which the fits are judged against.
+    pub fn memory_bytes(&self) -> u64 {
+        self.memory_bytes
+    }
+
+    /// Edit the query with `key` on tick `now`; a change re-matches and
+    /// re-arms the search.
     pub fn edit(&mut self, key: Key, now: u64) {
         if self.input.apply(key) {
             self.edited(now);
         }
     }
 
+    /// Empty the query.
+    pub fn clear_query(&mut self, now: u64) {
+        self.input.clear();
+        self.edited(now);
+    }
+
     fn edited(&mut self, now: u64) {
+        self.armed = None;
         self.hits.clear();
         self.rematch();
-        self.search_due = (!self.input.trimmed().is_empty()).then_some(now + SEARCH_DEBOUNCE_TICKS);
+        self.moved(now);
+        self.search = if self.input.trimmed().is_empty() {
+            Search::Idle
+        } else {
+            Search::Due(now + SEARCH_DEBOUNCE_TICKS)
+        };
     }
 
     /// The query to search on `now`, once it has sat still long enough.
     pub fn search_due(&mut self, now: u64) -> Option<String> {
-        if self.search_due.is_some_and(|due| now >= due) {
-            self.search_due = None;
-            Some(self.input.trimmed().to_owned())
-        } else {
-            None
+        match self.search {
+            Search::Due(due) if now >= due => {
+                self.search = Search::Asked;
+                Some(self.input.trimmed().to_owned())
+            }
+            _ => None,
         }
     }
 
-    /// Fold in the hits for `query`; whether they applied, which they do not
-    /// when the query has moved on.
-    pub fn searched(&mut self, query: &str, hits: &[InstallSearchHit]) -> bool {
+    /// Fold in the hits for `query`, or why there are none; whether they
+    /// applied, which they do not when the query has moved on.
+    pub fn searched(
+        &mut self,
+        query: &str,
+        hits: &[InstallSearchHit],
+        note: Option<String>,
+    ) -> bool {
         if query != self.input.trimmed() {
             return false;
         }
         self.hits = hits.iter().map(Offer::from_hit).collect();
+        self.search = match note {
+            Some(note) if hits.is_empty() => Search::Failed(note),
+            _ => Search::Done,
+        };
         self.rematch();
         true
     }
 
-    /// Move the highlight by `delta` rows.
-    pub fn step(&mut self, delta: isize) {
+    /// Move the highlight by `delta` rows on tick `now`, `at` on the
+    /// animation clock.
+    pub fn step(&mut self, delta: isize, now: u64, at: u64) {
         let last = self.matches.len().saturating_sub(1) as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
+        let target = (self.selected as isize + delta).clamp(0, last) as usize;
+        if target != self.selected {
+            // Leaving a row lets go of an enter waiting on its plan, so a
+            // download never starts for a row the cursor has left.
+            self.armed = None;
+            self.leave_failed();
+            self.selected = target;
+            self.selected_at = at;
+            self.moved(now);
+        }
     }
 
-    /// Ask for the plan of the highlighted match: the reference to plan and
-    /// the ask's number, or why not.
-    pub fn choose(&mut self) -> Result<(InstallProviderId, String, u64), String> {
-        let chosen = self
+    /// Show the next kind, or the one before when `delta` is negative.
+    pub fn cycle_kind(&mut self, delta: isize, now: u64, at: u64) {
+        let kinds = KINDS.len() as isize;
+        self.kind = (self.kind as isize + delta).rem_euclid(kinds) as usize;
+        self.armed = None;
+        self.selected = 0;
+        self.selected_at = at;
+        self.rematch();
+        self.moved(now);
+    }
+
+    fn moved(&mut self, now: u64) {
+        self.moved_at = now;
+    }
+
+    /// A failed plan is asked again only once the cursor has left the row
+    /// and come back, so a row that cannot be planned is not asked about on
+    /// every tick.
+    fn leave_failed(&mut self) {
+        if let Some(offer) = self.selected_offer()
+            && let key = offer.key()
+            && matches!(self.plans.get(&key), Some(Plan::Failed(_)))
+        {
+            self.plans.remove(&key);
+        }
+    }
+
+    /// The plan to ask for on tick `now`: the selected row's, once the
+    /// cursor has rested on it, unless it is on the shelf, downloading,
+    /// too big for the machine, or already asked for.
+    pub fn plan_due(&mut self, now: u64) -> Option<(InstallProviderId, String, u64)> {
+        if now < self.moved_at + PLAN_SETTLE_TICKS {
+            return None;
+        }
+        let offer = self.selected_offer()?;
+        // A reference still being typed is planned once its search has
+        // settled, not at every pause on the way to the whole name.
+        let typing = matches!(self.search, Search::Due(_) | Search::Asked);
+        if (typing && offer.note == DIRECT_NOTE)
+            || offer.shelf == Some(OnShelf::Present)
+            || offer.pulling
+            || offer.fit(self.memory_bytes) == Some(FitVerdict::TooLarge)
+            || self.plans.contains_key(&offer.key())
+        {
+            return None;
+        }
+        let (provider, reference, key) =
+            (offer.provider.clone(), offer.reference.clone(), offer.key());
+        let ask = NEXT_PLAN.fetch_add(1, Ordering::Relaxed);
+        self.plans.insert(key, Plan::Pending(ask));
+        Some((provider, reference, ask))
+    }
+
+    /// Whether a plan is on its way for the selected row.
+    pub fn planning(&self) -> bool {
+        self.selected_offer()
+            .and_then(|offer| self.plans.get(&offer.key()))
+            .is_some_and(|plan| matches!(plan, Plan::Pending(_)))
+    }
+
+    /// The plan for `reference` from `provider`, asked as `ask`, came back.
+    /// An answer to an older ask never lands. When `enter` was waiting on
+    /// it, what enter would have said had the plan been there already comes
+    /// back: the plan to start, or why it can't be.
+    pub fn planned(
+        &mut self,
+        provider: &InstallProviderId,
+        reference: &str,
+        ask: u64,
+        result: Result<InstallPlan, String>,
+    ) -> Option<Result<InstallPlan, String>> {
+        let key = (provider.as_str().to_owned(), reference.to_lowercase());
+        if self.plans.get(&key) != Some(&Plan::Pending(ask)) {
+            return None;
+        }
+        let plan = match result {
+            Ok(plan) if plan.requires_auth => Plan::Gated,
+            Ok(plan) => Plan::Ready(plan),
+            Err(reason) => Plan::Failed(reason),
+        };
+        self.plans.insert(key.clone(), plan);
+        if self.armed.as_ref() != Some(&key) {
+            return None;
+        }
+        self.armed = None;
+        if self.selected_offer().map(Offer::key) != Some(key) {
+            return None;
+        }
+        Some(match self.enter() {
+            Ok(Enter::Start(plan)) => Ok(*plan),
+            Ok(_) => Err(format!("{reference} has no plan yet")),
+            Err(reason) => Err(reason),
+        })
+    }
+
+    /// `enter` on the selected row: start it, arm it for its plan, ask for
+    /// its plan and arm it, or say why not.
+    pub fn enter(&mut self) -> Result<Enter, String> {
+        let offer = self
             .selected_offer()
             .ok_or_else(|| "nothing to pull".to_owned())?
             .clone();
-        if chosen.pulling {
-            return Err(already_downloading(&chosen.reference));
+        if offer.shelf == Some(OnShelf::Present) {
+            return Err(format!("{} is already on the shelf", offer.reference));
         }
-        self.stage = Stage::Planning(chosen.reference.clone());
-        self.ask += 1;
-        Ok((chosen.provider, chosen.reference, self.ask))
-    }
-
-    /// The plan for ask number `ask` came back; only the newest ask, still
-    /// being waited on, is answered.
-    pub fn planned(&mut self, ask: u64, result: Result<InstallPlan, String>) {
-        if ask != self.ask || !matches!(self.stage, Stage::Planning(_)) {
-            return;
+        if offer.pulling {
+            return Err(already_downloading(&offer.reference));
         }
-        self.stage = match result {
-            Ok(plan) if plan.requires_auth => Stage::Note(format!(
+        if self.fit(&offer) == Some(FitVerdict::TooLarge) {
+            return Err(format!(
+                "{} needs {} GiB; this machine has {}",
+                offer.reference,
+                text::gib(self.size(&offer).unwrap_or(0)),
+                text::gib(self.memory_bytes as i64)
+            ));
+        }
+        let key = offer.key();
+        match self.plans.get(&key) {
+            Some(Plan::Ready(plan)) => Ok(Enter::Start(Box::new(plan.clone()))),
+            Some(Plan::Gated) => Err(format!(
                 "{} is gated; add a Hugging Face token first",
-                plan.reference
+                offer.reference
             )),
-            Ok(plan) => Stage::Preview(plan),
-            Err(reason) => Stage::Note(reason),
-        };
+            Some(Plan::Failed(reason)) => Err(reason.clone()),
+            Some(Plan::Pending(_)) => {
+                self.armed = Some(key);
+                Ok(Enter::Armed)
+            }
+            None => {
+                let ask = NEXT_PLAN.fetch_add(1, Ordering::Relaxed);
+                self.plans.insert(key.clone(), Plan::Pending(ask));
+                self.armed = Some(key);
+                Ok(Enter::Plan(offer.provider, offer.reference, ask))
+            }
+        }
     }
 
-    /// Step back from a preview or note to the list.
-    pub fn back(&mut self) {
-        self.stage = Stage::Listing;
-    }
-
-    /// The typed reference itself, the catalog's grouped recommendations
-    /// (narrowed by the query when there is one), and the search hits, minus
-    /// what is on the shelf already and any repeat.
+    /// The typed reference itself, the catalog's recommendations (narrowed
+    /// by the query when there is one), and the search hits, each marked
+    /// when it is on the shelf already, without repeats; then the kind
+    /// shown narrows them.
     fn rematch(&mut self) {
         let typed = self.input.trimmed();
         let query = typed.to_lowercase();
-        let grouped = query.is_empty();
         let catalog_room = MAX_MATCHES.saturating_sub(self.hits.len());
         let mut matches: Vec<Offer> = Vec::new();
         let direct = Offer::direct(typed);
@@ -296,25 +599,65 @@ impl PullModal {
                 .iter()
                 .flat_map(|category| recommended(Some(*category), self.memory_bytes, None))
                 .filter(|entry| {
-                    grouped
+                    query.is_empty()
                         || entry.reference.to_lowercase().contains(&query)
                         || entry.name.to_lowercase().contains(&query)
                 })
-                .map(|entry| Offer::from_catalog(&entry, grouped))
+                .map(|entry| Offer::from_catalog(&entry))
                 .take(catalog_room),
         );
         matches.extend(self.hits.iter().cloned());
         let mut seen = HashSet::new();
-        matches.retain(|offer| {
-            !is_installed(&offer.reference, &self.installed)
-                && seen.insert((offer.provider.clone(), offer.reference.to_lowercase()))
-        });
+        matches
+            .retain(|offer| seen.insert((offer.provider.clone(), offer.reference.to_lowercase())));
         for offer in &mut matches {
             offer.pulling = self.pulling.contains(&offer.reference.to_lowercase());
+            offer.shelf = if is_installed(&offer.reference, &self.installed) {
+                Some(OnShelf::Present)
+            } else if is_installed(&offer.reference, &self.gone) {
+                Some(OnShelf::Gone)
+            } else {
+                None
+            };
         }
-        self.matches = matches;
+        let kind = self.kind();
+        self.matches = matches
+            .iter()
+            .filter(|offer| kind.admits(offer))
+            .cloned()
+            .collect();
+        self.all = matches;
         self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
+
+    /// A screen whose one row is `plan`'s reference, already planned, for a
+    /// test that starts from a ready preview.
+    #[cfg(test)]
+    pub fn ready(plan: InstallPlan) -> Self {
+        let mut modal = Self::open(&[], 0, &[]);
+        let offer = Offer::new(plan.provider.clone(), plan.reference.clone(), String::new());
+        modal.plans.insert(offer.key(), Plan::Ready(plan));
+        modal.all = vec![offer.clone()];
+        modal.matches = vec![offer];
+        modal.selected = 0;
+        modal
+    }
+}
+
+/// The names the shelf's gone records go by, the way [`installed_names`]
+/// names the present ones.
+fn gone_names(shelf: &[ModelRecord]) -> HashSet<String> {
+    shelf
+        .iter()
+        .filter(|record| record.state == ModelState::Missing)
+        .flat_map(|record| {
+            [
+                record.id.to_lowercase(),
+                record.name.to_lowercase(),
+                record.display_name().to_lowercase(),
+            ]
+        })
+        .collect()
 }
 
 /// The notice for a reference that is already being pulled.

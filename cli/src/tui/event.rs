@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use kernel::capabilities::GenerationStats;
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
+use kernel::install::provider::InstallProviderId;
 use kernel::records::ModelRecord;
 use ratatui::crossterm::event::{self, KeyCode, KeyEvent, KeyModifiers, MouseEventKind};
 use runtime::bench::BenchEvent;
@@ -28,6 +29,8 @@ pub enum Event {
     Resize,
     /// The periodic tick.
     Tick,
+    /// The animation clock wants a new frame drawn.
+    Frame,
     /// A background task moved.
     Task(TaskEvent),
     /// The pull jobs, as the job directory reads right now.
@@ -67,9 +70,11 @@ pub struct Searched {
 /// The plan for a reference, or why it could not be made.
 #[derive(Debug, Clone)]
 pub struct Planned {
-    /// Which `choose` asked, so a plan abandoned by Escape and asked for
-    /// again never answers with its first, possibly failed, result.
+    /// Which ask this answers, so an answer to an older one never lands.
     pub ask: u64,
+    /// What was planned.
+    pub provider: InstallProviderId,
+    pub reference: String,
     pub result: Result<InstallPlan, String>,
 }
 
@@ -124,6 +129,12 @@ pub enum Key {
     PageDown,
     /// A line-editing key, meaningful only while typing into a field.
     Edit(Edit),
+    /// Tab: the next suggestion, or the next kind.
+    Tab,
+    /// Shift-Tab: the previous one.
+    BackTab,
+    /// Ctrl-L: start over.
+    Clear,
 }
 
 /// The line-editing keys, named the way a shell names them.
@@ -242,6 +253,7 @@ fn translate(key: KeyEvent) -> Option<Key> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     Some(match key.code {
         KeyCode::Char('c') if ctrl => Key::Interrupt,
+        KeyCode::Char('l') if ctrl => Key::Clear,
         KeyCode::Char('a') if ctrl => Key::Edit(Edit::Start),
         KeyCode::Char('e') if ctrl => Key::Edit(Edit::End),
         KeyCode::Char('u') if ctrl => Key::Edit(Edit::KillToStart),
@@ -261,6 +273,8 @@ fn translate(key: KeyEvent) -> Option<Key> {
         KeyCode::Home => Key::Top,
         KeyCode::End => Key::Bottom,
         KeyCode::Enter => Key::Enter,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::BackTab => Key::BackTab,
         KeyCode::Esc => Key::Escape,
         KeyCode::Backspace => Key::Backspace,
         KeyCode::Char(c) if !ctrl && !alt => Key::Char(c),

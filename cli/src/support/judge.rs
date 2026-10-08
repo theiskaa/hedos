@@ -59,7 +59,7 @@ impl Kind {
 }
 
 /// One typed question: what is asked, and what it may be answered with.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Question {
     /// The key the answer comes back under.
     pub(crate) id: String,
@@ -169,7 +169,7 @@ fn collect_criteria(out: &Out, kind: Kind) -> Result<Vec<(String, String)>, CliE
 /// label holding a colon of its own (a URL, a clock time) survives. A score's
 /// level is one whole phrase: it has to stand on its own for the model to rate
 /// against it, so cutting it at a colon would ask a different question.
-fn split_entry(kind: Kind, line: &str) -> (&str, &str) {
+pub(crate) fn split_entry(kind: Kind, line: &str) -> (&str, &str) {
     match kind {
         Kind::Choice => match line.split_once(": ") {
             Some((label, description)) => (label.trim(), description.trim()),
@@ -416,6 +416,133 @@ pub(crate) fn with_images(question: &str, images: &[String]) -> Result<String, C
 /// literal stands in rather than a panic if it ever did.
 fn quoted(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
+}
+
+/// One weighed outcome of an answer: an option, a level, or yes and no.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Weighed {
+    /// What the outcome is called: the option's label, the level's text
+    /// after its number, `yes` or `no`.
+    pub(crate) label: String,
+    /// What a choice's option means, when it was given one.
+    pub(crate) detail: String,
+    /// The probability the model gave it.
+    pub(crate) probability: f64,
+    /// Whether it is the model's answer: the option it chose, the likeliest
+    /// level, the likelier of yes and no.
+    pub(crate) chosen: bool,
+}
+
+/// An answer read against its question, for a screen to lay out.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Answer {
+    /// The outcomes: a choice's ranked likeliest first, a score's levels in
+    /// their order, yes then no.
+    pub(crate) outcomes: Vec<Weighed>,
+    /// A score's expected level, and the highest level there is.
+    pub(crate) score: Option<(f64, usize)>,
+    /// How sure the model says it is, when it says.
+    pub(crate) confidence: Option<f64>,
+}
+
+/// Read the envelope `reply` as the answer to `question`, or say why it is
+/// not one.
+pub(crate) fn answer(reply: &str, question: &Question) -> Result<Answer, String> {
+    let envelope: serde_json::Value = serde_json::from_str(reply.trim())
+        .map_err(|_| format!("the model did not answer with a judgment: {}", reply.trim()))?;
+    let answers = envelope
+        .get("answers")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("the judgment carried no answers: {}", reply.trim()))?;
+    let answer = answers
+        .get(&question.id)
+        .or_else(|| answers.values().next())
+        .ok_or_else(|| "the question went unanswered".to_owned())?;
+    let probability = |key: &str| {
+        answer
+            .get("probabilities")
+            .and_then(|map| map.get(key))
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0)
+    };
+    let confidence = answer.get("confidence").and_then(serde_json::Value::as_f64);
+    let mut score = None;
+    let mut outcomes: Vec<Weighed> = match question.kind {
+        Kind::Choice => {
+            let chosen = answer.get("choice").and_then(serde_json::Value::as_str);
+            let mut rows: Vec<Weighed> = question
+                .criteria
+                .iter()
+                .map(|(label, detail)| Weighed {
+                    label: label.clone(),
+                    detail: detail.clone(),
+                    probability: probability(label),
+                    chosen: Some(label.as_str()) == chosen,
+                })
+                .collect();
+            rows.sort_by(|left, right| right.probability.total_cmp(&left.probability));
+            rows
+        }
+        Kind::Score => {
+            score = answer
+                .get("score")
+                .and_then(serde_json::Value::as_f64)
+                .map(|value| (value, question.criteria.len().saturating_sub(1)));
+            question
+                .criteria
+                .iter()
+                .enumerate()
+                .map(|(level, (label, _))| Weighed {
+                    label: format!("{level} {label}"),
+                    detail: String::new(),
+                    probability: probability(&level.to_string()),
+                    chosen: false,
+                })
+                .collect()
+        }
+        Kind::Noul => {
+            let holds = answer
+                .get("noul")
+                .and_then(serde_json::Value::as_f64)
+                .ok_or_else(|| format!("the judgment carried no noul: {answer}"))?;
+            vec![
+                Weighed {
+                    label: "yes".to_owned(),
+                    detail: String::new(),
+                    probability: holds,
+                    chosen: holds >= 0.5,
+                },
+                Weighed {
+                    label: "no".to_owned(),
+                    detail: String::new(),
+                    probability: 1.0 - holds,
+                    chosen: holds < 0.5,
+                },
+            ]
+        }
+    };
+    if question.kind == Kind::Score {
+        // The likeliest level, or the score's own level when the answer
+        // carried no distribution to pick it from.
+        let weighed = outcomes.iter().any(|outcome| outcome.probability > 0.0);
+        let chosen = if weighed {
+            outcomes
+                .iter()
+                .enumerate()
+                .max_by(|left, right| left.1.probability.total_cmp(&right.1.probability))
+                .map(|(index, _)| index)
+        } else {
+            score.map(|(value, _)| value.round().max(0.0) as usize)
+        };
+        if let Some(outcome) = chosen.and_then(|index| outcomes.get_mut(index)) {
+            outcome.chosen = true;
+        }
+    }
+    Ok(Answer {
+        outcomes,
+        score,
+        confidence,
+    })
 }
 
 /// Lay out the envelope `reply` against the `questions` that produced it.
@@ -903,5 +1030,51 @@ mod tests {
         for fraction in [0.0, 0.001, 0.5, 1.0] {
             assert_eq!(bar(fraction).chars().count(), BAR_CELLS);
         }
+    }
+
+    #[test]
+    fn an_answer_reads_into_weighed_outcomes() {
+        let choice = answer(
+            r#"{"answers":{"q1":{"choice":"alpha","probabilities":{"zeta":0.2,"alpha":0.7,"mid":0.1},"confidence":0.8}}}"#,
+            &choice(),
+        )
+        .expect("an answer");
+        assert_eq!(choice.outcomes[0].label, "alpha");
+        assert!(choice.outcomes[0].chosen && !choice.outcomes[1].chosen);
+        assert_eq!(choice.outcomes[0].detail, "first letter");
+        assert_eq!(choice.confidence, Some(0.8));
+        let score = Question {
+            id: "q1".to_owned(),
+            kind: Kind::Score,
+            instructions: "How bad?".to_owned(),
+            criteria: vec![
+                ("mild".to_owned(), String::new()),
+                ("dire".to_owned(), String::new()),
+            ],
+        };
+        let rated = answer(
+            r#"{"answers":{"q1":{"score":0.8,"probabilities":{"0":0.2,"1":0.8}}}}"#,
+            &score,
+        )
+        .expect("an answer");
+        assert_eq!(rated.score, Some((0.8, 1)));
+        assert_eq!(rated.outcomes[1].label, "1 dire");
+        assert!(rated.outcomes[1].chosen);
+        let noul = Question {
+            id: "q1".to_owned(),
+            kind: Kind::Noul,
+            instructions: "It holds".to_owned(),
+            criteria: Vec::new(),
+        };
+        let bare = answer(r#"{"answers":{"q1":{"score":0.2}}}"#, &score).expect("an answer");
+        assert!(bare.outcomes[0].chosen && !bare.outcomes[1].chosen);
+        let held = answer(r#"{"answers":{"q1":{"noul":0.3}}}"#, &noul).expect("an answer");
+        assert_eq!(held.outcomes[1].label, "no");
+        assert!(held.outcomes[1].chosen);
+        assert!(
+            answer("plain words", &noul)
+                .unwrap_err()
+                .contains("did not answer")
+        );
     }
 }

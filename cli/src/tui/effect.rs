@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
-use kernel::records::{JsonValue, ModelRecord};
+use kernel::records::{Capability, JsonValue, ModelRecord};
 
 use runtime::bench::BenchPlan;
 
@@ -81,6 +81,8 @@ pub enum Effect {
     /// events stamped with `generation`.
     Ask {
         record_id: String,
+        /// `chat` for a conversation, `judge` for a typed question.
+        capability: Capability,
         payload: JsonValue,
         generation: u64,
     },
