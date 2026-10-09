@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 
+use kernel::machine::Machine;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 
@@ -10,13 +11,13 @@ use crate::support::table::{self, DASH};
 use crate::support::text;
 
 /// The six columns shown for a model: state marker, name, runtime, store, fit, caps.
-pub(crate) fn cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> [String; 6] {
+pub(crate) fn cells(record: &ModelRecord, warm: bool, machine: &Machine) -> [String; 6] {
     [
         marker(record, warm).to_owned(),
         text::printable(record.display_name()).into_owned(),
         runtime_label(record).to_owned(),
         record.source.kind.as_str().to_owned(),
-        fit_label(record, total_memory_bytes).to_owned(),
+        fit_label(record, machine).to_owned(),
         record
             .capabilities
             .iter()
@@ -42,12 +43,11 @@ pub(crate) fn runtime_label(record: &ModelRecord) -> &str {
     record.runtime.id.as_ref().map_or(DASH, |id| id.as_str())
 }
 
-/// How a model that loads `serving_bytes` when served fits in `memory_bytes`,
-/// when that figure is known. Callers pass
-/// [`ModelRecord::serving_size`], not the disk figure: a repo can hold several
-/// quantizations and serve one.
-pub(crate) fn verdict(serving_bytes: Option<i64>, memory_bytes: u64) -> Option<FitVerdict> {
-    FitVerdict::assess(serving_bytes, memory_bytes).map(|fit| fit.verdict)
+/// How `record` fits on `machine`, when what serving it loads is known: judged
+/// by [`ModelRecord::serving_size`], not the disk figure (a repo can hold
+/// several quantizations and serve one), on the engine it resolved to.
+pub(crate) fn verdict(record: &ModelRecord, machine: &Machine) -> Option<FitVerdict> {
+    machine.fit_record(record).map(|fit| fit.assessment.verdict)
 }
 
 /// The short human form of a verdict: `fits` / `tight` / `too big`, empty
@@ -68,30 +68,30 @@ pub(crate) fn verdict_label(verdict: Option<FitVerdict>) -> &'static str {
 /// A model whose weights are gone reads `gone` instead of a verdict: there is
 /// nothing left to fit, and a fit here would be the row's one honest-looking
 /// claim about a model that cannot run at all.
-fn fit_label(record: &ModelRecord, total_memory_bytes: u64) -> &'static str {
+fn fit_label(record: &ModelRecord, machine: &Machine) -> &'static str {
     if record.state == ModelState::Missing {
         return "gone";
     }
-    match verdict(record.serving_size(), total_memory_bytes) {
+    match verdict(record, machine) {
         Some(fit) => verdict_label(Some(fit)),
         None => DASH,
     }
 }
 
 /// The six columns as a row of cells, for the shared table helpers.
-fn row_cells(record: &ModelRecord, warm: bool, total_memory_bytes: u64) -> Vec<String> {
-    cells(record, warm, total_memory_bytes).to_vec()
+fn row_cells(record: &ModelRecord, warm: bool, machine: &Machine) -> Vec<String> {
+    cells(record, warm, machine).to_vec()
 }
 
 /// The `hedos ls` header row, one label per column.
 pub(crate) const HEADERS: [&str; 6] = ["", "NAME", "RUNTIME", "STORE", "FIT", "CAPABILITIES"];
 
 /// The full `hedos ls` table: a header row followed by one aligned row per model,
-/// with fit judged against `total_memory_bytes`.
-pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_bytes: u64) -> String {
+/// with fit judged on `machine`.
+pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, machine: &Machine) -> String {
     let rows: Vec<Vec<String>> = records
         .iter()
-        .map(|record| row_cells(record, warm.contains(&record.id), total_memory_bytes))
+        .map(|record| row_cells(record, warm.contains(&record.id), machine))
         .collect();
     table::render(&HEADERS, &rows)
 }
@@ -101,11 +101,11 @@ pub fn table(records: &[&ModelRecord], warm: &HashSet<String>, total_memory_byte
 pub fn picker_labels(
     records: &[&ModelRecord],
     warm: &HashSet<String>,
-    total_memory_bytes: u64,
+    machine: &Machine,
 ) -> Vec<String> {
     let rows: Vec<Vec<String>> = records
         .iter()
-        .map(|record| row_cells(record, warm.contains(&record.id), total_memory_bytes))
+        .map(|record| row_cells(record, warm.contains(&record.id), machine))
         .collect();
     let widths = table::widths(&rows, None);
     rows.iter().map(|row| table::row(row, &widths)).collect()
@@ -131,7 +131,7 @@ mod tests {
 
     fn fit_of(record: &ModelRecord) -> String {
         // Column 4 (0-indexed) is FIT; judged against a fixed 16 GiB machine.
-        cells(record, false, 16 * GIB)[4].clone()
+        cells(record, false, &Machine::with_memory(16 * GIB))[4].clone()
     }
 
     #[test]
@@ -147,14 +147,18 @@ mod tests {
     fn a_model_whose_weights_are_gone_says_so_instead_of_fitting() {
         let mut record = model("tiny", Some(GIB as i64));
         record.state = ModelState::Missing;
-        let row = cells(&record, false, 16 * GIB);
+        let row = cells(&record, false, &Machine::with_memory(16 * GIB));
         assert_eq!(row[0], "✕", "the gutter marks it");
         assert_eq!(row[4], "gone", "and the fit column says why");
     }
 
     #[test]
     fn a_name_with_control_characters_prints_them_visibly() {
-        let row = cells(&model("evil\u{1b}[31mred\nrow", None), false, 16 * GIB);
+        let row = cells(
+            &model("evil\u{1b}[31mred\nrow", None),
+            false,
+            &Machine::with_memory(16 * GIB),
+        );
         assert_eq!(row[1], "evil\\u{1b}[31mred\\nrow");
     }
 
@@ -180,7 +184,7 @@ mod tests {
     fn the_table_has_a_fit_header() {
         let record = model("gemma", Some(GIB as i64));
         let records = [&record];
-        let rendered = table(&records, &HashSet::new(), 16 * GIB);
+        let rendered = table(&records, &HashSet::new(), &Machine::with_memory(16 * GIB));
         let header = rendered.lines().next().expect("a header row");
         let fit = header.find("FIT").expect("a FIT header");
         let capabilities = header.find("CAPABILITIES").expect("a CAPABILITIES header");

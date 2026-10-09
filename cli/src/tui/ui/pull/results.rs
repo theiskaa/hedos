@@ -12,6 +12,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 use super::Look;
+use crate::support::recommend::machine_label;
 use crate::tui::app::App;
 use crate::tui::palette::{AMBER, INK_COLOR, LINE_STRONG, PAPER, SEL, SOFT_COLOR, mix};
 use crate::tui::pull::{Kind, ListingRow, Offer, OnShelf, PullModal, Search};
@@ -102,8 +103,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, modal: &PullModal, app: &App, 
         format!("matching “{}”", text::clip(query, 20))
     } else if modal.kind() == Kind::All {
         format!(
-            "recommended for {} GiB",
-            text::gib(modal.memory_bytes() as i64).trim_end_matches(".0")
+            "recommended for {}",
+            text::clip(&machine_label(modal.machine()), 32)
         )
     } else {
         format!("{} models", modal.kind().label())
@@ -210,7 +211,7 @@ fn offer_line(
     app: &App,
     look: &Look,
 ) -> Line<'static> {
-    let memory = modal.memory_bytes();
+    let memory = modal.budget_bytes(offer);
     let verdict = modal.fit(offer);
     let bytes = modal.size(offer);
     let present = offer.shelf == Some(OnShelf::Present);

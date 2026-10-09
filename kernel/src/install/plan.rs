@@ -4,6 +4,11 @@ use crate::install::event::InstallProgress;
 use crate::install::file_selection::is_weight_path;
 use crate::install::provider::InstallProviderId;
 
+/// Multiply a download by this before comparing it with free disk, for
+/// headroom: the install service refuses a pull past it, and the
+/// recommendations warn of one.
+pub const DISK_HEADROOM: f64 = 1.05;
+
 /// One file an install will fetch, with its size when the provider reported it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InstallPlanFile {

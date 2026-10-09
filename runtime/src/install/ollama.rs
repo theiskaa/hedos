@@ -15,14 +15,14 @@ use kernel::install::{
     InstallAvailability, InstallError, InstallPlan, InstallProviderId, InstallSearchHit,
     InstallStreamEvent,
 };
+use kernel::machine::OLLAMA_INSTALL_HINT;
 use kernel::records::SourceKind;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::provider::{InstallEventStream, InstallFuture, InstallProvider};
 
-const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
-const NOT_INSTALLED_HINT: &str = "Ollama isn't installed. Get it from ollama.com.";
+pub(crate) const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Cap on connecting to the daemon, so a host that accepts then never answers
 /// can't hang `send()` forever.
@@ -105,7 +105,7 @@ impl InstallProvider for OllamaInstallProvider {
                 InstallAvailability::Ready
             } else {
                 InstallAvailability::Unavailable {
-                    hint: NOT_INSTALLED_HINT.to_owned(),
+                    hint: OLLAMA_INSTALL_HINT.to_owned(),
                 }
             }
         })
@@ -333,7 +333,7 @@ pub(crate) async fn start_daemon(
     environment: &HashMap<String, String>,
 ) -> Result<(), InstallError> {
     let binary = daemon_binary(environment)
-        .ok_or_else(|| InstallError::ProviderUnavailable(NOT_INSTALLED_HINT.to_owned()))?;
+        .ok_or_else(|| InstallError::ProviderUnavailable(OLLAMA_INSTALL_HINT.to_owned()))?;
     let mut child = std::process::Command::new(&binary)
         .arg("serve")
         .stdout(std::process::Stdio::null())
@@ -397,7 +397,9 @@ fn home_dir(environment: &HashMap<String, String>) -> PathBuf {
         .unwrap_or_default()
 }
 
-fn models_root(environment: &HashMap<String, String>) -> PathBuf {
+/// Where the Ollama daemon keeps its models: `OLLAMA_MODELS`, else
+/// `~/.ollama/models`.
+pub(crate) fn models_root(environment: &HashMap<String, String>) -> PathBuf {
     if let Some(custom) = environment
         .get("OLLAMA_MODELS")
         .filter(|value| !value.is_empty())

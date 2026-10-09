@@ -440,14 +440,14 @@ fn count_lines(app: &App, counts: [u64; 4]) -> [Vec<Span<'static>>; 2] {
     } else {
         vec![Span::styled("nothing held", DIM)]
     };
-    if app.facts.memory_bytes > 0 {
+    if app.facts.memory_bytes() > 0 {
         memory.extend([
             Span::styled(" · ", DIM),
             Span::styled(format!("{free} GiB"), SOFT),
             Span::styled(
                 format!(
                     " free of {}",
-                    text::gib(app.facts.memory_bytes as i64).trim_end_matches(".0")
+                    text::gib_short(app.facts.memory_bytes() as i64)
                 ),
                 DIM,
             ),
@@ -542,7 +542,7 @@ fn shelf_line(app: &App, wont_run: bool) -> String {
     if !wont_run {
         return parts.join(" · ");
     }
-    let too_big = FitTally::over(&app.records, app.facts.memory_bytes).too_large;
+    let too_big = FitTally::over(&app.records, &app.facts.machine).too_large;
     if too_big > 0 {
         parts.push(format!("{too_big} too big"));
     }

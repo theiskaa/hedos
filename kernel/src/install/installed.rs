@@ -1,9 +1,9 @@
 //! Matching an install reference against what the shelf already has, shared
-//! by `hedos pull`'s picker and the UI's pull modal.
+//! by the recommendations, `hedos pull`'s picker and the UI's pull modal.
 
 use std::collections::HashSet;
 
-use kernel::records::{ModelRecord, ModelState};
+use crate::records::{ModelRecord, ModelState};
 
 /// The records on `shelf` whose weights are still on disk: a record whose
 /// weights are gone can be pulled again, so it does not count as installed.
@@ -16,7 +16,7 @@ fn present(shelf: &[ModelRecord]) -> impl Iterator<Item = &ModelRecord> {
 /// The lowercased ids, names, and display names of every model on the shelf
 /// whose weights are present, for matching an install reference against what
 /// is already there.
-pub(crate) fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
+pub fn installed_names(shelf: &[ModelRecord]) -> HashSet<String> {
     present(shelf)
         .flat_map(|record| {
             [
@@ -39,7 +39,7 @@ fn tail(reference: &str) -> String {
 
 /// Whether `reference` names a model already on the shelf: a direct match, or a
 /// match on its last path segment (so `org/Model` matches an installed `Model`).
-pub(crate) fn is_installed(reference: &str, installed: &HashSet<String>) -> bool {
+pub fn is_installed(reference: &str, installed: &HashSet<String>) -> bool {
     installed.contains(&reference.to_lowercase()) || installed.contains(&tail(reference))
 }
 
@@ -47,10 +47,7 @@ pub(crate) fn is_installed(reference: &str, installed: &HashSet<String>) -> bool
 /// [`is_installed`]: a direct match on id, name, or display name wins over a
 /// match on the last path segment, and a record whose weights are gone is
 /// never named.
-pub(crate) fn find_installed<'a>(
-    shelf: &'a [ModelRecord],
-    reference: &str,
-) -> Option<&'a ModelRecord> {
+pub fn find_installed<'a>(shelf: &'a [ModelRecord], reference: &str) -> Option<&'a ModelRecord> {
     let names = |record: &'a ModelRecord| {
         [
             record.id.as_str(),
@@ -76,7 +73,7 @@ pub(crate) fn find_installed<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::records::{Capability, Modality, ModelSource, SourceKind};
+    use crate::records::{Capability, Modality, ModelSource, SourceKind};
 
     fn record(name: &str) -> ModelRecord {
         ModelRecord::new(

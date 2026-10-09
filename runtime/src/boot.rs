@@ -338,7 +338,7 @@ fn hf_home(home: &std::path::Path) -> PathBuf {
 
 /// The Hugging Face hub cache this process installs into, resolved by the same
 /// rule discovery uses.
-fn hf_cache_root(home: &std::path::Path) -> PathBuf {
+pub(crate) fn hf_cache_root(home: &std::path::Path) -> PathBuf {
     kernel::discovery::hf_cache_root(&readable_env(), home)
 }
 

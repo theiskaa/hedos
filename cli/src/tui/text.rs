@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use kernel::install::event::InstallProgress;
-use kernel::profiles::{FitAssessment, FitVerdict};
+use kernel::machine::{Fit, Machine};
+use kernel::profiles::FitVerdict;
+use kernel::records::ModelRecord;
 use kernel::records::byte_format::{format_bytes, one_decimal};
 
 use crate::support::shelf_table::verdict_label;
-pub use crate::support::text::{clip, count, elide_middle, gib, short_runtime};
+pub use crate::support::text::{clip, count, elide_middle, gib, gib_short, short_runtime};
 
 /// Bytes as `4.7 GB` / `512 MB`.
 pub fn bytes(bytes: i64) -> String {
@@ -42,26 +44,24 @@ pub fn at_home(path: &str) -> String {
     home_relative(path, home.as_deref())
 }
 
-/// `fits · needs 4.7 of 64 GiB`, `too big for this machine`, or that the
-/// footprint is unknown, and when the model fits at all, the bytes it needs.
-pub fn fit_parts(footprint_bytes: Option<i64>, memory_bytes: u64) -> (String, Option<i64>) {
-    match FitVerdict::assess(footprint_bytes, memory_bytes) {
+/// `fits · needs 4.7 of 51.8 GiB`, `too big for this machine`, or that the
+/// footprint is unknown, and when the model fits at all, how. Judged on
+/// `machine` under the engine `record` resolved to, against what that engine
+/// may give it.
+pub fn fit_parts(record: &ModelRecord, machine: &Machine) -> (String, Option<Fit>) {
+    match machine.fit_record(record) {
         None => ("unknown footprint".to_owned(), None),
-        Some(FitAssessment {
-            verdict: FitVerdict::TooLarge,
-            ..
-        }) => ("too big for this machine".to_owned(), None),
-        Some(FitAssessment {
-            verdict,
-            required_bytes,
-        }) => (
+        Some(fit) if fit.assessment.verdict == FitVerdict::TooLarge => {
+            ("too big for this machine".to_owned(), None)
+        }
+        Some(fit) => (
             format!(
                 "{} · needs {} of {} GiB",
-                verdict_label(Some(verdict)),
-                gib(required_bytes),
-                gib(memory_bytes as i64)
+                verdict_label(Some(fit.assessment.verdict)),
+                gib(fit.assessment.required_bytes),
+                gib(fit.budget_bytes as i64)
             ),
-            Some(required_bytes),
+            Some(fit),
         ),
     }
 }

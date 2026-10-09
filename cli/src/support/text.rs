@@ -47,6 +47,12 @@ pub fn gib(bytes: i64) -> String {
     one_decimal(bytes.max(0) as f64 / BYTES_PER_GIB as f64)
 }
 
+/// [`gib`] without a trailing `.0`, for a figure read as a whole when it is
+/// one: `64`, `51.8`.
+pub fn gib_short(bytes: i64) -> String {
+    gib(bytes).trim_end_matches(".0").to_owned()
+}
+
 /// A count with a noun that takes a plain `s` plural: `1 model`, `12 models`.
 pub fn count(count: usize, noun: &str) -> String {
     if count == 1 {

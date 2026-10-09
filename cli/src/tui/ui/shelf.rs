@@ -3,6 +3,7 @@
 //! whose weights are gone is marked in the gutter, drawn dim, and says `gone`
 //! where its size would be.
 
+use kernel::machine::Machine;
 use kernel::profiles::FitVerdict;
 use kernel::records::{ModelRecord, ModelState};
 use ratatui::Frame;
@@ -51,12 +52,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         draw_empty(frame, area, app);
         return;
     }
-    let budget = app.facts.memory_bytes;
     let shown: Vec<&ModelRecord> = app.shown().collect();
     let rows: Vec<ShelfRow> = shown
         .iter()
         .map(|record| {
-            ShelfRow::new(record, app.facts.is_warm(&record.id), budget)
+            ShelfRow::new(record, app.facts.is_warm(&record.id), &app.facts.machine)
                 .busy(app.tasks.running_on(&record.id))
         })
         .collect();
@@ -190,13 +190,9 @@ struct ShelfRow {
 impl ShelfRow {
     /// The row for `record`; a record whose weights are gone has no size and
     /// no verdict, only the word.
-    fn new(record: &ModelRecord, warm: bool, budget: u64) -> Self {
+    fn new(record: &ModelRecord, warm: bool, machine: &Machine) -> Self {
         let gone = record.state == ModelState::Missing;
-        let verdict = if gone {
-            None
-        } else {
-            verdict(record.serving_size(), budget)
-        };
+        let verdict = if gone { None } else { verdict(record, machine) };
         let mut size = if gone {
             "gone".to_owned()
         } else {
@@ -324,7 +320,7 @@ fn sort_label(app: &App) -> Vec<Span<'static>> {
 fn draw_empty(frame: &mut Frame, area: Rect, app: &App) {
     card("shelf").render(area, frame.buffer_mut());
     let inner = Card::inner(area);
-    let copy = empty_copy(app.facts.memory_bytes);
+    let copy = empty_copy(app.facts.memory_bytes());
     let copy_width = copy.iter().map(Line::width).max().unwrap_or(0) as u16;
     let with_koala = !Panes::hero(frame.area());
     let width = if with_koala {
@@ -413,27 +409,52 @@ mod tests {
     #[test]
     fn the_size_cell_carries_the_verdict_only_when_it_matters() {
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(GIB as i64)), false, 16 * GIB).cells[4],
+            ShelfRow::new(
+                &sized_record(Some(GIB as i64)),
+                false,
+                &Machine::with_memory(16 * GIB)
+            )
+            .cells[4],
             "1.1 GB"
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(12 * GIB as i64)), false, 16 * GIB).cells[4],
+            ShelfRow::new(
+                &sized_record(Some(12 * GIB as i64)),
+                false,
+                &Machine::with_memory(16 * GIB)
+            )
+            .cells[4],
             "12.9 GB tight"
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(16 * GIB as i64)), false, 16 * GIB).cells[4],
+            ShelfRow::new(
+                &sized_record(Some(16 * GIB as i64)),
+                false,
+                &Machine::with_memory(16 * GIB)
+            )
+            .cells[4],
             "17.2 GB too big"
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(None), false, 16 * GIB).cells[4],
+            ShelfRow::new(&sized_record(None), false, &Machine::with_memory(16 * GIB)).cells[4],
             DASH
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(1)), true, 16 * GIB).cells[0],
+            ShelfRow::new(
+                &sized_record(Some(1)),
+                true,
+                &Machine::with_memory(16 * GIB)
+            )
+            .cells[0],
             "●"
         );
         assert_eq!(
-            ShelfRow::new(&sized_record(Some(1)), false, 16 * GIB).cells[3],
+            ShelfRow::new(
+                &sized_record(Some(1)),
+                false,
+                &Machine::with_memory(16 * GIB)
+            )
+            .cells[3],
             "hf"
         );
     }
@@ -442,7 +463,7 @@ mod tests {
     fn a_multi_quant_row_shows_the_serving_size_without_too_big() {
         let mut record = sized_record(Some(40 * GIB as i64));
         record.serving_bytes = Some(GIB as i64);
-        let row = ShelfRow::new(&record, false, 16 * GIB);
+        let row = ShelfRow::new(&record, false, &Machine::with_memory(16 * GIB));
         assert_eq!(row.cells[SIZE], "1.1 GB");
         assert_eq!(row.verdict, Some(FitVerdict::RunsWell));
     }
@@ -451,7 +472,7 @@ mod tests {
     fn a_name_with_control_or_bidi_characters_shows_them_visibly() {
         let mut record = sized_record(Some(GIB as i64));
         record.name = "evil\u{1b}[31m\u{202e}gpj\nx\u{2028}y".to_owned();
-        let name = &ShelfRow::new(&record, false, 16 * GIB).cells[1];
+        let name = &ShelfRow::new(&record, false, &Machine::with_memory(16 * GIB)).cells[1];
         assert_eq!(name, "evil\\u{1b}[31m\\u{202e}gpj\\nx\\u{2028}y");
         assert!(name.chars().all(|c| !c.is_control()));
     }
@@ -460,13 +481,27 @@ mod tests {
     fn a_gone_row_is_dim_and_says_gone() {
         let mut gone = sized_record(Some(16 * GIB as i64));
         gone.state = ModelState::Missing;
-        let row = ShelfRow::new(&gone, false, 16 * GIB);
+        let row = ShelfRow::new(&gone, false, &Machine::with_memory(16 * GIB));
         assert!(row.dim());
         assert_eq!(row.cells[SIZE], "gone");
         assert_eq!(row.cells[0], "✕", "and the gutter marks it");
         assert_eq!(row.verdict, None);
-        assert!(!ShelfRow::new(&sized_record(Some(GIB as i64)), false, 16 * GIB).dim());
-        assert!(ShelfRow::new(&sized_record(Some(16 * GIB as i64)), false, 16 * GIB).dim());
+        assert!(
+            !ShelfRow::new(
+                &sized_record(Some(GIB as i64)),
+                false,
+                &Machine::with_memory(16 * GIB)
+            )
+            .dim()
+        );
+        assert!(
+            ShelfRow::new(
+                &sized_record(Some(16 * GIB as i64)),
+                false,
+                &Machine::with_memory(16 * GIB)
+            )
+            .dim()
+        );
     }
 
     #[test]
@@ -481,7 +516,11 @@ mod tests {
 
     #[test]
     fn the_gutter_stays_two_wide() {
-        let rows = [ShelfRow::new(&sized_record(Some(1 << 20)), true, 16 * GIB)];
+        let rows = [ShelfRow::new(
+            &sized_record(Some(1 << 20)),
+            true,
+            &Machine::with_memory(16 * GIB),
+        )];
         assert_eq!(widths(&rows)[0], 2);
     }
 

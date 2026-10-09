@@ -330,7 +330,7 @@ fn tail_string(bytes: &[u8], max: usize) -> String {
     String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
-fn uv_binary() -> Option<PathBuf> {
+pub(crate) fn uv_binary() -> Option<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_default();
     // The fixed candidates cover the common installs even when the caller's
     // PATH doesn't; the PATH walk picks up everything else.
@@ -354,8 +354,7 @@ fn uv_builder(
     Box::pin(async move {
         let Some(uv) = uv_binary() else {
             return Err(EnvError::RuntimeUnavailable(
-                "uv is required to prepare Python runtimes. Install it from astral.sh/uv."
-                    .to_owned(),
+                kernel::machine::UV_INSTALL_HINT.to_owned(),
             ));
         };
         let cache = BTreeMap::from([("UV_CACHE_DIR".to_owned(), cache_dir.display().to_string())]);

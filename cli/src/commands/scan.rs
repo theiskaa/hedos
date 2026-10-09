@@ -30,13 +30,13 @@ pub async fn run(_args: ScanArgs, out: &Out) -> Result<(), CliError> {
     let summary = session.discover().await?;
     // Judged on the shelf's records, so a verdict matches the FIT column of
     // `hedos ls`, but only for the models this scan found.
-    let memory_bytes = machine::memory_budget_bytes();
+    let machine = machine::machine();
     let shelf = session.shelf().await;
     let fit = FitTally::over(
         shelf
             .iter()
             .filter(|record| summary.found_ids.contains(&record.id)),
-        memory_bytes,
+        &machine,
     );
     for issue in &summary.issues {
         for line in issue_lines(issue) {
@@ -44,10 +44,10 @@ pub async fn run(_args: ScanArgs, out: &Out) -> Result<(), CliError> {
         }
     }
     out.line(&summary.headline());
-    for line in details(&summary, &shelf, &fit, memory_bytes) {
+    for line in details(&summary, &shelf, &fit) {
         out.line(&line);
     }
-    out.json(&scan_json(&summary, &fit, memory_bytes));
+    out.json(&scan_json(&summary, &fit, machine.memory_bytes));
     Ok(())
 }
 
@@ -73,12 +73,7 @@ fn issue_lines(issue: &str) -> Vec<String> {
 /// groups, and the too-large count, each paragraph after a blank line and
 /// only when it has something to say. Empty when the scan found nothing,
 /// whatever the tally holds.
-fn details(
-    summary: &DiscoverySummary,
-    shelf: &[ModelRecord],
-    fit: &FitTally,
-    memory_bytes: u64,
-) -> Vec<String> {
+fn details(summary: &DiscoverySummary, shelf: &[ModelRecord], fit: &FitTally) -> Vec<String> {
     let mut lines = Vec::new();
     if summary.total_count == 0 {
         return lines;
@@ -100,9 +95,8 @@ fn details(
             ("are", "them")
         };
         lines.push(format!(
-            "{} {verb} too big for this machine's {} GiB. `hedos ls` marks {pronoun}.",
+            "{} {verb} too big for this machine. `hedos ls` marks {pronoun}.",
             text::count(fit.too_large, "model"),
-            text::gib(memory_bytes as i64),
         ));
     }
     lines
@@ -353,8 +347,8 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
 
-    fn lines_for(summary: &DiscoverySummary, fit: &FitTally, memory_bytes: u64) -> Vec<String> {
-        details(summary, &[], fit, memory_bytes)
+    fn lines_for(summary: &DiscoverySummary, fit: &FitTally) -> Vec<String> {
+        details(summary, &[], fit)
     }
 
     fn summary(stores: &[(SourceKind, usize, i64)]) -> DiscoverySummary {
@@ -446,14 +440,13 @@ mod tests {
         let lines = lines_for(
             &summary(&[(SourceKind::ollama(), 3, 4_900_000_000)]),
             &FitTally::default(),
-            16 * GIB,
         );
         assert_eq!(lines, vec!["".to_owned(), "ollama  3  4.9 GB".to_owned()]);
     }
 
     #[test]
     fn details_aligns_the_stores_in_the_headline_order() {
-        let lines = lines_for(&shelf(), &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&shelf(), &FitTally::default());
         assert_eq!(
             &lines[..4],
             &[
@@ -470,14 +463,13 @@ mod tests {
         let lines = lines_for(
             &summary(&[(SourceKind::builtin(), 1, 0)]),
             &FitTally::default(),
-            16 * GIB,
         );
         assert_eq!(lines, vec!["".to_owned(), "builtin  1".to_owned()]);
     }
 
     #[test]
     fn details_names_every_copy_with_its_store_and_the_reclaimable_bytes() {
-        let lines = lines_for(&shelf(), &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&shelf(), &FitTally::default());
         assert_eq!(
             &lines[4..],
             &[
@@ -503,7 +495,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             &lines[3..],
             &[
@@ -521,7 +513,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             lines[3],
             "1 model is a copy of weights another model keeps (identical in size and sampled content). Removing it frees up to 1 GB:"
@@ -542,7 +534,7 @@ mod tests {
         shares.reclaimable_bytes = 900_000_000;
         found.duplicates = vec![shares];
         found.reclaimable_bytes = 900_000_000;
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             &lines[3..],
             &[
@@ -574,7 +566,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             lines[3],
             "2 models are copies of weights another model keeps (identical in size and sampled content). Removing them frees up to 1 GB:"
@@ -592,7 +584,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             &lines[4..],
             &[
@@ -610,7 +602,7 @@ mod tests {
             too_large: 0,
             unknown: 1,
         };
-        let lines = lines_for(&summary(&[(SourceKind::ollama(), 5, 1)]), &fit, 16 * GIB);
+        let lines = lines_for(&summary(&[(SourceKind::ollama(), 5, 1)]), &fit);
         assert_eq!(lines.len(), 2, "{lines:?}");
     }
 
@@ -620,22 +612,22 @@ mod tests {
             too_large: 1,
             ..FitTally::default()
         };
-        let lines = lines_for(&summary(&[(SourceKind::ollama(), 1, 1)]), &one, 16 * GIB);
+        let lines = lines_for(&summary(&[(SourceKind::ollama(), 1, 1)]), &one);
         assert_eq!(
             &lines[2..],
             &[
                 "".to_owned(),
-                "1 model is too big for this machine's 16 GiB. `hedos ls` marks it.".to_owned(),
+                "1 model is too big for this machine. `hedos ls` marks it.".to_owned(),
             ]
         );
         let three = FitTally {
             too_large: 3,
             ..FitTally::default()
         };
-        let lines = lines_for(&summary(&[(SourceKind::ollama(), 3, 1)]), &three, 36 * GIB);
+        let lines = lines_for(&summary(&[(SourceKind::ollama(), 3, 1)]), &three);
         assert_eq!(
             lines[3],
-            "3 models are too big for this machine's 36 GiB. `hedos ls` marks them."
+            "3 models are too big for this machine. `hedos ls` marks them."
         );
     }
 
@@ -655,7 +647,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             lines[4],
             "  keep qwen2.5:7b (ollama) [same files: qwen2.5:latest (ollama), q-linked (lm-studio)]"
@@ -680,7 +672,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(lines[4], "  keep link (file, a link to /x/real.gguf)");
         assert_eq!(lines[5], "    1 GB  other (file)");
         assert_eq!(
@@ -710,7 +702,7 @@ mod tests {
             Vec::new(),
             kernel::records::ModelSource::new(SourceKind::file(), "/c/MODEL.gguf"),
         );
-        let lines = details(&found, &[elsewhere], &FitTally::default(), 16 * GIB);
+        let lines = details(&found, &[elsewhere], &FitTally::default());
         assert_eq!(lines[4], "  keep model (file, /a/model.gguf)");
         assert_eq!(lines[5], "    1 GB  other (file)");
     }
@@ -742,7 +734,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         assert_eq!(
             lines[4],
             "  keep model (file, /a/model.gguf) [same files: model (file, /c/model.gguf)]"
@@ -762,7 +754,7 @@ mod tests {
             ],
         )];
         found.reclaimable_bytes = total(&found.duplicates);
-        let lines = lines_for(&found, &FitTally::default(), 16 * GIB);
+        let lines = lines_for(&found, &FitTally::default());
         let row = lines[4..].join(" ");
         assert!(row.chars().all(|c| !c.is_control()), "{row:?}");
         assert!(row.contains("evil\\u{1b}[31mred (file)"), "{row:?}");
@@ -774,7 +766,7 @@ mod tests {
 
     #[test]
     fn details_is_empty_for_an_empty_scan() {
-        assert!(lines_for(&DiscoverySummary::default(), &FitTally::default(), 16 * GIB).is_empty());
+        assert!(lines_for(&DiscoverySummary::default(), &FitTally::default()).is_empty());
     }
 
     #[test]
@@ -784,7 +776,7 @@ mod tests {
             too_large: 1,
             ..FitTally::default()
         };
-        assert!(lines_for(&DiscoverySummary::default(), &fit, 16 * GIB).is_empty());
+        assert!(lines_for(&DiscoverySummary::default(), &fit).is_empty());
     }
 
     #[test]
@@ -795,7 +787,7 @@ mod tests {
             ..FitTally::default()
         };
         let found = shelf();
-        let lines = lines_for(&found, &fit, 16 * GIB);
+        let lines = lines_for(&found, &fit);
         for line in lines.iter().chain([&found.headline()]) {
             assert!(!line.contains('\u{2014}'), "{line:?}");
         }

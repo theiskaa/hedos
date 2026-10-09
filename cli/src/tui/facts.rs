@@ -8,6 +8,7 @@ use std::time::Duration;
 use gateway::audit::GatewayAuditEntry;
 use gateway::stats::{LatencyPercentiles, percentiles};
 use kernel::discovery;
+use kernel::machine::Machine;
 use kernel::records::ModelRecord;
 use kernel::time::now_millis;
 
@@ -137,8 +138,9 @@ impl Activity {
 /// Everything about the machine the screen shows.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
-    /// The machine's total memory in bytes.
-    pub memory_bytes: u64,
+    /// The machine as fit is judged on it: its memory, its accelerator, and
+    /// the engines installed.
+    pub machine: Machine,
     /// The models in memory: local, then the gateway's, then the Ollama daemon's.
     pub residents: Vec<Resident>,
     /// The port a running gateway answered on, if any.
@@ -166,13 +168,18 @@ impl Facts {
         let loaded = residency::loaded(session, records).await;
         let disk = disk.figures(records).await;
         Self {
-            memory_bytes: machine::memory_budget_bytes(),
+            machine: machine::machine(),
             residents: loaded.residents,
             gateway_port: loaded.gateway_port,
             disk_by_store: disk,
             activity: Activity::from_entries(entries, now),
             collected_at_millis: now,
         }
+    }
+
+    /// The machine's total memory in bytes.
+    pub fn memory_bytes(&self) -> u64 {
+        self.machine.memory_bytes
     }
 
     /// Bytes held in memory, all holders together.
@@ -192,7 +199,7 @@ impl Facts {
 
     /// Bytes not held by any resident.
     pub fn free_bytes(&self) -> i64 {
-        self.memory_bytes as i64 - self.resident_bytes()
+        self.memory_bytes() as i64 - self.resident_bytes()
     }
 
     /// Bytes on disk across every store, once a count has finished.
@@ -562,7 +569,7 @@ mod tests {
     #[test]
     fn totals_add_up() {
         let facts = Facts {
-            memory_bytes: 0,
+            machine: Machine::default(),
             residents: vec![
                 Resident {
                     id: "a".into(),

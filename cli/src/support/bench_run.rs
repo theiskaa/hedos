@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use kernel::bench::Row;
+use kernel::machine::Machine;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 use runtime::bench::{EvictFuture, Eviction, Prepare};
@@ -15,31 +16,29 @@ use runtime::bench::{EvictFuture, Eviction, Prepare};
 use crate::support::ollama;
 use crate::support::residency::{self, Holder};
 use crate::support::session::Session;
-use crate::support::shelf_table::verdict;
 use crate::support::text;
 
-/// A row for every chat model on `shelf`, in shelf order, judged against
-/// `budget` bytes of memory. `any_size` benches the ones too big for this
-/// machine as well.
-pub(crate) fn rows(shelf: &[ModelRecord], budget: u64, any_size: bool) -> Vec<Row> {
+/// A row for every chat model on `shelf`, in shelf order, judged on
+/// `machine`. `any_size` benches the ones too big for it as well.
+pub(crate) fn rows(shelf: &[ModelRecord], machine: &Machine, any_size: bool) -> Vec<Row> {
     shelf
         .iter()
         .filter(|record| record.capabilities.contains(&Capability::chat()))
-        .map(|record| row_for(record, budget, any_size))
+        .map(|record| row_for(record, machine, any_size))
         .collect()
 }
 
 /// One model's row: queued, or skipped with the reason it cannot be measured.
 /// A skipped model keeps its row rather than being dropped, so the table says
 /// what it did not measure and why.
-pub(crate) fn row_for(record: &ModelRecord, budget: u64, any_size: bool) -> Row {
+pub(crate) fn row_for(record: &ModelRecord, machine: &Machine, any_size: bool) -> Row {
     let runtime = record
         .runtime
         .id
         .as_ref()
         .map(|id| text::short_runtime(id.as_str()).to_owned());
     let quantization = record.quantization.clone();
-    match skip_reason(record, budget, any_size) {
+    match skip_reason(record, machine, any_size) {
         Some(reason) => Row::skipped(
             &record.id,
             record.display_name(),
@@ -52,7 +51,7 @@ pub(crate) fn row_for(record: &ModelRecord, budget: u64, any_size: bool) -> Row 
 }
 
 /// Why a model will not be benched, when it will not be.
-fn skip_reason(record: &ModelRecord, budget: u64, any_size: bool) -> Option<String> {
+fn skip_reason(record: &ModelRecord, machine: &Machine, any_size: bool) -> Option<String> {
     if record.state == ModelState::Missing {
         return Some("weights are gone".to_owned());
     }
@@ -62,16 +61,22 @@ fn skip_reason(record: &ModelRecord, budget: u64, any_size: bool) -> Option<Stri
     if record.runtime.id.is_none() {
         return Some("no runtime serves it".to_owned());
     }
-    if !any_size && verdict(record.serving_size(), budget) == Some(FitVerdict::TooLarge) {
-        return Some(format!("too big for {} GiB", text::gib(budget as i64)));
+    if !any_size
+        && let Some(fit) = machine.fit_record(record)
+        && fit.assessment.verdict == FitVerdict::TooLarge
+    {
+        return Some(format!(
+            "too big for {} GiB",
+            text::gib(fit.budget_bytes as i64)
+        ));
     }
     None
 }
 
 /// `apple m3 max · 36 GiB`, or just the memory where the chip cannot be read.
-pub(crate) fn machine_line(memory_bytes: i64) -> String {
-    let memory = format!("{} GiB", text::gib(memory_bytes));
-    match runtime::chip::name() {
+pub(crate) fn machine_line(machine: &Machine) -> String {
+    let memory = format!("{} GiB", text::gib(machine.memory_bytes as i64));
+    match machine.chip.as_deref() {
         Some(chip) => format!("{} · {memory}", chip.to_lowercase()),
         None => memory,
     }
@@ -160,7 +165,7 @@ mod tests {
 
     #[test]
     fn a_model_that_fits_is_queued_and_one_that_does_not_says_so() {
-        let budget = 16 * GIB as u64;
+        let budget = &Machine::with_memory(16 * GIB as u64);
         assert_eq!(
             row_for(&record("small", GIB), budget, false).status,
             Status::Waiting
@@ -178,7 +183,7 @@ mod tests {
 
     #[test]
     fn a_model_that_cannot_run_names_what_stops_it() {
-        let budget = 16 * GIB as u64;
+        let budget = &Machine::with_memory(16 * GIB as u64);
         let mut gone = record("gone", GIB);
         gone.state = ModelState::Missing;
         assert_eq!(
@@ -206,7 +211,7 @@ mod tests {
         let mut speaker = record("kokoro", GIB);
         speaker.capabilities = vec![Capability::speak()];
         let shelf = vec![record("chatty", GIB), speaker];
-        let rows = rows(&shelf, 16 * GIB as u64, true);
+        let rows = rows(&shelf, &Machine::with_memory(16 * GIB as u64), true);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "chatty");
     }

@@ -13,7 +13,10 @@ pub mod governed;
 pub mod governor;
 pub mod install;
 pub mod jobs;
+pub mod machine;
 pub mod manifests;
+#[cfg(target_os = "macos")]
+mod metal;
 pub mod process;
 pub mod python_runtime;
 pub mod removal;

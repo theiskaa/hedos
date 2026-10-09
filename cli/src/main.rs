@@ -48,6 +48,8 @@ enum Command {
     Launch(commands::launch::LaunchArgs),
     /// Fetch a model from Ollama or Hugging Face.
     Pull(commands::pull::PullArgs),
+    /// Read this machine's hardware and recommend models to pull for it.
+    Recommend(commands::recommend::RecommendArgs),
     /// Run one pull, as the process `hedos pull` spawns for it.
     #[command(hide = true)]
     PullWorker(commands::pull::worker::PullWorkerArgs),
@@ -167,6 +169,7 @@ async fn dispatch(command: Command, out: &Out) -> Result<(), CliError> {
         Command::Serve(args) => commands::serve::run(args, out).await,
         Command::Launch(args) => commands::launch::run(args, out).await,
         Command::Pull(args) => commands::pull::run(args, out).await,
+        Command::Recommend(args) => commands::recommend::run(args, out).await,
         Command::PullWorker(args) => commands::pull::worker::run(args).await,
         Command::DiskCount => commands::disk_count::run(out),
         Command::Rm(args) => commands::rm::run(args, out).await,

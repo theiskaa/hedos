@@ -34,11 +34,11 @@ use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::bench_run::{machine_line, rows as bench_rows};
 use crate::support::extract;
-use crate::support::install::find_installed;
 use crate::support::judge;
 use crate::support::residency::{Holder, warm_request};
 use crate::support::shelf_table::verdict;
 use crate::tui::bench_view::Board;
+use kernel::install::installed::find_installed;
 
 /// How often the loop ticks; every cadence below is counted in these.
 pub(super) const TICK: Duration = Duration::from_millis(250);
@@ -305,7 +305,7 @@ impl App {
         if self.records.is_empty() {
             self.modal = Some(Modal::Pull(Box::new(PullModal::open(
                 &self.records,
-                self.facts.memory_bytes,
+                &self.facts.machine,
                 &[],
             ))));
             self.dirty = true;
@@ -353,9 +353,7 @@ impl App {
             Err(Refusal::Because(format!(
                 "{name} runs once per request; there is nothing to keep warm"
             )))
-        } else if verdict(record.serving_size(), self.facts.memory_bytes)
-            == Some(FitVerdict::TooLarge)
-        {
+        } else if verdict(record, &self.facts.machine) == Some(FitVerdict::TooLarge) {
             Err(Refusal::Because(format!(
                 "{name} is too big for this machine"
             )))
@@ -1337,7 +1335,7 @@ impl App {
         if self.bench.running() {
             return self.notify("a bench is already running; c stops it".to_owned());
         }
-        let mut rows = bench_rows(&self.records, self.facts.memory_bytes, any_size);
+        let mut rows = bench_rows(&self.records, &self.facts.machine, any_size);
         if !ids.is_empty() {
             rows.retain(|row| ids.contains(&row.id));
         }
@@ -1362,7 +1360,7 @@ impl App {
                 rows,
                 plan.runs,
                 plan.max_tokens,
-                machine_line(self.facts.memory_bytes as i64),
+                machine_line(&self.facts.machine),
             ),
             self.benches,
         );
@@ -1426,7 +1424,7 @@ impl App {
     fn open_pull_modal(&mut self) {
         self.open(Modal::Pull(Box::new(PullModal::open(
             &self.records,
-            self.facts.memory_bytes,
+            &self.facts.machine,
             &self.tasks.pulling(),
         ))));
     }

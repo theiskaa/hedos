@@ -59,6 +59,7 @@ hedos serves whatever your machine can already run, so nothing else is required 
 ```sh
 hedos scan                             # discover every model on this machine
 hedos ls                               # list them with runtime, store, fit, and capabilities
+hedos recommend                        # what this machine can run, and what to pull for it
 hedos pull qwen2.5:3b                  # install a model through Ollama
 hedos run qwen2.5:3b "explain this"    # stream a completion to your terminal
 hedos shelf                            # the shelf as a terminal screen

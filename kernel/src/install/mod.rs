@@ -7,13 +7,15 @@ pub mod catalog;
 pub mod error;
 pub mod event;
 pub mod file_selection;
+pub mod installed;
 pub mod ollama_pull;
 pub mod plan;
 pub mod provider;
 pub mod pulls;
+pub mod recommend;
 pub mod reference;
 
-pub use catalog::{InstallCatalogEntry, InstallCategory, recommended, recommended_for_ram};
+pub use catalog::{InstallCatalogEntry, InstallCategory};
 pub use error::InstallError;
 pub use event::{InstallEvent, InstallProgress, InstallStreamEvent};
 pub use file_selection::{HFSibling, file_extension, is_weight_path, select};

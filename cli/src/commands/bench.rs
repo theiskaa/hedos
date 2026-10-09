@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use clap::Args;
 use kernel::bench::{ColdStart, Row, Status, TimingSource};
+use kernel::machine::Machine;
 use kernel::records::{Capability, ModelRecord};
 use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::Paragraph;
@@ -54,8 +55,8 @@ pub struct BenchArgs {
 pub async fn run(args: BenchArgs, out: &Out) -> Result<(), CliError> {
     let session = Arc::new(Session::open()?);
     let shelf = session.shelf_or_discover().await?;
-    let budget = machine::memory_budget_bytes();
-    let rows = select(&args, &shelf, budget)?;
+    let machine = machine::machine();
+    let rows = select(&args, &shelf, &machine)?;
     if rows
         .iter()
         .all(|row| matches!(row.status, Status::Skipped(_)))
@@ -79,16 +80,11 @@ pub async fn run(args: BenchArgs, out: &Out) -> Result<(), CliError> {
         runs: args.runs.max(1),
         keep_warm: args.keep_warm,
     };
-    let board = Board::new(
-        rows,
-        plan.runs,
-        plan.max_tokens,
-        machine_line(budget as i64),
-    );
+    let board = Board::new(rows, plan.runs, plan.max_tokens, machine_line(&machine));
     let board = drive(board, plan.clone(), &session, &shelf, out).await?;
 
     if out.is_json() {
-        out.json(&document(&board, &plan, budget));
+        out.json(&document(&board, &plan, &machine));
     } else if !std::io::stdout().is_terminal() {
         out.line(&plain(&board.rows));
     }
@@ -226,9 +222,13 @@ fn redraw(
 ///
 /// A model named on the command line is benched whatever its fit says: the
 /// reason to name one is often to find out what it does here.
-fn select(args: &BenchArgs, shelf: &[ModelRecord], budget: u64) -> Result<Vec<Row>, CliError> {
+fn select(
+    args: &BenchArgs,
+    shelf: &[ModelRecord],
+    machine: &Machine,
+) -> Result<Vec<Row>, CliError> {
     if args.models.is_empty() {
-        return Ok(shelf_rows(shelf, budget, args.all));
+        return Ok(shelf_rows(shelf, machine, args.all));
     }
     let mut rows: Vec<Row> = Vec::with_capacity(args.models.len());
     for query in &args.models {
@@ -239,17 +239,17 @@ fn select(args: &BenchArgs, shelf: &[ModelRecord], budget: u64) -> Result<Vec<Ro
         if rows.iter().any(|row| row.id == record.id) {
             continue;
         }
-        rows.push(row_for(record, budget, true));
+        rows.push(row_for(record, machine, true));
     }
     Ok(rows)
 }
 
 /// The whole bench as one JSON document.
-fn document(board: &Board, plan: &BenchPlan, memory_bytes: u64) -> Value {
+fn document(board: &Board, plan: &BenchPlan, machine: &Machine) -> Value {
     json!({
         "machine": {
-            "chip": runtime::chip::name(),
-            "memoryBytes": memory_bytes,
+            "chip": machine.chip,
+            "memoryBytes": machine.memory_bytes,
         },
         "prompt": plan.prompt,
         "maxTokens": plan.max_tokens,
