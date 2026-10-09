@@ -235,13 +235,21 @@ fn the_rest_of_the_facts_pass_through() {
     );
 }
 
+/// This Mac, as the probe reads it, agrees with what Metal says: its working
+/// set where there is a GPU, and something other than Metal on a virtual
+/// machine without one.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-fn this_mac_reads_its_working_set_from_metal() {
+fn this_mac_is_read_as_metal_reports_it() {
     let machine = super::probe();
-    assert_eq!(machine.devices_from, DevicesFrom::Metal);
-    let device = &machine.devices[0];
-    assert_eq!(device.kind, DeviceKind::Unified);
-    assert!(device.memory_bytes > 0 && device.memory_bytes <= machine.memory_bytes);
     assert!(machine.chip.is_some());
+    match crate::metal::recommended_working_set() {
+        Some(bytes) => {
+            assert_eq!(machine.devices_from, DevicesFrom::Metal);
+            let device = &machine.devices[0];
+            assert_eq!(device.kind, DeviceKind::Unified);
+            assert_eq!(device.memory_bytes, bytes);
+        }
+        None => assert_ne!(machine.devices_from, DevicesFrom::Metal),
+    }
 }

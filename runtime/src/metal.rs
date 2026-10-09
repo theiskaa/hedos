@@ -73,11 +73,14 @@ unsafe fn message<T>(receiver: Id, selector: &CStr) -> T {
 mod tests {
     use super::*;
 
-    #[cfg(target_arch = "aarch64")]
+    /// A Mac with a GPU sharing its memory reports a working set within
+    /// that memory; a virtual machine without one reports none, and reading
+    /// it there is no failure.
     #[test]
-    fn apple_silicon_has_a_working_set_within_its_memory() {
-        let bytes = recommended_working_set().expect("an Apple Silicon Mac has a Metal device");
+    fn a_working_set_when_there_is_one_lies_within_memory() {
         let memory = crate::sys::u64_value(c"hw.memsize").unwrap();
-        assert!(bytes > 0 && bytes <= memory, "{bytes} of {memory}");
+        if let Some(bytes) = recommended_working_set() {
+            assert!(bytes > 0 && bytes <= memory, "{bytes} of {memory}");
+        }
     }
 }
