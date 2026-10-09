@@ -3,6 +3,7 @@
 use clap::Args;
 
 use crate::error::CliError;
+use crate::support::extract;
 use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::residency::{self, is_resident, residency_outcome, warm_request};
@@ -35,6 +36,17 @@ pub async fn run(args: WarmArgs, out: &Out) -> Result<(), CliError> {
     let warm = session.warm_set_anywhere(&shelf).await;
     let record =
         interactive::choose_model(out, args.model.as_deref(), &shelf, None, "warm", &warm)?;
+
+    // An extractor is read from disk and run for each request, in whichever
+    // process asks; there is no copy of it to keep loaded anywhere.
+    if extract::is_extractor(record) {
+        out.line(&format!(
+            "{} runs once per request; there is nothing to keep warm",
+            record.display_name()
+        ));
+        out.json(&serde_json::json!({ "model": record.id, "resident": false }));
+        return Ok(());
+    }
 
     // A model is warm where it is served. While a gateway is running that is the
     // gateway's own copy, and warming this process's would load the model here,

@@ -50,6 +50,7 @@ toml = "1"
 regex = "1"
 fs2 = "0.4"
 flate2 = "1"
+tar = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 [profile.release]

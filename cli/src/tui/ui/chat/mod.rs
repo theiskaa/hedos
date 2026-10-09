@@ -5,11 +5,14 @@
 //! figures: residency, how much of the context is used, how fast the last
 //! reply came. With nothing said yet, the transcript offers things to ask.
 //! A judge gets a composer for typed questions in the box's place, and its
-//! answers are drawn as distributions.
+//! answers are drawn as distributions. An extractor gets one for the text and
+//! what to do with it, and its answers are drawn as what was found.
 
 mod composer;
 mod draft;
 mod empty;
+mod extract_draft;
+mod extraction;
 mod judgment;
 mod session;
 mod transcript;
@@ -72,9 +75,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         width: area.width.saturating_sub(session_width),
         ..area
     };
-    let composer_height = match pane.draft.as_deref() {
-        Some(draft) => draft::height(draft),
-        None => composer::height(pane, left.width),
+    let composer_height = match (pane.draft.as_deref(), pane.extract.as_deref()) {
+        (Some(draft), _) => draft::height(draft),
+        (None, Some(draft)) => extract_draft::height(draft, left.width),
+        (None, None) => composer::height(pane, left.width),
     }
     .min(area.height);
     let transcript = Rect {
@@ -87,9 +91,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         ..left
     };
     draw_transcript(frame, transcript, pane, &look, warm, wide);
-    match pane.draft.as_deref() {
-        Some(draft) => draft::draw(frame, composer, pane, draft, &look),
-        None => composer::draw(frame, composer, pane, &look),
+    match (pane.draft.as_deref(), pane.extract.as_deref()) {
+        (Some(draft), _) => draft::draw(frame, composer, pane, draft, &look),
+        (None, Some(draft)) => extract_draft::draw(frame, composer, pane, draft, &look),
+        (None, None) => composer::draw(frame, composer, pane, &look),
     }
     if wide {
         let session = Rect {
@@ -143,7 +148,16 @@ fn draw_transcript(
         )],
         View::Follow if turns == 0 => vec![Span::styled("new", DIM)],
         View::Follow => vec![Span::styled(
-            text::count(turns, if pane.judging() { "ask" } else { "turn" }),
+            text::count(
+                turns,
+                if pane.judging() {
+                    "ask"
+                } else if pane.extracting() {
+                    "read"
+                } else {
+                    "turn"
+                },
+            ),
             DIM,
         )],
     };
@@ -153,7 +167,16 @@ fn draw_transcript(
         right.push(Span::styled(if warm { " · warm" } else { " · cold" }, DIM));
     }
     Card::new(vec![
-        Span::styled(if pane.judging() { "judge " } else { "try " }, SOFT),
+        Span::styled(
+            if pane.judging() {
+                "judge "
+            } else if pane.extracting() {
+                "extract "
+            } else {
+                "try "
+            },
+            SOFT,
+        ),
         Span::styled(
             crate::support::text::printable(pane.record.display_name()).into_owned(),
             BOLD,

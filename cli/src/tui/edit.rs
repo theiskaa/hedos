@@ -139,14 +139,23 @@ impl LineEdit {
     }
 
     /// The text broken into lines of at most `width` cells, grapheme by
-    /// grapheme, with the cursor's row and column; a cursor at the end of a
-    /// full line sits at the start of the next.
+    /// grapheme, and at every line break it holds, with the cursor's row and
+    /// column; a cursor at the end of a full line sits at the start of the
+    /// next.
     pub fn wrapped(&self, width: usize) -> (Vec<String>, (usize, usize)) {
         let width = width.max(1);
         let mut lines = vec![String::new()];
         let mut used = 0;
         let mut cursor = None;
         for (offset, grapheme) in self.text.grapheme_indices(true) {
+            if grapheme == "\n" || grapheme == "\r\n" {
+                if offset == self.cursor {
+                    cursor = Some((lines.len() - 1, used));
+                }
+                lines.push(String::new());
+                used = 0;
+                continue;
+            }
             let cells = grapheme.width().max(1);
             if used + cells > width {
                 lines.push(String::new());
@@ -337,5 +346,16 @@ mod tests {
             LineEdit::default().wrapped(5),
             (vec![String::new()], (0, 0))
         );
+    }
+
+    #[test]
+    fn a_line_break_starts_a_new_wrapped_line() {
+        let mut edit = LineEdit::default();
+        for c in "ab\ncd".chars() {
+            edit.apply(Key::Char(c));
+        }
+        let (lines, cursor) = edit.wrapped(10);
+        assert_eq!(lines, ["ab", "cd"]);
+        assert_eq!(cursor, (1, 2));
     }
 }

@@ -155,7 +155,7 @@ The size column and the size sort follow what serving the model loads, as the FI
 | `y` | Copy its weights path. | |
 | `Y` | Copy its id. | |
 
-The footer offers a model's keys only when they apply: `w` when it can be warmed, `u` when it can be unloaded from here, `l`, `t` and `T` when it chats (`t` alone for a judge), `x` when it can be removed, and `y` when it has a weights path. A key pressed anyway says why not in the footer, unless the model is busy with a task the strip already shows.
+The footer offers a model's keys only when they apply: `w` when it can be warmed, `u` when it can be unloaded from here, `l`, `t` and `T` when it chats (`t` alone for a judge or an extractor), `x` when it can be removed, and `y` when it has a weights path. A key pressed anyway says why not in the footer, unless the model is busy with a task the strip already shows.
 
 ### The shelf as a whole
 
@@ -202,6 +202,8 @@ Every text field (the try screen's box, the judge's fields, the pull search, the
 | Delete | Delete forward. |
 
 Cmd+Delete is a macOS binding the terminal keeps to itself. In iTerm, map it to send Ctrl-U (hex `0x15`) if you want it here.
+
+A paste arrives whole. In a one-line field its line breaks read as spaces, so a pasted text never sends or moves on by itself; an extractor's text keeps them. On the shelf itself, where letters are commands, a paste is ignored rather than run as keys.
 
 ## Acting on a model
 
@@ -357,6 +359,21 @@ On screen, the rest of each bar's track is drawn as a dim line, and the bars wid
 - When the model says how sure it is, `confidence` follows.
 
 The session card shows the chosen outcome's share in big figures (`%`), its label, and how long it took (`judged in 0.4s`), with `each ask stands alone` under SESSION. Each ask empties the fields, keeping the kind, and stands alone: nothing from an earlier ask goes with the next one.
+
+## Extractors on the try screen
+
+An extractor such as [Tessera](models.md#extractors) finds contacts in text. `t` on one opens the same screen, titled `extract <model>`, with a composer for the text in the box's place.
+
+| Field | What goes in it |
+| --- | --- |
+| operation | `detect` (every entity found), `contacts` (grouped by who they belong to), or `address` (one address split into its parts). |
+| text | The text to read. A pasted text keeps its line breaks and tabs, and the field grows to four rows to show it. |
+
+`tab` moves between the two fields, `←` / `→` or space change the operation, and `enter` on the text reads it. Each read empties the text, keeping the operation, and stands alone.
+
+The answer lists what was found, one row per entity: its kind, its text, a bar and a figure for how sure the extractor is, and under it the canonical form of a phone or email when that differs from the text. Contacts are headed by the person or organization they belong to, then come the entities in no contact; an address is its parts, one per row. A figure the extractor suggests a person check, or one under 0.5, is drawn in the warning colour.
+
+The session card shows how many things the last read found in big figures, what they were (`1 contact · 5 entities`), and how long it took (`read in 40ms`). An extractor holds nothing in memory between reads, so the card says it `runs once per request` where a model's residency would be, and `w` does not warm it.
 
 ## The pull screen
 

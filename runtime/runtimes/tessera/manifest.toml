@@ -1,0 +1,47 @@
+# Tessera finds contacts in text: people, organizations, emails, phones and
+# addresses, grouped into who they belong to, with an address split into its
+# parts. It is a small CPU model with its own runtime, so it runs as its own
+# command once per request; nothing stays resident between requests.
+#
+# The command is Tessera's release binary, pinned per platform below by its
+# archive's sha256. Approving the runtime downloads this machine's archive,
+# checks it against the pin and keeps the binary in hedos's data directory,
+# where it runs as `{bin}`. The pin is part of this folder, so the approval
+# covers exactly the binary that runs.
+#
+# The request goes in on stdin rather than in argv, so a document never shows
+# in a process listing. `tessera json` answers with one JSON line, and exits 2
+# when the request itself is wrong, which the gateway returns as a 400.
+#
+# Detected by the bundle's own manifest, which names Tessera as its runtime.
+id           = "cli:tessera"
+modalities   = ["text"]
+capabilities = ["extract"]
+execution    = "sync"
+detect       = { file = "bundle.json", contains = "\"runtime\": \"tessera\"" }
+
+[invoke]
+command = "{bin} json --bundle {model}"
+stdin   = "{payload}"
+
+[install]
+version = "0.3.0"
+
+[install.targets.aarch64-apple-darwin]
+url    = "https://github.com/theiskaa/tessera/releases/download/v0.3.0/tessera-v0.3.0-aarch64-apple-darwin.tar.gz"
+sha256 = "3a66ac2200b5e4c1949c61f6555f3778c9b2c4b153c696ad8c27fc422f18f86d"
+binary = "tessera-v0.3.0-aarch64-apple-darwin/tessera"
+
+[install.targets.x86_64-apple-darwin]
+url    = "https://github.com/theiskaa/tessera/releases/download/v0.3.0/tessera-v0.3.0-x86_64-apple-darwin.tar.gz"
+sha256 = "a3096b773ea2afb0aa70dbff95398d9a3e6cb02cf0fc32ffb0bcdec7929713e9"
+binary = "tessera-v0.3.0-x86_64-apple-darwin/tessera"
+
+[install.targets.x86_64-unknown-linux-gnu]
+url    = "https://github.com/theiskaa/tessera/releases/download/v0.3.0/tessera-v0.3.0-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "760208cc1c8a7f10d65c65a0fea9d3ac32d960576767907a783b86cb9e69c514"
+binary = "tessera-v0.3.0-x86_64-unknown-linux-gnu/tessera"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]

@@ -9,10 +9,15 @@
 
 mod community;
 mod consent;
+mod install;
+
+/// The data directory's folder for the commands manifests install.
+pub const COMMANDS_DIR: &str = "commands";
 mod store;
 
 pub use community::{CommunityLibrary, ManifestInstaller, Recipe, RuntimeInstallPreview};
 pub use consent::{HostConsent, host_consent, servable_models};
+pub use install::{InstallError, host_build, host_target, install, installed, unpack};
 pub use store::{RuntimeCatalog, StoreLoad, UserRuntimeStore};
 
 use std::collections::BTreeMap;
@@ -212,9 +217,9 @@ pub fn expand_placeholders(token: &str, replacements: &BTreeMap<String, String>)
 }
 
 /// Substitute a manifest command into its argument vector, expanding the model,
-/// prompt, workdir, outputs, and (when an environment is prepared) python
-/// placeholders. Errors if the command uses `{python}` without an environment or
-/// resolves to no tokens.
+/// prompt, workdir, outputs, (when an environment is prepared) python, and
+/// (when the manifest installs its command) bin placeholders. Errors if the
+/// command uses `{python}` without an environment or resolves to no tokens.
 pub fn substituted(
     command: &str,
     record: &ModelRecord,
@@ -222,6 +227,7 @@ pub fn substituted(
     workdir: &Path,
     outputs: &Path,
     env_dir: Option<&Path>,
+    bin: Option<&Path>,
 ) -> Result<Vec<String>, ManifestError> {
     if command.contains("{python}") && env_dir.is_none() {
         return Err(ManifestError::Failed(
@@ -245,6 +251,9 @@ pub fn substituted(
             "{python}".to_owned(),
             env_dir.join("bin/python").to_string_lossy().into_owned(),
         );
+    }
+    if let Some(bin) = bin {
+        replacements.insert("{bin}".to_owned(), bin.to_string_lossy().into_owned());
     }
     // Splitting on spaces drops empty subsequences (runs of spaces).
     let tokens: Vec<String> = command

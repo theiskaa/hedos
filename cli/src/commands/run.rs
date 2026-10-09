@@ -1,5 +1,6 @@
 //! `hedos run <model> <prompt>` — stream a single completion to stdout.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use base64::Engine;
@@ -12,6 +13,7 @@ use kernel::records::{Capability, JsonValue, ModelRecord};
 use serde_json::json;
 
 use crate::error::CliError;
+use crate::support::extract::{self, Operation};
 use crate::support::interactive;
 use crate::support::judge;
 use crate::support::output::Out;
@@ -39,6 +41,21 @@ pub struct RunArgs {
     /// Attach a local image for a vision (`see`) model to read. Repeatable.
     #[arg(long = "image", value_name = "PATH")]
     images: Vec<PathBuf>,
+    /// For an extractor: read the text from this file.
+    #[arg(short = 'f', long = "file", value_name = "PATH")]
+    file: Option<PathBuf>,
+    /// For an extractor: group what it finds into contacts.
+    #[arg(long, conflicts_with = "address")]
+    contacts: bool,
+    /// For an extractor: read the text as one address and split it into parts.
+    #[arg(long)]
+    address: bool,
+    /// For an extractor: only these kinds (person, org, address, email, phone).
+    #[arg(long, value_delimiter = ',', value_name = "KINDS")]
+    kinds: Vec<String>,
+    /// For an extractor: region hints such as US, in place of its own.
+    #[arg(long = "country", value_delimiter = ',', value_name = "REGIONS")]
+    countries: Vec<String>,
 }
 
 /// Run the `run` command.
@@ -48,7 +65,7 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
     let warm = session.warm_set_anywhere(&shelf).await;
 
     // A named model resolves against every model `run` can serve, one that
-    // chats or one that judges, then an image run checks `see` explicitly, so a
+    // chats, judges or extracts, then an image run checks `see` explicitly, so a
     // named non-vision model gets a precise reason instead of being silently
     // swapped for a look-alike that can see. With no model named, an image run
     // offers only vision models in the picker.
@@ -59,7 +76,7 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
             if args.model.is_none() && !args.images.is_empty() {
                 has(Capability::see())
             } else {
-                has(Capability::chat()) || has(Capability::judge())
+                has(Capability::chat()) || has(Capability::judge()) || has(Capability::extract())
             }
         })
         .cloned()
@@ -69,13 +86,13 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
         && !runnable.iter().any(|record| record.id == found.id)
     {
         return Err(CliError::new(format!(
-            "{} neither chats nor answers typed questions; `hedos ls` shows what it does",
+            "{} neither chats, answers typed questions nor extracts contacts; `hedos ls` shows what it does",
             found.display_name()
         )));
     }
     if args.model.is_none() && runnable.is_empty() {
         let wanted = if args.images.is_empty() {
-            "chats or answers typed questions"
+            "chats, answers typed questions or extracts contacts"
         } else {
             "reads images"
         };
@@ -94,6 +111,10 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
 
     // Read before anything is composed, so a bad path loses nothing typed.
     let attachments = read_images(&args.images)?;
+
+    if extract::is_extractor(record) {
+        return run_extract(&session, record, args, out).await;
+    }
 
     // A judge takes a typed question, so it is composed rather than typed as a
     // prompt: offering a prompt box would be offering the one thing it refuses.
@@ -182,7 +203,8 @@ async fn run_judge(
         vec![payload::user_message_with_images(&text, Vec::new())],
         None,
     ));
-    let (judgment, cancelled) = collect_judgment(session, record, payload, out).await?;
+    let (judgment, cancelled) =
+        collect_reply(session, record, Capability::judge(), payload, out).await?;
     if cancelled {
         // Ctrl-C at a judge leaves nothing half-said to keep: it answers whole
         // or not at all. Stopping is what was asked for, not a failure.
@@ -200,17 +222,94 @@ async fn run_judge(
     judge::render(out, &judgment, &questions)
 }
 
-/// Drain a judgment, which arrives whole rather than token by token, with a
-/// spinner standing in for the wait. The flag says whether Ctrl-C ended it.
-async fn collect_judgment(
+/// Find what `record` extracts from the text, given as the argument, read from
+/// `--file`, piped in, or typed, and lay it out.
+async fn run_extract(
     session: &Session,
     record: &ModelRecord,
+    args: RunArgs,
+    out: &Out,
+) -> Result<(), CliError> {
+    let ignored: Vec<&str> = [
+        ("--system", args.system.is_some()),
+        ("--max-tokens", args.max_tokens.is_some()),
+        ("--temperature", args.temperature.is_some()),
+        ("--image", !args.images.is_empty()),
+    ]
+    .into_iter()
+    .filter_map(|(flag, given)| given.then_some(flag))
+    .collect();
+    if !ignored.is_empty() {
+        out.err(&format!(
+            "{} finds contacts in text, so {} {} no effect on it",
+            record.display_name(),
+            ignored.join(" and "),
+            if ignored.len() == 1 { "has" } else { "have" },
+        ));
+    }
+    let text = extract_text(args.prompt, args.file.as_deref(), out)?;
+    let operation = if args.address {
+        Operation::Address
+    } else if args.contacts {
+        Operation::Contacts
+    } else {
+        Operation::Detect
+    };
+    let payload = extract::request(operation, &text, &args.kinds, &args.countries);
+    let (reply, cancelled) =
+        collect_reply(session, record, Capability::extract(), payload, out).await?;
+    if cancelled {
+        return Ok(());
+    }
+    if out.is_json() {
+        let value: serde_json::Value = serde_json::from_str(&reply).map_err(|_| {
+            CliError::new(format!("{}'s reply was not JSON", record.display_name()))
+        })?;
+        out.json(&value);
+        return Ok(());
+    }
+    let parsed = extract::parse(&reply).map_err(CliError::new)?;
+    extract::render(out, &parsed, operation);
+    Ok(())
+}
+
+/// The text to extract from: the argument, else the file, else what is piped
+/// in, else typed at a prompt. Never taken from anywhere it would show in `ps`
+/// beyond the argument the caller chose to give.
+fn extract_text(
+    argument: Option<String>,
+    file: Option<&Path>,
+    out: &Out,
+) -> Result<String, CliError> {
+    if let Some(text) = argument {
+        return Ok(text);
+    }
+    if let Some(path) = file {
+        return std::fs::read_to_string(path)
+            .map_err(|error| CliError::new(format!("cannot read {}: {error}", path.display())));
+    }
+    if !std::io::stdin().is_terminal() {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .map_err(|error| CliError::new(format!("cannot read stdin: {error}")))?;
+        return Ok(text);
+    }
+    interactive::text_or_prompt(out, None, "text")
+}
+
+/// Drain a reply that arrives whole rather than token by token (a judgment, an
+/// extraction), with a spinner standing in for the wait. The flag says whether
+/// Ctrl-C ended it.
+async fn collect_reply(
+    session: &Session,
+    record: &ModelRecord,
+    capability: Capability,
     payload: JsonValue,
     out: &Out,
 ) -> Result<(String, bool), CliError> {
     let mut stream = session
         .kernel
-        .invoke_with(&record.id, Capability::judge(), payload, None, None)
+        .invoke_with(&record.id, capability, payload, None, None)
         .await?;
     let mut text = String::new();
     let mut cancelled = false;

@@ -251,3 +251,109 @@ fn a_corrupt_provenance_reads_none_and_is_left_in_place() {
         "reading a corrupt provenance must not quarantine it"
     );
 }
+
+const SHA: &str = "3a66ac2200b5e4c1949c61f6555f3778c9b2c4b153c696ad8c27fc422f18f86d";
+
+/// An extract command that reads its request on stdin, with `invoke` and
+/// `install` as its tail.
+fn reading(invoke: &str, install: &str) -> String {
+    format!(
+        "id = \"cli:tool\"\ncapabilities = [\"extract\"]\nexecution = \"sync\"\ndetect = {{ file = \"bundle.json\" }}\n[invoke]\n{invoke}\n{install}"
+    )
+}
+
+/// An `[install]` with one build for `target` at `url`, `sha256` and `binary`.
+fn install(target: &str, url: &str, sha256: &str, binary: &str) -> String {
+    format!(
+        "[install]\nversion = \"1.0.0\"\n[install.targets.{target}]\nurl = \"{url}\"\nsha256 = \"{sha256}\"\nbinary = \"{binary}\"\n"
+    )
+}
+
+#[test]
+fn a_command_reads_its_payload_on_stdin_and_nothing_else() {
+    let manifest = parse(&reading(
+        "command = \"tool json\"\nstdin = \"{payload}\"",
+        "",
+    ))
+    .expect("stdin payload");
+    assert_eq!(
+        manifest.invoke.and_then(|invoke| invoke.stdin),
+        Some(kernel::manifests::InvokeStdin::Payload)
+    );
+    let err = parse(&reading(
+        "command = \"tool json\"\nstdin = \"{prompt}\"",
+        "",
+    ))
+    .expect_err("another stdin is refused");
+    assert!(err.to_string().contains("stdin"), "{err}");
+}
+
+#[test]
+fn an_installed_command_pins_its_build_and_runs_it_as_bin() {
+    let url = "https://example.com/tool-aarch64-apple-darwin.tar.gz";
+    let manifest = parse(&reading(
+        "command = \"{bin} json --bundle {model}\"\nstdin = \"{payload}\"",
+        &install("aarch64-apple-darwin", url, SHA, "tool/tool"),
+    ))
+    .expect("a pinned build");
+    let install = manifest.install.expect("install");
+    assert_eq!(install.version, "1.0.0");
+    let build = &install.targets["aarch64-apple-darwin"];
+    assert_eq!(
+        (build.url.as_str(), build.binary.as_str()),
+        (url, "tool/tool")
+    );
+}
+
+#[test]
+fn an_install_that_could_run_something_else_is_refused() {
+    let url = "https://example.com/tool.tar.gz";
+    let bin = "command = \"{bin} json\"";
+    let cases = [
+        (
+            "plain http",
+            reading(
+                bin,
+                &install("x", "http://example.com/tool.tar.gz", SHA, "tool"),
+            ),
+        ),
+        (
+            "short sha256",
+            reading(bin, &install("x", url, "abc123", "tool")),
+        ),
+        (
+            "uppercase sha256",
+            reading(bin, &install("x", url, &SHA.to_uppercase(), "tool")),
+        ),
+        (
+            "binary outside the archive",
+            reading(bin, &install("x", url, SHA, "../tool")),
+        ),
+        (
+            "absolute binary",
+            reading(bin, &install("x", url, SHA, "/bin/sh")),
+        ),
+        (
+            "no targets",
+            reading(bin, "[install]\nversion = \"1.0.0\"\n"),
+        ),
+        (
+            "install not run",
+            reading("command = \"tool json\"", &install("x", url, SHA, "tool")),
+        ),
+        ("bin without install", reading(bin, "")),
+    ];
+    for (name, text) in cases {
+        assert!(parse(&text).is_err(), "expected rejection: {name}");
+    }
+}
+
+#[test]
+fn a_vm_runtime_cannot_also_install_a_command() {
+    let text = format!(
+        "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"sync\"\n[invoke]\ncommand = \"{{bin}}\"\n[vm]\nimage = \"ghcr.io/acme/tool@sha256:abc123\"\n{}",
+        install("x", "https://example.com/t.tar.gz", SHA, "t")
+    );
+    let err = parse(&text).expect_err("rejected");
+    assert!(err.to_string().contains("[vm] and [install]"), "{err}");
+}

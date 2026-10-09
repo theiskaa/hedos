@@ -63,9 +63,9 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 | whisper.cpp (`whisper-cpp`) | Transcription, from GGUF or GGML `.bin` weights | `uv` |
 | ComfyUI (`comfyui`), AUTOMATIC1111 (`a1111`) | Image models the running daemon serves | The daemon running |
 | Apple Intelligence (`apple-foundation`) | Apple's on-device model, with tool calls | A Mac where the model is enabled and ready, plus the bridge library (below) |
-| Manifest runtimes (`python:laya`, `python:zerank`, or your own) | Whatever the manifest declares | Approval with `hedos runtimes approve <id>`, and `uv` |
+| Manifest runtimes (`python:laya`, `python:zerank`, `cli:tessera`, or your own) | Whatever the manifest declares | Approval with `hedos runtimes approve <id>`, and `uv` for a Python one |
 
-The Python sidecars provision their own environment through `uv` on first use; their runtime code ships inside the binary. A manifest runtime runs code on the host, so it neither bids on a model nor serves one until you approve it, and the approval is bound to a hash of its files: editing any of them asks for it again. hedos ships `python:laya` and `python:zerank` this way, and reads your own from `runtimes.d` in the data directory. `hedos runtimes` lists them and where each approval stands.
+The Python sidecars provision their own environment through `uv` on first use; their runtime code ships inside the binary. A manifest runtime runs code on the host, so it neither bids on a model nor serves one until you approve it, and the approval is bound to a hash of its files: editing any of them asks for it again. hedos ships `python:laya`, `python:zerank` and `cli:tessera` this way, and reads your own from `runtimes.d` in the data directory. `hedos runtimes` lists them and where each approval stands.
 
 ### GGUF models on llama.cpp
 
@@ -107,6 +107,7 @@ Each model declares what it can be asked to do. `hedos ls` shows them, and `hedo
 | `see` | Reads images | Image parts in chat; `hedos run --image` |
 | `embed` | Turns text into vectors | `/v1/embeddings`, `/api/embed`, `/api/embeddings` |
 | `judge` | Answers typed questions | `/v1/systemone`; `hedos run` |
+| `extract` | Finds contacts in text | `/v1/extract`; `hedos run` |
 | `image` | Generates images | `/v1/images/generations`; `hedos image` |
 | `speak` | Synthesizes speech | `/v1/audio/speech`; `hedos speak` |
 | `transcribe` | Turns speech into text | `/v1/audio/transcriptions`; `hedos transcribe` |
@@ -177,7 +178,7 @@ The preview is honest about what remains. If duplicate copies of the same weight
 
 ## Warm and unload
 
-`hedos warm <model>` loads a model with a tiny request, so the next real request starts warm, and reports whether it is resident afterwards. A model is warm where it is served: when a gateway is running on the configured port (or the one `--port` names), the model is loaded there rather than in the command's own process, which would exit and take the loaded model with it. The probe fits the model, so a judge is asked the smallest well-formed typed question rather than greeted.
+`hedos warm <model>` loads a model with a tiny request, so the next real request starts warm, and reports whether it is resident afterwards. A model is warm where it is served: when a gateway is running on the configured port (or the one `--port` names), the model is loaded there rather than in the command's own process, which would exit and take the loaded model with it. The probe fits the model, so a judge is asked the smallest well-formed typed question rather than greeted. An extractor reads its model from disk for each request and holds nothing between them, so `hedos warm` says there is nothing to keep warm.
 
 `hedos unload <model>` evicts a model from residency and reports the result, asking the Ollama daemon to unload it too when the daemon holds it. Omit the model to pick from the ones currently warm. An idle model is also unloaded on its own once `keep_warm` runs out.
 
@@ -189,3 +190,28 @@ A judge is a model that answers typed questions about a state rather than chatti
 - **Manifest runtimes**: `python:laya`, an encoder with a decision head that answers in one forward pass, detected by its `rl_agent_config.json`; and `python:zerank`, a reranker that scores each option as a document against the question, detected by its chat template. Their probabilities differ in kind: zerank's are relevance, not laya's calibrated belief. Both run only once approved (`hedos runtimes approve python:laya`).
 
 Ask a judge with `hedos run <judge>`, passing the question as JSON (`{"state": ..., "questions": {...}}`) or composing it in a terminal; on the shelf's [try screen](shelf.md#judges-on-the-try-screen); or over the gateway's `/v1/systemone`, which is what a TypeSafe SDK calls. [gateway.md](gateway.md#judges) has the request and answer format.
+
+## Extractors
+
+An extractor finds people, organizations, addresses, emails and phone numbers in text, groups them into contacts, and splits an address into its parts, with offsets into the source. [Tessera](https://github.com/theiskaa/tessera) is one: a 3.5 MB model with its own small runtime, which hedos runs as a command once per request through the shipped `cli:tessera` manifest.
+
+```sh
+hedos pull theiskaa/tessera
+hedos runtimes approve cli:tessera
+hedos run tessera "Jordan Lee, 123 Main St, Bismarck, ND 58501, (701) 555-0142, jordan@acme.example"
+```
+
+There is nothing to install by hand. The manifest pins Tessera's release archive for each platform (Apple silicon and Intel Macs, x86-64 Linux) by its sha256, and approving it downloads this machine's archive, checks it against the pin, and keeps the binary in the data directory under `commands/`. The pin is part of the manifest, so the approval covers exactly the binary that runs, and a hedos that pins a newer release asks for it again. The text goes to Tessera on its standard input, never on its command line.
+
+Extractors declare the `extract` capability (`hedos ls --capability extract`). Each request names an operation:
+
+| Operation | Answers |
+| --- | --- |
+| `detect` | Every entity found, each with its kind, text, offsets, confidence, and a canonical form for phones (E.164) and emails |
+| `contacts` | The entities grouped by the person or organization they belong to, then the ones that belong to none |
+| `address` | The text read as one address, split into its parts (house number, road, city, region, postcode, …) |
+
+Use one with `hedos run` (see [cli.md](cli.md#extractors)), on the shelf's [try screen](shelf.md#extractors-on-the-try-screen), or over the gateway's `/v1/extract` ([gateway.md](gateway.md#extractors)), which answers exactly what Tessera's own `tessera json` would.
+
+Tessera's model is experimental and was trained on United States documents: it finds US phone numbers and addresses best, and a request that names no region is read as one from the US, the hint its detector expects. Its confidences say how sure it is, and a result it suggests a person look at is marked.
+

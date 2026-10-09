@@ -89,6 +89,7 @@ string_id! {
         transcribe => "transcribe",
         tools => "tools",
         judge => "judge",
+        extract => "extract",
     }
 }
 

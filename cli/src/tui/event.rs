@@ -54,6 +54,8 @@ pub enum Event {
     Bench { generation: u64, step: BenchEvent },
     /// A bench's driver returned, however it went.
     BenchEnded(u64),
+    /// Text pasted into the terminal, whole, line breaks and all.
+    Paste(String),
     /// The terminal stopped delivering keys; nothing can drive the UI now.
     InputClosed,
 }
@@ -216,6 +218,7 @@ impl Input {
                         _ => None,
                     },
                     Ok(event::Event::Resize(_, _)) => Some(Event::Resize),
+                    Ok(event::Event::Paste(text)) => Some(Event::Paste(text)),
                     Ok(_) => None,
                     Err(_) => {
                         let _ = tx.send(Event::InputClosed);

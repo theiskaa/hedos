@@ -19,10 +19,12 @@ use crate::responder::GatewayResponder;
 
 pub mod chat;
 pub mod embeddings;
+pub mod extract;
 pub mod generate;
 pub mod images;
 pub mod messages;
 pub mod models;
+mod named;
 pub mod speech;
 pub mod stream;
 pub mod systemone;

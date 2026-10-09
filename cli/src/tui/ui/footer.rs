@@ -45,7 +45,7 @@ struct Candidate {
 pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let line = match (app.notice(), app.chat_pane()) {
         (Some(notice), _) => notice_line(notice, app.notice_at().unwrap_or(0), &app.motion),
-        (None, Some(pane)) if pane.judging() => judge_line(pane.streaming()),
+        (None, Some(pane)) if pane.judging() || pane.extracting() => judge_line(pane.streaming()),
         (None, Some(pane)) => chat_line(pane.streaming()),
         (None, None) if app.pull_screen().is_some() => pull_line(
             app.pull_screen()

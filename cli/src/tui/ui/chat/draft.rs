@@ -138,7 +138,7 @@ fn kinds(draft: &Draft, focused: bool) -> Vec<Span<'static>> {
 /// What was typed into `input`, cut to `room` around its cursor, or the
 /// placeholder; `cursor` is whether the blinking cursor shows, `None` on a
 /// field without the keys.
-fn typed_or(
+pub(super) fn typed_or(
     input: &LineEdit,
     room: usize,
     cursor: Option<bool>,
@@ -200,7 +200,7 @@ fn options(draft: &Draft, room: usize, cursor: Option<bool>) -> Vec<Span<'static
 }
 
 /// The end of `text` that fits `width` cells, an ellipsis where it was cut.
-fn clip_left(text: &str, width: usize) -> String {
+pub(super) fn clip_left(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_owned();
     }

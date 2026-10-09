@@ -279,6 +279,7 @@ fn manifest_adapters(
     dirs: &HedosDirs,
 ) -> Vec<RegisteredAdapter> {
     let workdirs = dirs.sub("workdirs");
+    let commands = dirs.sub(crate::manifests::COMMANDS_DIR);
     let environments = EnvironmentManager::new(dirs.sub("env").join("manifests"));
     let mut adapters = Vec::new();
     for manifest in &runtimes.manifests {
@@ -307,6 +308,7 @@ fn manifest_adapters(
                 governor.clone(),
                 environments.clone(),
                 workdirs.clone(),
+                commands.clone(),
             ));
             adapters.push(RegisteredAdapter::with_jobs(adapter.clone(), adapter));
         }

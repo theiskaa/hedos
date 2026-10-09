@@ -14,6 +14,7 @@ use crate::error::{GatewayError, GatewayErrorKind};
 use crate::handlers::GatewayHandling;
 use crate::handlers::chat::{OllamaChatHandler, OpenAIChatHandler};
 use crate::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
+use crate::handlers::extract::ExtractHandler;
 use crate::handlers::generate::{OllamaGenerateHandler, OpenAICompletionsHandler};
 use crate::handlers::images::OpenAIImagesHandler;
 use crate::handlers::messages::AnthropicMessagesHandler;
@@ -110,6 +111,9 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             .inference()
             .described("TypeSafe", "Answer typed questions about a state")
             .max_body(32 * 1024 * 1024),
+        GatewayRoute::new("POST", "/v1/extract", Box::new(ExtractHandler))
+            .inference()
+            .described("hedos", "Extract contacts from text"),
         GatewayRoute::new("POST", "/api/chat", Box::new(OllamaChatHandler::default()))
             .inference()
             .described("Ollama", "Chat over the Ollama NDJSON protocol"),
