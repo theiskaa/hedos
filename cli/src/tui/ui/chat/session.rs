@@ -40,6 +40,10 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, pane: &ChatPane, look: &Look, 
         draw_judge(frame, inner, pane, &held);
         return;
     }
+    if pane.extracting() {
+        draw_extractor(frame, inner, pane, &held);
+        return;
+    }
     let width = inner.width as usize;
     let mut lines = heading(pane, &held, width);
     lines.push(section("CONTEXT", width));
@@ -297,6 +301,94 @@ fn draw_judge(frame: &mut Frame, inner: Rect, pane: &ChatPane, held: &Residency)
     }
 }
 
+/// The card for an extractor: how much its last read found in big figures,
+/// what that was, and how many reads there have been. An extractor holds
+/// nothing between reads, so there is no residency, speed or context to
+/// show.
+fn draw_extractor(frame: &mut Frame, inner: Rect, pane: &ChatPane, held: &Residency) {
+    let width = inner.width as usize;
+    let mut lines = heading(pane, held, width);
+    lines.push(section("LAST READ", width));
+    let last = pane
+        .turns
+        .iter()
+        .rev()
+        .find(|turn| turn.speaker == Speaker::Model);
+    let figure_row = lines.len();
+    let headline = last.and_then(|turn| {
+        let operation = turn.extracted?;
+        matches!(turn.ending, Ending::Done(_))
+            .then(|| super::extraction::headline(&turn.text, operation))
+            .flatten()
+    });
+    match (last, &headline) {
+        (None, _) => lines.push(Line::from(Span::styled("nothing read yet", DIM))),
+        (Some(turn), _) if turn.ending == Ending::Open => {
+            lines.push(Line::from(Span::styled("reading", DIM)));
+        }
+        (Some(turn), Some((_, label))) => {
+            lines.extend([Line::default(), Line::default(), Line::default()]);
+            lines.push(Line::from(Span::styled(text::clip(label, width), BOLD)));
+            if let Some(ended) = turn.ended_ms {
+                let ms = ended.saturating_sub(turn.at_ms);
+                lines.push(Line::from(Span::styled(
+                    if ms < 1000 {
+                        format!("read in {ms}ms")
+                    } else {
+                        format!("read in {:.1}s", ms as f64 / 1000.0)
+                    },
+                    DIM,
+                )));
+            }
+        }
+        (Some(turn), None) => lines.push(Line::from(Span::styled(
+            match &turn.ending {
+                Ending::Stopped => "stopped",
+                Ending::Failed(_) => "failed",
+                _ => "nothing came back",
+            },
+            DIM,
+        ))),
+    }
+    lines.push(Line::default());
+    lines.push(section("SESSION", width));
+    let reads = pane
+        .turns
+        .iter()
+        .filter(|turn| turn.speaker == Speaker::User)
+        .count();
+    let session = match (reads, pane.since_wall_ms().and_then(clock_time)) {
+        (0, _) => "nothing read".to_owned(),
+        (reads, Some(since)) => format!("{} · since {since}", text::count(reads, "read")),
+        (reads, None) => text::count(reads, "read"),
+    };
+    lines.push(Line::from(Span::styled(text::clip(&session, width), SOFT)));
+    lines.push(Line::from(Span::styled("each read stands alone", DIM)));
+    let room = inner.height as usize;
+    if lines.len() < room {
+        lines.resize(room - 1, Line::default());
+        lines.push(Line::from(vec![
+            Span::styled("⌃l", BOLD),
+            Span::styled(" clear  ", DIM),
+            Span::styled("esc", BOLD),
+            Span::styled(if pane.streaming() { " stop" } else { " shelf" }, DIM),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+    if let Some((found, _)) = headline
+        && figure_row + 3 <= inner.height as usize
+    {
+        let columns = pixel::columns(&found.to_string(), DIGITS, 1);
+        pixel::draw(
+            frame.buffer_mut(),
+            inner.x,
+            inner.y + figure_row as u16,
+            &columns,
+            |_| Some(INK_COLOR),
+        );
+    }
+}
+
 /// The card's head: the model, its runtime and size, and whether it is
 /// held.
 fn heading(pane: &ChatPane, held: &Residency, width: usize) -> Vec<Line<'static>> {
@@ -324,7 +416,11 @@ fn heading(pane: &ChatPane, held: &Residency, width: usize) -> Vec<Line<'static>
             ),
             SOFT,
         )),
-        residency(held, width),
+        if pane.extracting() {
+            Line::from(Span::styled("runs once per request", DIM))
+        } else {
+            residency(held, width)
+        },
         Line::default(),
     ]
 }

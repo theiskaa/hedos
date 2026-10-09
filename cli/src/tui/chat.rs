@@ -4,6 +4,10 @@
 //! A judge takes no prose, so its pane holds a draft instead of a prompt: a
 //! situation, a question, its kind, and the options or levels it may be
 //! answered with. Each ask stands alone, and its answer is a distribution.
+//!
+//! An extractor takes a text and what to do with it: find every entity, group
+//! them into contacts, or split one address. Each read stands alone too, and
+//! its answer is what was found.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,6 +16,7 @@ use kernel::records::{JsonValue, ModelRecord};
 
 use super::edit::LineEdit;
 use super::event::Key;
+use crate::support::extract::{self, Operation};
 use crate::support::judge::{self, Kind, Question};
 use crate::support::payload::{self, message};
 
@@ -61,6 +66,9 @@ pub struct Turn {
     /// What a judge was asked, on both the ask and its answer, so the
     /// answer can be read against the question that produced it.
     pub asked: Option<Box<Asked>>,
+    /// What an extractor was asked to do with the text, on both the text and
+    /// its answer.
+    pub extracted: Option<Operation>,
 }
 
 /// What one ask of a judge carried.
@@ -84,6 +92,7 @@ impl Turn {
             ended_ms: None,
             cold: false,
             asked: None,
+            extracted: None,
         }
     }
 
@@ -336,6 +345,68 @@ impl Draft {
     }
 }
 
+/// The fields of the extractor's composer, in the order `tab` moves through
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractField {
+    /// What to do with the text.
+    Operation,
+    /// The text to read.
+    Text,
+}
+
+/// What the extractor's composer holds while a text is put in; a read empties
+/// the text and keeps the operation.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExtractDraft {
+    /// Which of [`Operation::ALL`] is asked.
+    pub operation: usize,
+    /// Which field takes the keys; the text until the operation is chosen.
+    pub field: Option<ExtractField>,
+    /// The text, line breaks and all.
+    pub text: LineEdit,
+}
+
+impl ExtractDraft {
+    /// What is asked of the text.
+    pub fn operation(&self) -> Operation {
+        Operation::ALL[self.operation % Operation::ALL.len()]
+    }
+
+    /// The field taking the keys.
+    pub fn field(&self) -> ExtractField {
+        self.field.unwrap_or(ExtractField::Text)
+    }
+
+    /// Move to the other field.
+    pub fn step(&mut self) {
+        self.field = Some(match self.field() {
+            ExtractField::Operation => ExtractField::Text,
+            ExtractField::Text => ExtractField::Operation,
+        });
+    }
+
+    /// Move `delta` operations along, wrapping.
+    pub fn cycle(&mut self, delta: isize) {
+        let count = Operation::ALL.len() as isize;
+        self.operation = (self.operation as isize + delta).rem_euclid(count) as usize;
+    }
+
+    /// Edit the field taking the keys with `key`. On the operation, left,
+    /// right and space change it.
+    pub fn edit(&mut self, key: Key) {
+        use super::event::Edit;
+        match (self.field(), key) {
+            (ExtractField::Operation, Key::Edit(Edit::Left)) => self.cycle(-1),
+            (ExtractField::Operation, Key::Edit(Edit::Right) | Key::Char(' ')) => self.cycle(1),
+            (ExtractField::Operation, _) => {}
+            (ExtractField::Text, key) => {
+                self.text.apply(key);
+            }
+        }
+    }
+}
+
 /// Asks are numbered across every pane of the run, so a reply that outlives
 /// the pane it was asked in can never match an ask in the next one.
 static NEXT_ASK: AtomicU64 = AtomicU64::new(1);
@@ -374,11 +445,13 @@ pub struct ChatPane {
     suggestion: usize,
     /// The judge's composer, when the model is a judge.
     pub draft: Option<Box<Draft>>,
+    /// The extractor's composer, when the model extracts.
+    pub extract: Option<Box<ExtractDraft>>,
 }
 
-/// What enter did in the judge's composer.
+/// What enter did in a judge's or an extractor's composer.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Judged {
+pub enum Entered {
     /// Moved to the next field, or added an option.
     Moved,
     /// Asked: the payload for the kernel and the generation it belongs to.
@@ -399,6 +472,7 @@ impl ChatPane {
             opened_at: 0,
             suggestion: 0,
             draft: judge::is_judge(&record).then(Box::default),
+            extract: extract::is_extractor(&record).then(Box::default),
             record,
         }
     }
@@ -414,6 +488,10 @@ impl ChatPane {
                     && draft.option.is_empty()
                     && draft.options.is_empty())
             })
+            || self
+                .extract
+                .as_deref()
+                .is_some_and(|draft| !draft.text.is_empty())
     }
 
     /// Whether the model is a judge, asked typed questions rather than
@@ -422,16 +500,24 @@ impl ChatPane {
         self.draft.is_some()
     }
 
+    /// Whether the model extracts, handed a text rather than talked to.
+    pub fn extracting(&self) -> bool {
+        self.extract.is_some()
+    }
+
     /// The same pane, opened at `at` on the animation clock.
     pub fn opened(mut self, at: u64) -> Self {
         self.opened_at = at;
         self
     }
 
-    /// Move the judge's composer `delta` fields along.
+    /// Move the judge's or the extractor's composer `delta` fields along.
     pub fn next_field(&mut self, delta: isize) {
         if let Some(draft) = self.draft.as_mut() {
             draft.step(delta);
+        }
+        if let Some(draft) = self.extract.as_mut() {
+            draft.step();
         }
     }
 
@@ -527,29 +613,82 @@ impl ChatPane {
             .is_some_and(|turn| turn.ending == Ending::Open && turn.text.is_empty())
     }
 
-    /// Edit the prompt with `key`, or the judge's field taking the keys.
+    /// Edit the prompt with `key`, or the composer's field taking the keys.
     pub fn edit(&mut self, key: Key) {
-        match self.draft.as_mut() {
-            Some(draft) => draft.edit(key),
-            None => {
-                self.input.apply(key);
-            }
+        if let Some(draft) = self.draft.as_mut() {
+            draft.edit(key);
+        } else if let Some(draft) = self.extract.as_mut() {
+            draft.edit(key);
+        } else {
+            self.input.apply(key);
         }
+    }
+
+    /// Put pasted `text` where the keys go. The extractor's text keeps its
+    /// line breaks and tabs, which mark a table's cells to it; any other field
+    /// is one line, so a break reads as a space there and never as enter.
+    pub fn paste(&mut self, text: &str) {
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        let keeps_lines = self
+            .extract
+            .as_deref()
+            .is_some_and(|draft| draft.field() == ExtractField::Text);
+        for c in text.chars() {
+            let c = match c {
+                '\n' | '\t' if keeps_lines => c,
+                '\n' | '\t' => ' ',
+                c if c.is_control() => continue,
+                c => c,
+            };
+            self.edit(Key::Char(c));
+        }
+    }
+
+    /// Enter in the extractor's composer at `now_ms` (`wall_ms` on the wall):
+    /// on the operation it moves to the text; on the text it reads it.
+    pub fn extract_enter(&mut self, now_ms: u64, wall_ms: i64) -> Entered {
+        let streaming = self.streaming();
+        let Some(draft) = self.extract.as_mut() else {
+            return Entered::Moved;
+        };
+        if draft.field() == ExtractField::Operation {
+            draft.step();
+            return Entered::Moved;
+        }
+        let text = draft.text.trimmed().to_owned();
+        if text.is_empty() {
+            return Entered::Refused("type or paste the text to read".to_owned());
+        }
+        if streaming {
+            return Entered::Refused("still reading the last text".to_owned());
+        }
+        let operation = draft.operation();
+        draft.text.clear();
+        let payload = extract::request(operation, &text, &[], &[]);
+        let mut ask = Turn::new(Speaker::User, text, Ending::Done(None), now_ms, wall_ms);
+        ask.extracted = Some(operation);
+        self.turns.push(ask);
+        let mut reply = Turn::new(Speaker::Model, String::new(), Ending::Open, now_ms, wall_ms);
+        reply.extracted = Some(operation);
+        self.turns.push(reply);
+        self.generation = NEXT_ASK.fetch_add(1, Ordering::Relaxed);
+        self.view = View::Follow;
+        Entered::Asked(payload, self.generation)
     }
 
     /// Enter in the judge's composer at `now_ms` (`wall_ms` on the wall):
     /// on the kind or the situation it moves on; on the question it moves
     /// to the options, or asks a noul; on the options it adds the one typed,
     /// or asks once nothing is. `warm` says whether the model is in memory.
-    pub fn judge_enter(&mut self, now_ms: u64, wall_ms: i64, warm: bool) -> Judged {
+    pub fn judge_enter(&mut self, now_ms: u64, wall_ms: i64, warm: bool) -> Entered {
         let streaming = self.streaming();
         let Some(draft) = self.draft.as_mut() else {
-            return Judged::Moved;
+            return Entered::Moved;
         };
         let ask = match draft.field() {
             Field::Kind | Field::Situation => false,
             Field::Question if draft.question.trimmed().is_empty() => {
-                return Judged::Refused(match draft.kind() {
+                return Entered::Refused(match draft.kind() {
                     Kind::Noul => "write the statement to weigh".to_owned(),
                     _ => "write the question to ask".to_owned(),
                 });
@@ -557,18 +696,18 @@ impl ChatPane {
             Field::Question => draft.kind() == Kind::Noul,
             Field::Options if !draft.option.trimmed().is_empty() => {
                 return match draft.add_option() {
-                    Ok(()) => Judged::Moved,
-                    Err(reason) => Judged::Refused(reason),
+                    Ok(()) => Entered::Moved,
+                    Err(reason) => Entered::Refused(reason),
                 };
             }
             Field::Options => true,
         };
         if !ask {
             draft.step(1);
-            return Judged::Moved;
+            return Entered::Moved;
         }
         if streaming {
-            return Judged::Refused("the judge is still weighing the last ask".to_owned());
+            return Entered::Refused("the judge is still weighing the last ask".to_owned());
         }
         let question = match draft.question() {
             Ok(question) => question,
@@ -576,7 +715,7 @@ impl ChatPane {
                 if draft.question.trimmed().is_empty() {
                     draft.field = Some(Field::Question);
                 }
-                return Judged::Refused(reason);
+                return Entered::Refused(reason);
             }
         };
         let situation = draft.situation.trimmed().to_owned();
@@ -609,7 +748,7 @@ impl ChatPane {
         self.turns.push(reply);
         self.generation = NEXT_ASK.fetch_add(1, Ordering::Relaxed);
         self.view = View::Follow;
-        Judged::Asked(payload, self.generation)
+        Entered::Asked(payload, self.generation)
     }
 
     /// Send what was typed at `now_ms` (`wall_ms` on the clock on the wall):
@@ -974,7 +1113,7 @@ mod tests {
         ChatPane::open(record)
     }
 
-    fn enter(pane: &mut ChatPane) -> Judged {
+    fn enter(pane: &mut ChatPane) -> Entered {
         pane.judge_enter(0, 0, true)
     }
 
@@ -985,23 +1124,25 @@ mod tests {
         let draft = pane.draft.as_ref().expect("a draft");
         assert_eq!(draft.field(), Field::Situation);
         type_in(&mut pane, "the order arrived broken");
-        assert_eq!(enter(&mut pane), Judged::Moved);
-        assert!(matches!(enter(&mut pane), Judged::Refused(reason) if reason.contains("question")));
+        assert_eq!(enter(&mut pane), Entered::Moved);
+        assert!(
+            matches!(enter(&mut pane), Entered::Refused(reason) if reason.contains("question"))
+        );
         type_in(&mut pane, "how should support answer?");
-        assert_eq!(enter(&mut pane), Judged::Moved);
+        assert_eq!(enter(&mut pane), Entered::Moved);
         let draft = pane.draft.as_ref().expect("a draft");
         assert_eq!(draft.field(), Field::Options);
         assert!(
-            matches!(enter(&mut pane), Judged::Refused(reason) if reason.contains("two options"))
+            matches!(enter(&mut pane), Entered::Refused(reason) if reason.contains("two options"))
         );
         type_in(&mut pane, "refund: money back");
-        assert_eq!(enter(&mut pane), Judged::Moved);
+        assert_eq!(enter(&mut pane), Entered::Moved);
         type_in(&mut pane, "refund");
-        assert!(matches!(enter(&mut pane), Judged::Refused(reason) if reason.contains("already")));
+        assert!(matches!(enter(&mut pane), Entered::Refused(reason) if reason.contains("already")));
         pane.draft.as_mut().expect("a draft").option.clear();
         type_in(&mut pane, "replace");
         enter(&mut pane);
-        let Judged::Asked(payload, generation) = enter(&mut pane) else {
+        let Entered::Asked(payload, generation) = enter(&mut pane) else {
             panic!("an ask");
         };
         assert!(generation > 0 && pane.streaming());
@@ -1032,7 +1173,7 @@ mod tests {
         assert_eq!(draft.fields().len(), 3);
         pane.next_field(2);
         type_in(&mut pane, "the reply is polite");
-        assert!(matches!(enter(&mut pane), Judged::Asked(..)));
+        assert!(matches!(enter(&mut pane), Entered::Asked(..)));
     }
 
     #[test]
@@ -1065,5 +1206,57 @@ mod tests {
         );
         draft.cycle_kind(-1);
         assert_eq!(draft.entries()[0].1, "money back");
+    }
+
+    fn extractor_pane() -> ChatPane {
+        let mut record = record("tessera");
+        record.capabilities = vec![kernel::records::Capability::extract()];
+        ChatPane::open(record)
+    }
+
+    #[test]
+    fn an_extractor_opens_on_its_text_and_reads_it_with_the_operation_chosen() {
+        let mut pane = extractor_pane();
+        assert!(pane.extracting() && !pane.judging());
+        assert!(matches!(
+            pane.extract_enter(0, 0),
+            Entered::Refused(reason) if reason.contains("text")
+        ));
+        pane.next_field(1);
+        pane.edit(Key::Char(' '));
+        pane.next_field(1);
+        pane.paste("Jordan Lee\r\n123 Main St\tBismarck");
+        assert_eq!(
+            pane.extract.as_deref().map(|draft| draft.text.as_str()),
+            Some("Jordan Lee\n123 Main St\tBismarck"),
+            "the text keeps its breaks and tabs"
+        );
+        let Entered::Asked(payload, generation) = pane.extract_enter(0, 0) else {
+            panic!("asked");
+        };
+        assert!(generation > 0);
+        let payload = serde_json::to_value(&payload).unwrap();
+        assert_eq!(payload["operation"], "contacts");
+        assert_eq!(payload["text"], "Jordan Lee\n123 Main St\tBismarck");
+        assert_eq!(pane.turns.len(), 2);
+        assert_eq!(pane.turns[1].extracted, Some(Operation::Contacts));
+        assert!(
+            pane.extract.as_deref().is_some_and(
+                |draft| draft.text.is_empty() && draft.operation() == Operation::Contacts
+            ),
+            "a read empties the text and keeps the operation"
+        );
+        type_in(&mut pane, "more");
+        assert!(matches!(
+            pane.extract_enter(0, 0),
+            Entered::Refused(reason) if reason.contains("still reading")
+        ));
+    }
+
+    #[test]
+    fn a_paste_anywhere_else_is_one_line() {
+        let mut pane = pane();
+        pane.paste("two\nlines\x1b");
+        assert_eq!(pane.input.as_str(), "two lines");
     }
 }

@@ -5,6 +5,7 @@ pub mod banner;
 pub mod bench_run;
 pub mod clock;
 pub mod download;
+pub mod extract;
 pub mod harnesses;
 pub mod http;
 pub mod install;

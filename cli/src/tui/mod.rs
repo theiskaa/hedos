@@ -42,7 +42,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
 
@@ -213,7 +215,7 @@ async fn on_terminal(
             return Err(terminal_error(error));
         }
     };
-    let mouse = MouseCapture::enable();
+    let reporting = Reporting::enable();
     let outcome = drive(&mut terminal, app, context, tx, rx, ticks, started).await;
     // Dropped, the terminal shows the cursor again and reports a failure to
     // stderr, which on a closed terminal fails in turn and aborts. One that
@@ -223,7 +225,7 @@ async fn on_terminal(
     } else {
         drop(terminal);
     }
-    drop(mouse);
+    drop(reporting);
     restore_screen();
     // Only a hand-off needs the reader gone: on the way out it is left to
     // end, so one stuck on a terminal that hung up never holds the exit.
@@ -285,21 +287,23 @@ impl TerminalModes {
 
 /// Mouse reporting for the wheel, which scrolls the transcript and the
 /// shelf; without capture the terminal would scroll its own (empty) history.
+/// And bracketed paste, so a paste arrives whole: a text with line breaks
+/// keeps them where a field takes them, and a break never reads as enter.
 /// Held as a guard because ratatui's panic hook restores the screen but
-/// knows nothing about the mouse, and a shell left reporting the mouse
-/// prints a code on every move.
-struct MouseCapture;
+/// knows nothing about either, and a shell left reporting the mouse prints a
+/// code on every move.
+struct Reporting;
 
-impl MouseCapture {
+impl Reporting {
     fn enable() -> Self {
-        let _ = execute!(io::stdout(), EnableMouseCapture);
+        let _ = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste);
         Self
     }
 }
 
-impl Drop for MouseCapture {
+impl Drop for Reporting {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
     }
 }
 

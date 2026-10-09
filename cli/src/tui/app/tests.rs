@@ -1634,3 +1634,54 @@ fn a_judge_opens_on_its_composer_and_asks_as_a_judge() {
         "{effects:?}"
     );
 }
+
+#[test]
+fn an_extractor_opens_on_its_composer_and_reads_as_an_extractor() {
+    let mut app = app(1);
+    app.records[0].capabilities = vec![Capability::extract()];
+    app.reorder_in_place();
+    assert!(app.actions().contains(&"t"));
+    assert!(
+        !app.actions()
+            .iter()
+            .any(|key| ["w", "l", "T"].contains(key))
+    );
+    press(&mut app, Key::Char('t'));
+    assert!(app.chat_pane().is_some_and(ChatPane::extracting));
+    app.reduce(Event::Paste(
+        "Write to jordan@acme.example\nor call".to_owned(),
+    ));
+    let effects = press(&mut app, Key::Enter);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Ask { capability, .. }] if *capability == Capability::extract()
+        ),
+        "{effects:?}"
+    );
+}
+
+#[test]
+fn an_extractor_has_nothing_to_keep_warm() {
+    let mut app = app(1);
+    app.records[0].capabilities = vec![Capability::extract()];
+    app.reorder_in_place();
+    press(&mut app, Key::Char('w'));
+    assert!(
+        app.notice()
+            .is_some_and(|notice| notice.contains("nothing to keep warm")),
+        "{:?}",
+        app.notice()
+    );
+}
+
+#[test]
+fn a_paste_on_the_shelf_is_never_run_as_keys() {
+    let mut app = app(2);
+    let effects = app.reduce(Event::Paste("xq".to_owned()));
+    assert!(effects.is_empty());
+    assert!(
+        app.modal.is_none(),
+        "no removal card opened from the pasted x"
+    );
+}

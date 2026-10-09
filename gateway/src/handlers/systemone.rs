@@ -23,21 +23,37 @@
 //! `error.message` out of a failed response, so it shows the text written here.
 
 use kernel::capabilities::question_carries_images;
-use kernel::records::{Capability, ModelRecord, ModelState};
+use kernel::records::Capability;
 
+use super::named::{Wanted, listed, named};
 use super::{GatewayHandling, HandlerFuture, bad_request, collect_completion, completion_id};
 use crate::admission::GatewayWorkKind;
-use crate::error::{GatewayError, GatewayErrorKind};
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::{GatewayPort, require_admission};
 use crate::request::GatewayRequest;
-use crate::resolver::resolve;
 use crate::responder::GatewayResponder;
 use crate::wire::typesafe;
 
 /// The response header the TypeSafe SDK reads a request id from, to quote in
 /// its errors and logs.
 const REQUEST_ID_HEADER: &str = "x-typesafe-request-id";
+
+/// What `/v1/systemone` asks of a model, and of one handed images.
+fn judges(seeing: bool) -> Wanted {
+    if seeing {
+        Wanted {
+            required: vec![Capability::judge(), Capability::see()],
+            plural: "answer typed questions about images",
+            singular: "answers typed questions about images",
+        }
+    } else {
+        Wanted {
+            required: vec![Capability::judge()],
+            plural: "answer typed questions",
+            singular: "answers typed questions",
+        }
+    }
+}
 
 /// The System One handler.
 pub struct SystemOneHandler;
@@ -53,14 +69,14 @@ impl GatewayHandling for SystemOneHandler {
         Box::pin(async move {
             let question = typesafe::decode_request(&request.body)?;
             let shelf = port.shelf().await;
-            let record = judge_named(&shelf, identity, &question.model)?;
+            let record = named(&shelf, identity, &question.model, &judges(false))?;
             identity.require(&record.id, &Capability::judge())?;
             let text = question.question_text();
             if question_carries_images(&text) && !record.capabilities.contains(&Capability::see()) {
                 return Err(bad_request(format!(
                     "{} does not read images; {}",
                     record.display_name(),
-                    judges_listed(&shelf, identity, true)
+                    listed(&shelf, identity, &judges(true))
                 )));
             }
             require_admission(port, &record, GatewayWorkKind::Stream).await?;
@@ -84,53 +100,5 @@ impl GatewayHandling for SystemOneHandler {
                 Some(&Capability::judge()),
             ))
         })
-    }
-}
-
-/// The ready, in-scope model on `shelf` that `requested` names, provided it
-/// answers typed questions. A name that resolves to nothing is a `404` and one
-/// that resolves to a model without `judge` is a `400`; both name the models
-/// that would do.
-fn judge_named(
-    shelf: &[ModelRecord],
-    identity: &GatewayIdentity,
-    requested: &str,
-) -> Result<ModelRecord, GatewayError> {
-    let judges = || judges_listed(shelf, identity, false);
-    match resolve(requested, shelf, &identity.scopes) {
-        Ok(record) if record.capabilities.contains(&Capability::judge()) => Ok(record),
-        Ok(record) => Err(bad_request(format!(
-            "{} does not answer typed questions; {}",
-            record.display_name(),
-            judges()
-        ))),
-        Err(error) if error.kind == GatewayErrorKind::NotFound => Err(GatewayError::new(
-            GatewayErrorKind::NotFound,
-            format!("{}; {}", error.message, judges()),
-        )),
-        Err(error) => Err(error),
-    }
-}
-
-/// The ready, in-scope models on `shelf` that answer typed questions, those
-/// that also read images when `seeing`, named for a refusal.
-fn judges_listed(shelf: &[ModelRecord], identity: &GatewayIdentity, seeing: bool) -> String {
-    let mut names: Vec<&str> = shelf
-        .iter()
-        .filter(|record| record.state == ModelState::Ready)
-        .filter(|record| identity.scopes.permits_model(&record.id))
-        .filter(|record| record.capabilities.contains(&Capability::judge()))
-        .filter(|record| !seeing || record.capabilities.contains(&Capability::see()))
-        .map(ModelRecord::display_name)
-        .collect();
-    names.sort_unstable();
-    let about = if seeing { " about images" } else { "" };
-    if names.is_empty() {
-        format!("no model on this machine answers typed questions{about}")
-    } else {
-        format!(
-            "the models that answer typed questions{about} here: {}",
-            names.join(", ")
-        )
     }
 }

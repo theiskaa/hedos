@@ -15,7 +15,7 @@ use runtime::install::WorkerError;
 use kernel::install::plan::InstallPlan;
 
 use super::bench::BenchScreen;
-use super::chat::{ChatPane, Judged};
+use super::chat::{ChatPane, Entered};
 use super::edit::LineEdit;
 use super::effect::{Effect, HandOff};
 use super::event::{Event, Key, Planned, Refreshed, Reply, ReplyStep, Searched};
@@ -33,6 +33,7 @@ use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::bench_run::{machine_line, rows as bench_rows};
+use crate::support::extract;
 use crate::support::install::find_installed;
 use crate::support::judge;
 use crate::support::residency::{Holder, warm_request};
@@ -327,7 +328,7 @@ impl App {
         }
         if Self::chat_capable(record).is_ok() {
             actions.extend(["l", "t", "T"]);
-        } else if judge::is_judge(record) {
+        } else if judge::is_judge(record) || extract::is_extractor(record) {
             actions.push("t");
         }
         if self.removable(record).is_ok() {
@@ -348,6 +349,10 @@ impl App {
             Err(Refusal::Because(format!("{name} is already warm")))
         } else if record.state == ModelState::Missing {
             Err(Refusal::Because(format!("{name}'s weights are gone")))
+        } else if extract::is_extractor(record) {
+            Err(Refusal::Because(format!(
+                "{name} runs once per request; there is nothing to keep warm"
+            )))
         } else if verdict(record.serving_size(), self.facts.memory_bytes)
             == Some(FitVerdict::TooLarge)
         {
@@ -489,8 +494,31 @@ impl App {
                 self.dirty = true;
                 Vec::new()
             }
+            Event::Paste(text) => self.paste(&text),
             Event::InputClosed => vec![Effect::Quit],
         }
+    }
+
+    /// Pasted `text`, where something takes text: the try screen's field,
+    /// whole, or the filter and the pull search, typed in as one line. Where
+    /// letters are commands it is dropped rather than run as keys.
+    fn paste(&mut self, text: &str) -> Vec<Effect> {
+        if let Some(Modal::Chat(pane)) = self.modal.as_mut() {
+            pane.paste(text);
+            self.dirty = true;
+            return Vec::new();
+        }
+        if !(self.filtering || self.pull_screen().is_some()) {
+            return Vec::new();
+        }
+        let mut effects = Vec::new();
+        for c in text.chars() {
+            let c = if c.is_whitespace() { ' ' } else { c };
+            if !c.is_control() {
+                effects.extend(self.reduce(Event::Key(Key::Char(c))));
+            }
+        }
+        effects
     }
 
     /// The pull screen, while it is open.
@@ -949,11 +977,14 @@ impl App {
         }
     }
 
-    /// Open the try screen on the selected model: a conversation, or the
-    /// judge's composer for a model that answers typed questions.
+    /// Open the try screen on the selected model: a conversation, the judge's
+    /// composer for a model that answers typed questions, or the extractor's
+    /// for one that finds contacts.
     fn open_chat(&mut self) -> Vec<Effect> {
         let trying = match self.selected_record() {
-            Some(record) if judge::is_judge(record) => Ok(record.clone()),
+            Some(record) if judge::is_judge(record) || extract::is_extractor(record) => {
+                Ok(record.clone())
+            }
             _ => self.chatting_record(),
         };
         match trying {
@@ -995,8 +1026,8 @@ impl App {
                 }
                 self.dirty = true;
             }
-            Key::Tab if pane.judging() => pane.next_field(1),
-            Key::BackTab if pane.judging() => pane.next_field(-1),
+            Key::Tab if pane.judging() || pane.extracting() => pane.next_field(1),
+            Key::BackTab if pane.judging() || pane.extracting() => pane.next_field(-1),
             Key::Tab => {
                 pane.suggest();
             }
@@ -1021,14 +1052,28 @@ impl App {
                 let record_id = pane.record.id.clone();
                 self.dirty = true;
                 return match pane.judge_enter(now, wall, warm) {
-                    Judged::Moved => Vec::new(),
-                    Judged::Asked(payload, generation) => vec![Effect::Ask {
+                    Entered::Moved => Vec::new(),
+                    Entered::Asked(payload, generation) => vec![Effect::Ask {
                         record_id,
                         capability: Capability::judge(),
                         payload,
                         generation,
                     }],
-                    Judged::Refused(reason) => self.notify(reason),
+                    Entered::Refused(reason) => self.notify(reason),
+                };
+            }
+            Key::Enter if pane.extracting() => {
+                let record_id = pane.record.id.clone();
+                self.dirty = true;
+                return match pane.extract_enter(now, wall) {
+                    Entered::Moved => Vec::new(),
+                    Entered::Asked(payload, generation) => vec![Effect::Ask {
+                        record_id,
+                        capability: Capability::extract(),
+                        payload,
+                        generation,
+                    }],
+                    Entered::Refused(reason) => self.notify(reason),
                 };
             }
             Key::Enter => {

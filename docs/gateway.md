@@ -35,6 +35,7 @@ The gateway stops cleanly on Ctrl-C, SIGTERM, or SIGHUP. It takes no new request
 | `GET` | `/v1/models` | OpenAI | Every ready model, with its context window as `meta.n_ctx`. |
 | `POST` | `/v1/messages` | Anthropic | Chat over the Messages protocol, with tool use. |
 | `POST` | `/v1/systemone` | TypeSafe | Typed questions (choice, score, noul) to a judge. See [Judges](#judges). |
+| `POST` | `/v1/extract` | hedos | Find contacts in text with an extractor. See [Extractors](#extractors). |
 | `POST` | `/api/chat` | Ollama | Chat over Ollama's NDJSON protocol, with tools. |
 | `POST` | `/api/generate` | Ollama | Prompt generation. |
 | `POST` | `/api/embed` | Ollama | Embed text. |
@@ -50,7 +51,7 @@ Errors come back in the shape of the route's dialect:
 
 | Dialect | Error body |
 | --- | --- |
-| OpenAI (and `/v1/systemone`) | `{"error": {"message": "…", "type": "…", "code": "…"}}` |
+| OpenAI (and `/v1/systemone`, `/v1/extract`) | `{"error": {"message": "…", "type": "…", "code": "…"}}` |
 | Ollama | `{"error": "…"}` |
 | Anthropic | `{"type": "error", "error": {"type": "…", "message": "…"}}` |
 
@@ -276,6 +277,39 @@ A bearer token is ignored, as on every other route, so a real TypeSafe key in th
 A decision GGUF reads its whole question in one batch of its window, which is the model's declared context capped at 16384 tokens. A question longer than that is a `400` naming the window (`the question takes 30138 tokens, more than the 16384-token window Clef-Flash-Q4_K_M is served with`). On a llama.cpp older than 0.6.0 the request fails with a message naming the version it needs.
 
 The SDK's default timeout is 10 seconds and a cold model takes longer than that to load, so run `hedos warm <model>` first. With a gateway running, `hedos warm` asks a judge its probe on this route, so the gateway's own copy is the one loaded.
+
+## Extractors
+
+`POST /v1/extract` hands a text to an extractor such as [Tessera](models.md#extractors) and returns what it found. Neither OpenAI nor Ollama has a route for it, so the request and the answer are Tessera's own: the body is the request `tessera json` reads, plus the `model` to ask, and the answer is the one JSON object Tessera writes, byte for byte.
+
+```sh
+curl http://127.0.0.1:43367/v1/extract -d '{
+  "model": "tessera",
+  "operation": "contacts",
+  "text": "Jordan Lee, 123 Main St, Bismarck, ND 58501, (701) 555-0142, jordan@acme.example"
+}'
+```
+
+| Field | Value |
+| --- | --- |
+| `model` | The extractor to ask; required. |
+| `operation` | `detect`, `contacts`, or `address`; required. |
+| `text` | The document, or for `address` the one address; required. |
+| `kinds` | Any of `person`, `org`, `address`, `email`, `phone`; every kind when left out. |
+| `country_hint` | Region codes such as `["US"]`; when left out, the region the model was trained for. |
+| `include_uncertain` | Return low-confidence results too; `false` by default. |
+| `offsets` | `utf8` bytes (the default) or `utf16` code units for every `start` and `end`. |
+
+The answer has `model` and `operation`, then `entities` for `detect`, `contacts` and `unassigned` for `contacts`, or `address` with its `components` for `address`. Each entity carries its `kind`, `text`, `start` and `end`, `confidence`, `review_recommended`, its `source`, and a `normalized` form for phones (E.164) and emails.
+
+| Status | When |
+| --- | --- |
+| `404` | The name does not resolve. The message names the extractors that would do. |
+| `400` | The name resolves to a model that does not extract, or the body is not a JSON object with a `model`. |
+| `400` | The extractor refuses the request: an unknown field or value, an `address` request without the `address` kind, a text too large. Its reason is in `error.message`. |
+| `500` | The model could not be read, or its reply was not one JSON object. |
+
+An extractor reads its model for each request and keeps nothing between them, so there is nothing to warm and the first request is as quick as the rest.
 
 ## Tool calling
 

@@ -84,6 +84,8 @@ pub struct MockPort {
     /// When set, each invoke's stream is left open after `chunks`, its sender
     /// kept here, so a test can see whether the reader let it go.
     pub open_streams: Option<Mutex<Vec<StreamSender>>>,
+    /// When set, each invoke's stream ends with this error after `chunks`.
+    pub stream_error: Option<RuntimeError>,
 }
 
 /// The sending half of a runtime's chunk stream.
@@ -102,6 +104,7 @@ impl Default for MockPort {
             resident: Vec::new(),
             invoked: Mutex::new(Vec::new()),
             open_streams: None,
+            stream_error: None,
         }
     }
 }
@@ -174,6 +177,9 @@ impl GatewayPort for MockPort {
             let (tx, stream) = ChunkStream::channel();
             for chunk in chunks {
                 let _ = tx.send(Ok(chunk));
+            }
+            if let Some(error) = &self.stream_error {
+                let _ = tx.send(Err(error.clone()));
             }
             if let Some(open) = &self.open_streams {
                 open.lock().unwrap().push(tx);

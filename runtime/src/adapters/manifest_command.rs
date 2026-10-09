@@ -1,8 +1,10 @@
 //! The manifest command adapter: it serves a model by running the one-shot
 //! `[invoke]` command a [`RuntimeManifest`] declares, in a fresh workdir, with the
-//! model/prompt/output placeholders substituted. Streaming (`invoke`) and job
-//! (`run`) paths share the same governed execution; the interpreter is launched
-//! directly (host execution must be approved).
+//! model/prompt/output placeholders substituted, and the request on its stdin
+//! when the manifest asks for it there. Streaming (`invoke`) and job (`run`)
+//! paths share the same governed execution; the interpreter is launched
+//! directly (host execution must be approved), or the binary the manifest
+//! installed.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -13,11 +15,12 @@ use std::time::Duration;
 
 use kernel::capabilities::CapabilityChunk;
 use kernel::jobs::JobRuntimeEvent;
-use kernel::manifests::RuntimeManifest;
+use kernel::manifests::{InvokeStdin, RuntimeManifest};
 use kernel::records::{
     BidPreference, Capability, ExecutionMode, JsonValue, ModelRecord, RunTier, RuntimeId,
 };
 use kernel::resolution::{IdentifiedModel, RuntimeBid};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -26,7 +29,8 @@ use crate::environment::{EnvironmentManager, Progress, scrubbed_environment};
 use crate::governed::governed_one_shot;
 use crate::governor::{GpuProducer, MemoryGovernor};
 use crate::manifests::{
-    MAX_OUTPUT_FILE_BYTES, bounded_output_data, detect_matches, error_summary, slug, substituted,
+    MAX_OUTPUT_FILE_BYTES, bounded_output_data, detect_matches, error_summary, host_build,
+    installed, slug, substituted,
 };
 use crate::process::{drain_bounded, terminate_tree};
 use crate::sidecar::SidecarWorkdir;
@@ -37,6 +41,9 @@ const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(1800);
 const KILL_GRACE: Duration = Duration::from_secs(5);
 /// The most command output buffered before the excess is discarded.
 const OUTPUT_CAP: usize = 256 * 1024 * 1024;
+/// The exit status a command uses to say the request, not the run, is at
+/// fault: it would refuse the same request again.
+const REJECTED_STATUS: i32 = 2;
 
 type ChunkSender = mpsc::UnboundedSender<Result<CapabilityChunk, RuntimeError>>;
 type JobSender = mpsc::UnboundedSender<Result<JobRuntimeEvent, RuntimeError>>;
@@ -54,20 +61,24 @@ struct Execution {
     approved_host_execution: bool,
     environments: EnvironmentManager,
     workdir_root: PathBuf,
+    /// Where commands a manifest installs are kept.
+    bin_root: PathBuf,
     execution_timeout: Duration,
 }
 
 impl ManifestCommandAdapter {
     /// An adapter for `manifest`. `approved_host_execution` must be true for it to
     /// bid or run, since it launches a command on this machine. Governs through
-    /// `governor`, prepares environments through `environments`, and runs under
-    /// `workdir_root`.
+    /// `governor`, prepares environments through `environments`, runs under
+    /// `workdir_root`, and finds a command the manifest installs under
+    /// `bin_root`.
     pub fn new(
         manifest: RuntimeManifest,
         approved_host_execution: bool,
         governor: MemoryGovernor,
         environments: EnvironmentManager,
         workdir_root: PathBuf,
+        bin_root: PathBuf,
     ) -> Self {
         let id = RuntimeId::from(manifest.id.as_str());
         Self {
@@ -77,6 +88,7 @@ impl ManifestCommandAdapter {
                 approved_host_execution,
                 environments,
                 workdir_root,
+                bin_root,
                 execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
             },
             governor,
@@ -154,13 +166,10 @@ impl RuntimeAdapter for ManifestCommandAdapter {
             .await;
             match outcome {
                 Ok((stdout, _outputs)) => {
-                    for line in stdout.split('\n') {
-                        if tx
-                            .send(Ok(CapabilityChunk::Text(format!("{line}\n"))))
-                            .is_err()
-                        {
-                            return;
-                        }
+                    // As the command wrote it: a reply that is one JSON object
+                    // reaches the caller byte for byte.
+                    if !stdout.is_empty() && tx.send(Ok(CapabilityChunk::Text(stdout))).is_err() {
+                        return;
                     }
                     let _ = tx.send(Ok(CapabilityChunk::Done(None)));
                 }
@@ -236,8 +245,9 @@ impl JobRunning for ManifestCommandAdapter {
 impl Execution {
     /// Prepare the environment, build a fresh workdir, substitute the command, and
     /// run it — returning its stdout and the outputs directory. Fails if host
-    /// execution is not approved or the command exits non-zero, times out, or is
-    /// otherwise unrunnable.
+    /// execution is not approved, a command the manifest installs is not in
+    /// place, or the command exits non-zero, times out, or is otherwise
+    /// unrunnable.
     async fn run<F: Future<Output = ()>>(
         &self,
         record: &ModelRecord,
@@ -258,6 +268,26 @@ impl Execution {
             )));
         };
 
+        let bin = match &self.manifest.install {
+            Some(_) => Some(installed(&self.manifest, &self.bin_root).ok_or_else(|| {
+                match host_build(&self.manifest) {
+                    Err(error) => RuntimeError::Unavailable(error.to_string()),
+                    Ok(_) => RuntimeError::Unavailable(format!(
+                        "{id} is not installed yet: `hedos runtimes approve {id}` downloads it",
+                        id = self.id.as_str()
+                    )),
+                }
+            })?),
+            None => None,
+        };
+        let input = match invoke.stdin {
+            Some(InvokeStdin::Payload) => Some(
+                serde_json::to_vec(payload)
+                    .map_err(|error| RuntimeError::Rejected(error.to_string()))?,
+            ),
+            None => None,
+        };
+
         let env_dir = self.prepare_environment(progress).await?;
         let workdir = SidecarWorkdir::directory(&self.workdir_root, &slug(self.id.as_str()))
             .map_err(|error| RuntimeError::Failed(error.to_string()))?;
@@ -273,10 +303,11 @@ impl Execution {
             &workdir,
             &outputs,
             env_dir.as_deref(),
+            bin.as_deref(),
         )
         .map_err(|error| RuntimeError::Failed(error.to_string()))?;
 
-        let stdout = self.execute(&tokens, &workdir, cancel).await?;
+        let stdout = self.execute(&tokens, &workdir, input, cancel).await?;
         Ok((stdout, outputs))
     }
 
@@ -305,13 +336,17 @@ impl Execution {
         Ok(Some(env_dir))
     }
 
-    /// Spawn `tokens` (the substituted command) in `workdir`, draining its output
-    /// and enforcing the execution timeout, and return its stdout. Killing the
-    /// whole process tree on timeout or when `cancel` resolves (consumer drop).
+    /// Spawn `tokens` (the substituted command) in `workdir`, writing `input`
+    /// to its stdin and closing it (or giving it no stdin at all), draining its
+    /// output and enforcing the execution timeout, and return its stdout.
+    /// Killing the whole process tree on timeout or when `cancel` resolves
+    /// (consumer drop). An exit status of 2 is the command saying the request
+    /// is at fault; any other failure is the run's.
     async fn execute<F: Future<Output = ()>>(
         &self,
         tokens: &[String],
         workdir: &Path,
+        input: Option<Vec<u8>>,
         cancel: F,
     ) -> Result<String, RuntimeError> {
         let (program, arguments) = tokens
@@ -324,6 +359,11 @@ impl Execution {
             .current_dir(workdir)
             .env_clear()
             .envs(scrubbed_environment(std::env::vars(), &overrides))
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
@@ -340,6 +380,14 @@ impl Execution {
             .stderr
             .take()
             .ok_or_else(|| RuntimeError::Failed("the command produced no stderr".to_owned()))?;
+        // Written beside the drain, so a request larger than the pipe's buffer
+        // can't wait on a command that is waiting for its output to be read. A
+        // command that stops reading early just ends the write.
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            tokio::spawn(async move {
+                let _ = stdin.write_all(&input).await;
+            });
+        }
 
         let drain = drain_bounded(stdout, stderr, OUTPUT_CAP, || {});
         tokio::pin!(drain);
@@ -366,6 +414,9 @@ impl Execution {
         if !status.success() {
             let code = exit_code(&status);
             let tail = error_summary(&String::from_utf8_lossy(&outcome.stderr));
+            if status.code() == Some(REJECTED_STATUS) {
+                return Err(RuntimeError::Rejected(tail));
+            }
             return Err(RuntimeError::Failed(format!(
                 "{} stopped with status {code}: {tail}",
                 self.id.as_str()
@@ -475,6 +526,7 @@ mod tests {
             MemoryGovernor::new(GovernorConfig::with_total_mb(262_144)),
             EnvironmentManager::new(scratch.0.join("env")),
             scratch.0.join("workdirs"),
+            scratch.0.join("commands"),
         )
     }
 
@@ -653,5 +705,82 @@ mod tests {
             }
         }
         assert!(matches!(error, Some(RuntimeError::Failed(message)) if message.contains("status")));
+    }
+
+    /// A manifest for an `extract` command that reads its request on stdin.
+    fn reading(command: &str, install: &str) -> RuntimeManifest {
+        let text = format!(
+            "id = \"echo-runtime\"\ncapabilities = [\"extract\"]\nexecution = \"sync\"\ndetect = {{ extension = \"gguf\" }}\n[invoke]\ncommand = \"{command}\"\nstdin = \"{{payload}}\"\n{install}"
+        );
+        RuntimeManifest::parse(&text, None).unwrap()
+    }
+
+    /// Everything an invoke streams: its text, and the error it ended on.
+    async fn drained(
+        adapter: &ManifestCommandAdapter,
+        payload: JsonValue,
+    ) -> (String, Option<RuntimeError>) {
+        let mut stream = adapter.invoke(&record(), Capability::extract(), payload);
+        let mut text = String::new();
+        let mut error = None;
+        while let Some(item) = stream.recv().await {
+            match item {
+                Ok(CapabilityChunk::Text(chunk)) => text.push_str(&chunk),
+                Ok(_) => {}
+                Err(err) => error = Some(err),
+            }
+        }
+        (text, error)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_payload_goes_in_on_stdin_and_stdout_comes_back_as_written() {
+        let scratch = Scratch::new();
+        let adapter = adapter(&scratch, reading("cat", ""), true);
+        let mut payload = std::collections::BTreeMap::new();
+        payload.insert(
+            "text".to_owned(),
+            JsonValue::String("Jordan Lee\n(701) 555-0142".to_owned()),
+        );
+        let (text, error) = drained(&adapter, JsonValue::Object(payload)).await;
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(text, r#"{"text":"Jordan Lee\n(701) 555-0142"}"#);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exit_two_is_the_request_at_fault_with_its_line() {
+        let scratch = Scratch::new();
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let script = scratch.0.join("refuse.sh");
+        std::fs::write(
+            &script,
+            "cat >/dev/null\necho 'unknown operation' >&2\nexit 2\n",
+        )
+        .unwrap();
+        let command = format!("sh {}", script.display());
+        let adapter = adapter(&scratch, reading(&command, ""), true);
+        let (_, error) = drained(&adapter, JsonValue::Object(Default::default())).await;
+        assert!(
+            matches!(&error, Some(RuntimeError::Rejected(line)) if line.contains("unknown operation")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_not_downloaded_yet_says_how_to_get_it() {
+        let scratch = Scratch::new();
+        let install = format!(
+            "[install]\nversion = \"1.0.0\"\n[install.targets.{}]\nurl = \"https://example.invalid/tool.tar.gz\"\nsha256 = \"{}\"\nbinary = \"tool/tool\"\n",
+            crate::manifests::host_target(),
+            "0".repeat(64)
+        );
+        let adapter = adapter(&scratch, reading("{bin} json", &install), true);
+        let (_, error) = drained(&adapter, JsonValue::Object(Default::default())).await;
+        assert!(
+            matches!(&error, Some(RuntimeError::Unavailable(why)) if why.contains("hedos runtimes approve echo-runtime")),
+            "{error:?}"
+        );
     }
 }

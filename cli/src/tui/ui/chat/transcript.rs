@@ -8,7 +8,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use super::{Look, clock_time, judgment};
+use super::{Look, clock_time, extraction, judgment};
 use crate::tui::chat::{ChatPane, Ending, Speaker, Turn};
 use crate::tui::markup::{self, Block, Emphasis};
 use crate::tui::palette::{BUBBLE, CODE_GROUND, CODE_INK, READ};
@@ -49,6 +49,12 @@ fn user(turn: &Turn, width: usize) -> Vec<Line<'static>> {
         .max(1);
     let parts = match &turn.asked {
         Some(asked) => judgment::ask(asked),
+        // A text handed to an extractor keeps its line breaks.
+        None if turn.extracted.is_some() => turn
+            .text
+            .lines()
+            .map(|line| (line.replace('\t', "  "), INK))
+            .collect(),
         None => vec![(turn.text.clone(), INK)],
     };
     let rows: Vec<(String, Style)> = parts
@@ -67,6 +73,9 @@ fn user(turn: &Turn, width: usize) -> Vec<Line<'static>> {
     let mut label = "you".to_owned();
     if let Some(asked) = &turn.asked {
         label.push_str(&format!(" · {}", judgment::kind(asked)));
+    }
+    if let Some(operation) = turn.extracted {
+        label.push_str(&format!(" · {}", operation.as_str()));
     }
     if let Some(time) = clock_time(turn.wall_ms) {
         label.push_str(&format!(" · {time}"));
@@ -135,6 +144,19 @@ fn reply(turn: &Turn, pane: &ChatPane, width: usize, now: u64, look: &Look) -> V
     role.append(&mut status);
     let mut lines = vec![Line::from(role)];
     let phase = phase(turn);
+    if let Some(operation) = turn.extracted {
+        // An extraction arrives whole too.
+        match &turn.ending {
+            Ending::Done(_) => lines.extend(extraction::answer(&turn.text, operation, reading)),
+            Ending::Failed(reason) => {
+                for piece in wrap::wrap(&format!("failed: {reason}"), reading) {
+                    lines.push(Line::from(Span::styled(piece, FAILED)));
+                }
+            }
+            Ending::Open | Ending::Stopped => {}
+        }
+        return lines;
+    }
     if let Some(asked) = &turn.asked {
         // A judgment arrives whole, so there is nothing to show of it until
         // it has ended.
@@ -198,6 +220,22 @@ fn reply(turn: &Turn, pane: &ChatPane, width: usize, now: u64, look: &Look) -> V
 fn status(turn: &Turn, pane: &ChatPane, now: u64, look: &Look) -> Vec<Span<'static>> {
     let elapsed = |from: u64| format!("{:.1}s", now.saturating_sub(from) as f64 / 1000.0);
     let turning = || Span::styled(format!("{} ", spinner(look.spin_frame)), ACCENT);
+    if turn.extracted.is_some() {
+        return match &turn.ending {
+            Ending::Open => vec![
+                turning(),
+                Span::styled(format!("reading · {}", elapsed(turn.at_ms)), DIM),
+            ],
+            Ending::Stopped => vec![Span::styled("stopped", CAUTION)],
+            Ending::Failed(_) => vec![Span::styled("failed", FAILED)],
+            Ending::Done(_) => vec![Span::styled(
+                turn.ended_ms.map_or_else(String::new, |ended| {
+                    format!("read in {}", duration(ended.saturating_sub(turn.at_ms)))
+                }),
+                DIM,
+            )],
+        };
+    }
     if turn.asked.is_some() {
         return match (&turn.ending, turn.cold) {
             (Ending::Open, true) => vec![
@@ -263,6 +301,15 @@ fn status(turn: &Turn, pane: &ChatPane, now: u64, look: &Look) -> Vec<Span<'stat
             }
             vec![Span::styled(parts.join(" · "), DIM)]
         }
+    }
+}
+
+/// `41ms` under a second, `1.2s` from there.
+fn duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
     }
 }
 

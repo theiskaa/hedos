@@ -294,7 +294,7 @@ Sizes are decimal, as the hubs state them (`4.9 GB` is 4.9e9 bytes). Memory figu
 
 ### `hedos run`
 
-Stream a single completion to stdout, or put a typed question to a judge.
+Stream a single completion to stdout, put a typed question to a judge, or find contacts in a text with an extractor.
 
 ```sh
 hedos run [model] [prompt] [flags]
@@ -306,8 +306,13 @@ hedos run [model] [prompt] [flags]
 | `--max-tokens <n>` | Cap the generated length. | the runtime's |
 | `--temperature <f>` | The sampling temperature. | the runtime's |
 | `--image <path>` | Attach a local image for a vision (`see`) model to read. Repeat it for several images. | none |
+| `-f`, `--file <path>` | An extractor's text, read from a file. | none |
+| `--contacts` | Have an extractor group what it finds into contacts. | off |
+| `--address` | Have an extractor read the text as one address and split it into parts. | off |
+| `--kinds <list>` | Only these kinds, comma-separated: `person`, `org`, `address`, `email`, `phone`. | every kind |
+| `--country <list>` | Region hints for an extractor, comma-separated, in place of the one its model expects. | the model's |
 
-Omit the model to pick one interactively, and omit the prompt to type it at a prompt. The picker offers the models that chat or answer typed questions; with `--image`, only vision-capable models. A named model that does neither is refused, and so is a model that cannot see when `--image` is given, rather than answering blind.
+Omit the model to pick one interactively, and omit the prompt to type it at a prompt. The picker offers the models that chat, answer typed questions, or extract; with `--image`, only vision-capable models. A named model that does none of them is refused, and so is a model that cannot see when `--image` is given, rather than answering blind.
 
 ```sh
 hedos run gemma3 "explain this"
@@ -340,6 +345,20 @@ how should support answer?
 ```
 
 A judge answers in one pass, so `--system`, `--max-tokens` and `--temperature` have no effect on it; hedos says so on stderr if you pass them. Ctrl-C while it weighs prints nothing and is not an error.
+
+#### Extractors
+
+An extractor such as [Tessera](models.md#extractors) takes a text: as the argument, from `--file`, piped in, or typed at a prompt. It lists every entity it finds by default, groups them with `--contacts`, and splits one address with `--address`:
+
+```
+$ hedos run tessera --contacts "Jordan Lee, 123 Main St, Bismarck, ND 58501, (701) 555-0142, jordan@acme.example"
+Jordan Lee · 0.95
+  address  123 Main St, Bismarck, ND 58501  0.95
+  email    jordan@acme.example              0.99  jordan@acme.example
+  phone    (701) 555-0142                   0.99  +17015550142
+```
+
+Under `--json` the extractor's answer is printed as it came. A confidence it suggests a person check is marked `review`. `--system`, `--max-tokens`, `--temperature` and `--image` have no effect on an extractor, and hedos says so on stderr if you pass them. A request the extractor refuses (an unknown kind, say) fails with its reason.
 
 `--image` on a judge that sees (clef, OpenJev) adds each file to the question's `images` as a data URL, leaving the rest of the question as written. A question that already lists its `images` cannot take `--image` too, and a question that carries images is refused by a judge that cannot see.
 
@@ -752,8 +771,8 @@ hedos runtimes
 hedos runtimes approve python:zerank
 ```
 
-- **`ls`** (the default) prints a table with the columns RUNTIME, SERVES, CONSENT, and MODELS. CONSENT reads `approved`, `needs approval`, `changed since approval`, or `needs a VM`. With no manifest runtimes, it names the directory to put one in (`runtimes.d` under the data directory).
-- **`approve`** prints what you are agreeing to on stderr (its files, what it runs, what it installs, the paths and network it declares, the models it would serve, and its hash), then asks. What a runtime declares is its own account and is not enforced: it runs as you, unsandboxed. A runtime that needs a VM cannot be approved in this build.
+- **`ls`** (the default) prints a table with the columns RUNTIME, SERVES, CONSENT, and MODELS. CONSENT reads `approved`, `approved, not downloaded`, `needs approval`, `changed since approval`, or `needs a VM`. With no manifest runtimes, it names the directory to put one in (`runtimes.d` under the data directory).
+- **`approve`** prints what you are agreeing to on stderr (its files, what it runs, what it installs, the release it downloads and its sha256, the paths and network it declares, the models it would serve, and its hash), then asks. A runtime that pins a release, such as `cli:tessera`, has this machine's build downloaded and checked against the pin before the approval is recorded; `approve` on an approved runtime whose binary is missing downloads it again. What a runtime declares is its own account and is not enforced: it runs as you, unsandboxed. A runtime that needs a VM cannot be approved in this build.
 - **`revoke`** takes an approval back. It works by what the settings hold, so it works even after the runtime's manifest is gone.
 
 The approval is bound to a hash of the runtime's files, so editing any of them asks for it again. After approving or revoking, hedos rescans and says which models the runtime now serves. A gateway that is already running keeps the approvals it booted with; restart `hedos serve` to pick the change up.

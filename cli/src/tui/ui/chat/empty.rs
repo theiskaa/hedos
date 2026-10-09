@@ -1,6 +1,7 @@
 //! What the transcript shows before anything is asked: the model's name and
 //! facts, and three things to ask, the one `tab` puts in the box next marked.
-//! A judge's shows what it can be asked instead, the kind chosen marked.
+//! A judge's shows what it can be asked instead, the kind chosen marked, and
+//! an extractor's what it can do with a text, the operation chosen marked.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -8,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::Look;
+use crate::support::extract::Operation;
 use crate::support::judge::Kind;
 use crate::support::shelf_table::runtime_label;
 use crate::tui::chat::{ChatPane, KINDS, SUGGESTIONS};
@@ -77,6 +79,33 @@ fn lines(pane: &ChatPane, look: &Look, width: usize) -> Vec<Line<'static>> {
         ]));
         return lines;
     }
+    if let Some(draft) = pane.extract.as_deref() {
+        lines.push(Line::from(Span::styled(
+            "FINDS CONTACTS, DOESN'T CHAT",
+            EYEBROW,
+        )));
+        lines.push(Line::default());
+        for (index, operation) in Operation::ALL.iter().enumerate() {
+            let chosen = index == draft.operation;
+            lines.push(Line::from(vec![
+                Span::styled(if chosen { "› " } else { "  " }, INK),
+                Span::styled(
+                    format!("{:<10}", operation.as_str()),
+                    if chosen { BOLD } else { SOFT },
+                ),
+                Span::styled(
+                    text::clip(does(*operation), width.saturating_sub(12)),
+                    if chosen { INK } else { DIM },
+                ),
+            ]));
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(vec![
+            Span::styled("tab", BOLD),
+            Span::styled(" chooses one; paste the text below", DIM),
+        ]));
+        return lines;
+    }
     lines.extend([
         Line::from(Span::styled("TRY ASKING", EYEBROW)),
         Line::default(),
@@ -97,6 +126,15 @@ fn lines(pane: &ChatPane, look: &Look, width: usize) -> Vec<Line<'static>> {
         Span::styled(" puts one in the box", DIM),
     ]));
     lines
+}
+
+/// What an operation does with the text.
+fn does(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Detect => "people, orgs, addresses, emails, phones",
+        Operation::Contacts => "groups them by who they belong to",
+        Operation::Address => "splits one address into its parts",
+    }
 }
 
 /// What a kind of question gets back.

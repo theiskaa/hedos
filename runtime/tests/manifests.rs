@@ -201,6 +201,7 @@ fn substituted_rejects_an_empty_command() {
         Path::new("/w"),
         Path::new("/o"),
         None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("empty"));
@@ -223,6 +224,7 @@ fn substituted_expands_a_command_into_tokens() {
         workdir,
         outputs,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(tokens[0], "run");
@@ -243,6 +245,7 @@ fn substituted_collapses_runs_of_spaces() {
         Path::new("/w"),
         Path::new("/o"),
         None,
+        None,
     )
     .unwrap();
     assert_eq!(tokens, vec!["a".to_owned(), "b".to_owned()]);
@@ -259,6 +262,7 @@ fn substituted_requires_an_env_for_the_python_placeholder() {
         Path::new("/w"),
         Path::new("/o"),
         None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("{python}"));
@@ -271,6 +275,7 @@ fn substituted_requires_an_env_for_the_python_placeholder() {
         Path::new("/w"),
         Path::new("/o"),
         Some(Path::new("/env")),
+        None,
     )
     .unwrap();
     assert_eq!(tokens[0], "/env/bin/python");

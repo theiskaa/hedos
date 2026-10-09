@@ -3,12 +3,17 @@
 //!
 //! A manifest runtime runs code on the host, so it neither bids on a model nor
 //! serves one until it is approved here. The approval is bound to a hash of the
-//! runtime's files, and editing any of them asks for it again.
+//! runtime's files, and editing any of them asks for it again. A runtime whose
+//! command is a release binary pinned in its manifest has that binary
+//! downloaded and checked here, once the approval is given.
 
 use clap::{Args, Subcommand};
 use kernel::manifests::RuntimeManifest;
 use kernel::records::ModelRecord;
-use runtime::manifests::{HostConsent, host_consent, servable_models};
+use runtime::boot::HedosDirs;
+use runtime::manifests::{
+    COMMANDS_DIR, HostConsent, host_build, host_consent, install, installed, servable_models,
+};
 use runtime::settings::{ModelsSettings, SettingsStore};
 
 use crate::error::CliError;
@@ -73,6 +78,10 @@ async fn list(out: &Out) -> Result<(), CliError> {
                 "id": manifest.id,
                 "capabilities": manifest.capabilities,
                 "consent": standing(manifest, &session.settings.models).1,
+                "downloaded": manifest
+                    .install
+                    .as_ref()
+                    .map(|_| installed(manifest, &commands(&session.dirs)).is_some()),
                 "network": manifest.permissions.network,
                 "directory": manifest.directory,
                 "models": model_names(manifest, &shelf),
@@ -102,7 +111,7 @@ async fn list(out: &Out) -> Result<(), CliError> {
             vec![
                 manifest.id.clone(),
                 capabilities.join(","),
-                standing(manifest, &session.settings.models).0.to_owned(),
+                described(manifest, &session.settings.models, &session.dirs),
                 or_dash(model_names(manifest, &shelf).join(", ")),
             ]
         })
@@ -130,7 +139,14 @@ async fn approve(args: ApproveArgs, out: &Out) -> Result<(), CliError> {
             manifest.id
         )));
     };
+    if manifest.install.is_some() {
+        host_build(manifest).map_err(|error| CliError::new(error.to_string()))?;
+    }
     if host_consent(manifest, &session.settings.models).is_approved() {
+        // An approval whose download failed or was removed is finished here.
+        if manifest.install.is_some() && installed(manifest, &commands(&session.dirs)).is_none() {
+            fetch(manifest, &session.dirs, out).await?;
+        }
         out.line(&format!("{} is already approved", manifest.id));
         out.json(&serde_json::json!({
             "runtime": manifest.id,
@@ -154,6 +170,11 @@ async fn approve(args: ApproveArgs, out: &Out) -> Result<(), CliError> {
         }
     }
 
+    // The binary is fetched before the approval is written, so a download that
+    // fails leaves nothing half approved.
+    if manifest.install.is_some() {
+        fetch(manifest, &session.dirs, out).await?;
+    }
     SettingsStore::discover().approve_runtime(
         &manifest.id,
         Some(hash),
@@ -217,6 +238,27 @@ async fn settle(id: &str, out: &Out) -> Result<Vec<String>, CliError> {
     Ok(served)
 }
 
+/// Where downloaded commands are kept.
+fn commands(dirs: &HedosDirs) -> std::path::PathBuf {
+    dirs.sub(COMMANDS_DIR)
+}
+
+/// Download, check and unpack `manifest`'s pinned binary for this machine,
+/// saying so while it does.
+async fn fetch(manifest: &RuntimeManifest, dirs: &HedosDirs, out: &Out) -> Result<(), CliError> {
+    if let (Some(pinned), Ok(build)) = (&manifest.install, host_build(manifest)) {
+        out.err(&format!(
+            "downloading {} {} ({})",
+            manifest.id, pinned.version, build.url
+        ));
+    }
+    let path = install(manifest, &commands(dirs))
+        .await
+        .map_err(|error| CliError::new(error.to_string()))?;
+    out.err(&format!("checked and installed {}", path.display()));
+    Ok(())
+}
+
 fn find<'a>(session: &'a Session, id: &str) -> Result<&'a RuntimeManifest, CliError> {
     session
         .kernel
@@ -244,6 +286,10 @@ fn consent_card(manifest: &RuntimeManifest, hash: &str, shelf: &[ModelRecord]) -
     }
     if let Some(env) = &manifest.env {
         lines.push(format!("  installs {}", env.lockfile));
+    }
+    if let (Some(pinned), Ok(build)) = (&manifest.install, host_build(manifest)) {
+        lines.push(format!("  fetches  {} {}", pinned.version, build.url));
+        lines.push(format!("  sha256   {}", build.sha256));
     }
     lines.push(format!(
         "  declares paths {}, network {}",
@@ -281,6 +327,17 @@ fn or_dash(text: String) -> String {
     } else {
         text
     }
+}
+
+/// Where a runtime stands, in the table's words: an approved runtime whose
+/// pinned binary is not in place yet says so.
+fn described(manifest: &RuntimeManifest, models: &ModelsSettings, dirs: &HedosDirs) -> String {
+    let (words, slug) = standing(manifest, models);
+    let missing = manifest.install.is_some() && installed(manifest, &commands(dirs)).is_none();
+    if slug == "approved" && missing {
+        return "approved, not downloaded".to_owned();
+    }
+    words.to_owned()
 }
 
 /// Where a runtime stands, as the table's words and the JSON's slug. A `[vm]`

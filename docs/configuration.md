@@ -175,7 +175,7 @@ The Ollama daemon and the image daemons (ComfyUI, AUTOMATIC1111) are reached ove
 
 ## Manifest runtimes and consent
 
-Besides its built-in runtimes, hedos can serve a model through a runtime described by a manifest: a TOML file that says which models it handles, what it can do, and how to run it. Some ship inside the binary (the decision runtimes `python:laya` and `python:zerank`, for example). You can add your own under `runtimes.d/` in the data directory.
+Besides its built-in runtimes, hedos can serve a model through a runtime described by a manifest: a TOML file that says which models it handles, what it can do, and how to run it. Some ship inside the binary (the decision runtimes `python:laya` and `python:zerank`, and the extractor `cli:tessera`). You can add your own under `runtimes.d/` in the data directory.
 
 A manifest runtime runs code on your machine, as you, unsandboxed. So it stays inert until you approve it.
 
@@ -197,7 +197,7 @@ python:zerank  chat,judge  needs approval  -
 laya can run on python:laya, which needs your approval: `hedos runtimes approve python:laya`
 ```
 
-`approve` shows the runtime's files, what it runs and installs, the paths and network access it declares, the models it would serve, and its hash, then asks you to confirm (`-y` skips the question). It records the id in `models.approved_host_runtimes` and the hash in `models.approved_host_runtime_hashes`. What a manifest declares is its own account and is not enforced.
+`approve` shows the runtime's files, what it runs and installs, the release it downloads and that release's sha256 when it pins one, the paths and network access it declares, the models it would serve, and its hash, then asks you to confirm (`-y` skips the question). A pinned release is downloaded and checked before the approval is recorded, so a failed download approves nothing; running `approve` again retries it. It records the id in `models.approved_host_runtimes` and the hash in `models.approved_host_runtime_hashes`. What a manifest declares is its own account and is not enforced.
 
 The hash covers the manifest and every file beside it. If any of them changes, the approval stops counting and `hedos runtimes` shows the runtime as `changed since approval` until you approve it again.
 
@@ -223,5 +223,33 @@ A few rules hedos checks when it loads them:
 - A manifest declares exactly one of `[invoke]` or `[serve]`.
 - A manifest needs a `detect` rule (a file `extension`, or a marker `file`, optionally with `contains`) to ever match a model. A manifest runtime bids last, so it only serves models no built-in runtime takes.
 - A manifest with a `[vm]` section is reported as an issue and not run: this build cannot start a VM.
+
+An `[invoke]` command gets its model's snapshot directory as `{model}`, and the prompt as `{prompt}`. A command that takes a structured request can read it on standard input instead, which keeps a document out of the process list:
+
+```toml
+[invoke]
+command = "my-tool json --bundle {model}"
+stdin   = "{payload}"
+```
+
+`{payload}` is the only value `stdin` takes: the request as one line of JSON. What the command writes to standard output is the answer, exactly as written. Exit status `0` is success, `2` means the request itself is wrong (the gateway answers `400` with the command's last stderr line), and any other status is a failure (`500`).
+
+A command that is not on the machine can be downloaded instead. An `[install]` section pins a release archive per platform, by the Rust target triple, and the `binary` inside it; the command runs it as `{bin}`:
+
+```toml
+[invoke]
+command = "{bin} json --bundle {model}"
+stdin   = "{payload}"
+
+[install]
+version = "1.2.0"
+
+[install.targets.aarch64-apple-darwin]
+url    = "https://example.com/my-tool-1.2.0-aarch64-apple-darwin.tar.gz"
+sha256 = "<the archive's sha256, 64 lowercase hex digits>"
+binary = "my-tool-1.2.0-aarch64-apple-darwin/my-tool"
+```
+
+The archive is a `.tar.gz` fetched over `https`, and `binary` is a relative path inside it. `hedos runtimes approve` downloads this machine's archive, refuses it unless its sha256 matches the pin, and unpacks the one binary into `commands/` in the data directory. A command that runs `{bin}` must declare `[install]`, and one that declares `[install]` must run `{bin}`. Until the binary is in place, the runtime answers that it is not installed yet and names the command that fetches it.
 
 Problems show up as `issue:` lines in `hedos scan`.

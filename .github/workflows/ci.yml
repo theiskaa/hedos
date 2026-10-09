@@ -76,10 +76,12 @@ jobs:
         # __init__.py), so a single `mypy runtime/runtimes` invocation makes
         # every file resolve to the same top-level module and fails with
         # "Duplicate module named main" — see runtime/runtimes/pyproject.toml.
-        # Check one sidecar directory at a time instead.
+        # Check one sidecar directory at a time instead, passing over the
+        # runtimes that hold no Python (a command runtime is a manifest only).
         run: |
           set -e
           for dir in runtime/runtimes/*/; do
+            compgen -G "$dir*.py" >/dev/null || continue
             mypy --config-file runtime/runtimes/pyproject.toml "$dir"
           done
 
