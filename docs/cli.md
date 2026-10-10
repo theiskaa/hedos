@@ -18,6 +18,7 @@
 | [`hedos warm`](#hedos-warm) | Load a model into memory. |
 | [`hedos unload`](#hedos-unload) | Evict a model from memory. |
 | [`hedos pull`](#hedos-pull) | Fetch a model from Ollama or Hugging Face, and manage the pulls under way. |
+| [`hedos recommend`](#hedos-recommend) | Read this machine's hardware and recommend models to pull for it. |
 | [`hedos rm`](#hedos-rm) | Remove an installed model. |
 | [`hedos runtimes`](#hedos-runtimes) | List the manifest runtimes, and approve or revoke one. |
 | [`hedos bench`](#hedos-bench) | Measure what each model does on this machine. |
@@ -77,7 +78,7 @@ It takes no flags of its own. It prints:
 1. a one-line summary,
 2. the per-store split: each store's model count and the bytes its files take on disk,
 3. the models that can go because another model keeps everything they hold,
-4. how many of the models found are too big for this machine's memory.
+4. how many of the models found are too big for this machine.
 
 Each paragraph appears only when it has something to say. Issues go to stderr, each starting with `issue:`.
 
@@ -95,7 +96,7 @@ file       2   4.7 GB
     4.7 GB  qwen2.5-7b-instruct-q4_k_m (file)
   A name in brackets reaches the same files as the copy before it. Removing all of them frees the space; removing one alone can free nothing while another keeps the files (a hard link, a second Ollama tag), and removing a symlink frees nothing.
 
-1 model is too big for this machine's 16 GiB. `hedos ls` marks it.
+1 model is too big for this machine. `hedos ls` marks it.
 ```
 
 When the scan finds nothing, it prints `No models found on this Mac yet.` and nothing more.
@@ -221,7 +222,7 @@ An issue that spans several lines (a TOML parse error's caret diagram) is printe
 | `duplicates` | One entry per group, described below. |
 | `reclaimableBytes` | What removing every copy offered in every group frees, each file counted once. |
 | `fit` | The fit tally: `runsWell`, `tightFit`, `tooLarge`, `unknown`. |
-| `memoryBytes` | The memory the fit was judged against. |
+| `memoryBytes` | The machine's total memory. Each model's fit was judged against what its engine may use of it (see [Fit and memory](models.md#fit-and-memory)). |
 | `failedStores` | The stores whose scan failed outright. |
 
 Each group in `duplicates` carries:
@@ -266,7 +267,7 @@ hedos ls --json
 
 - **The first column** is a filled dot for a model that is warm (in this process, the Ollama daemon, or a running gateway), a hollow dot for one that is cold, and a cross for one whose weights are gone.
 - **RUNTIME** is the runtime the model resolved to, or a dash when none did.
-- **FIT** reads `fits`, `tight`, or `too big`, judged from the model's estimated footprint against this machine's memory. It is the same assessment the install recommendations use. A dash means the footprint is unknown, and `gone` means the weights are gone, so there is nothing left to fit.
+- **FIT** reads `fits`, `tight`, or `too big`, judged from the model's estimated footprint against what the engine it resolved to may use on this machine: the GPU's share of memory where there is one, else all of it (see [Fit and memory](models.md#fit-and-memory)). It is the same assessment [`hedos recommend`](#hedos-recommend) uses. A dash means the footprint is unknown, and `gone` means the weights are gone, so there is nothing left to fit.
 
 When a model on the shelf waits on a manifest runtime you have not approved, `ls` adds a line under the table naming the models and the command that approves it (`hedos runtimes approve <id>`). See [`hedos runtimes`](#hedos-runtimes).
 
@@ -636,7 +637,7 @@ hedos pull                                  # search interactively
 #### Choosing what to pull
 
 - The reference is a Hugging Face repo (`org/model`) or an Ollama tag (`gemma3:4b`). hedos infers the provider from the shape; `--from` forces it.
-- Omit the reference in a terminal to search. Type a query to search Hugging Face (results show download and like counts), or leave it blank for a short list of models that fit this machine's RAM. A "search again" entry in the list returns to the prompt, so you can move between recommendations and a search, or try another query, without restarting the command.
+- Omit the reference in a terminal to search. Type a query to search Hugging Face (results show download and like counts), or leave it blank for the picks [`hedos recommend`](#hedos-recommend) makes for this machine that are not on the shelf yet, each with its download size, its fit, and what to install first when the engine that serves it is missing. A "search again" entry in the list returns to the prompt, so you can move between recommendations and a search, or try another query, without restarting the command.
 - Before any bytes move, hedos shows the plan (the name, the destination, and the size) and asks `Download now?`, defaulting to yes. Outside a terminal there is no prompt.
 - Gated Hugging Face repositories need a token with access to the repo (`HF_TOKEN`, `HF_TOKEN_PATH`, or `huggingface-cli login`), and you must accept the model's terms on its Hugging Face page first.
 
@@ -726,6 +727,69 @@ Listing it changes nothing. The first command that acts on it (`pull resume`, `p
 
 Delete its directory under the pull store by hand once it is no longer wanted.
 
+### `hedos recommend`
+
+Read this machine's hardware and recommend models from hedos's catalog to pull for it.
+
+```sh
+hedos recommend [--kind <chat|code|voice|image>]... [--all]
+```
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `--kind <kind>` | Only this kind of model. Repeat it for more than one. | every kind |
+| `--all` | Every model in the catalog, each with where it stands on this machine. | the picks and what is on the shelf |
+
+```
+Apple M5 Pro · 6 performance + 12 efficiency cores · 64 GiB memory
+51.8 GiB for models on the GPU, its Metal working set
+207.9 GiB free on disk
+
+chat
+  qwen3.8:27b                               17.7 GB  fits      Qwen's newest, strong on research and long tasks.
+  gemma4:26b                                18.7 GB  fits      A mixture of experts: big-model answers at a small model's pace.
+  gemma4:31b                                20.4 GB  fits      Gemma's flagship, for a machine with room to spare.
+
+code
+  qwen2.5-coder:14b                         9.0 GB   fits      A strong local coding model with a large context.
+  qwen3.6:27b-coding                        17.8 GB  fits      Qwen3.6 tuned for agentic coding.
+  qwen3-coder:30b                           18.6 GB  fits      Agentic coding over long context. A mixture of experts.
+
+voice
+  mlx-community/Kokoro-82M-bf16             0.3 GB   on shelf  Tiny, warm text-to-speech. Instant on Apple Silicon.
+
+image
+  stabilityai/sdxl-turbo                    26.9 GB  fits      Images in one to four steps, fast enough to iterate on.
+  stabilityai/stable-diffusion-xl-base-1.0  41.2 GB  on shelf  Dependable, well-supported image workhorse.
+
+hedos pull <name> fetches one · hedos recommend --all shows every model and why
+```
+
+Nothing is pulled; `hedos pull <name>` does that. The blank search of `hedos pull` and the shelf's pull screen offer the same picks.
+
+#### What it reads
+
+- **The memory a model may use.** On Apple Silicon that is Metal's working set, the share of memory the GPU may take, which every Metal engine budgets against: 51.8 GiB of 64 on the machine above. On Linux it is each NVIDIA card's memory (from `nvidia-smi`) or AMD card's (from the driver's files). On a machine with neither it is all of memory, and models run on the processor. When none of those answer, `llama-server --list-devices` is asked, when it is on `PATH`. None of this needs a model engine installed.
+- **The engines.** Whether Ollama (installed, or its daemon answering), `llama-server`, and `uv` are there.
+- **The chip, cores and memory**, for the header, and **the free disk** where each provider's pulls land: the Ollama models directory, and the Hugging Face cache. It reads one figure when both are on the same disk.
+
+#### How the picks are made
+
+Each catalog model is judged by what serving it loads, on the engine that serves it: Ollama for every chat and code model, mlx-audio for speech (Apple Silicon only), diffusers for images. Each kind picks the largest models that run well, up to three, among those its engine can run here and that are not on the shelf. When none runs well, it picks the smallest that still fits, and when none fits, it says so (`nothing of this kind fits this machine`). A model on the shelf is listed as `on shelf` and takes no pick.
+
+A card that cannot hold a model whole is not the end of it: Ollama and llama.cpp run what does not fit on the card from memory, slower. Such a model is judged against all of memory instead whenever that reads better, so a machine with a small card is never judged worse than it would be without one, and the model reads `spills`. A card under 1 GiB (an integrated GPU's carve-out) is not counted at all.
+
+A missing engine never changes what fits. The picks stay the same, a line under the header says what to install first (once for each engine), and each pick that needs it reads `needs Ollama` or `needs uv`. A pick whose download would not fit on the free disk reads `short on disk`.
+
+With `--all`, every model is listed: the picks, `also fits` for one the larger picks passed over, `too big`, `on shelf`, and `can't run here` for one whose engine does not run on this machine.
+
+#### JSON output
+
+`--json` prints `machine` and `recommendations`:
+
+- `machine`: `os`, `arch`, `chip`, `cores` (`performance`, `efficiency`, `logical`), `memory_bytes`, `devices` (each `name`, `kind` `unified` or `discrete`, `memory_bytes`), `devices_from` (`metal`, `nvidia-smi`, `amd-sysfs`, `llama-cpp`, or `none`), `models_budget_bytes`, `free_disk` (each `provider` and the `bytes` free where its pulls land), and `engines` (`ollama`, `llama_cpp`, `uv`).
+- `recommendations`: each with `kind`, `reference`, `provider`, `name`, `blurb`, `download_bytes`, `serving_bytes`, `engine`, `status` (`pick`, `on_shelf`, `fits`, `too_large`, `no_engine`), `verdict`, `required_bytes`, `placement` (`gpu`, `spill`, `cpu`), and `notes` (`{"kind": "install", "engine", "hint"}` or `{"kind": "disk", "needs_bytes", "free_bytes"}`). Without `--all`, only the picks and what is on the shelf.
+
 ### `hedos rm`
 
 Remove an installed model.
@@ -789,13 +853,13 @@ hedos bench [model...] [flags]
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `--all` | Bench the models too big for this machine's memory too. | off |
+| `--all` | Bench the models too big for this machine too. | off |
 | `--runs <n>` | Warm runs per model, after the cold one. | `3` |
 | `--max-tokens <n>` | Cap each reply. A reply cut by the cap is still a whole measurement. | `128` |
 | `--prompt <text>` | Replace the prompt every model answers. | `Explain how a hash map works, in plain prose, in about two hundred words.` |
 | `--keep-warm` | Leave residency alone: nothing is evicted, so nothing is measured cold. | off |
 
-Name models to bench only those, whatever their size, or omit them for every chat model that fits this machine's memory.
+Name models to bench only those, whatever their size, or omit them for every chat model that fits this machine (judged as `hedos ls` judges FIT).
 
 ```sh
 hedos bench                          # every model that fits

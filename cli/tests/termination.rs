@@ -24,7 +24,13 @@ const PATIENCE: Duration = Duration::from_secs(20);
 
 /// The stand-in `llama-server`: with `HEDOS_TEST_READY` set it answers every
 /// request on its `--port` with an empty JSON object, else it never listens.
+/// Asked for its devices, as the machine probe asks where Metal says nothing,
+/// it lists none and exits without counting as a server.
 const STAND_IN: &str = r#"#!/bin/sh
+if [ "$1" = --list-devices ]; then
+  echo "Available devices:"
+  exit 0
+fi
 echo $$ >> "$HEDOS_TEST_PIDS"
 if [ -n "$HEDOS_TEST_READY" ]; then
   while [ $# -gt 0 ]; do [ "$1" = --port ] && port=$2; shift; done

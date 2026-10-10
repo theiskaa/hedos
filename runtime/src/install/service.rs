@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use kernel::fs::expand_tilde_env;
+use kernel::install::plan::DISK_HEADROOM;
 use kernel::install::reference::{hugging_face_repo, is_hugging_face_link, ollama_direct_tag};
 use kernel::install::{
     ActiveInstall, InstallAvailability, InstallBrowseResult, InstallError, InstallEvent,
@@ -24,8 +25,6 @@ use tokio::sync::{Notify, mpsc};
 
 use super::provider::{InstallProvider, InstallProviderStatus};
 
-/// Multiply a pending download by this before checking free disk, for headroom.
-const DISK_HEADROOM: f64 = 1.05;
 /// How many concluded installs keep a replayable terminal event.
 const TERMINAL_HISTORY_LIMIT: usize = 64;
 

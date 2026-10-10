@@ -340,10 +340,10 @@ fn gauge_row(
 ) -> Option<Line<'static>> {
     let needed = record.serving_size()?;
     let cells = value_width.saturating_sub(GAUGE_SUFFIX).min(GAUGE_MAX);
-    if cells == 0 || facts.memory_bytes == 0 {
+    if cells == 0 || facts.memory_bytes() == 0 {
         return None;
     }
-    let per_cell = facts.memory_bytes as f64 / cells as f64;
+    let per_cell = facts.memory_bytes() as f64 / cells as f64;
     let others: i64 = facts
         .residents
         .iter()
@@ -545,22 +545,23 @@ fn last_used(activity: &ModelActivity, now: i64) -> String {
 /// [`text::fit_parts`]' summary, then how much would be free with the rest of what
 /// is loaded still in memory; a record whose weights are gone says so first.
 fn fit_line(record: &ModelRecord, facts: &Facts) -> String {
-    let (summary, required_bytes) = text::fit_parts(record.serving_size(), facts.memory_bytes);
+    let (summary, fit) = text::fit_parts(record, &facts.machine);
     let summary = if record.state == ModelState::Missing {
         format!("weights are gone · {summary}")
     } else {
         summary
     };
-    let Some(required_bytes) = required_bytes else {
+    let Some(fit) = fit else {
         return summary;
     };
+    let required_bytes = fit.assessment.required_bytes;
     let others: i64 = facts
         .residents
         .iter()
         .filter(|resident| resident.id != record.id)
         .map(|resident| resident.bytes)
         .sum();
-    let free_after = facts.memory_bytes as i64 - others - required_bytes;
+    let free_after = fit.budget_bytes as i64 - others - required_bytes;
     let beside = if others == 0 {
         String::new()
     } else if free_after < 0 {

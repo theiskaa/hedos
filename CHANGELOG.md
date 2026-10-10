@@ -2,6 +2,15 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.5.1 - 2026-10-10
+
+- `hedos recommend` reads this machine and recommends models to pull for it (#26). It shows the chip, memory, free disk, how much memory a model may use and which engines are installed, then picks up to three models each for chat, code, voice and image: the largest that run well here. A missing engine keeps the same picks and says what to install first. `--kind` narrows the list, `--all` shows every catalog model and why it is or is not a pick, and `--json` carries all of it.
+- Fit follows the hardware a model runs on rather than total memory. On Apple Silicon that is Metal's working set, the share the GPU may take (51.8 GiB of 64 on an M5 Pro); on NVIDIA and AMD cards it is their memory, with a larger model judged against all of memory since Ollama and llama.cpp run the rest from there; elsewhere it is all of memory. `hedos ls`, the shelf, `hedos scan`, `hedos bench` and both pull surfaces judge the same way.
+- The install catalog is current: gemma4, qwen3.5, qwen3.8, gpt-oss and qwen3-coder for chat and code, Kokoro for speech, SDXL and SDXL Turbo for images, every size checked against its registry. The `hedos pull` picker and the shelf's pull screen offer the same picks as `hedos recommend`.
+- Tessera's contact extraction runs on the shelf (#27). A shipped `cli:tessera` runtime serves it through `POST /v1/extract`, `hedos run` and an extract mode on the try screen. hedos does not link Tessera: approving the runtime downloads the release it pins and checks it first.
+- Manifest runtimes can read their request on stdin, report a bad request with exit status 2 (a 400 at the gateway), and pin a release to download per platform.
+- The shelf draws on the terminal's own background, light or dark, and its header carries the gateway's pulse: whether it is on, its requests a minute, and the last day's traffic. A paste arrives whole instead of being read as keys.
+
 ## v1.5.0 - 2026-10-08
 
 Decision models are served, and the shelf is redrawn. A GGUF that answers typed questions (clef, OpenJev, Kev, lev, Laya, Julia-1) is a judge now, served by llama.cpp over its own `/v1/systemone` and reachable from `hedos run`, `hedos warm`, the gateway and the shelf, and the ones that see take images. Getting there fixed llama.cpp vision for every model, which had never been handed its projector. The shelf has a new face, with try and pull as screens of their own. The rest of the release closes the open bugs: pulls that stop when told and read the same everywhere, models sized by what serving them loads, GGUF embedders served, a gateway that stops cleanly on any signal, and a scan that says what it found.

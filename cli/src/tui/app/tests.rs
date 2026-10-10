@@ -2,7 +2,7 @@ use super::*;
 
 use crate::tui::keymap;
 use crate::tui::strip::{DONE_LINGER_TICKS, FAILED_LINGER_TICKS};
-use crate::tui::testing::{downloading, job_row, plan, resident};
+use crate::tui::testing::{self, downloading, job_row, plan, resident};
 use kernel::bench::{Phase, Status as BenchStatus};
 use kernel::install::event::InstallProgress;
 use kernel::install::pulls::PullState;
@@ -183,7 +183,7 @@ fn warm_goes_local_without_a_gateway_and_through_it_with_one() {
 #[test]
 fn warm_is_not_refused_for_a_repo_whose_quants_only_sum_too_big() {
     let mut app = app(1);
-    app.facts.memory_bytes = 16 << 30;
+    app.facts = testing::facts_with_memory(16);
     app.records[0].footprint_bytes = Some(40 << 30);
     app.records[0].serving_bytes = Some(1 << 30);
     assert!(matches!(
@@ -192,7 +192,7 @@ fn warm_is_not_refused_for_a_repo_whose_quants_only_sum_too_big() {
     ));
 
     let mut app = self::app(1);
-    app.facts.memory_bytes = 16 << 30;
+    app.facts = testing::facts_with_memory(16);
     app.records[0].footprint_bytes = Some(40 << 30);
     assert!(press(&mut app, Key::Char('w')).is_empty());
     assert_eq!(app.notice(), Some("model-0 is too big for this machine"));
@@ -368,6 +368,7 @@ fn the_pull_screen_types_until_escape_twice() {
 #[test]
 fn a_rested_row_is_planned_once() {
     let mut app = app(1);
+    app.facts.machine = testing::machine(64);
     press(&mut app, Key::Char('p'));
     app.take_dirty();
     assert!(ticks(&mut app, 1).is_empty());

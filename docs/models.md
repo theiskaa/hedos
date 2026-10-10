@@ -114,18 +114,24 @@ Each model declares what it can be asked to do. `hedos ls` shows them, and `hedo
 
 ## Fit and memory
 
-The FIT column of `hedos ls` says how a model will sit in this machine's memory. hedos estimates what the model needs as its serving size plus a quarter (working memory beyond the raw weights), then compares that with the machine's total RAM:
+The FIT column of `hedos ls` says how a model will sit on this machine. hedos estimates what the model needs as its serving size plus a quarter (working memory beyond the raw weights), then compares that with what the engine it resolved to may use here:
 
-| Verdict | `hedos ls` shows | Estimated need |
-| --- | --- | --- |
-| Runs well | `fits` | under 75% of RAM |
-| Tight fit | `tight` | 75% to 95% of RAM |
-| Too large | `too big` | 95% of RAM or more |
-| Unknown | a dash | no size to judge |
+- **On Apple Silicon**, the Metal engines (Ollama, llama.cpp, the MLX runtimes) may use Metal's working set, the share of memory the GPU may take, read from Metal itself (51.8 GiB of 64 on an M5 Pro). The PyTorch runtimes (diffusers, embeddings) allocate from all of memory.
+- **With NVIDIA or AMD cards**, Ollama and llama.cpp may use the cards' memory together, and run what does not fit from system memory, slower. A model the cards cannot hold well is judged against all of memory instead whenever that reads better, so a small card never makes a model look worse than the processor alone would. A PyTorch runtime uses the largest card. A card under 1 GiB (an integrated GPU's carve-out) is not counted.
+- **With neither**, every engine runs on the processor, from all of memory. So does a model that has not resolved to a runtime, or whose runtime is a remote endpoint or a daemon of its own.
+
+The GPU's share is already what a model may take, so it is judged more loosely than all of memory, which the system and every other program share:
+
+| Verdict | `hedos ls` shows | Of the GPU's share | Of all of memory |
+| --- | --- | --- | --- |
+| Runs well | `fits` | under 90% | under 75% |
+| Tight fit | `tight` | 90% up to, not including, all of it | 75% to 95% |
+| Too large | `too big` | all of it or more | 95% or more |
+| Unknown | a dash | no size to judge | no size to judge |
 
 A model whose weights are gone reads `gone` instead. `hedos ls --json` carries the verdict as `fit`: `runs_well`, `tight_fit`, `too_large`, or `null`.
 
-The serving size is what serving the model loads, which is not always what it takes on disk: a Hugging Face repo that holds several quantizations, or blobs from older revisions, serves one weight set (with its projector and config). The same verdict drives the "too big" count of `hedos scan` and the recommendations `hedos pull` offers.
+The serving size is what serving the model loads, which is not always what it takes on disk: a Hugging Face repo that holds several quantizations, or blobs from older revisions, serves one weight set (with its projector and config). The same verdict drives the "too big" count of `hedos scan`, the shelf screen, and the recommendations of [`hedos recommend`](cli.md#hedos-recommend), which `hedos pull` and the shelf's pull screen offer too.
 
 While serving, a memory governor decides which models stay loaded. Two settings in `[models]` shape it: `keep_warm` (how long an idle model stays loaded) and `eviction` (`strict-single` keeps one heavy model resident, `budgeted` keeps as many as fit `ram_budget_mb`). See [configuration.md](configuration.md).
 
@@ -144,7 +150,7 @@ While serving, a memory governor decides which models stay loaded. Two settings 
 
 hedos infers the provider from the shape: an `org/model` with no `:tag` is a Hugging Face repo, and anything else that reads as a tag is Ollama. `--from ollama` or `--from hf` forces it. Since a bare word is a valid Ollama tag, a model named after a `pull` subcommand is written `hedos pull -- ls`.
 
-Run `hedos pull` with no reference in a terminal to search Hugging Face by keyword, or leave the search blank to pick from a short list of models that fit your machine's RAM.
+Run `hedos pull` with no reference in a terminal to search Hugging Face by keyword, or leave the search blank to pick from the models [`hedos recommend`](cli.md#hedos-recommend) picks for this machine.
 
 ### The plan
 

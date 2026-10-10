@@ -117,7 +117,7 @@ pub fn select_model<'a>(
         )
     });
 
-    let labels = shelf_table::picker_labels(&ordered, warm, machine::memory_budget_bytes());
+    let labels = shelf_table::picker_labels(&ordered, warm, &machine::machine());
     let index = select_index(prompt, &labels)?;
     ordered
         .get(index)

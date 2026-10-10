@@ -69,7 +69,7 @@ Beside the shelf, the model card describes the selected model. Its right edge sa
 - **The name** arrives letter by letter, with a line of facts under it: runtime, store, serving size, context length, and the disk size when it differs from the serving size (`8.5 GB · ctx 32k · 34 GB on disk`).
 - **The capabilities** as chips (`chat`, `tools`, `see`, ...).
 - **MEMORY**:
-  - `fit`: the verdict and what it needs (`fits · needs 4.7 of 64 GiB`), then how much stays free beside what is already loaded, or that it won't fit beside it.
+  - `fit`: the verdict and what it needs of what its engine may use here (`fits · needs 4.7 of 51.8 GiB`, the GPU's share on Apple Silicon; see [Fit and memory](models.md#fit-and-memory)), then how much stays free beside what is already loaded, or that it won't fit beside it.
   - a gauge of the machine's memory: what the other loaded models hold, what this one needs (`held` when it is loaded, `if warmed` when it is not), and the rest.
   - `residency`: `● warm` and who holds it (`this process`, `Ollama daemon`, or `gateway :<port>`), with `unloads in 4m` when it has a warm window, or `cold`.
 - **GATEWAY**: when the model was last used through the gateway, the requests served in the last 24 hours with their p50, p90 and p99 latency, and a bar per hour for the last day. A model that never came through the gateway says `no requests through the gateway`.
@@ -386,10 +386,10 @@ The field at the top takes a name, an `owner/repo`, or a `name:tag`. Beside it, 
 The results combine:
 
 - a row for exactly what you typed, when it is a full `owner/repo` or `name:tag` (noted `as typed`),
-- the catalog's recommendations that fit this machine's memory, narrowed by the query; with nothing typed, on the `all` kind, they are grouped under CHAT, CODE, SPEECH and IMAGE,
+- the catalog's recommendations for this machine, the picks of [`hedos recommend`](cli.md#hedos-recommend) and the ones already on the shelf, narrowed by the query; with nothing typed, on the `all` kind, they are grouped under CHAT, CODE, SPEECH and IMAGE. A pick whose engine is not installed says what it needs after its note (`needs Ollama`),
 - Hugging Face hits, with their download and like counts.
 
-The list holds up to twelve matches, and Hugging Face hits always keep their places.
+The list holds up to twelve matches, besides the catalog's models already on the shelf, and Hugging Face hits always keep their places.
 
 ### Kinds
 
@@ -397,11 +397,11 @@ Under the field, chips choose a kind: `all`, `chat`, `code`, `speech`, `image`, 
 
 ### The results
 
-The results card says what it lists (`recommended for 64 GiB`, `chat models`, or `matching “qwen”`). Each row shows:
+The results card says what it lists (`recommended for Apple M5 Pro · 51.8 GiB`, the chip and what it can give a model; `chat models`; or `matching “qwen”`). Each row shows:
 
 - a mark: `●` already on the shelf, `✕` on the shelf but its weights are gone, `○` not on the shelf, or a spinner while it downloads,
 - the reference, where it comes from (`ollama` or `hf`), and its size,
-- a gauge of how much of the machine's memory it takes, with `fits`, `tight` or `too big`, `pull again` for a model whose weights are gone, `✓ on shelf`, or a download's percentage,
+- a gauge of how much of what its engine may use here it takes, with `fits`, `tight` or `too big`, `pull again` for a model whose weights are gone, `✓ on shelf`, or a download's percentage,
 - the hub's download count, on a wide card.
 
 ### The preview
@@ -409,7 +409,7 @@ The results card says what it lists (`recommended for 64 GiB`, `chat models`, or
 The preview follows the cursor. It sits beside the results from 100 columns, and under them on a narrower terminal. It shows:
 
 - the owner or registry, the name, and its kind and size, with the catalog's note about it,
-- **FIT**: the verdict, what it needs of the machine's memory, and a gauge of what is loaded, what this model would take, and what would be left,
+- **FIT**: the verdict, what it needs of what its engine may use here, and a gauge of what is loaded, what this model would take, and what would be left,
 - **FILES** (Hugging Face) or **LAYERS** (Ollama): the plan, once it has come back. That is the files or layers it fetches with their sizes, where they land (`to`), and, when some of it is already on disk, how much is left to get.
 
 A plan is asked for each row the cursor rests on, not for the rows you scroll past (`planned once the cursor rests here`, then `planning`). A plan that fails is asked again only once you move away and come back. A gated repository says so and needs a Hugging Face token first.

@@ -6,36 +6,32 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use kernel::install::catalog::{InstallCatalogEntry, InstallCategory, recommended};
+use kernel::install::catalog::InstallCategory;
+use kernel::install::installed::{installed_names, is_installed};
 use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::install::provider::InstallProviderId;
+use kernel::install::recommend::{Ask, Recommendation, Status, recommend};
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
+use kernel::machine::{Engine, Fit, Machine};
 use kernel::profiles::FitVerdict;
 use kernel::records::{ModelRecord, ModelState};
 
 use super::edit::LineEdit;
 use super::event::Key;
 use super::text;
-use crate::support::install::{installed_names, is_installed};
-use crate::support::shelf_table::verdict;
+use crate::support::recommend::notes_label;
 
 /// How many quiet ticks after a keystroke before the typed query is searched.
 pub(crate) const SEARCH_DEBOUNCE_TICKS: u64 = 2;
 /// How many ticks the cursor rests on a row before its plan is asked for:
 /// long enough that scrolling past a row asks nothing.
 pub(crate) const PLAN_SETTLE_TICKS: u64 = 2;
-/// The most matches the list keeps; search hits always keep their places.
-/// The grouped catalog can fill it: up to three per category.
+/// The most matches the list keeps, besides the catalog's models already on
+/// the shelf; search hits always keep their places. The catalog's picks can
+/// fill it: up to three per category.
 pub(crate) const MAX_MATCHES: usize = 12;
 /// Hugging Face hits requested per search.
 pub(crate) const SEARCH_LIMIT: usize = 8;
-/// The catalog's groups, in the order the list shows them.
-pub(crate) const CATEGORIES: [InstallCategory; 4] = [
-    InstallCategory::Chat,
-    InstallCategory::Code,
-    InstallCategory::Voice,
-    InstallCategory::Image,
-];
 
 /// Which models the list shows: all of them, or one of the catalog's kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,8 +86,12 @@ pub enum OnShelf {
 pub struct Offer {
     pub provider: InstallProviderId,
     pub reference: String,
-    /// The size in bytes when the catalog knows it; search hits don't.
+    /// What serving it loads, in bytes, when the catalog knows it; search
+    /// hits don't.
     pub bytes: Option<i64>,
+    /// The engine that would serve it: the catalog's, Ollama for a typed
+    /// tag, and unknown for anything from Hugging Face it has not planned.
+    pub engine: Engine,
     /// A one-line note: the catalog blurb, or the hit's popularity.
     pub note: String,
     /// The catalog kind; search hits and a typed reference have none.
@@ -110,6 +110,7 @@ impl Offer {
             provider,
             reference,
             bytes: None,
+            engine: Engine::Other,
             note,
             category: None,
             pulling: false,
@@ -118,16 +119,19 @@ impl Offer {
         }
     }
 
-    fn from_catalog(entry: &InstallCatalogEntry) -> Self {
+    fn from_catalog(rec: &Recommendation) -> Self {
+        let entry = &rec.entry;
+        let notes = notes_label(&rec.notes);
+        let note = if notes.is_empty() {
+            entry.blurb.clone()
+        } else {
+            format!("{} · {notes}", entry.blurb)
+        };
         Self {
-            // The catalog's sizes are the hubs' decimal gigabytes.
-            bytes: Some((entry.size_gb * 1e9) as i64),
+            bytes: Some(entry.serving_size()),
+            engine: entry.engine,
             category: Some(entry.category),
-            ..Self::new(
-                entry.provider.clone(),
-                entry.reference.clone(),
-                entry.blurb.clone(),
-            )
+            ..Self::new(entry.provider.clone(), entry.reference.clone(), note)
         }
     }
 
@@ -148,16 +152,18 @@ impl Offer {
     /// A row for a reference typed in full: `owner/repo` or `name:tag`. A bare
     /// word is a search, not a tag.
     fn direct(query: &str) -> Option<Self> {
-        let (provider, reference) = match hugging_face_repo(query) {
-            Some(repo) => (InstallProviderId::huggingface(), repo),
-            None => (InstallProviderId::ollama(), ollama_direct_tag(query)?),
+        let (provider, reference, engine) = match hugging_face_repo(query) {
+            Some(repo) => (InstallProviderId::huggingface(), repo, Engine::Other),
+            None => (
+                InstallProviderId::ollama(),
+                ollama_direct_tag(query)?,
+                Engine::Ollama,
+            ),
         };
-        Some(Self::new(provider, reference, DIRECT_NOTE.to_owned()))
-    }
-
-    /// How the model fits in `memory_bytes`, when its size is known.
-    pub fn fit(&self, memory_bytes: u64) -> Option<FitVerdict> {
-        verdict(self.bytes, memory_bytes)
+        Some(Self {
+            engine,
+            ..Self::new(provider, reference, DIRECT_NOTE.to_owned())
+        })
     }
 
     fn key(&self) -> PlanKey {
@@ -247,7 +253,7 @@ pub struct PullModal {
     gone: HashSet<String>,
     /// Lowercased references with a pull already running.
     pulling: HashSet<String>,
-    memory_bytes: u64,
+    machine: Machine,
     plans: HashMap<PlanKey, Plan>,
     /// The tick the selection last moved on, for when its plan comes due.
     moved_at: u64,
@@ -267,7 +273,7 @@ pub enum ListingRow {
 impl PullModal {
     /// A fresh screen offering the machine's recommendations; `pulling`
     /// names the references already downloading.
-    pub fn open(shelf: &[ModelRecord], memory_bytes: u64, pulling: &[String]) -> Self {
+    pub fn open(shelf: &[ModelRecord], machine: &Machine, pulling: &[String]) -> Self {
         let mut modal = Self {
             input: LineEdit::default(),
             matches: Vec::new(),
@@ -282,7 +288,7 @@ impl PullModal {
             installed: installed_names(shelf),
             gone: gone_names(shelf),
             pulling: lowercased(pulling),
-            memory_bytes,
+            machine: machine.clone(),
             plans: HashMap::new(),
             moved_at: 0,
             armed: None,
@@ -349,9 +355,42 @@ impl PullModal {
         })
     }
 
-    /// How `offer` fits this machine, by [`Self::size`].
+    /// How `offer` fits this machine under its engine, by [`Self::size`],
+    /// and the memory it was judged against.
+    pub fn assessment(&self, offer: &Offer) -> Option<Fit> {
+        self.machine.fit_on(self.engine(offer), self.size(offer))
+    }
+
+    /// The memory `offer` is judged against, by [`Self::assessment`], or all
+    /// of memory while its size is unknown.
+    pub fn budget_bytes(&self, offer: &Offer) -> u64 {
+        self.assessment(offer)
+            .map_or(self.machine.memory_bytes, |fit| fit.budget_bytes)
+    }
+
+    /// How `offer` fits this machine, by [`Self::assessment`].
     pub fn fit(&self, offer: &Offer) -> Option<FitVerdict> {
-        verdict(self.size(offer), self.memory_bytes)
+        self.assessment(offer).map(|fit| fit.assessment.verdict)
+    }
+
+    /// The engine `offer` would run on: the one it knows, or llama.cpp for
+    /// one whose plan fetches a GGUF. Anything else from Hugging Face is
+    /// judged against all of memory until it is pulled and resolved.
+    fn engine(&self, offer: &Offer) -> Engine {
+        if offer.engine != Engine::Other {
+            return offer.engine;
+        }
+        match self.plans.get(&offer.key()) {
+            Some(Plan::Ready(plan))
+                if plan
+                    .files
+                    .iter()
+                    .any(|file| file.path.to_lowercase().ends_with(".gguf")) =>
+            {
+                Engine::LlamaCpp
+            }
+            _ => Engine::Other,
+        }
     }
 
     /// Whether `enter` is waiting on `offer`'s plan.
@@ -364,9 +403,9 @@ impl PullModal {
         &self.search
     }
 
-    /// The machine's memory, which the fits are judged against.
-    pub fn memory_bytes(&self) -> u64 {
-        self.memory_bytes
+    /// The machine the fits are judged on.
+    pub fn machine(&self) -> &Machine {
+        &self.machine
     }
 
     /// Edit the query with `key` on tick `now`; a change re-matches and
@@ -483,7 +522,7 @@ impl PullModal {
         if (typing && offer.note == DIRECT_NOTE)
             || offer.shelf == Some(OnShelf::Present)
             || offer.pulling
-            || offer.fit(self.memory_bytes) == Some(FitVerdict::TooLarge)
+            || self.fit(offer) == Some(FitVerdict::TooLarge)
             || self.plans.contains_key(&offer.key())
         {
             return None;
@@ -552,10 +591,10 @@ impl PullModal {
         }
         if self.fit(&offer) == Some(FitVerdict::TooLarge) {
             return Err(format!(
-                "{} needs {} GiB; this machine has {}",
+                "{} needs {} GiB; this machine can give a model {}",
                 offer.reference,
                 text::gib(self.size(&offer).unwrap_or(0)),
-                text::gib(self.memory_bytes as i64)
+                text::gib(self.budget_bytes(&offer) as i64)
             ));
         }
         let key = offer.key();
@@ -594,18 +633,25 @@ impl PullModal {
             .filter(|row| is_installed(&row.reference, &self.installed))
             .map(|row| row.reference.clone());
         matches.extend(direct);
-        matches.extend(
-            CATEGORIES
-                .iter()
-                .flat_map(|category| recommended(Some(*category), self.memory_bytes, None))
-                .filter(|entry| {
-                    query.is_empty()
-                        || entry.reference.to_lowercase().contains(&query)
-                        || entry.name.to_lowercase().contains(&query)
-                })
-                .map(|entry| Offer::from_catalog(&entry))
-                .take(catalog_room),
-        );
+        let ask = Ask {
+            categories: &[],
+            installed: &self.installed,
+            all: false,
+        };
+        let mut room = catalog_room;
+        for rec in recommend(&self.machine, &ask).iter().filter(|rec| {
+            query.is_empty()
+                || rec.entry.reference.to_lowercase().contains(&query)
+                || rec.entry.name.to_lowercase().contains(&query)
+        }) {
+            if rec.status == Status::Pick {
+                if room == 0 {
+                    continue;
+                }
+                room -= 1;
+            }
+            matches.push(Offer::from_catalog(rec));
+        }
         matches.extend(self.hits.iter().cloned());
         let mut seen = HashSet::new();
         matches
@@ -634,7 +680,7 @@ impl PullModal {
     /// test that starts from a ready preview.
     #[cfg(test)]
     pub fn ready(plan: InstallPlan) -> Self {
-        let mut modal = Self::open(&[], 0, &[]);
+        let mut modal = Self::open(&[], &Machine::default(), &[]);
         let offer = Offer::new(plan.provider.clone(), plan.reference.clone(), String::new());
         modal.plans.insert(offer.key(), Plan::Ready(plan));
         modal.all = vec![offer.clone()];

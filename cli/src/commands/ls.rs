@@ -3,7 +3,7 @@
 //! running gateway).
 
 use clap::Args;
-use kernel::profiles::FitVerdict;
+use kernel::machine::Machine;
 use kernel::records::{Capability, ModelRecord, ModelState};
 use runtime::manifests::{host_consent, servable_models};
 
@@ -40,9 +40,9 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
         shelf.retain(|record| record.capabilities.contains(&capability));
     }
 
-    let budget = machine::memory_budget_bytes();
+    let machine = machine::machine();
     if out.is_json() {
-        out.json(&shelf_json(&shelf, budget));
+        out.json(&shelf_json(&shelf, &machine));
         return Ok(());
     }
 
@@ -53,7 +53,7 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
 
     let warm = session.warm_set_anywhere(&shelf).await;
     let records: Vec<&_> = shelf.iter().collect();
-    out.line(&shelf_table::table(&records, &warm, budget));
+    out.line(&shelf_table::table(&records, &warm, &machine));
     for hint in approval_hints(&session, &shelf) {
         out.line(&hint);
     }
@@ -94,21 +94,21 @@ fn approval_hints(session: &Session, shelf: &[ModelRecord]) -> Vec<String> {
 /// disk, and `serving_bytes` when the store measured serving apart from it)
 /// plus a `fit` slug (`runs_well`/`tight_fit`/`too_large`, or `null` when the
 /// size is unknown or the weights are gone), judged from what serving the
-/// model loads against `total_memory_bytes`.
+/// model loads on `machine`, under the engine it resolved to.
 ///
 /// A model whose weights are gone has no fit for the same reason the table
 /// reads `gone` in that column: there is nothing left to fit, and a verdict
 /// would be the row's one healthy-looking claim about a model that cannot run.
 /// The record's own `state` field says which it is.
-fn shelf_json(shelf: &[ModelRecord], total_memory_bytes: u64) -> serde_json::Value {
+fn shelf_json(shelf: &[ModelRecord], machine: &Machine) -> serde_json::Value {
     let models: Vec<serde_json::Value> = shelf
         .iter()
         .map(|record| {
             let mut value = serde_json::to_value(record).unwrap_or_default();
             let fit = (record.state != ModelState::Missing)
-                .then(|| FitVerdict::assess(record.serving_size(), total_memory_bytes))
+                .then(|| machine.fit_record(record))
                 .flatten()
-                .map(|assessment| assessment.verdict.as_str());
+                .map(|fit| fit.assessment.verdict.as_str());
             if let Some(object) = value.as_object_mut() {
                 // serde_json maps `None` to JSON `null`, `Some(slug)` to a string.
                 object.insert("fit".to_owned(), fit.into());
@@ -140,7 +140,10 @@ mod tests {
     #[test]
     fn json_injects_a_fit_slug_and_keeps_every_record_field() {
         let record = model("gemma", Some(GIB as i64));
-        let value = shelf_json(std::slice::from_ref(&record), 16 * GIB);
+        let value = shelf_json(
+            std::slice::from_ref(&record),
+            &Machine::with_memory(16 * GIB),
+        );
         let enriched = value[0].as_object().expect("record object");
         assert_eq!(
             enriched.get("fit").and_then(|fit| fit.as_str()),
@@ -164,7 +167,7 @@ mod tests {
     fn json_withholds_a_fit_from_a_model_whose_weights_are_gone() {
         let mut record = model("tiny", Some(GIB as i64));
         record.state = ModelState::Missing;
-        let value = shelf_json(&[record], 16 * GIB);
+        let value = shelf_json(&[record], &Machine::with_memory(16 * GIB));
         assert!(value[0]["fit"].is_null());
         assert_eq!(value[0]["state"], "missing", "and says why");
     }
@@ -173,7 +176,7 @@ mod tests {
     fn json_fit_reads_the_serving_figure() {
         let mut record = model("multi", Some(40 * GIB as i64));
         record.serving_bytes = Some(GIB as i64);
-        let value = shelf_json(&[record], 16 * GIB);
+        let value = shelf_json(&[record], &Machine::with_memory(16 * GIB));
         assert_eq!(value[0]["fit"], "runs_well");
         assert_eq!(value[0]["serving_bytes"], GIB as i64);
         assert_eq!(value[0]["footprint_bytes"], 40 * GIB as i64);
@@ -181,7 +184,7 @@ mod tests {
 
     #[test]
     fn json_fit_is_null_when_the_footprint_is_unknown() {
-        let value = shelf_json(&[model("mystery", None)], 16 * GIB);
+        let value = shelf_json(&[model("mystery", None)], &Machine::with_memory(16 * GIB));
         assert!(value[0].get("fit").expect("fit key present").is_null());
     }
 }

@@ -87,7 +87,7 @@ fn draw_machine(frame: &mut Frame, area: Rect, app: &App, stacked: bool) {
     let facts = &app.facts;
     card("machine")
         .right(vec![Span::styled(
-            format!("{} GiB", text::gib(facts.memory_bytes as i64)),
+            format!("{} GiB", text::gib(facts.memory_bytes() as i64)),
             DIM,
         )])
         .render(area, frame.buffer_mut());
@@ -245,7 +245,7 @@ fn memory_line(
     spans.push(Span::raw("  "));
     spans.push(Span::styled(text::gib(facts.resident_bytes()), BOLD));
     spans.push(Span::styled(
-        format!(" of {} GiB", text::gib(facts.memory_bytes as i64)),
+        format!(" of {} GiB", text::gib(facts.memory_bytes() as i64)),
         SOFT,
     ));
     clipped(spans, width)
@@ -254,7 +254,7 @@ fn memory_line(
 /// One run per resident, sized by its share of the machine as it shows
 /// now, then the track.
 fn memory_bar(facts: &Facts, shown: &[(String, i64)], bar_width: usize) -> Vec<Span<'static>> {
-    let total = facts.memory_bytes.max(1) as f64;
+    let total = facts.memory_bytes().max(1) as f64;
     let mut spans = Vec::new();
     let mut used = 0usize;
     for (index, (_, bytes)) in shown.iter().enumerate() {

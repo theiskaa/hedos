@@ -7,6 +7,7 @@ pub mod image;
 pub mod launch;
 pub mod ls;
 pub mod pull;
+pub mod recommend;
 pub mod rm;
 pub mod run;
 pub mod runtimes;

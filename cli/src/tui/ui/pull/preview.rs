@@ -119,7 +119,7 @@ fn name_line(offer: &Offer, modal: &PullModal, look: &Look, width: usize) -> Lin
 
 /// `fits · needs 7 of 64 GiB`, the verdict bold in its colour.
 fn fit_line(offer: &Offer, modal: &PullModal, width: usize) -> Line<'static> {
-    let memory = modal.memory_bytes();
+    let memory = modal.budget_bytes(offer);
     let (word, style) = match (offer.shelf, modal.fit(offer)) {
         (Some(OnShelf::Present), _) => ("on the shelf", SOFT),
         (_, Some(FitVerdict::TooLarge)) => ("too big", DIM),
@@ -133,8 +133,8 @@ fn fit_line(offer: &Offer, modal: &PullModal, width: usize) -> Line<'static> {
             text::clip(
                 &format!(
                     " · needs {} of {} GiB",
-                    text::gib(bytes).trim_end_matches(".0"),
-                    text::gib(memory as i64).trim_end_matches(".0")
+                    text::gib_short(bytes),
+                    text::gib_short(memory as i64)
                 ),
                 width.saturating_sub(word.width()),
             ),
@@ -205,7 +205,7 @@ fn gauge(
     look: &Look,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let memory = modal.memory_bytes();
+    let memory = modal.budget_bytes(offer);
     let Some(bytes) = modal.size(offer).filter(|_| memory > 0 && width > 0) else {
         return Vec::new();
     };
@@ -408,14 +408,11 @@ fn button(
         muted(frame, "already on the shelf");
         return "esc, then select it on the shelf".to_owned();
     }
-    let memory = modal.memory_bytes();
+    let memory = modal.budget_bytes(offer);
     if modal.fit(offer) == Some(FitVerdict::TooLarge) {
         muted(
             frame,
-            &format!(
-                "too big for {} GiB",
-                text::gib(memory as i64).trim_end_matches(".0")
-            ),
+            &format!("too big for {} GiB", text::gib_short(memory as i64)),
         );
         return "a smaller quantization of it may fit".to_owned();
     }

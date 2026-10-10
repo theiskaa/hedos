@@ -9,6 +9,7 @@ pub mod discovery;
 pub mod fs;
 pub mod install;
 pub mod jobs;
+pub mod machine;
 pub mod manifests;
 pub mod persistence;
 pub mod profiles;

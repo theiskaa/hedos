@@ -11,6 +11,7 @@ use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
 use kernel::install::pulls::{PullJob, PullState, PullStatus};
+use kernel::machine::{Engines, Machine, Os};
 use kernel::records::{Capability, Modality, ModelRecord, ModelSource, SourceKind};
 use kernel::removal::ModelDeletionPreview;
 use ratatui::text::Line;
@@ -51,10 +52,25 @@ pub fn resident_with_bytes(id: &str, holder: Holder, bytes: i64) -> Resident {
     }
 }
 
+/// An Apple Silicon machine with `gib` GiB of memory, every engine installed,
+/// and no Metal reading, so each engine is judged against all of its memory.
+pub fn machine(gib: u64) -> Machine {
+    Machine {
+        os: Os::Macos,
+        arch: "aarch64".to_owned(),
+        engines: Engines {
+            ollama: true,
+            llama_cpp: true,
+            uv: true,
+        },
+        ..Machine::with_memory(gib << 30)
+    }
+}
+
 /// A machine with `gib` GiB of memory and nothing else known about it.
 pub fn facts_with_memory(gib: u64) -> Facts {
     Facts {
-        memory_bytes: gib << 30,
+        machine: machine(gib),
         ..Facts::default()
     }
 }

@@ -11,5 +11,5 @@ pub use context_budget::{
     BUILTIN_CONTEXT_WINDOW, COMPLETION_FLOOR, Verdict, assess, effective_window, estimated_tokens,
     prompt_characters, stored_context_length,
 };
-pub use fit::{FitAssessment, FitTally, FitVerdict};
+pub use fit::{FitAssessment, FitTally, FitVerdict, Scale};
 pub use profile::{ModelProfile, ProfileRegistry, context_length_spec};

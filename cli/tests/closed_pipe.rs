@@ -13,8 +13,14 @@ const POLL: Duration = Duration::from_millis(20);
 const PATIENCE: Duration = Duration::from_secs(20);
 
 /// The stand-in `llama-server`: answers `/health`, and streams a chat reply
-/// that never ends on `/v1/chat/completions`.
+/// that never ends on `/v1/chat/completions`. Asked for its devices, as the
+/// machine probe asks where Metal says nothing, it lists none and exits
+/// without counting as a server.
 const STAND_IN: &str = r#"#!/bin/sh
+if [ "$1" = --list-devices ]; then
+  echo "Available devices:"
+  exit 0
+fi
 echo $$ >> "$HEDOS_TEST_PIDS"
 while [ $# -gt 0 ]; do [ "$1" = --port ] && port=$2; shift; done
 exec /usr/bin/python3 -I -c '

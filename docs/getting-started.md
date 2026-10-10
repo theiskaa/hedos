@@ -73,7 +73,7 @@ builtin             1
 When it applies, the summary also lists:
 
 - any model that can go because another model already keeps every file it holds, with the space removing it frees,
-- how many models are too big for this machine's memory,
+- how many models are too big for this machine,
 - any issues it found, as `issue:` lines.
 
 Nothing is moved or copied. The registry only records where each model's files already sit.
@@ -92,7 +92,7 @@ hedos ls
 ○  Qwen2.5-0.5B-Instruct-4bit  python:mlx-lm  huggingface-cache  fits  chat, complete, tools
 ```
 
-Each row is one model: its name, the runtime it resolved to, the store it came from, whether it fits this machine's memory (`fits`, `tight`, or `too big`), and what it can do.
+Each row is one model: its name, the runtime it resolved to, the store it came from, whether it fits in what its runtime may use here (`fits`, `tight`, or `too big`; on Apple Silicon, the GPU's share of memory), and what it can do.
 
 The first column is the model's state: `●` is warm (loaded right now), `○` is cold, and `✕` means its weights are gone from disk. A model with no runtime that can serve it shows a dash in the runtime column.
 
@@ -150,6 +150,14 @@ What to press first:
 The footer only lists the keys that apply to the model under the cursor. If the shelf is empty, the first screen offers to pull a model. The [shelf guide](shelf.md) covers the whole screen.
 
 ## Install something new
+
+Not sure what this machine can run? Ask:
+
+```sh
+hedos recommend
+```
+
+It reads the hardware (on Apple Silicon, the share of memory the GPU may give a model; on Linux, your NVIDIA or AMD cards) and lists the models worth pulling for each kind, chat, code, voice and image, with what to install first if an engine they need is missing. See [`hedos recommend`](cli.md#hedos-recommend).
 
 ```sh
 hedos pull qwen2.5:3b

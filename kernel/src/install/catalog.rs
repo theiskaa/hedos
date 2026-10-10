@@ -1,10 +1,9 @@
-//! A curated catalog of models worth installing, grouped by task and filtered by
-//! how well they fit the machine's memory.
-
-use std::collections::HashSet;
+//! A curated catalog of models worth installing, grouped by task. Each entry
+//! names the engine that serves it, what a pull downloads, and what serving it
+//! loads, so [`recommend`](super::recommend) can judge it against the machine.
 
 use crate::install::provider::InstallProviderId;
-use crate::profiles::{FitAssessment, FitVerdict};
+use crate::machine::{Engine, Fit, Machine};
 
 /// The task a catalog entry is meant for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,6 +19,14 @@ pub enum InstallCategory {
 }
 
 impl InstallCategory {
+    /// Every category, in the order they are shown.
+    pub const ALL: [InstallCategory; 4] = [
+        InstallCategory::Chat,
+        InstallCategory::Code,
+        InstallCategory::Voice,
+        InstallCategory::Image,
+    ];
+
     /// The stable string form.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -29,9 +36,17 @@ impl InstallCategory {
             InstallCategory::Image => "image",
         }
     }
+
+    /// The category named `name` (its stable string form), if any.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.as_str().eq_ignore_ascii_case(name))
+    }
 }
 
-/// One recommendable model: where it comes from, how big it is, and what it's for.
+/// One recommendable model: where it comes from, how big it is, what it's for,
+/// and what serves it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstallCatalogEntry {
     /// The provider that installs it.
@@ -42,28 +57,53 @@ pub struct InstallCatalogEntry {
     pub name: String,
     /// A one-line description.
     pub blurb: String,
-    /// The approximate download/footprint size in gigabytes.
-    pub size_gb: f64,
+    /// What a pull downloads, in bytes: the sum of an Ollama manifest's
+    /// layers, or the files a Hugging Face pull selects.
+    pub download_bytes: u64,
+    /// What serving it loads, in bytes, as the shelf measures it once pulled.
+    /// A repo can hold several copies of its weights (a single-file checkpoint
+    /// beside the diffusers folders, fp16 beside full precision), and serving
+    /// loads one, so this can be far below `download_bytes`.
+    pub serving_bytes: u64,
     /// The task it's meant for.
     pub category: InstallCategory,
+    /// The engine that serves it once installed.
+    pub engine: Engine,
 }
 
 impl InstallCatalogEntry {
-    fn new(
-        provider: InstallProviderId,
-        reference: &str,
-        name: &str,
-        blurb: &str,
-        size_gb: f64,
-        category: InstallCategory,
-    ) -> Self {
+    /// An Ollama tag: what it downloads is what it serves.
+    fn ollama(reference: &str, blurb: &str, bytes: u64, category: InstallCategory) -> Self {
         Self {
-            provider,
+            provider: InstallProviderId::ollama(),
             reference: reference.to_owned(),
-            name: name.to_owned(),
+            name: reference.to_owned(),
             blurb: blurb.to_owned(),
-            size_gb,
+            download_bytes: bytes,
+            serving_bytes: bytes,
             category,
+            engine: Engine::Ollama,
+        }
+    }
+
+    /// A Hugging Face repo, `(download, serving)` bytes apart.
+    fn hugging_face(
+        reference: &str,
+        blurb: &str,
+        (download_bytes, serving_bytes): (u64, u64),
+        category: InstallCategory,
+        engine: Engine,
+    ) -> Self {
+        let name = reference.rsplit('/').next().unwrap_or(reference);
+        Self {
+            provider: InstallProviderId::huggingface(),
+            reference: reference.to_owned(),
+            name: name.to_lowercase(),
+            blurb: blurb.to_owned(),
+            download_bytes,
+            serving_bytes,
+            category,
+            engine,
         }
     }
 
@@ -72,184 +112,138 @@ impl InstallCatalogEntry {
         format!("{}|{}", self.provider.as_str(), self.reference)
     }
 
-    /// How well this model fits in `total_memory_bytes`, its footprint being
-    /// `size_gb` decimal gigabytes as the hubs state them, or `None` if the
-    /// size is unusable.
-    pub fn fit(&self, total_memory_bytes: u64) -> Option<FitAssessment> {
-        FitVerdict::assess(Some((self.size_gb * 1e9) as i64), total_memory_bytes)
+    /// What a pull downloads, as the byte count a record carries.
+    pub fn download_size(&self) -> i64 {
+        i64::try_from(self.download_bytes).unwrap_or(i64::MAX)
+    }
+
+    /// What serving it loads, as the byte count a record carries.
+    pub fn serving_size(&self) -> i64 {
+        i64::try_from(self.serving_bytes).unwrap_or(i64::MAX)
+    }
+
+    /// How this model fits on `machine` under its engine, judged by what
+    /// serving it loads, or `None` when the engine cannot run there.
+    pub fn fit(&self, machine: &Machine) -> Option<Fit> {
+        machine.fit(self.engine, Some(self.serving_size()))
     }
 }
 
-/// The full curated catalog.
+/// The full curated catalog, smallest first within each category.
+///
+/// Every tag and repo here was checked against its registry, and each download
+/// size is what that registry lists; `catalog_sizes_match_the_registries` in
+/// the runtime's tests checks them again (it is ignored by default, since it
+/// reads the network). Each serving size is what the shelf measures for the
+/// pulled repo, pinned by `catalog_servable` over the repo's captured listing.
 pub fn entries() -> Vec<InstallCatalogEntry> {
-    let ollama = InstallProviderId::ollama();
-    let hf = InstallProviderId::huggingface();
+    use InstallCategory::{Chat, Code, Image, Voice};
     vec![
-        InstallCatalogEntry::new(
-            ollama.clone(),
-            "gemma3:1b",
-            "gemma3:1b",
-            "Tiny and instant. Always fits.",
-            0.8,
-            InstallCategory::Chat,
+        InstallCatalogEntry::ollama(
+            "qwen3.5:0.8b",
+            "Tiny and instant. Fits anywhere.",
+            1_322_069_043,
+            Chat,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
-            "llama3.2:3b",
-            "llama3.2:3b",
-            "Fast general chat on modest memory.",
-            2.0,
-            InstallCategory::Chat,
+        InstallCatalogEntry::ollama(
+            "qwen3.5:4b",
+            "Quick everyday chat on modest memory.",
+            3_324_173_757,
+            Chat,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
-            "gemma3:4b",
-            "gemma3:4b",
-            "Fast everyday chat. Runs comfortably on any Mac.",
-            3.3,
-            InstallCategory::Chat,
+        InstallCatalogEntry::ollama(
+            "gemma4:e4b",
+            "Fast everyday chat, light on memory.",
+            6_583_656_264,
+            Chat,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
-            "gemma3:12b",
-            "gemma3:12b",
+        InstallCatalogEntry::ollama(
+            "gemma4:12b",
             "Stronger reasoning, still nimble.",
-            8.1,
-            InstallCategory::Chat,
+            8_021_618_699,
+            Chat,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
-            "gemma3:27b",
-            "gemma3:27b",
-            "Flagship reasoning with room to spare on a big Mac.",
-            17.0,
-            InstallCategory::Chat,
+        InstallCatalogEntry::ollama(
+            "gpt-oss:20b",
+            "OpenAI's open model. A mixture of experts, quick for its size.",
+            13_793_441_427,
+            Chat,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
-            "llama3.3:70b",
-            "llama3.3:70b",
-            "The big one, at Q4. Leaves a little headroom, not much.",
-            40.0,
-            InstallCategory::Chat,
+        InstallCatalogEntry::ollama(
+            "qwen3.8:27b",
+            "Qwen's newest, strong on research and long tasks.",
+            17_741_871_939,
+            Chat,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
+        InstallCatalogEntry::ollama(
+            "gemma4:26b",
+            "A mixture of experts: big-model answers at a small model's pace.",
+            18_731_025_387,
+            Chat,
+        ),
+        InstallCatalogEntry::ollama(
+            "gemma4:31b",
+            "Gemma's flagship, for a machine with room to spare.",
+            20_385_457_992,
+            Chat,
+        ),
+        InstallCatalogEntry::ollama(
+            "gpt-oss:120b",
+            "The big one. Wants a lot of memory.",
+            65_369_819_443,
+            Chat,
+        ),
+        InstallCatalogEntry::ollama(
             "qwen2.5-coder:7b",
-            "qwen2.5-coder:7b",
-            "Everyday coding help that fits most Macs.",
-            4.7,
-            InstallCategory::Code,
+            "Everyday coding help that fits most machines.",
+            4_683_087_074,
+            Code,
         ),
-        InstallCatalogEntry::new(
-            ollama.clone(),
+        InstallCatalogEntry::ollama(
             "qwen2.5-coder:14b",
-            "qwen2.5-coder:14b",
-            "Strong local coding model with a large context.",
-            9.0,
-            InstallCategory::Code,
+            "A strong local coding model with a large context.",
+            8_988_123_810,
+            Code,
         ),
-        InstallCatalogEntry::new(
-            ollama,
-            "deepseek-coder-v2:16b",
-            "deepseek-coder-v2:16b",
-            "Sharp on repository-scale edits and refactors.",
-            9.4,
-            InstallCategory::Code,
+        InstallCatalogEntry::ollama(
+            "qwen3.6:27b-coding",
+            "Qwen3.6 tuned for agentic coding.",
+            17_769_076_721,
+            Code,
         ),
-        InstallCatalogEntry::new(
-            hf.clone(),
-            "hexgrad/Kokoro-82M",
-            "kokoro-82m",
-            "Tiny, warm text-to-speech. Instant on any Mac.",
-            0.3,
-            InstallCategory::Voice,
+        InstallCatalogEntry::ollama(
+            "qwen3-coder:30b",
+            "Agentic coding over long context. A mixture of experts.",
+            18_556_700_222,
+            Code,
         ),
-        InstallCatalogEntry::new(
-            hf.clone(),
-            "openai/whisper-large-v3",
-            "whisper-large-v3",
-            "Best-in-class speech-to-text for dictation.",
-            1.5,
-            InstallCategory::Voice,
+        InstallCatalogEntry::hugging_face(
+            "mlx-community/Kokoro-82M-bf16",
+            "Tiny, warm text-to-speech. Instant on Apple Silicon.",
+            (332_922_211, 327_117_503),
+            Voice,
+            Engine::Mlx,
         ),
-        InstallCatalogEntry::new(
-            hf.clone(),
-            "black-forest-labs/FLUX.1-schnell",
-            "flux.1-schnell",
-            "Quick, striking image generation in a few steps.",
-            24.0,
-            InstallCategory::Image,
+        InstallCatalogEntry::hugging_face(
+            "stabilityai/sdxl-turbo",
+            "Images in one to four steps, fast enough to iterate on.",
+            (26_927_360_164, 26_927_360_164),
+            Image,
+            Engine::Torch,
         ),
-        InstallCatalogEntry::new(
-            hf,
+        InstallCatalogEntry::hugging_face(
             "stabilityai/stable-diffusion-xl-base-1.0",
-            "sdxl",
             "Dependable, well-supported image workhorse.",
-            7.0,
-            InstallCategory::Image,
+            (41_165_626_911, 41_165_626_911),
+            Image,
+            Engine::Torch,
         ),
     ]
-}
-
-/// Up to three recommended entries for `total_memory_bytes`, optionally scoped to
-/// a `category` and/or a set of `providers`. Entries that run well are preferred
-/// (the largest three that do); if none fit, the single smallest scoped entry is
-/// returned so there's always a suggestion.
-pub fn recommended(
-    category: Option<InstallCategory>,
-    total_memory_bytes: u64,
-    providers: Option<&HashSet<InstallProviderId>>,
-) -> Vec<InstallCatalogEntry> {
-    let scoped: Vec<InstallCatalogEntry> = entries()
-        .into_iter()
-        .filter(|entry| category.is_none_or(|category| entry.category == category))
-        .filter(|entry| providers.is_none_or(|providers| providers.contains(&entry.provider)))
-        .collect();
-
-    let mut fitting: Vec<InstallCatalogEntry> = scoped
-        .iter()
-        .filter(|entry| {
-            entry
-                .fit(total_memory_bytes)
-                .is_some_and(|assessment| assessment.verdict == FitVerdict::RunsWell)
-        })
-        .cloned()
-        .collect();
-    fitting.sort_by(by_size_then_reference);
-
-    if fitting.is_empty() {
-        return scoped
-            .into_iter()
-            .min_by(by_size_then_reference)
-            .map(|entry| vec![entry])
-            .unwrap_or_default();
-    }
-    // The largest three that still run well.
-    let start = fitting.len().saturating_sub(3);
-    fitting.split_off(start)
-}
-
-/// Recommend for a machine with `ram_gb` gigabytes (at least 1).
-pub fn recommended_for_ram(
-    category: Option<InstallCategory>,
-    ram_gb: u64,
-    providers: Option<&HashSet<InstallProviderId>>,
-) -> Vec<InstallCatalogEntry> {
-    recommended(category, ram_gb.max(1) << 30, providers)
-}
-
-fn by_size_then_reference(a: &InstallCatalogEntry, b: &InstallCatalogEntry) -> std::cmp::Ordering {
-    a.size_gb
-        .total_cmp(&b.size_gb)
-        .then_with(|| a.reference.cmp(&b.reference))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const GIB: u64 = 1 << 30;
 
     #[test]
     fn ids_are_provider_and_reference() {
@@ -258,45 +252,55 @@ mod tests {
     }
 
     #[test]
-    fn a_category_filter_scopes_the_recommendations() {
-        let code = recommended(Some(InstallCategory::Code), 64 * GIB, None);
-        assert!(!code.is_empty());
-        assert!(
-            code.iter()
-                .all(|entry| entry.category == InstallCategory::Code)
-        );
+    fn every_entry_has_a_size_and_a_serving_engine() {
+        for entry in entries() {
+            assert!(entry.download_bytes > 0, "{}", entry.reference);
+            assert!(entry.serving_bytes > 0, "{}", entry.reference);
+            assert!(
+                entry.serving_bytes <= entry.download_bytes,
+                "{}",
+                entry.reference
+            );
+            assert_ne!(entry.engine, Engine::Other, "{}", entry.reference);
+        }
     }
 
     #[test]
-    fn a_provider_filter_scopes_the_recommendations() {
-        let only_ollama: HashSet<InstallProviderId> = [InstallProviderId::ollama()].into();
-        let hits = recommended(None, 64 * GIB, Some(&only_ollama));
-        assert!(
-            hits.iter()
-                .all(|entry| entry.provider == InstallProviderId::ollama())
-        );
+    fn references_are_unique() {
+        let entries = entries();
+        let mut ids: Vec<String> = entries.iter().map(InstallCatalogEntry::id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), entries.len());
     }
 
     #[test]
-    fn a_big_machine_gets_the_largest_three_that_run_well() {
-        let chat = recommended(Some(InstallCategory::Chat), 128 * GIB, None);
-        assert_eq!(chat.len(), 3);
-        // Sorted ascending by size, so the last is the largest.
-        assert!(chat[0].size_gb <= chat[2].size_gb);
+    fn ollama_tags_are_served_by_ollama() {
+        for entry in entries() {
+            assert_eq!(
+                entry.provider == InstallProviderId::ollama(),
+                entry.engine == Engine::Ollama,
+                "{}",
+                entry.reference
+            );
+        }
     }
 
     #[test]
-    fn a_tiny_machine_still_gets_the_smallest_suggestion() {
-        // 2 GiB can't run anything well, but the smallest chat model is returned.
-        let chat = recommended(Some(InstallCategory::Chat), 2 * GIB, None);
-        assert_eq!(chat.len(), 1);
-        assert_eq!(chat[0].reference, "gemma3:1b");
+    fn a_name_is_the_lowercased_last_segment() {
+        let entry = entries()
+            .into_iter()
+            .find(|entry| entry.reference == "mlx-community/Kokoro-82M-bf16")
+            .unwrap();
+        assert_eq!(entry.name, "kokoro-82m-bf16");
     }
 
     #[test]
-    fn recommended_for_ram_clamps_to_at_least_one_gib() {
-        // ram 0 → clamped to 1 GiB; still returns the fallback smallest.
-        let chat = recommended_for_ram(Some(InstallCategory::Chat), 0, None);
-        assert_eq!(chat.len(), 1);
+    fn categories_parse_from_their_names() {
+        for category in InstallCategory::ALL {
+            assert_eq!(InstallCategory::parse(category.as_str()), Some(category));
+        }
+        assert_eq!(InstallCategory::parse("CODE"), Some(InstallCategory::Code));
+        assert_eq!(InstallCategory::parse("speech"), None);
     }
 }
