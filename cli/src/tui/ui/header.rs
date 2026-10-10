@@ -492,7 +492,7 @@ pub(crate) fn figures(app: &App) -> [u64; 4] {
     ]
 }
 
-/// ` hedos v1.5.0  12 models · 3 warm · 1 too big`, then against the right
+/// ` hedos v1.5.1  12 models · 3 warm · 1 too big`, then against the right
 /// edge the gateway (`● :11434`, or `○ gateway off`) and the free memory
 /// when no machine card shows it, held to `width` cells: the counts of what
 /// won't run go first, then the counts are clipped, so the right side
