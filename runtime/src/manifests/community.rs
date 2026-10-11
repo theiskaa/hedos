@@ -119,7 +119,7 @@ impl ManifestInstaller {
             image: vm.image.clone(),
             setup: vm.setup.clone(),
             paths: manifest.permissions.paths.clone(),
-            detect_summary: manifest.detect.as_ref().and_then(detect_summary),
+            detect_summary: manifest.detect.as_ref().map(detect_summary),
             vm_asset_download_mb,
             source: source.to_path_buf(),
         })
@@ -221,17 +221,20 @@ fn load_manifest(source: &Path) -> Result<(RuntimeManifest, PathBuf), ManifestEr
 }
 
 /// A plain-language description of a detect rule.
-fn detect_summary(detect: &ManifestDetect) -> Option<String> {
-    if let Some(file) = &detect.file {
-        return Some(match &detect.contains {
-            Some(contains) => format!("models whose {file} mentions {contains}"),
-            None => format!("models carrying {file}"),
-        });
+fn detect_summary(detect: &ManifestDetect) -> String {
+    match detect {
+        ManifestDetect::File {
+            path,
+            contains: Some(contains),
+        } => format!("models whose {path} mentions {contains}"),
+        ManifestDetect::File {
+            path,
+            contains: None,
+        } => format!("models carrying {path}"),
+        ManifestDetect::Extension(extension) => format!(".{extension} files"),
+        ManifestDetect::ModelType(model_type) => format!("models of type {model_type}"),
+        ManifestDetect::Pipeline(pipeline) => format!("{pipeline} pipelines"),
     }
-    detect
-        .file_extension
-        .as_ref()
-        .map(|extension| format!(".{extension} files"))
 }
 
 fn execution_str(execution: ExecutionMode) -> &'static str {

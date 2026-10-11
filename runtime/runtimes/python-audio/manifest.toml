@@ -1,0 +1,23 @@
+# The built-in audio-generation runtime: songs, music and sound effects from
+# the models diffusers and transformers run by themselves (Stable Audio,
+# AudioLDM, AudioLDM2, MusicLDM, ACE-Step's AceStepPipeline, MusicGen). Its
+# adapter is wired in code, so this file documents the bundle and declares no
+# detect rule. A model that makes audio with its own package (YuE2) is served
+# by a runtime of its own that speaks the same job contract.
+id           = "python:audio"
+modalities   = ["audio"]
+capabilities = ["audio"]
+execution    = "job"
+
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]

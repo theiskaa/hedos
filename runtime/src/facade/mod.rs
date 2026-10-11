@@ -46,6 +46,11 @@ const STRANDED_EMBEDDERS_MIGRATION: u32 = 1;
 /// served as chat models or left unresolved have been resolved as judges.
 const DECISION_MODELS_MIGRATION: u32 = 2;
 
+/// The registry's migration level once the audio generators and voices an
+/// older shelf read as chat models, left without a capability, or put on a
+/// runtime that cannot load them have been resolved.
+const AUDIO_MODELS_MIGRATION: u32 = 3;
+
 /// How many times the first read of a shelf runs one migration when another
 /// process keeps writing the store under it.
 const MIGRATION_ATTEMPTS: usize = 3;
@@ -477,10 +482,11 @@ impl Kernel {
         // refold `tools` for records that predate it (or a fold-rule change)
         // and take back the cross-encoders it registered as embedders. Once
         // per shelf, resolve the GGUF embedders it left unresolved or served
-        // as chat models, then the decision GGUFs it did the same to. Both
-        // re-read the header of every llama.cpp chat model, and the second
-        // also re-identifies every unresolved record, so the store records
-        // that each ran. A failed migration serves the shelf as it stands,
+        // as chat models, then the decision GGUFs it did the same to, then the
+        // audio generators and voices it misread. The first two re-read the
+        // header of every llama.cpp chat model, the second also re-identifies
+        // every unresolved record, and the third re-identifies those and the
+        // records on mlx-lm and mlx-audio, so the store records that each ran. A failed migration serves the shelf as it stands,
         // exactly as before the migration existed.
         if !self
             .shelf_migrated
@@ -500,6 +506,12 @@ impl Kernel {
                 &mut registry,
                 DECISION_MODELS_MIGRATION,
                 ResolutionEngine::resolve_stranded_judges,
+            );
+            migrate(
+                &engine,
+                &mut registry,
+                AUDIO_MODELS_MIGRATION,
+                ResolutionEngine::resolve_stranded_audio,
             );
         }
         let generation = registry.generation();
@@ -550,6 +562,19 @@ impl Kernel {
                 .map_err(|error| KernelError::Storage(error.to_string())),
             None => Ok(None),
         }
+    }
+
+    /// The file extension the artifact stored under `id` was written with
+    /// (`png`, `flac`), or `None` if no such artifact exists.
+    pub async fn artifact_extension(&self, id: &str) -> Result<Option<String>, KernelError> {
+        let mut store = self.artifacts.lock().await;
+        let path = store
+            .url(id)
+            .map_err(|error| KernelError::Storage(error.to_string()))?;
+        Ok(path.and_then(|path| {
+            path.extension()
+                .map(|extension| extension.to_string_lossy().into_owned())
+        }))
     }
 
     /// The models currently holding memory, per the governor.
@@ -714,6 +739,7 @@ fn forward_job_stream(mut stream: JobStream) -> RunnerStream {
             let mapped = match item {
                 Ok(event) => Ok(event),
                 Err(RuntimeError::Cancelled) => Err(JobError::Cancelled),
+                Err(RuntimeError::Rejected(message)) => Err(JobError::Rejected(message)),
                 Err(other) => Err(JobError::Failed(other.to_string())),
             };
             if tx.send(mapped).is_err() {

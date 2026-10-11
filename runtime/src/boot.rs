@@ -16,10 +16,10 @@ use kernel::registry::{Registry, RegistryError};
 
 use crate::adapters::{
     A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
-    ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter, LlamaServerAdapter,
-    LlamaServerPool, LlamaServerSpawner, ManifestCommandAdapter, ManifestSidecarAdapter,
-    MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter, MlxVlmAdapter,
-    OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
+    AudioGenAdapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter,
+    LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, ManifestCommandAdapter,
+    ManifestSidecarAdapter, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter,
+    MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
 };
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
@@ -240,6 +240,10 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
     let (g, s, e, b, w) = args("diffusers");
     let diffusers = Arc::new(DiffusersAdapter::new(g, s, e, b, w));
     adapters.push(RegisteredAdapter::with_jobs(diffusers.clone(), diffusers));
+    // So does audio generation.
+    let (g, s, e, b, w) = args("audio");
+    let audio = Arc::new(AudioGenAdapter::new(g, s, e, b, w));
+    adapters.push(RegisteredAdapter::with_jobs(audio.clone(), audio));
     let comfy = Arc::new(ComfyUiAdapter::new(DaemonLiveness::with_defaults()));
     adapters.push(RegisteredAdapter::with_jobs(comfy.clone(), comfy));
     let a1111 = Arc::new(A1111Adapter::new(DaemonLiveness::with_defaults()));

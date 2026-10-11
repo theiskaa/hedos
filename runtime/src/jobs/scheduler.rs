@@ -207,7 +207,7 @@ impl JobScheduler {
         self.conclude(&job_id, terminal, error);
     }
 
-    async fn drive(&self, job_id: &str, cancel: Arc<Notify>) -> (JobState, Option<String>) {
+    async fn drive(&self, job_id: &str, cancel: Arc<Notify>) -> (JobState, Option<Failure>) {
         let (job, runner) = {
             let mut state = lock(&self.inner.state);
             match (
@@ -218,7 +218,7 @@ impl JobScheduler {
                 _ => {
                     return (
                         JobState::Failed,
-                        Some(format!("job {job_id} lost its runner")),
+                        Some(Failure::of(format!("job {job_id} lost its runner"))),
                     );
                 }
             }
@@ -239,8 +239,7 @@ impl JobScheduler {
         };
         let verdict = match verdict {
             Ok(verdict) => verdict,
-            Err(JobError::Cancelled) => return (JobState::Cancelled, None),
-            Err(JobError::Failed(message)) => return (JobState::Failed, Some(message)),
+            Err(error) => return ended(error),
         };
         if self.is_cancel_requested(job_id) {
             return (JobState::Cancelled, None);
@@ -282,12 +281,11 @@ impl JobScheduler {
                     file_extension,
                 })) => {
                     if let Err(message) = self.persist(data, file_extension, job_id).await {
-                        return (JobState::Failed, Some(message));
+                        return (JobState::Failed, Some(Failure::of(message)));
                     }
                 }
                 Some(Ok(event)) => self.apply(event, job_id),
-                Some(Err(JobError::Cancelled)) => return (JobState::Cancelled, None),
-                Some(Err(JobError::Failed(message))) => return (JobState::Failed, Some(message)),
+                Some(Err(error)) => return ended(error),
             }
         }
     }
@@ -375,13 +373,14 @@ impl JobScheduler {
         );
     }
 
-    fn conclude(&self, job_id: &str, terminal: JobState, error: Option<String>) {
+    fn conclude(&self, job_id: &str, terminal: JobState, failure: Option<Failure>) {
         let recorded = {
             let mut state = lock(&self.inner.state);
             let stamped = match state.jobs.get_mut(job_id) {
                 Some(job) if !job.state.is_terminal() => {
                     job.state = terminal;
-                    job.error = error.clone();
+                    job.error = failure.as_ref().map(|failure| failure.message.clone());
+                    job.rejected = failure.as_ref().is_some_and(|failure| failure.rejected);
                     job.finished_at = Some(now_millis());
                     if terminal == JobState::Done {
                         let total = job.progress.total_steps;
@@ -405,9 +404,13 @@ impl JobScheduler {
             JobState::Done => JobEvent::Done {
                 result: recorded.result.clone(),
             },
-            JobState::Failed => JobEvent::Failed {
-                message: error.unwrap_or_else(|| "failed".to_owned()),
-            },
+            JobState::Failed => {
+                let failure = failure.unwrap_or_else(|| Failure::of("failed".to_owned()));
+                JobEvent::Failed {
+                    message: failure.message,
+                    rejected: failure.rejected,
+                }
+            }
             JobState::Cancelled => JobEvent::Cancelled,
             _ => {
                 self.evict_and_advance(&mut lock(&self.inner.state), job_id);
@@ -461,6 +464,37 @@ impl JobScheduler {
     }
 }
 
+/// Why a job failed, and whether the request was at fault.
+struct Failure {
+    message: String,
+    rejected: bool,
+}
+
+impl Failure {
+    /// A failure that was not the request's fault.
+    fn of(message: String) -> Self {
+        Self {
+            message,
+            rejected: false,
+        }
+    }
+}
+
+/// The terminal state a runner's `error` ends its job in.
+fn ended(error: JobError) -> (JobState, Option<Failure>) {
+    match error {
+        JobError::Cancelled => (JobState::Cancelled, None),
+        JobError::Failed(message) => (JobState::Failed, Some(Failure::of(message))),
+        JobError::Rejected(message) => (
+            JobState::Failed,
+            Some(Failure {
+                message,
+                rejected: true,
+            }),
+        ),
+    }
+}
+
 struct ExecuteGuard {
     scheduler: JobScheduler,
     job_id: String,
@@ -487,7 +521,7 @@ impl Drop for ExecuteGuard {
             self.scheduler.conclude(
                 &self.job_id,
                 JobState::Failed,
-                Some(PANIC_MESSAGE.to_owned()),
+                Some(Failure::of(PANIC_MESSAGE.to_owned())),
             );
         }
     }
@@ -517,6 +551,7 @@ fn replay(job: &Job) -> Vec<JobEvent> {
         }),
         JobState::Failed => events.push(JobEvent::Failed {
             message: job.error.clone().unwrap_or_else(|| "failed".to_owned()),
+            rejected: job.rejected,
         }),
         JobState::Cancelled => events.push(JobEvent::Cancelled),
     }

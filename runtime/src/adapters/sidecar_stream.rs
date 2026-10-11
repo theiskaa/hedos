@@ -8,13 +8,20 @@ use super::{ChunkStream, RuntimeError, RuntimeStream};
 use crate::sidecar::SidecarStream;
 
 /// Forward a sidecar stream as a runtime stream, mapping sidecar errors. Dropping
-/// the returned stream drops the sidecar stream, triggering its cancellation.
+/// the returned stream drops the sidecar stream at once, triggering its
+/// cancellation, rather than at the sidecar's next event, which a long silent
+/// stage (a model loading, a song synthesizing) may not send for minutes.
 /// Generic over the item type so both capability-chunk and job-event streams
 /// share it.
 pub(crate) fn bridge<T: Send + 'static>(mut sidecar: SidecarStream<T>) -> RuntimeStream<T> {
     let (tx, stream) = RuntimeStream::channel();
     tokio::spawn(async move {
-        while let Some(item) = sidecar.recv().await {
+        loop {
+            let item = tokio::select! {
+                item = sidecar.recv() => item,
+                () = tx.closed() => break,
+            };
+            let Some(item) = item else { break };
             if tx.send(item.map_err(RuntimeError::from)).is_err() {
                 break;
             }
@@ -110,5 +117,17 @@ mod tests {
         assert!(visible.contains("hi") && visible.contains("bye"));
         assert!(!visible.contains("reasoning"));
         assert!(done);
+    }
+
+    #[tokio::test]
+    async fn dropping_the_bridged_stream_lets_a_silent_sidecar_go_at_once() {
+        let (sidecar_tx, rx) =
+            mpsc::unbounded_channel::<Result<u8, crate::sidecar::SidecarError>>();
+        let bridged = bridge(crate::sidecar::SidecarStream { rx });
+        drop(bridged);
+        // The sidecar has sent nothing, yet its stream is released.
+        tokio::time::timeout(std::time::Duration::from_secs(2), sidecar_tx.closed())
+            .await
+            .expect("released without waiting for a sidecar event");
     }
 }

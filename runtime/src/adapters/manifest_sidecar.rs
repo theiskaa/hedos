@@ -138,6 +138,9 @@ impl RuntimeAdapter for ManifestSidecarAdapter {
         if !self.approved_host_execution {
             return RuntimeStream::failed(self.consent_error());
         }
+        if let Err(error) = companions_ready(record) {
+            return RuntimeStream::failed(error);
+        }
         let is_text = capability == Capability::chat() || capability == Capability::complete();
         let stream = bridge(self.runtime().stream(record, capability, payload));
         // Chat/completion output is think-split; other capabilities pass through.
@@ -150,7 +153,26 @@ impl JobRunning for ManifestSidecarAdapter {
         if !self.approved_host_execution {
             return RuntimeStream::failed(self.consent_error());
         }
+        if let Err(error) = companions_ready(record) {
+            return RuntimeStream::failed(error);
+        }
         bridge(self.runtime().job(record, capability.as_str(), payload))
+    }
+}
+
+/// Whether every companion `record`'s runtime needs is on disk, so no process
+/// starts for a model that cannot load. A missing one is named with the pull
+/// that fetches it.
+fn companions_ready(record: &ModelRecord) -> Result<(), RuntimeError> {
+    match record.missing_companions().next() {
+        Some(companion) => Err(RuntimeError::Unavailable(format!(
+            "{} needs {} (its {}); run: hedos pull {}",
+            record.display_name(),
+            companion.repo,
+            companion.role,
+            companion.repo
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -198,13 +220,19 @@ fn build_spec(
         .map(|dir| dir.join("bin").join("python"))
         .unwrap_or_else(|| PathBuf::from("/usr/bin/python3"));
 
-    let arguments = vec![
+    let mut arguments = vec![
         path_string(&directory.join(&serve.entrypoint)),
         "--model".to_owned(),
         paths.snapshot,
         "--workdir".to_owned(),
         path_string(&workdir),
     ];
+    for companion in &record.companions {
+        if let Some(path) = &companion.path {
+            arguments.push("--companion".to_owned());
+            arguments.push(format!("{}={path}", companion.role));
+        }
+    }
     let mut spec = SidecarSpec::new(format!("{}#{}", manifest.id, record.id), python, arguments);
     spec.environment
         .insert("PYTHONDONTWRITEBYTECODE".to_owned(), "1".to_owned());
@@ -225,7 +253,7 @@ fn path_string(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::governor::GovernorConfig;
-    use kernel::records::{Modality, ModelSource, ModelState, SourceKind};
+    use kernel::records::{Companion, Modality, ModelSource, ModelState, SourceKind};
 
     fn manifest_text(execution: &str) -> String {
         // Job execution requires a job-shaped capability; stream a chat one.
@@ -341,5 +369,68 @@ mod tests {
         // No env dir → the system python.
         assert_eq!(spec.executable, PathBuf::from("/usr/bin/python3"));
         assert!(!spec.cooperative_cancel);
+    }
+
+    fn decoder(path: Option<String>) -> Companion {
+        Companion {
+            role: "vae".to_owned(),
+            repo: "m-a-p/YuE2-Vae".to_owned(),
+            path,
+            serving_bytes: Some(530_000_000),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_companion_is_unavailable_with_the_pull_that_fetches_it() {
+        let adapter = adapter(manifest("job"), true);
+        let mut record = record();
+        record.companions = vec![decoder(None)];
+        let mut job = adapter.run(
+            &record,
+            Capability::image(),
+            JsonValue::Object(Default::default()),
+        );
+        match job.recv().await {
+            Some(Err(RuntimeError::Unavailable(message))) => {
+                assert!(message.contains("hedos pull m-a-p/YuE2-Vae"), "{message}");
+            }
+            other => panic!("expected unavailable, got {other:?}"),
+        }
+
+        // A companion the shelf held but whose folder has since gone is missing too.
+        record.companions = vec![decoder(Some("/nowhere/YuE2-Vae".to_owned()))];
+        let mut stream = adapter.invoke(
+            &record,
+            Capability::image(),
+            JsonValue::Object(Default::default()),
+        );
+        assert!(matches!(
+            stream.recv().await,
+            Some(Err(RuntimeError::Unavailable(_)))
+        ));
+    }
+
+    #[test]
+    fn the_spec_passes_each_companion_by_role() {
+        let mut record = record();
+        record.companions = vec![decoder(Some(
+            "/hub/models--m-a-p--YuE2-Vae/snapshots/abc".to_owned(),
+        ))];
+        let spec = build_spec(
+            &manifest("job"),
+            &std::env::temp_dir().join("hedos-manifest-sidecar-spec-companion"),
+            &record,
+            None,
+        )
+        .unwrap();
+        let at = spec
+            .arguments
+            .iter()
+            .position(|arg| arg == "--companion")
+            .expect("a companion argument");
+        assert_eq!(
+            spec.arguments[at + 1],
+            "vae=/hub/models--m-a-p--YuE2-Vae/snapshots/abc"
+        );
     }
 }

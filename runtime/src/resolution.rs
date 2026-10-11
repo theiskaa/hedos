@@ -24,8 +24,8 @@ use kernel::discovery::modality_hints::{SentenceTransformersLayout, sentence_tra
 use kernel::manifests::RuntimeManifest;
 use kernel::profiles::ProfileRegistry;
 use kernel::records::{
-    Capability, Modality, ModelRecord, ModelState, Resolution, RunTier, RuntimeId, RuntimeRef,
-    SourceKind,
+    Capability, Companion, Modality, ModelRecord, ModelState, Resolution, RunTier, RuntimeId,
+    RuntimeRef, SourceKind,
 };
 use kernel::registry::{Registry, RegistryError};
 use kernel::resolution::{IdentificationCache, IdentifiedModel, ModelFormat, identify};
@@ -233,6 +233,40 @@ impl ResolutionEngine {
         })
     }
 
+    /// Resolve the audio generators and voices a shelf written before audio
+    /// generation was recognized got wrong: YuE2 or a TTS model built on a
+    /// causal LM (Orpheus, OuteTTS) left unresolved as a chat model or put on
+    /// mlx-lm, a MusicGen or diffusers audio pipeline left without a
+    /// capability, and a voice the Kokoro-only speech runtime holds but cannot
+    /// load. It re-identifies records that are unresolved or held by mlx-lm or
+    /// mlx-audio, neither downloading nor pinned by the user, and keeps a plan
+    /// only when the model now reads as audio or speech, so a chat model on
+    /// mlx-lm is left exactly as it is. These identities come from config and
+    /// card files a scan reads again anyway, so nothing counts as unread.
+    pub fn resolve_stranded_audio(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<StrandedModels, RegistryError> {
+        let changed = self.resolve_where(
+            registry,
+            |record| {
+                let held_by = |runtime: RuntimeId| record.runtime.id.as_ref() == Some(&runtime);
+                (record.state == ModelState::Unresolved
+                    || held_by(RuntimeId::mlx_lm())
+                    || held_by(RuntimeId::mlx_audio()))
+                    && !record.downloading
+                    && record.runtime.resolved != Resolution::User
+            },
+            |_, plan| {
+                matches!(
+                    plan.identified.modality.as_ref(),
+                    Some(modality) if *modality == Modality::audio() || *modality == Modality::speech()
+                )
+            },
+        )?;
+        Ok(StrandedModels { changed, unread: 0 })
+    }
+
     /// Plan every record `select` admits, keep the plans `keep` admits, and
     /// write the winners back through the shared guards in [`Self::applied`].
     fn resolve_where(
@@ -255,9 +289,10 @@ impl ResolutionEngine {
         }
         let ids: Vec<String> = plans.keys().cloned().collect();
         let live = self.live_adapter_ids();
+        let companions = self.companions_held(registry);
         registry.update(&ids, |current| {
             let plan = plans.get(&current.id)?;
-            self.applied(plan, current, &live)
+            self.applied(plan, current, &live, &companions)
         })
     }
 
@@ -272,8 +307,9 @@ impl ResolutionEngine {
             return Ok(None);
         };
         let live = self.live_adapter_ids();
+        let companions = self.companions_held(registry);
         let changed = registry.update(std::slice::from_ref(&record.id), |current| {
-            self.applied(&plan, current, &live)
+            self.applied(&plan, current, &live, &companions)
         })?;
         Ok(changed.into_iter().next())
     }
@@ -303,6 +339,18 @@ impl ResolutionEngine {
             .list()
             .into_iter()
             .map(|record| self.explain(record))
+            .collect()
+    }
+
+    /// For each manifest runtime that names companions, those companions as
+    /// `registry` holds them, worked out once before a resolution pass writes.
+    fn companions_held(&self, registry: &Registry) -> HashMap<RuntimeId, Vec<Companion>> {
+        let shelf = registry.list();
+        self.adapters
+            .iter()
+            .filter_map(|adapter| Some((adapter.id(), adapter.manifest()?)))
+            .filter(|(_, manifest)| !manifest.companions.is_empty())
+            .map(|(id, manifest)| (id.clone(), companions_on(manifest, &shelf)))
             .collect()
     }
 
@@ -364,6 +412,7 @@ impl ResolutionEngine {
         plan: &ResolutionPlan,
         current: &ModelRecord,
         live: &HashSet<RuntimeId>,
+        companions: &HashMap<RuntimeId, Vec<Companion>>,
     ) -> Option<ModelRecord> {
         if current.runtime.resolved == Resolution::User
             && current
@@ -388,8 +437,19 @@ impl ResolutionEngine {
         apply_winner(&plan.bids, &mut updated, &current.runtime);
         let wires_tools = self.adapter_wires_tools(updated.runtime.id.as_ref());
         merge(&plan.identified, &mut updated, wires_tools);
+        let mut lent_params = false;
+        updated.companions.clear();
         if let Some(manifest) = self.winning_manifest(updated.runtime.id.as_ref()) {
-            backfill(manifest, &plan.identified, &mut updated);
+            lent_params = backfill(manifest, &plan.identified, &mut updated);
+            if let Some(id) = updated.runtime.id.as_ref() {
+                updated.companions = companions.get(id).cloned().unwrap_or_default();
+            }
+            // A rule loose enough to match the companion itself must not make
+            // it its own companion, counted twice.
+            let own = updated.clone();
+            updated
+                .companions
+                .retain(|companion| !own.holds_hub_repo(&companion.repo));
             // The manifest's list is copied as written, so the tool fold has to
             // have the last word again: a manifest runtime forwards no tools,
             // whatever its manifest declares.
@@ -403,7 +463,7 @@ impl ResolutionEngine {
         {
             withdraw_backfill(&plan.identified, &mut updated);
         }
-        if plan.identified.params.is_empty() {
+        if plan.identified.params.is_empty() && !lent_params {
             updated = self.profiles.refreshed(&updated);
         }
         (updated != *current).then_some(updated)
@@ -540,8 +600,10 @@ fn apply_winner(bids: &[BidEntry], updated: &mut ModelRecord, previous: &Runtime
 }
 
 /// Fold the identified facts onto `updated`, each field only when identification
-/// actually determined it (an empty modality/capability/param set never clobbers
-/// what the record already carries).
+/// actually determined it: an empty modality or param set never clobbers what
+/// the record already carries, and neither does an empty capability list,
+/// except from weights read directly or from an identification that named the
+/// modality and withheld every capability.
 fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_tools: bool) {
     if let Some(modality) = &identified.modality {
         updated.modality = modality.clone();
@@ -550,10 +612,15 @@ fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_
     // list included: a GGUF that serves nothing is a piece of a pipeline (a
     // projector, or the vocoder half of a speech pair), and must not fall back
     // to what a scanner guessed from the file's name. Every other format's
-    // empty list means "nothing learned", so the scanner's hint stands.
+    // empty list means "nothing learned", so the scanner's hint stands, unless
+    // identification named the modality: then it recognized the model and
+    // withheld what an architecture name implied (an audio generator running
+    // its own code, a voice built on a causal LM, a cross-encoder), and a
+    // stale `chat` must not outlive that.
     let read_from_the_weights =
         matches!(identified.format, ModelFormat::Gguf | ModelFormat::GgmlBin);
-    if read_from_the_weights || !identified.capabilities.is_empty() {
+    let withheld = identified.modality.is_some() && identified.capabilities.is_empty();
+    if read_from_the_weights || withheld || !identified.capabilities.is_empty() {
         updated.capabilities = identified.capabilities.clone();
     }
     if !identified.params.is_empty() {
@@ -583,9 +650,16 @@ fn merge(identified: &IdentifiedModel, updated: &mut ModelRecord, runtime_wires_
 }
 
 /// Fill in from the winning `manifest` what identification left blank: the
-/// modality when none was determined, and the capabilities together with the
-/// execution mode when none were. Anything identification did determine stands.
-fn backfill(manifest: &RuntimeManifest, identified: &IdentifiedModel, updated: &mut ModelRecord) {
+/// modality when none was determined, the capabilities together with the
+/// execution mode when none were, and the parameter schema when identification
+/// found none and the manifest declares one. Anything identification did
+/// determine stands. Returns whether the schema was lent, since a lent schema
+/// is the runtime's own account and no generic profile replaces it.
+fn backfill(
+    manifest: &RuntimeManifest,
+    identified: &IdentifiedModel,
+    updated: &mut ModelRecord,
+) -> bool {
     if identified.modality.is_none()
         && let Some(modality) = manifest.modalities.first()
     {
@@ -595,6 +669,34 @@ fn backfill(manifest: &RuntimeManifest, identified: &IdentifiedModel, updated: &
         updated.capabilities = manifest.capabilities.clone();
         updated.execution = manifest.execution;
     }
+    if !identified.params.is_empty() {
+        return false;
+    }
+    // Replaced even when the manifest declares none, so a schema an earlier
+    // version of it lent does not outlive the edit.
+    updated.params = manifest.params.clone();
+    !manifest.params.is_empty()
+}
+
+/// The companions `manifest` names, each found on `shelf` when a hub repo of
+/// that name is there in full ([`ModelRecord::holds_hub_repo`]).
+fn companions_on(manifest: &RuntimeManifest, shelf: &[&ModelRecord]) -> Vec<Companion> {
+    manifest
+        .companions
+        .iter()
+        .map(|companion| {
+            let held = shelf
+                .iter()
+                .copied()
+                .find(|record| record.holds_hub_repo(&companion.repo));
+            Companion {
+                role: companion.role.clone(),
+                repo: companion.repo.clone(),
+                path: held.map(|record| SidecarModelPaths::resolve(record).snapshot),
+                serving_bytes: held.and_then(ModelRecord::own_serving_size),
+            }
+        })
+        .collect()
 }
 
 /// Take back what [`backfill`] lent a record whose manifest stopped bidding, so a
@@ -607,6 +709,9 @@ fn withdraw_backfill(identified: &IdentifiedModel, updated: &mut ModelRecord) {
     }
     if identified.capabilities.is_empty() {
         updated.capabilities.clear();
+    }
+    if identified.params.is_empty() {
+        updated.params.clear();
     }
 }
 

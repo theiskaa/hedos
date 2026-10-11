@@ -181,6 +181,31 @@ while True:
             send_json({"event": "vector", "values": [float(len(text)), 0.5, -0.25]})
         send_json({"event": "done", "seconds": 0.05, "prompt_tokens": len(inputs)})
         continue
+    if op == "audio":
+        # A song larger than one frame may be, sent in chunks under a `result`
+        # that announces its size; "short" and "over" break that promise.
+        size = int(request.get("bytes", 40 * 1024 * 1024))
+        chunk = 15 * 1024 * 1024
+        body = bytes(range(256)) * (size // 256) + bytes(size % 256)
+        send_json({"event": "begin"})
+        send_json({"event": "status", "message": "Writing the score"})
+        send_json({"event": "step", "n": 1, "total": 1})
+        sent = body
+        if request.get("prompt") == "short":
+            sent = body[: size // 2]
+        if request.get("prompt") == "over":
+            sent = body + b"extra"
+        announced = 0 if request.get("prompt") == "empty" else size
+        send_json({"event": "result", "format": "flac", "bytes": announced, "sample_rate": 48000, "channels": 2})
+        for start in range(0, len(sent), chunk):
+            send(2, sent[start : start + chunk])
+        if request.get("prompt") == "trailing":
+            send(2, b"extra")
+        if request.get("prompt") == "short":
+            send_json({"event": "done", "seconds": 0.1})
+            continue
+        send_json({"event": "done", "seconds": 0.1})
+        continue
     if op == "image":
         if request.get("prompt") == "fail":
             send_json({"event": "error", "message": "the pipeline exploded"})

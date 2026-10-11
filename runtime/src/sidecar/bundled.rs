@@ -147,6 +147,7 @@ mod tests {
         for name in [
             "python-mlx-audio",
             "python-diffusers",
+            "python-audio",
             "python-mlx-lm",
             "python-mlx-vlm",
             "python-embeddings",

@@ -25,6 +25,9 @@ pub enum JobError {
     Cancelled,
     /// The work failed with this message.
     Failed(String),
+    /// The runtime refused the work as the request's fault: asking again
+    /// unchanged fails again.
+    Rejected(String),
 }
 
 /// The stream a runner produces: job runtime events until it ends, or a

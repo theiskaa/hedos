@@ -40,7 +40,13 @@ def load_sidecar_module(dirname, module_name):
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    # A sidecar imports its bundle's own modules (`audio_output`) the way
+    # `python main.py` finds them: from the directory main.py is in.
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(path.parent))
     return module
 
 
@@ -116,3 +122,17 @@ def zerank():
     """python-zerank/main.py: how a typed question becomes the query and
     document pairs a reranker scores, and how its logits become a judgment."""
     return load_sidecar_module("python-zerank", "sidecar_zerank")
+
+
+@pytest.fixture(scope="session")
+def audio_gen():
+    """python-audio/main.py: how the audio job contract is mapped onto a
+    diffusers pipeline or MusicGen, and how a finished song is sent."""
+    return load_sidecar_module("python-audio", "sidecar_audio_gen")
+
+
+@pytest.fixture(scope="session")
+def yue2():
+    """python-yue2/main.py: how a job request becomes YuE2's song request,
+    and how its four stages are reported and cancelled."""
+    return load_sidecar_module("python-yue2", "sidecar_yue2")

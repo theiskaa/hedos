@@ -1,0 +1,13 @@
+# yue2-infer's own exact pins (its METADATA), so the environment is the one
+# m-a-p tested.
+torch==2.10.0
+transformers==4.57.6
+huggingface-hub==0.36.2
+safetensors==0.7.0
+tiktoken==0.12.0
+numpy==2.2.6
+soundfile==0.13.1
+accelerate==1.13.0
+# The inference package YuE2's repo ships, pinned to the commit it came with
+# (its hash is in the lock).
+yue2-infer @ https://huggingface.co/m-a-p/YuE2-3B/resolve/8f24312f187763b9854adeec87e437e2b03bbff1/yue2_infer-0.1.5-py3-none-any.whl

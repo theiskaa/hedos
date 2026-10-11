@@ -462,6 +462,90 @@ async fn a_job_cancel_with_ack_keeps_the_sidecar_warm() {
     supervisor.shutdown_all().await;
 }
 
+/// Every event a job request yields, with its terminal error if it failed.
+async fn job_events(
+    supervisor: &SidecarSupervisor,
+    spec: &SidecarSpec,
+    request: JsonValue,
+) -> (Vec<JobRuntimeEvent>, Option<SidecarError>) {
+    let mut stream = supervisor.job_request(spec, request);
+    let mut events = Vec::new();
+    while let Some(item) = stream.recv().await {
+        match item {
+            Ok(event) => events.push(event),
+            Err(error) => return (events, Some(error)),
+        }
+    }
+    (events, None)
+}
+
+#[tokio::test]
+async fn a_result_larger_than_a_frame_arrives_whole() {
+    let spec = spec("normal");
+    let supervisor = SidecarSupervisor::new();
+    supervisor.ensure_running(&spec).await.expect("ready");
+    let (events, error) = job_events(&supervisor, &spec, jobj(&[("op", jstr("audio"))])).await;
+    assert!(error.is_none(), "{error:?}");
+    assert!(events.contains(&JobRuntimeEvent::Status("Writing the score".to_owned())));
+    let results: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            JobRuntimeEvent::Result {
+                data,
+                file_extension,
+            } => Some((data, file_extension)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    let (data, extension) = results[0];
+    assert_eq!(extension, "flac");
+    assert_eq!(data.len(), 40 * 1024 * 1024);
+    assert_eq!(&data[..4], &[0, 1, 2, 3]);
+    assert_eq!(data[data.len() - 1], 255);
+    supervisor.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn a_result_that_breaks_its_announced_size_fails_the_job() {
+    let spec = spec("normal");
+    let supervisor = SidecarSupervisor::new();
+    supervisor.ensure_running(&spec).await.expect("ready");
+    // "short" stops early, "over" runs past the count within a frame,
+    // "trailing" sends a frame after the count, and "empty" announces nothing.
+    for prompt in ["short", "over", "trailing", "empty"] {
+        let request = jobj(&[
+            ("op", jstr("audio")),
+            ("prompt", jstr(prompt)),
+            ("bytes", JsonValue::Int(1 << 20)),
+        ]);
+        let (events, error) = job_events(&supervisor, &spec, request).await;
+        // A trailing frame comes after a whole result; the job fails all the same.
+        assert_eq!(
+            events
+                .iter()
+                .any(|event| matches!(event, JobRuntimeEvent::Result { .. })),
+            prompt == "trailing",
+            "{prompt}"
+        );
+        assert!(
+            matches!(error, Some(SidecarError::RuntimeFailed(_))),
+            "{prompt}: {error:?}"
+        );
+        // The broken sidecar is gone, and a fresh one answers whole.
+        supervisor.ensure_running(&spec).await.expect("ready again");
+        let whole = jobj(&[("op", jstr("audio")), ("bytes", JsonValue::Int(1 << 20))]);
+        let (events, error) = job_events(&supervisor, &spec, whole).await;
+        assert!(error.is_none(), "{prompt}: {error:?}");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, JobRuntimeEvent::Result { .. }))
+        );
+    }
+    supervisor.shutdown_all().await;
+}
+
 #[tokio::test]
 async fn a_job_cancel_without_ack_kills_after_grace() {
     let spec = spec_with("normal", false, Duration::from_millis(400));

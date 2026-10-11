@@ -23,6 +23,10 @@ use super::{SidecarError, SidecarStream};
 
 const STDERR_TAIL_CHARS: usize = 2000;
 const READ_CHUNK: usize = 64 * 1024;
+/// The largest artifact a job may return in one `result`: a long song as
+/// 24-bit stereo WAV is a few hundred megabytes, and anything near this is a
+/// runtime that has lost count.
+const MAX_RESULT_BYTES: i64 = 1 << 30;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -411,7 +415,10 @@ impl SidecarSupervisor {
         let id = &spec.runtime_id;
         while let Some(frame) = self.next_frame(id).await {
             let Frame::Control(value) = frame else {
-                continue;
+                // Every binary frame of a job belongs to the event before it
+                // (a preview, an image, a result's bytes); one on its own means
+                // the sidecar's frames are out of step with what it said.
+                return Err(self.out_of_step(id, "sent bytes no event announced"));
             };
             let object = value.as_object();
             match control_event(&value) {
@@ -441,6 +448,24 @@ impl SidecarSupervisor {
                         }));
                     }
                 }
+                Some("result") => {
+                    let data = self.result_bytes(id, object).await?;
+                    let format = string_field(object, "format");
+                    let _ = tx.send(Ok(JobRuntimeEvent::Result {
+                        data,
+                        file_extension: if format.is_empty() {
+                            "bin".to_owned()
+                        } else {
+                            format
+                        },
+                    }));
+                }
+                Some("status") => {
+                    let message = string_field(object, "message");
+                    if !message.is_empty() {
+                        let _ = tx.send(Ok(JobRuntimeEvent::Status(message)));
+                    }
+                }
                 Some("done") => return Ok(()),
                 Some("cancelled") => return Err(SidecarError::Cancelled),
                 Some("error") => return Err(reported_error(object)),
@@ -448,6 +473,58 @@ impl SidecarSupervisor {
             }
         }
         Err(self.frame_loop_exit_error(spec))
+    }
+
+    /// The artifact a `result` event announces: the binary frames after it,
+    /// read until they add up to its `bytes`, since one file (a song) can be
+    /// larger than a frame may be. Each frame is checked against what is left
+    /// before it is kept, and memory grows with what arrives rather than with
+    /// what was announced. A sidecar that breaks its own count is out of step
+    /// with its frames, so it is killed and the next request starts a fresh one.
+    async fn result_bytes(
+        &self,
+        id: &str,
+        object: ControlObject<'_>,
+    ) -> Result<Vec<u8>, SidecarError> {
+        let Some(expected) =
+            int_field(object, "bytes").filter(|bytes| (1..=MAX_RESULT_BYTES).contains(bytes))
+        else {
+            return Err(self.out_of_step(
+                id,
+                &format!("announced a result without a size from 1 to {MAX_RESULT_BYTES} bytes"),
+            ));
+        };
+        let expected = expected as usize;
+        let mut data: Vec<u8> = Vec::new();
+        while data.len() < expected {
+            let Some(Frame::Binary(chunk)) = self.next_frame(id).await else {
+                return Err(self.out_of_step(
+                    id,
+                    &format!("sent {} of the {expected} bytes of its result", data.len()),
+                ));
+            };
+            if chunk.len() > expected - data.len() {
+                return Err(self.out_of_step(
+                    id,
+                    &format!("sent more of its result than the {expected} bytes it announced"),
+                ));
+            }
+            if data.try_reserve(chunk.len()).is_err() {
+                self.kill(id);
+                return Err(SidecarError::RuntimeFailed(format!(
+                    "no memory left for the {expected}-byte result {id} sent"
+                )));
+            }
+            data.extend_from_slice(&chunk);
+        }
+        Ok(data)
+    }
+
+    /// Kill the sidecar `id`, whose frames no longer line up with its events,
+    /// and say what it did.
+    fn out_of_step(&self, id: &str, what: &str) -> SidecarError {
+        self.kill(id);
+        SidecarError::RuntimeFailed(format!("{id} {what}"))
     }
 
     async fn next_binary_frame(&self, id: &str) -> Option<Vec<u8>> {
