@@ -221,7 +221,14 @@ A few rules hedos checks when it loads them:
 
 - An id may use letters, digits, dots, underscores, colons and hyphens. Ids of built-in and shipped runtimes are reserved, and a duplicate id keeps the first one.
 - A manifest declares exactly one of `[invoke]` or `[serve]`.
-- A manifest needs a `detect` rule (a file `extension`, or a marker `file`, optionally with `contains`) to ever match a model. A manifest runtime bids last, so it only serves models no built-in runtime takes.
+- A manifest needs a `detect` rule to ever match a model, and the rule uses exactly one form:
+  - `extension = "gguf"`: the model's weight file ends in it.
+  - `file = "bundle.json"`, optionally with `contains = "..."`: a marker file beside the model, holding that text when `contains` is given.
+  - `model_type = "yue2"`: the `model_type` the model's `config.json` names, read as JSON.
+  - `pipeline = "AceStepPipeline"`: the diffusers pipeline class its `model_index.json` names, read as JSON.
+
+  A manifest runtime bids last, so it only serves models no built-in runtime takes.
+- `execution = "job"` is for exactly the runtimes that generate (`image` or `audio`). A manifest cannot declare both `speak` and `audio`: a model is either a voice reading text or a generator making audio from a description.
 - A manifest with a `[vm]` section is reported as an issue and not run: this build cannot start a VM.
 
 An `[invoke]` command gets its model's snapshot directory as `{model}`, and the prompt as `{prompt}`. A command that takes a structured request can read it on standard input instead, which keeps a document out of the process list:
@@ -251,5 +258,65 @@ binary = "my-tool-1.2.0-aarch64-apple-darwin/my-tool"
 ```
 
 The archive is a `.tar.gz` fetched over `https`, and `binary` is a relative path inside it. `hedos runtimes approve` downloads this machine's archive, refuses it unless its sha256 matches the pin, and unpacks the one binary into `commands/` in the data directory. A command that runs `{bin}` must declare `[install]`, and one that declares `[install]` must run `{bin}`. Until the binary is in place, the runtime answers that it is not installed yet and names the command that fetches it.
+
+A runtime can say what a request may carry. Each `[[params]]` entry has a lowercase `key` and a `type` (`int`, `float`, `bool`, `string` or `enum`). An `enum` must list its choices in a non-empty `values`, which no other type may carry. Any entry may give a `default` of its type, and a number a `range = [min, max]` with the default inside it. A model the runtime serves takes these as its parameters when identification found none of its own, and gives them back when the runtime is revoked:
+
+```toml
+[[params]]
+key     = "cot"
+type    = "enum"
+values  = ["full", "melody", "off"]
+default = "full"
+```
+
+A model that needs another repository beside its own to run (a decoder, a codec) names it under `[companions]`, by role, at most four:
+
+```toml
+[companions]
+vae = { repo = "m-a-p/YuE2-Vae" }
+```
+
+hedos looks for each companion among the Hugging Face repos on the shelf and passes it to a `[serve]` runtime as `--companion vae=<snapshot directory>`. Its size counts toward the model's fit. A model whose companion is not on the shelf is refused with the `hedos pull` that fetches it; `hedos ls` says the same, and `hedos runtimes approve` offers to pull it (`-y` accepts). Nothing is downloaded without that yes.
+
+### Bringing an audio model
+
+A model that makes audio with its own code (HeartMuLa, DiffRhythm, Stable Audio 3, or one hedos has never heard of) is served by a runtime folder in `runtimes.d`, with no change to hedos: `python:yue2` is built this way. hedos has to see that the model makes audio before a runtime can lend it the `audio` capability: its `config.json` names a model type hedos knows as an audio generator, or its model card (`README.md`) is filed under `text-to-audio` or `text-to-music`, or tagged `music` with no chat template beside it. A model with none of these whose architecture ends in `ForCausalLM` reads as a chat model and keeps `chat`; give it a card that says what it is. The folder holds a `manifest.toml`, a `requirements.lock` (`uv pip compile --generate-hashes`), and a `main.py`:
+
+```toml
+id           = "python:my-music"
+modalities   = ["audio"]
+capabilities = ["audio"]
+execution    = "job"
+detect       = { model_type = "my_music" }
+
+[[params]]
+key  = "lyrics"
+type = "string"
+
+[[params]]
+key   = "duration"
+type  = "float"
+range = [5, 240]
+
+[companions]
+codec = { repo = "someone/my-music-codec" }
+
+[env]
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+```
+
+hedos starts `main.py --model <snapshot> --workdir <dir>`, plus `--companion <role>=<snapshot>` for each companion, and speaks to it in frames on stdin and stdout: a little-endian `u32` length (of what follows), a type byte (`1` for JSON, `2` for bytes), then the payload. Anything the model's libraries print belongs on stderr, so `main.py` moves stdout aside first (see a shipped runtime's opening lines).
+
+1. Load the model, then send `{"event": "ready"}`.
+2. Each job arrives as `{"op": "audio", "prompt": "...", "format": "flac", ...}` with the fields the request carried, already checked against `[[params]]`. `{"op": "shutdown"}` asks the process to exit.
+3. While it works, send `{"event": "begin"}`, then any of `{"event": "status", "message": "..."}` and `{"event": "step", "n": 3, "total": 32}`. hedos checks for silence every 600 seconds and stops a job that has sent nothing for at least that long, so a long stage with no progress of its own should send a status now and then.
+4. Between steps, read stdin without blocking for `{"op": "cancel"}` (or `shutdown`); on one, stop and send `{"event": "cancelled"}`.
+5. Send the file as `{"event": "result", "format": "flac", "bytes": N}`, then binary frames of at most 16 MiB each that add up to exactly `N` bytes, then `{"event": "done"}`.
+6. A request the model cannot take is `{"event": "error", "message": "...", "fault": "request"}` (a `400` at the gateway, or the final `error` event of a streamed answer); any other failure leaves `fault` out (a `500`, likewise).
+
+The model folder it serves is found by `detect`; its parameters are what `hedos audio` and `/v1/audio/generations` accept for it; and nothing runs until `hedos runtimes approve python:my-music`.
 
 Problems show up as `issue:` lines in `hedos scan`.

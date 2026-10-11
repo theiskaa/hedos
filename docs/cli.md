@@ -12,7 +12,8 @@
 | [`hedos chat`](#hedos-chat) | Chat with a model over stdin. |
 | [`hedos speak`](#hedos-speak) | Synthesize speech to a WAV file. |
 | [`hedos transcribe`](#hedos-transcribe) | Transcribe an audio file to text. |
-| [`hedos image`](#hedos-image) | Generate an image to a PNG file. |
+| [`hedos image`](#hedos-image) | Generate an image to a file. |
+| [`hedos audio`](#hedos-audio) | Make a song, music or a sound to a file. |
 | [`hedos serve`](#hedos-serve) | Run the OpenAI-, Ollama- and Anthropic-compatible gateway on loopback. |
 | [`hedos launch`](#hedos-launch) | Run a coding harness against a gateway that lives as long as the harness. |
 | [`hedos warm`](#hedos-warm) | Load a model into memory. |
@@ -443,7 +444,7 @@ Under `--json`, the model, the path, and the full transcript are printed as one 
 
 ### `hedos image`
 
-Generate an image and write a PNG file. This runs as a job, with progress on stderr.
+Generate an image and write it to a file, in the format the model made (PNG from the built-in runtimes). This runs as a job, with progress on stderr.
 
 ```sh
 hedos image [model] [prompt] [flags]
@@ -453,7 +454,7 @@ hedos image [model] [prompt] [flags]
 | --- | --- | --- |
 | `--steps <n>` | The number of diffusion steps. | the runtime's |
 | `--seed <n>` | The random seed. | the runtime's |
-| `-o, --output <path>` | The output file. | the prompt, slugged, with `.png`, in the current directory |
+| `-o, --output <path>` | The output file. | the prompt, slugged, with the image's extension, in the current directory |
 
 Omit the model or the prompt to be prompted for them. The default file name is slugged from the prompt the same way `speak` slugs its text.
 
@@ -463,6 +464,40 @@ hedos image flux "a koala on a bookshelf" --steps 4 --seed 7
 
 ```
 wrote a-koala-on-a-bookshelf.png
+```
+
+Under `--json`, it prints `model` and `path`.
+
+### `hedos audio`
+
+Make a song, music or a sound from a description and write it to a file. This runs as a job, with each stage and its progress on stderr.
+
+```sh
+hedos audio [model] [prompt] [flags]
+```
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `--lyrics <file>` | Lyrics, with `[verse]` and `[chorus]` tags on their own lines; `-` reads them from stdin. | none |
+| `--instrumental` | No vocals; refused together with `--lyrics`. | off |
+| `--duration <s>` | How long, for a model that takes a length. | the model's |
+| `--seed <n>` | The random seed. | random |
+| `--steps <n>` | The number of diffusion steps. | the model's |
+| `--guidance <f>` | The guidance scale. | the model's |
+| `--negative <text>` | What to steer away from. | none |
+| `--set <key=value>` | Any other parameter the model takes, repeatable (`cot=melody`). | none |
+| `--format <f>` | `flac` or `wav`. | `flac` |
+| `-o, --output <path>` | The output file. | the prompt, slugged, with the file's extension, in the current directory |
+
+The flags are checked against the model's parameters before anything runs: `--lyrics` to a model that cannot sing, or a `--duration` outside its range, is refused with what the model takes. A voice named here is pointed at `hedos speak`, and a generator named to `speak` at `hedos audio`.
+
+```sh
+hedos audio stable-audio-open-1.0 "rain on a tin roof" --duration 20
+hedos audio YuE2-3B "warm indie pop, female vocals" --lyrics song.txt --set cot=melody
+```
+
+```
+wrote rain-on-a-tin-roof.flac
 ```
 
 Under `--json`, it prints `model` and `path`.

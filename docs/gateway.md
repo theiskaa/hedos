@@ -31,6 +31,8 @@ The gateway stops cleanly on Ctrl-C, SIGTERM, or SIGHUP. It takes no new request
 | `POST` | `/v1/embeddings` | OpenAI | Embed text. `encoding_format` is `float` or `base64`. |
 | `POST` | `/v1/images/generations` | OpenAI | One image per request, returned as `b64_json`. |
 | `POST` | `/v1/audio/speech` | OpenAI | Synthesize speech, returned as WAV. |
+| `POST` | `/v1/audio/generations` | hedos | Make a song, music or a sound. See [Audio generation](#audio-generation). |
+| `POST` | `/v1/audio/music-generations` | mlx-serve | The same, under the name mlx-serve's music API uses. |
 | `POST` | `/v1/audio/transcriptions` | OpenAI | Transcribe an uploaded WAV file (multipart). |
 | `GET` | `/v1/models` | OpenAI | Every ready model, with its context window as `meta.n_ctx`. |
 | `POST` | `/v1/messages` | Anthropic | Chat over the Messages protocol, with tool use. |
@@ -45,13 +47,13 @@ The gateway stops cleanly on Ctrl-C, SIGTERM, or SIGHUP. It takes no new request
 | `GET` | `/api/version` | Ollama | Version handshake for stock clients (reports `0.5.0`). |
 | `POST` | `/api/show` | Ollama | Model details handshake. Takes `model` (or `name`) and lists the model's `capabilities` (`completion`, `embedding`, `vision`, `tools`). |
 
-Any other path is a `404` (`no route for /api/pull`), and a known path with the wrong method is a `405`. A request body may be up to 2 MiB, or 32 MiB on `/v1/systemone` and `/v1/audio/transcriptions`; a larger one is a `413`. The body is read as JSON whatever its `content-type` says (transcriptions excepted, which need `multipart/form-data`).
+Any other path is a `404` (`no route for /api/pull`), and a known path with the wrong method is a `405`. A request body may be up to 2 MiB, or 32 MiB on `/v1/systemone`, `/v1/audio/transcriptions` and the audio generation routes; a larger one is a `413`. The body is read as JSON whatever its `content-type` says (transcriptions excepted, which need `multipart/form-data`).
 
 Errors come back in the shape of the route's dialect:
 
 | Dialect | Error body |
 | --- | --- |
-| OpenAI (and `/v1/systemone`, `/v1/extract`) | `{"error": {"message": "…", "type": "…", "code": "…"}}` |
+| OpenAI (and `/v1/systemone`, `/v1/extract`, `/v1/audio/generations`) | `{"error": {"message": "…", "type": "…", "code": "…"}}` |
 | Ollama | `{"error": "…"}` |
 | Anthropic | `{"type": "error", "error": {"type": "…", "message": "…"}}` |
 
@@ -310,6 +312,38 @@ The answer has `model` and `operation`, then `entities` for `detect`, `contacts`
 | `500` | The model could not be read, or its reply was not one JSON object. |
 
 An extractor reads its model for each request and keeps nothing between them, so there is nothing to warm and the first request is as quick as the rest.
+
+## Audio generation
+
+`POST /v1/audio/generations` (or `/v1/audio/music-generations`) asks a model with the `audio` capability for a song, music or a sound. Neither OpenAI nor Ollama defines a route for this, so it takes the request field names mlx-serve's music API uses; its streamed events (below) are hedos's own.
+
+### The request
+
+```sh
+curl -s http://127.0.0.1:43367/v1/audio/generations -o rain.flac \
+  -d '{"model": "stable-audio-open-1.0", "prompt": "rain on a tin roof", "duration_seconds": 20}'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `model` | The model. Required. |
+| `prompt` | What to make: a style, mood, instruments, a scene. Required. |
+| `lyrics` | Lyrics, with `[verse]` and `[chorus]` tags on their own lines, for a model that sings. |
+| `instrumental` | `true` for no vocals; refused together with `lyrics`. |
+| `duration_seconds` (or `duration`) | How long, for a model that takes a length. |
+| `seed`, `steps`, `guidance`, `negative_prompt` | Where the model takes them. |
+| `response_format` | `flac` (the default) or `wav`. |
+| `stream` | `true` for progress events (below). |
+
+Any other parameter the model declares passes through: YuE2 takes `cot`, `abc` and `cfg_scale`. Every field is checked against the model's parameters before anything runs, so lyrics sent to a model that cannot sing, a key it has no use for (`bpm`), a duration outside its range or `mp3` is a `400` that names what the model takes, never silently dropped. A voice sent here is refused with a pointer to `/v1/audio/speech`, and a generator sent there with a pointer here.
+
+### The answer
+
+The file itself, as `audio/flac` or `audio/wav`. With `"stream": true` the answer is server-sent events: `progress` events (`{"stage": "Generating audio tokens"}`, or `{"step": 3600, "total": 9000, "fraction": 0.4}`), then one `complete` event with `b64_json`, `format`, `model` and `created`, or one `error` event with a `message`.
+
+A piece can take many minutes on a laptop, so a job may run an hour before it is cancelled. A client that goes away cancels its job: nobody would hear the result. Without `stream`, a failure is an HTTP error: a `400` when the runtime refuses the request itself (YuE2 without lyrics), a `504` when the hour runs out, a `500` otherwise. With `stream`, the response has already begun with a `200`, so a failure arrives as the final `error` event instead, carrying the message.
+
+While a song renders it holds the GPU, as an image job does, so a `/v1/audio/speech` request waits for it (up to that route's 300 s).
 
 ## Tool calling
 

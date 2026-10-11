@@ -23,6 +23,12 @@ fn every_label_is_listed() {
     let mut record = record_with("m", vec![Capability::chat()]);
     record.alias = Some("alias".to_owned());
     record.primary_weight_path = Some("/models/m.gguf".to_owned());
+    record.companions = vec![kernel::records::Companion {
+        role: "vae".to_owned(),
+        repo: "m-a-p/YuE2-Vae".to_owned(),
+        path: None,
+        serving_bytes: None,
+    }];
     let mut facts = Facts {
         collected_at_millis: 1_000_000,
         ..facts_with_memory(64)
@@ -53,8 +59,9 @@ fn every_label_is_listed() {
         assert!(LABELS.contains(&label.as_str()), "{label} is not listed");
         seen += 1;
     }
-    // Every label drawn is listed, and with the alias, path, and gateway
-    // traffic set, the expanded card draws every label listed but the size,
+    // Every label drawn is listed, and with the alias, path, a missing
+    // companion and gateway traffic set, the expanded card draws every label
+    // listed but the size,
     // which only the stacked card's pathless row uses.
     assert_eq!(seen, LABELS.len() - 1);
 }
@@ -277,4 +284,42 @@ fn the_gauge_shows_what_warming_would_take_beside_what_is_loaded() {
     );
     assert!(text(&gauge).ends_with("if warmed"));
     assert!(gauge_row(&record_with("m", Vec::new()), &facts, 50, &look).is_none());
+}
+
+#[test]
+fn a_missing_companion_is_named_with_its_pull() {
+    let mut record = record_with("YuE2-3B", vec![Capability::audio()]);
+    record.companions = vec![kernel::records::Companion {
+        role: "vae".to_owned(),
+        repo: "m-a-p/YuE2-Vae".to_owned(),
+        path: None,
+        serving_bytes: None,
+    }];
+    let motion = settled();
+    let lines = full_lines(
+        &record,
+        &facts_with_memory(64),
+        false,
+        80,
+        &Look::settled(&motion),
+    );
+    let needs: Vec<String> = texts(&lines)
+        .into_iter()
+        .filter(|line| line.contains("needs"))
+        .collect();
+    assert_eq!(needs.len(), 1, "{needs:?}");
+    assert!(
+        needs[0].contains("m-a-p/YuE2-Vae · hedos pull m-a-p/YuE2-Vae"),
+        "{needs:?}"
+    );
+
+    record.companions.clear();
+    let lines = full_lines(
+        &record,
+        &facts_with_memory(64),
+        false,
+        80,
+        &Look::settled(&motion),
+    );
+    assert!(!texts(&lines).iter().any(|line| line.contains("needs")));
 }

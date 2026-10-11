@@ -43,12 +43,13 @@ pub enum Kind {
 }
 
 /// The kinds, in the order `tab` steps through them.
-pub(crate) const KINDS: [Kind; 5] = [
+pub(crate) const KINDS: [Kind; 6] = [
     Kind::All,
     Kind::Of(InstallCategory::Chat),
     Kind::Of(InstallCategory::Code),
     Kind::Of(InstallCategory::Voice),
     Kind::Of(InstallCategory::Image),
+    Kind::Of(InstallCategory::Audio),
 ];
 
 impl Kind {
@@ -60,6 +61,7 @@ impl Kind {
             Kind::Of(InstallCategory::Code) => "code",
             Kind::Of(InstallCategory::Voice) => "speech",
             Kind::Of(InstallCategory::Image) => "image",
+            Kind::Of(InstallCategory::Audio) => "audio",
         }
     }
 

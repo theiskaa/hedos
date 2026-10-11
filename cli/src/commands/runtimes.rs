@@ -148,10 +148,18 @@ async fn approve(args: ApproveArgs, out: &Out) -> Result<(), CliError> {
             fetch(manifest, &session.dirs, out).await?;
         }
         out.line(&format!("{} is already approved", manifest.id));
+        let missing = missing_companions(manifest, &shelf);
+        let pulled = offer_companions(&manifest.id, &missing, args.yes, out).await;
+        let models = if pulled {
+            settle(&manifest.id, out).await?
+        } else {
+            model_names(manifest, &shelf)
+        };
         out.json(&serde_json::json!({
             "runtime": manifest.id,
             "consent": "approved",
-            "models": model_names(manifest, &shelf),
+            "models": models,
+            "missing_companions": still_missing(&manifest.id, out).await?,
         }));
         return Ok(());
     }
@@ -182,9 +190,100 @@ async fn approve(args: ApproveArgs, out: &Out) -> Result<(), CliError> {
     )?;
     let id = manifest.id.clone();
     out.line(&format!("{id} approved"));
+    let missing = missing_companions(manifest, &shelf);
+    offer_companions(&id, &missing, args.yes, out).await;
     let resolved = settle(&id, out).await?;
-    out.json(&serde_json::json!({ "runtime": id, "consent": "approved", "models": resolved }));
+    out.json(&serde_json::json!({
+        "runtime": id,
+        "consent": "approved",
+        "models": resolved,
+        "missing_companions": still_missing(&id, out).await?,
+    }));
     Ok(())
+}
+
+/// The companions `manifest` names that no model on `shelf` holds, as (role,
+/// repo), when the runtime would serve a model there: with none to serve, it
+/// needs nothing yet.
+fn missing_companions(manifest: &RuntimeManifest, shelf: &[ModelRecord]) -> Vec<(String, String)> {
+    if servable_models(manifest, shelf).is_empty() {
+        return Vec::new();
+    }
+    manifest
+        .companions
+        .iter()
+        .filter(|companion| {
+            !shelf
+                .iter()
+                .any(|record| record.holds_hub_repo(&companion.repo))
+        })
+        .map(|companion| (companion.role.clone(), companion.repo.clone()))
+        .collect()
+}
+
+/// Say which companions `id`'s models need and the shelf lacks, and pull them
+/// on a yes (or `--yes`); otherwise print the pulls to run. Nothing is fetched
+/// without that yes, and nothing is pulled under `--json`, where the pull's
+/// own output would break the one document approve prints. A pull that fails
+/// is reported with the command that retries it, and the approval stands.
+/// Returns whether anything was pulled.
+async fn offer_companions(id: &str, missing: &[(String, String)], yes: bool, out: &Out) -> bool {
+    if missing.is_empty() {
+        return false;
+    }
+    for (role, repo) in missing {
+        out.err(&format!("{id} also needs {repo} (its {role}) to run"));
+    }
+    let names: Vec<&str> = missing.iter().map(|(_, repo)| repo.as_str()).collect();
+    let pull = !out.is_json()
+        && (yes
+            || (interactive::is_interactive(out)
+                && interactive::confirm(&format!("Pull {} now?", names.join(", ")), false)
+                    .unwrap_or(false)));
+    if !pull {
+        for repo in &names {
+            out.err(&format!("pull it with `hedos pull {repo}`"));
+        }
+        return false;
+    }
+    let mut pulled = false;
+    for repo in names {
+        match crate::commands::pull::pull_hugging_face(repo, out).await {
+            Ok(()) => pulled = true,
+            Err(error) => out.err(&format!(
+                "pulling {repo} failed: {error}; retry with `hedos pull {repo}`"
+            )),
+        }
+    }
+    pulled
+}
+
+/// The companions `id`'s models still lack once the shelf has settled, said
+/// on stderr and returned for the JSON output.
+async fn still_missing(id: &str, out: &Out) -> Result<Vec<String>, CliError> {
+    let session = Session::open()?;
+    let shelf = session.shelf().await;
+    let mut missing: Vec<String> = Vec::new();
+    for record in shelf.iter().filter(|record| {
+        record
+            .runtime
+            .id
+            .as_ref()
+            .is_some_and(|runtime| runtime.as_str() == id)
+    }) {
+        for companion in record.missing_companions() {
+            out.err(&format!(
+                "{} still needs {}: `hedos pull {}`",
+                record.display_name(),
+                companion.repo,
+                companion.repo
+            ));
+            if !missing.contains(&companion.repo) {
+                missing.push(companion.repo.clone());
+            }
+        }
+    }
+    Ok(missing)
 }
 
 async fn revoke(args: RuntimeArgs, out: &Out) -> Result<(), CliError> {
@@ -291,6 +390,25 @@ fn consent_card(manifest: &RuntimeManifest, hash: &str, shelf: &[ModelRecord]) -
         lines.push(format!("  fetches  {} {}", pinned.version, build.url));
         lines.push(format!("  sha256   {}", build.sha256));
     }
+    if !manifest.params.is_empty() {
+        let keys: Vec<&str> = manifest
+            .params
+            .iter()
+            .map(|spec| spec.key.as_str())
+            .collect();
+        lines.push(format!("  takes    {}", keys.join(", ")));
+    }
+    for companion in &manifest.companions {
+        let held = shelf
+            .iter()
+            .any(|record| record.holds_hub_repo(&companion.repo));
+        lines.push(format!(
+            "  needs    {} {} ({})",
+            companion.role,
+            companion.repo,
+            if held { "on the shelf" } else { "not pulled" }
+        ));
+    }
     lines.push(format!(
         "  declares paths {}, network {}",
         manifest.permissions.paths.join(", "),
@@ -350,5 +468,82 @@ fn standing(manifest: &RuntimeManifest, models: &ModelsSettings) -> (&'static st
         HostConsent::Approved => ("approved", "approved"),
         HostConsent::Changed => ("changed since approval", "changed"),
         HostConsent::Unapproved => ("needs approval", "unapproved"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_card_names_what_a_request_may_carry_and_what_else_is_needed() {
+        let manifest = RuntimeManifest::parse(
+            "id = \"python:song\"\ncapabilities = [\"audio\"]\nexecution = \"job\"\n\
+             detect = { model_type = \"yue2\" }\n\
+             [[params]]\nkey = \"lyrics\"\ntype = \"string\"\n\
+             [[params]]\nkey = \"seed\"\ntype = \"int\"\n\
+             [companions]\nvae = { repo = \"m-a-p/YuE2-Vae\" }\n\
+             [serve]\nentrypoint = \"main.py\"\n",
+            None,
+        )
+        .unwrap();
+        let card = consent_card(&manifest, "abc", &[]);
+        assert!(
+            missing_companions(&manifest, &[]).is_empty(),
+            "nothing to serve yet"
+        );
+        assert!(
+            card.contains(&"  takes    lyrics, seed".to_owned()),
+            "{card:?}"
+        );
+        assert!(
+            card.contains(&"  needs    vae m-a-p/YuE2-Vae (not pulled)".to_owned()),
+            "{card:?}"
+        );
+    }
+
+    #[test]
+    fn a_companion_is_missing_only_for_a_runtime_with_a_model_to_serve() {
+        let manifest = RuntimeManifest::parse(
+            "id = \"python:song\"\ncapabilities = [\"audio\"]\nexecution = \"job\"\n\
+             detect = { extension = \"safetensors\" }\n\
+             [companions]\nvae = { repo = \"m-a-p/YuE2-Vae\" }\n\
+             [serve]\nentrypoint = \"main.py\"\n",
+            None,
+        )
+        .unwrap();
+        let mut song = ModelRecord::new(
+            "YuE2-3B",
+            kernel::records::Modality::audio(),
+            Vec::new(),
+            kernel::records::ModelSource::new(kernel::records::SourceKind::folder(), "/m"),
+        );
+        song.primary_weight_path = Some("/m/model.safetensors".to_owned());
+        assert_eq!(
+            missing_companions(&manifest, std::slice::from_ref(&song)),
+            vec![("vae".to_owned(), "m-a-p/YuE2-Vae".to_owned())]
+        );
+
+        let mut source = kernel::records::ModelSource::new(
+            kernel::records::SourceKind::huggingface_cache(),
+            "/hub/models--m-a-p--YuE2-Vae",
+        );
+        source.repo = Some("m-a-p/yue2-vae".to_owned());
+        let mut decoder = ModelRecord::new(
+            "YuE2-Vae",
+            kernel::records::Modality::audio(),
+            Vec::new(),
+            source,
+        );
+        assert_eq!(
+            missing_companions(&manifest, &[song.clone(), decoder.clone()]).len(),
+            1,
+            "a snapshot without its weights is no decoder"
+        );
+        decoder.serving_bytes = Some(530_000_000);
+        assert!(
+            missing_companions(&manifest, &[song, decoder]).is_empty(),
+            "held, any case"
+        );
     }
 }
