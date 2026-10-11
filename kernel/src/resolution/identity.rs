@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::modality_hints::{
-    Hint, SentenceTransformersLayout, from_config_json, sentence_transformers_layout,
+    Hint, SentenceTransformersLayout, from_snapshot, sentence_transformers_layout,
 };
 use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{
@@ -170,7 +170,7 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     }
 
     let config = container.join("config.json");
-    let hint = from_config_json(&config);
+    let hint = from_snapshot(&container);
     if let Some(format) = safetensors_format(&container, &config) {
         return identify_safetensors(format, hint.as_ref(), &container);
     }
@@ -193,6 +193,7 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
                 hint.execution,
             );
             model.context_length = hint.context_length;
+            model.params = hint.params;
             model
         }
         None => IdentifiedModel::new(ModelFormat::Unknown, None, Vec::new(), ExecutionMode::Sync),
@@ -380,6 +381,7 @@ fn apply_facts(model: &mut IdentifiedModel, facts: Option<&GgufFacts>) {
 fn apply_hint(model: &mut IdentifiedModel, hint: Option<&Hint>) {
     model.context_length = hint.and_then(|hint| hint.context_length);
     model.quantization = hint.and_then(|hint| hint.quantization.clone());
+    model.params = hint.map(|hint| hint.params.clone()).unwrap_or_default();
 }
 
 fn chat_model(format: ModelFormat, params: Vec<ParamSpec>) -> IdentifiedModel {

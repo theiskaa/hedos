@@ -120,7 +120,7 @@ pub struct PipelineFamily {
     pub class_names: HashSet<String>,
     /// What the family generates.
     pub modality: Modality,
-    /// The capabilities it serves (empty for edit/upscale/video/audio families).
+    /// The capabilities it serves (empty for the edit/upscale/video families).
     pub capabilities: Vec<Capability>,
     /// The base parameter schema.
     pub params: Vec<ParamSpec>,
@@ -316,16 +316,27 @@ impl PipelineFamilyRegistry {
                 Vec::new(),
             ),
             PipelineFamily::new(
-                "audio",
-                &[
-                    "AudioLDMPipeline",
-                    "AudioLDM2Pipeline",
-                    "MusicLDMPipeline",
-                    "StableAudioPipeline",
-                ],
+                "audio-ldm",
+                &["AudioLDMPipeline", "AudioLDM2Pipeline", "MusicLDMPipeline"],
                 Modality::audio(),
+                vec![Capability::audio()],
+                audio_ldm_params(),
                 Vec::new(),
+            ),
+            PipelineFamily::new(
+                "stable-audio",
+                &["StableAudioPipeline"],
+                Modality::audio(),
+                vec![Capability::audio()],
+                stable_audio_params(),
                 Vec::new(),
+            ),
+            PipelineFamily::new(
+                "ace-step",
+                &["AceStepPipeline"],
+                Modality::audio(),
+                vec![Capability::audio()],
+                ace_step_params(),
                 Vec::new(),
             ),
         ])
@@ -371,6 +382,22 @@ fn bare_param(key: &str, param_type: ParamType) -> ParamSpec {
         default_value: None,
         range: None,
         values: None,
+    }
+}
+
+/// An integer within a range, with no default: the runtime's own applies.
+fn int_range(key: &str, min: i64, max: i64) -> ParamSpec {
+    ParamSpec {
+        range: Some(vec![JsonValue::Int(min), JsonValue::Int(max)]),
+        ..bare_param(key, ParamType::Int)
+    }
+}
+
+/// A float within a range, with no default: the runtime's own applies.
+fn float_range(key: &str, min: f64, max: f64) -> ParamSpec {
+    ParamSpec {
+        range: Some(vec![JsonValue::Double(min), JsonValue::Double(max)]),
+        ..bare_param(key, ParamType::Float)
     }
 }
 
@@ -452,6 +479,55 @@ fn lcm_params() -> Vec<ParamSpec> {
         int_param("steps", 4, 1, 8),
         float_param("guidance", 1.5, 0.0, 2.0),
         size_param("512x512", &["512x512", "768x768"]),
+        seed(),
+    ]
+}
+
+/// How long the piece runs, in seconds.
+fn duration(default: f64, min: f64, max: f64) -> ParamSpec {
+    float_param("duration", default, min, max)
+}
+
+fn audio_ldm_params() -> Vec<ParamSpec> {
+    vec![
+        duration(10.0, 1.0, 30.0),
+        int_param("steps", 100, 1, 500),
+        float_param("guidance", 3.5, 0.0, 15.0),
+        seed(),
+        negative_prompt(),
+    ]
+}
+
+fn stable_audio_params() -> Vec<ParamSpec> {
+    vec![
+        duration(10.0, 1.0, 47.0),
+        int_param("steps", 100, 1, 500),
+        float_param("guidance", 7.0, 0.0, 15.0),
+        seed(),
+        negative_prompt(),
+    ]
+}
+
+/// ACE-Step sings: lyrics with `[verse]`/`[chorus]` tags, or none with
+/// `instrumental`. Its step count depends on the checkpoint (turbo or base), so
+/// the pipeline's own default stands.
+fn ace_step_params() -> Vec<ParamSpec> {
+    vec![
+        bare_param("lyrics", ParamType::String),
+        bare_param("instrumental", ParamType::Bool),
+        duration(60.0, 10.0, 600.0),
+        int_range("steps", 1, 200),
+        float_range("guidance", 0.0, 15.0),
+        seed(),
+    ]
+}
+
+/// MusicGen, run by transformers: about 50 audio tokens a second, trained on
+/// clips up to 30 seconds.
+pub(crate) fn musicgen_params() -> Vec<ParamSpec> {
+    vec![
+        duration(10.0, 1.0, 30.0),
+        float_param("guidance", 3.0, 0.0, 10.0),
         seed(),
     ]
 }

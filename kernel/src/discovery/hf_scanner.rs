@@ -220,10 +220,17 @@ fn resolve_hint(
     let mut hint = if names.contains("model_index.json") {
         modality_hints::from_model_index(&snapshot.join("model_index.json"))
     } else if names.contains("config.json") {
-        modality_hints::from_config_json(&snapshot.join("config.json"))
+        modality_hints::from_snapshot(snapshot)
             .unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync))
     } else if !ggufs.is_empty() {
         modality_hints::gguf_hint()
+    } else if let Some(hint) = names
+        .contains("README.md")
+        .then(|| modality_hints::from_snapshot(snapshot))
+        .flatten()
+    {
+        diagnostics.push("no config.json; identified from its model card alone".to_owned());
+        hint
     } else {
         diagnostics.push("no config.json or model_index.json in snapshot".to_owned());
         Hint::unknown(ExecutionMode::Sync)

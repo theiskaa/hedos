@@ -219,7 +219,13 @@ impl Engine {
             Engine::LlamaCpp
         } else if mlx.contains(runtime) {
             Engine::Mlx
-        } else if *runtime == RuntimeId::diffusers() || *runtime == RuntimeId::embeddings() {
+        } else if [
+            RuntimeId::diffusers(),
+            RuntimeId::audio(),
+            RuntimeId::embeddings(),
+        ]
+        .contains(runtime)
+        {
             Engine::Torch
         } else {
             Engine::Other

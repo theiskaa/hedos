@@ -67,6 +67,10 @@ pub struct Job {
     pub result: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub error: Option<String>,
+    /// Whether the job failed because the runtime refused the request itself,
+    /// so asking again unchanged would fail again.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rejected: bool,
     pub submitted_at: i64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub started_at: Option<i64>,
@@ -94,6 +98,7 @@ impl Job {
             preview: None,
             result: Vec::new(),
             error: None,
+            rejected: false,
             submitted_at,
             started_at: None,
             finished_at: None,

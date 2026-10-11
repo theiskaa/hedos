@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::records::{Capability, ExecutionMode, Modality};
+use crate::records::{Capability, ExecutionMode, JsonValue, Modality, ParamSpec, ParamType};
 
 use super::provenance::RuntimeProvenance;
 
@@ -18,14 +18,35 @@ fn invalid(message: impl Into<String>) -> ManifestValidationError {
     ManifestValidationError(message.into())
 }
 
-/// How a runtime is auto-detected for a model: a weight-file extension, or a
-/// marker file (optionally containing a string) beside the model.
+/// How a runtime is auto-detected for a model: exactly one of these rules.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ManifestDetect {
-    pub file: Option<String>,
-    pub contains: Option<String>,
-    pub file_extension: Option<String>,
+pub enum ManifestDetect {
+    /// A marker file beside the model, holding `contains` when one is given.
+    File {
+        path: String,
+        contains: Option<String>,
+    },
+    /// The extension of the model's weight file.
+    Extension(String),
+    /// The `model_type` the model's `config.json` names, read as JSON so its
+    /// spacing does not matter.
+    ModelType(String),
+    /// The pipeline class the model's `model_index.json` names, read as JSON.
+    Pipeline(String),
 }
+
+/// Another repository a model needs beside its own to run (YuE2's decoder),
+/// passed to the runtime under its role.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ManifestCompanion {
+    /// What it is to the runtime (`vae`).
+    pub role: String,
+    /// The Hugging Face repo it comes from (`m-a-p/YuE2-Vae`).
+    pub repo: String,
+}
+
+/// The most companions one manifest may name.
+const MAX_COMPANIONS: usize = 4;
 
 /// The Python environment a runtime needs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -96,7 +117,7 @@ pub struct ManifestVm {
 }
 
 /// A validated community runtime manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeManifest {
     pub id: String,
     pub modalities: Vec<Modality>,
@@ -110,6 +131,11 @@ pub struct RuntimeManifest {
     pub install: Option<ManifestInstall>,
     pub permissions: ManifestPermissions,
     pub vm: Option<ManifestVm>,
+    /// What a request to the runtime may carry, lent to a model it serves
+    /// when identification found no schema of its own.
+    pub params: Vec<ParamSpec>,
+    /// Other repositories its models need, sorted by role.
+    pub companions: Vec<ManifestCompanion>,
     pub directory: Option<PathBuf>,
     pub provenance: Option<RuntimeProvenance>,
     pub content_hash: Option<String>,
@@ -142,6 +168,10 @@ struct RawManifest {
     install: Option<RawInstall>,
     permissions: Option<RawPermissions>,
     vm: Option<RawVm>,
+    #[serde(default)]
+    params: Vec<RawParam>,
+    #[serde(default)]
+    companions: BTreeMap<String, RawCompanion>,
 }
 
 #[derive(Deserialize)]
@@ -149,6 +179,23 @@ struct RawDetect {
     file: Option<String>,
     contains: Option<String>,
     extension: Option<String>,
+    model_type: Option<String>,
+    pipeline: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawParam {
+    key: Option<String>,
+    #[serde(rename = "type")]
+    param_type: Option<String>,
+    default: Option<toml::Value>,
+    range: Option<Vec<toml::Value>>,
+    values: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct RawCompanion {
+    repo: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -221,6 +268,14 @@ impl RawManifest {
         if capabilities.is_empty() {
             return Err(invalid(format!("manifest {id} declares no capabilities")));
         }
+        if capabilities.contains(&Capability::speak())
+            && capabilities.contains(&Capability::audio())
+        {
+            return Err(invalid(format!(
+                "manifest {id} declares both speak and audio, but a model is either a voice \
+                 reading text or a generator making audio from a description"
+            )));
+        }
 
         let execution_raw = self
             .execution
@@ -229,19 +284,7 @@ impl RawManifest {
             .ok_or_else(|| invalid(format!("manifest {id} has an unknown execution mode")))?;
 
         let detect = match self.detect {
-            Some(raw) => {
-                let detect = ManifestDetect {
-                    file: raw.file,
-                    contains: raw.contains,
-                    file_extension: raw.extension,
-                };
-                if detect.file.is_none() && detect.file_extension.is_none() {
-                    return Err(invalid(format!(
-                        "manifest {id} has a detect rule with no file or extension"
-                    )));
-                }
-                Some(detect)
-            }
+            Some(raw) => Some(validate_detect(&id, raw)?),
             None => None,
         };
 
@@ -333,10 +376,11 @@ impl RawManifest {
             ));
         }
 
-        let serves_job = capabilities.contains(&Capability::image());
+        let serves_job = capabilities.iter().any(Capability::generates);
         if (execution == ExecutionMode::Job) != serves_job {
             return Err(invalid(format!(
-                "manifest {id} execution \"{execution_raw}\" does not match its capabilities"
+                "manifest {id} execution \"{execution_raw}\" does not match its capabilities: \
+                 \"job\" is for exactly the manifests that generate (image or audio)"
             )));
         }
 
@@ -386,6 +430,9 @@ impl RawManifest {
             None => None,
         };
 
+        let params = validate_params(&id, self.params)?;
+        let companions = validate_companions(&id, self.companions)?;
+
         Ok(RuntimeManifest {
             id,
             modalities,
@@ -399,11 +446,241 @@ impl RawManifest {
             install,
             permissions,
             vm,
+            params,
+            companions,
             directory,
             provenance: None,
             content_hash: None,
         })
     }
+}
+
+/// `raw` checked: exactly one of a marker file (with an optional string it must
+/// hold), a weight extension, a `model_type` or a pipeline class.
+fn validate_detect(id: &str, raw: RawDetect) -> Result<ManifestDetect, ManifestValidationError> {
+    let empty = [&raw.file, &raw.extension, &raw.model_type, &raw.pipeline]
+        .into_iter()
+        .any(|value| value.as_deref() == Some(""));
+    if empty {
+        return Err(invalid(format!("manifest {id} has an empty detect value")));
+    }
+    if raw.contains.is_some() && raw.file.is_none() {
+        return Err(invalid(format!(
+            "manifest {id} has a detect rule with contains but no file to look in"
+        )));
+    }
+    match (raw.file, raw.extension, raw.model_type, raw.pipeline) {
+        (Some(path), None, None, None) => Ok(ManifestDetect::File {
+            path,
+            contains: raw.contains,
+        }),
+        (None, Some(extension), None, None) => Ok(ManifestDetect::Extension(extension)),
+        (None, None, Some(model_type), None) => Ok(ManifestDetect::ModelType(model_type)),
+        (None, None, None, Some(pipeline)) => Ok(ManifestDetect::Pipeline(pipeline)),
+        (None, None, None, None) => Err(invalid(format!(
+            "manifest {id} has a detect rule with no file, extension, model_type or pipeline"
+        ))),
+        _ => Err(invalid(format!(
+            "manifest {id} has a detect rule with more than one of file, extension, model_type \
+             and pipeline; use one"
+        ))),
+    }
+}
+
+/// Each `[[params]]` entry checked and turned into the schema a record carries:
+/// a unique lowercase key, a known type, enum values only on an enum, a
+/// two-number range only on a number, and a default of the declared type.
+fn validate_params(
+    id: &str,
+    raw: Vec<RawParam>,
+) -> Result<Vec<ParamSpec>, ManifestValidationError> {
+    let mut specs: Vec<ParamSpec> = Vec::new();
+    for param in raw {
+        let key = param
+            .key
+            .filter(|key| {
+                !key.is_empty()
+                    && key
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+            .ok_or_else(|| {
+                invalid(format!(
+                    "manifest {id} declares a param without a lowercase key"
+                ))
+            })?;
+        if specs.iter().any(|spec| spec.key == key) {
+            return Err(invalid(format!("manifest {id} declares param {key} twice")));
+        }
+        let param_type = match param.param_type.as_deref() {
+            Some("int") => ParamType::Int,
+            Some("float") => ParamType::Float,
+            Some("bool") => ParamType::Bool,
+            Some("string") => ParamType::String,
+            Some("enum") => ParamType::Enum,
+            _ => {
+                return Err(invalid(format!(
+                    "manifest {id} param {key} needs a type: int, float, bool, string or enum"
+                )));
+            }
+        };
+        let values = match (param_type, param.values) {
+            (ParamType::Enum, Some(values)) if !values.is_empty() => Some(values),
+            (ParamType::Enum, _) => {
+                return Err(invalid(format!(
+                    "manifest {id} param {key} is an enum without values"
+                )));
+            }
+            (_, Some(_)) => {
+                return Err(invalid(format!(
+                    "manifest {id} param {key} has values but is not an enum"
+                )));
+            }
+            (_, None) => None,
+        };
+        let range = match param.range {
+            None => None,
+            Some(bounds) => {
+                let bounds = match (param_type, bounds.as_slice()) {
+                    (ParamType::Int | ParamType::Float, [low, high]) => {
+                        let low = number(param_type, low);
+                        let high = number(param_type, high);
+                        match (low, high) {
+                            (Some(low), Some(high)) if ordered(&low, &high) => {
+                                vec![low, high]
+                            }
+                            _ => {
+                                return Err(invalid(format!(
+                                    "manifest {id} param {key} range must be [min, max] of its type"
+                                )));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(invalid(format!(
+                            "manifest {id} param {key} range must be [min, max] on an int or float"
+                        )));
+                    }
+                };
+                Some(bounds)
+            }
+        };
+        let default_value = match param.default {
+            None => None,
+            Some(value) => {
+                let converted = match (param_type, value) {
+                    (ParamType::Int | ParamType::Float, value) => number(param_type, &value),
+                    (ParamType::Bool, toml::Value::Boolean(value)) => Some(JsonValue::Bool(value)),
+                    (ParamType::String, toml::Value::String(value)) => {
+                        Some(JsonValue::String(value))
+                    }
+                    (ParamType::Enum, toml::Value::String(value))
+                        if values
+                            .as_ref()
+                            .is_some_and(|values| values.contains(&value)) =>
+                    {
+                        Some(JsonValue::String(value))
+                    }
+                    _ => None,
+                };
+                Some(converted.ok_or_else(|| {
+                    invalid(format!(
+                        "manifest {id} param {key} has a default that is not of its type"
+                    ))
+                })?)
+            }
+        };
+        if let (Some(default), Some([low, high])) = (&default_value, range.as_deref())
+            && !(ordered(low, default) && ordered(default, high))
+        {
+            return Err(invalid(format!(
+                "manifest {id} param {key} has a default outside its range"
+            )));
+        }
+        specs.push(ParamSpec {
+            key,
+            param_type,
+            default_value,
+            range,
+            values,
+        });
+    }
+    Ok(specs)
+}
+
+/// A TOML number as the JSON value a param of `param_type` holds: an integer
+/// for an int, a double for a float (an integer is widened).
+fn number(param_type: ParamType, value: &toml::Value) -> Option<JsonValue> {
+    match (param_type, value) {
+        (ParamType::Int, toml::Value::Integer(value)) => Some(JsonValue::Int(*value)),
+        (ParamType::Float, toml::Value::Integer(value)) => Some(JsonValue::Double(*value as f64)),
+        (ParamType::Float, toml::Value::Float(value)) if value.is_finite() => {
+            Some(JsonValue::Double(*value))
+        }
+        _ => None,
+    }
+}
+
+/// Whether number `low` is at most `high`: integers compared exactly, floats
+/// as floats.
+fn ordered(low: &JsonValue, high: &JsonValue) -> bool {
+    match (low, high) {
+        (JsonValue::Int(low), JsonValue::Int(high)) => low <= high,
+        (JsonValue::Double(low), JsonValue::Double(high)) => low <= high,
+        _ => false,
+    }
+}
+
+/// Each `[companions]` entry checked: a lowercase role, and a repo written
+/// `owner/name` in the characters Hugging Face allows. At most
+/// [`MAX_COMPANIONS`].
+fn validate_companions(
+    id: &str,
+    raw: BTreeMap<String, RawCompanion>,
+) -> Result<Vec<ManifestCompanion>, ManifestValidationError> {
+    if raw.len() > MAX_COMPANIONS {
+        return Err(invalid(format!(
+            "manifest {id} names more than {MAX_COMPANIONS} companions"
+        )));
+    }
+    raw.into_iter()
+        .map(|(role, companion)| {
+            let role_ok = !role.is_empty()
+                && role
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+            if !role_ok {
+                return Err(invalid(format!(
+                    "manifest {id} companion role {role:?} must be lowercase letters, digits or _"
+                )));
+            }
+            let repo = companion
+                .repo
+                .filter(|repo| is_repo_id(repo))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "manifest {id} companion {role} needs a repo written owner/name"
+                    ))
+                })?;
+            Ok(ManifestCompanion { role, repo })
+        })
+        .collect()
+}
+
+/// Whether `repo` reads as a Hugging Face repo id: `owner/name`, each part made
+/// of letters, digits, `-`, `_` and `.`, and neither starting with a dot.
+fn is_repo_id(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    [owner, name].iter().all(|part| {
+        !part.is_empty()
+            && !part.starts_with('.')
+            && part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    })
 }
 
 /// `raw` checked: a version, at least one target, and for each an `https`

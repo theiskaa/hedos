@@ -1,14 +1,18 @@
 //! Modality/capability hints derived from a Hugging Face model's `config.json`:
-//! a first guess (architecture list, a vision block, or a few speech config keys)
-//! at what a downloaded model can do, before full identification. A diffusers
-//! `model_index.json` is hinted through the pipeline-family registry
+//! a first guess (architecture list, model type, a vision block, or a few
+//! speech config keys) at what a downloaded model can do, before full
+//! identification, weighed against what the model card says ([`from_snapshot`]).
+//! A diffusers `model_index.json` is hinted through the pipeline-family registry
 //! ([`from_model_index`]).
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::records::{Capability, ExecutionMode, JsonValue, Modality};
-use crate::resolution::pipelines::{PipelineFamilyRegistry, diffusers_pipeline_class};
+use super::card::ModelCard;
+use crate::records::{Capability, ExecutionMode, JsonValue, Modality, ParamSpec};
+use crate::resolution::pipelines::{
+    PipelineFamilyRegistry, diffusers_pipeline_class, musicgen_params,
+};
 
 /// A best-effort guess at a model's shape from its config metadata.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,6 +27,8 @@ pub struct Hint {
     pub context_length: Option<i64>,
     /// The quantization the config names, as `4bit`, when it does.
     pub quantization: Option<String>,
+    /// The parameter schema the model takes, when the hint knows it.
+    pub params: Vec<ParamSpec>,
 }
 
 impl Hint {
@@ -33,6 +39,7 @@ impl Hint {
             execution,
             context_length: None,
             quantization: None,
+            params: Vec::new(),
         }
     }
 
@@ -45,6 +52,7 @@ impl Hint {
             execution,
             context_length: None,
             quantization: None,
+            params: Vec::new(),
         }
     }
 }
@@ -65,6 +73,26 @@ pub fn audio_hint() -> Hint {
         vec![Capability::transcribe()],
         ExecutionMode::Stream,
     )
+}
+
+/// A model that makes audio (songs, music, sound effects) from a description,
+/// with the parameters it takes.
+fn audio_generator_hint(params: Vec<ParamSpec>) -> Hint {
+    let mut hint = Hint::new(
+        Modality::audio(),
+        vec![Capability::audio()],
+        ExecutionMode::Job,
+    );
+    hint.params = params;
+    hint
+}
+
+/// A model recognized for what it is but claiming no capability of its own:
+/// its own code drives it (YuE2, a TTS model built on a causal LM), so it must
+/// not inherit `chat` from an architecture name, and whichever runtime can drive
+/// it says what it does.
+fn withheld_hint(modality: Modality, execution: ExecutionMode) -> Hint {
+    Hint::new(modality, Vec::new(), execution)
 }
 
 /// A text chat/completion model.
@@ -158,6 +186,7 @@ pub fn from_model_index(path: &Path) -> Hint {
             execution: ExecutionMode::Job,
             context_length: None,
             quantization: None,
+            params: Vec::new(),
         };
     }
     Hint::unknown(ExecutionMode::Job)
@@ -176,10 +205,28 @@ pub fn from_config_json(path: &Path) -> Option<Hint> {
     from_config(&json)
 }
 
-/// The hint for a parsed `config.json` value: a vision-language model (a
-/// `vision_config` block plus a matching architecture), else the first
-/// architecture that matches an [`architecture_hint`] rule, else a speech model
-/// recognized by its config keys, else `None`.
+/// Model types that make audio with their own inference code, or are a part of
+/// one (a decoder, a codec). None of them chats, whatever its architecture is
+/// named (`YuE2ForCausalLM`), and nothing built in can drive them.
+const AUDIO_GENERATOR_MODEL_TYPES: [&str; 7] = [
+    "yue2",
+    "yue2_vae",
+    "acestep",
+    "heartmula",
+    "heartcodec",
+    "diffrhythm",
+    "minimax_music3",
+];
+
+/// Model types transformers generates audio with by itself.
+const LIBRARY_AUDIO_MODEL_TYPES: [&str; 2] = ["musicgen", "musicgen_melody"];
+
+/// The hint for a parsed `config.json` value, by the first rule that matches:
+/// a speech model (by architecture or config keys), an audio generator (by
+/// model type), a vision-language model (a `vision_config` block plus a
+/// matching architecture), else the first architecture that matches an
+/// [`architecture_hint`] rule, else `None`. Speech goes first so a voice is
+/// never read as anything else.
 pub fn from_config(json: &JsonValue) -> Option<Hint> {
     let object = json.as_object()?;
     let architectures: Vec<&str> = object
@@ -187,6 +234,7 @@ pub fn from_config(json: &JsonValue) -> Option<Hint> {
         .and_then(JsonValue::as_array)
         .map(|items| items.iter().filter_map(JsonValue::as_str).collect())
         .unwrap_or_default();
+    let model_type = object.get("model_type").and_then(JsonValue::as_str);
 
     // First present integer among the window keys, then require it positive
     // (a present-but-zero value voids the hint rather than falling through).
@@ -203,6 +251,27 @@ pub fn from_config(json: &JsonValue) -> Option<Hint> {
         .and_then(JsonValue::as_i64)
         .filter(|bits| *bits > 0)
         .map(|bits| format!("{bits}bit"));
+    let facts = |hint: Hint| with_facts(hint, context_length, quantization.clone());
+
+    let keys: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    if architectures
+        .iter()
+        .any(|architecture| is_speech_architecture(architecture))
+    {
+        return Some(facts(speech_hint()));
+    }
+    if let Some(hint) = config_key_hint(&keys) {
+        return Some(facts(hint));
+    }
+
+    if let Some(model_type) = model_type {
+        if AUDIO_GENERATOR_MODEL_TYPES.contains(&model_type) {
+            return Some(facts(withheld_hint(Modality::audio(), ExecutionMode::Job)));
+        }
+        if LIBRARY_AUDIO_MODEL_TYPES.contains(&model_type) {
+            return Some(facts(audio_generator_hint(musicgen_params())));
+        }
+    }
 
     if object.contains_key("vision_config")
         && architectures.iter().any(|architecture| {
@@ -212,21 +281,86 @@ pub fn from_config(json: &JsonValue) -> Option<Hint> {
                     .any(|marker| architecture.contains(marker))
         })
     {
-        return Some(with_facts(
-            vision_chat_hint(),
-            context_length,
-            quantization.clone(),
-        ));
+        return Some(facts(vision_chat_hint()));
     }
 
-    for architecture in &architectures {
-        if let Some(hint) = architecture_hint(architecture) {
-            return Some(with_facts(hint, context_length, quantization.clone()));
-        }
-    }
+    architectures
+        .iter()
+        .find_map(|architecture| architecture_hint(architecture))
+        .map(facts)
+}
 
-    let keys: BTreeSet<&str> = object.keys().map(String::as_str).collect();
-    config_key_hint(&keys).map(|hint| with_facts(hint, context_length, quantization))
+/// The hint for a model directory: its `config.json` ([`from_config_json`]),
+/// weighed against its model card ([`ModelCard`]). The config's verdict stands
+/// when it names a voice, an audio model, an embedder or anything else it is
+/// sure of; the card only corrects a config that reads as text (or says
+/// nothing), since that is the reading an architecture name gets wrong.
+pub fn from_snapshot(dir: &Path) -> Option<Hint> {
+    weighed(
+        from_config_json(&dir.join("config.json")),
+        ModelCard::read(dir).as_ref(),
+        ships_chat_template(dir),
+    )
+}
+
+/// A config hint corrected by a model card, as [`from_snapshot`] weighs them.
+/// `chat_template` says whether the snapshot ships a chat template, which a
+/// chat model filed with a `music` tag has and a music model does not.
+pub fn weighed(
+    config: Option<Hint>,
+    card: Option<&ModelCard>,
+    chat_template: bool,
+) -> Option<Hint> {
+    let open = config
+        .as_ref()
+        .is_none_or(|hint| hint.modality.is_none() || hint.modality == Some(Modality::text()));
+    if !open {
+        return config;
+    }
+    let Some(verdict) = card.and_then(|card| card_hint(card, chat_template)) else {
+        return config;
+    };
+    Some(match config {
+        Some(config) => with_facts(verdict, config.context_length, config.quantization),
+        None => verdict,
+    })
+}
+
+/// Card tags that mark a music generator.
+const MUSIC_TAGS: [&str; 4] = ["music", "music-generation", "text-to-music", "text2music"];
+
+/// What a model card alone says a model is, ranked: a card filed under
+/// `text-to-speech` is a voice whatever its tags add (Bark and CSM also carry
+/// `text-to-audio`); a card filed under `text-to-audio` or `text-to-music` makes
+/// audio; a music tag on a card filed as text generation, or not filed, makes
+/// audio only when no chat template ships (YuE v1's stage-1 Llama), since a
+/// chat model tagged with its subject keeps one. A bare `text-to-audio` card
+/// (ChatTTS, a voice) still only keeps the model out of chat: none of these
+/// claims a capability.
+fn card_hint(card: &ModelCard, chat_template: bool) -> Option<Hint> {
+    let pipeline = card.pipeline_tag.as_deref();
+    if pipeline == Some("text-to-speech") {
+        return Some(withheld_hint(Modality::speech(), ExecutionMode::Stream));
+    }
+    let filed_as_audio = matches!(pipeline, Some("text-to-audio" | "text-to-music"));
+    let tagged_music = matches!(pipeline, None | Some("text-generation"))
+        && !chat_template
+        && MUSIC_TAGS.iter().any(|tag| card.has_tag(tag));
+    (filed_as_audio || tagged_music).then(|| withheld_hint(Modality::audio(), ExecutionMode::Job))
+}
+
+/// Whether `dir` ships a chat template: a `chat_template.jinja` or
+/// `chat_template.json` file, or a `chat_template` entry in its
+/// `tokenizer_config.json`.
+fn ships_chat_template(dir: &Path) -> bool {
+    if dir.join("chat_template.jinja").is_file() || dir.join("chat_template.json").is_file() {
+        return true;
+    }
+    crate::fs::read_regular(&dir.join("tokenizer_config.json")).is_ok_and(|bytes| {
+        bytes
+            .windows(b"\"chat_template\"".len())
+            .any(|window| window == b"\"chat_template\"")
+    })
 }
 
 fn with_facts(mut hint: Hint, context_length: Option<i64>, quantization: Option<String>) -> Hint {
@@ -235,10 +369,33 @@ fn with_facts(mut hint: Hint, context_length: Option<i64>, quantization: Option<
     hint
 }
 
+/// Whether `dir` holds a Kokoro checkpoint: its `config.json` carries the
+/// `istftnet` decoder block that Kokoro (and nothing else hedos meets) is
+/// built around. The shipped speech runtime drives Kokoro's own pipeline and
+/// voice packs, so this is what it can load, not every voice.
+pub fn is_kokoro_layout(dir: &Path) -> bool {
+    crate::fs::read_regular(&dir.join("config.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<JsonValue>(&bytes).ok())
+        .and_then(|json| {
+            json.as_object()
+                .map(|object| object.contains_key("istftnet"))
+        })
+        .unwrap_or(false)
+}
+
+/// Architecture-name substrings that mark a text-to-speech model.
+const SPEECH_ARCHITECTURES: [&str; 6] = ["Kokoro", "StyleTTS", "Bark", "ParlerTTS", "Vits", "Xtts"];
+
+fn is_speech_architecture(architecture: &str) -> bool {
+    SPEECH_ARCHITECTURES
+        .iter()
+        .any(|marker| architecture.contains(marker))
+}
+
 /// The hint for a single architecture name, by substring/suffix rules (checked in
 /// priority order: speech, audio, embedding, then causal-LM text).
 fn architecture_hint(architecture: &str) -> Option<Hint> {
-    const SPEECH: [&str; 6] = ["Kokoro", "StyleTTS", "Bark", "ParlerTTS", "Vits", "Xtts"];
     const EMBEDDING: [&str; 5] = [
         "BertModel",
         "NomicBertModel",
@@ -246,7 +403,7 @@ fn architecture_hint(architecture: &str) -> Option<Hint> {
         "XLMRobertaModel",
         "MPNetModel",
     ];
-    if SPEECH.iter().any(|marker| architecture.contains(marker)) {
+    if is_speech_architecture(architecture) {
         return Some(speech_hint());
     }
     if architecture.contains("Whisper") {
@@ -271,4 +428,15 @@ fn config_key_hint(keys: &BTreeSet<&str>) -> Option<Hint> {
         return Some(speech_hint());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_card_on_a_feature_extractor_tagged_music_says_nothing() {
+        let card = ModelCard::parse("---\npipeline_tag: feature-extraction\ntags:\n- music\n---\n");
+        assert_eq!(weighed(None, card.as_ref(), false), None);
+    }
 }

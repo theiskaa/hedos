@@ -517,3 +517,36 @@ fn byte_format_handles_boundaries_and_negatives() {
     assert_eq!(format_bytes(999_999_999), "999 MB");
     assert_eq!(format_bytes(-5), "-5 B");
 }
+
+#[test]
+fn serving_counts_the_companions_on_disk() {
+    use kernel::records::Companion;
+    let dir = std::env::temp_dir();
+    let mut record = kernel::records::ModelRecord::new(
+        "YuE2-3B",
+        kernel::records::Modality::audio(),
+        Vec::new(),
+        kernel::records::ModelSource::new(kernel::records::SourceKind::folder(), "/m"),
+    );
+    record.serving_bytes = Some(7_000);
+    let companion = |path: Option<&std::path::Path>| Companion {
+        role: "vae".to_owned(),
+        repo: "m-a-p/YuE2-Vae".to_owned(),
+        path: path.map(|path| path.to_string_lossy().into_owned()),
+        serving_bytes: Some(500),
+    };
+    record.companions = vec![companion(Some(&dir))];
+    assert_eq!(record.serving_size(), Some(7_500));
+    assert_eq!(record.missing_companions().count(), 0);
+
+    record.companions = vec![companion(Some(&dir.join("hedos-no-such-companion")))];
+    assert_eq!(
+        record.serving_size(),
+        Some(7_000),
+        "a removed companion loads nothing"
+    );
+    assert_eq!(record.missing_companions().count(), 1);
+
+    record.companions = vec![companion(None)];
+    assert_eq!(record.serving_size(), Some(7_000));
+}

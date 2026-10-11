@@ -221,6 +221,7 @@ fn runtimes_map_to_their_engines() {
         assert_eq!(Engine::of_runtime(&mlx), Engine::Mlx);
     }
     assert_eq!(Engine::of_runtime(&RuntimeId::diffusers()), Engine::Torch);
+    assert_eq!(Engine::of_runtime(&RuntimeId::audio()), Engine::Torch);
     assert_eq!(Engine::of_runtime(&RuntimeId::embeddings()), Engine::Torch);
     assert_eq!(
         Engine::of_runtime(&RuntimeId::apple_foundation()),

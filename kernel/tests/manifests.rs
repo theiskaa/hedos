@@ -2,8 +2,8 @@
 
 mod support;
 
-use kernel::manifests::{RuntimeManifest, RuntimeProvenance};
-use kernel::records::{Capability, ExecutionMode, Modality};
+use kernel::manifests::{ManifestCompanion, ManifestDetect, RuntimeManifest, RuntimeProvenance};
+use kernel::records::{Capability, ExecutionMode, JsonValue, Modality, ParamType};
 use support::TempDir;
 
 fn parse(text: &str) -> Result<RuntimeManifest, kernel::manifests::ManifestValidationError> {
@@ -32,11 +32,8 @@ fn loads_a_valid_invoke_manifest() {
     assert_eq!(manifest.capabilities, vec![Capability::speak()]);
     assert_eq!(manifest.execution, ExecutionMode::Sync);
     assert_eq!(
-        manifest
-            .detect
-            .as_ref()
-            .and_then(|d| d.file_extension.as_deref()),
-        Some("pth")
+        manifest.detect,
+        Some(ManifestDetect::Extension("pth".to_owned()))
     );
     assert!(
         manifest
@@ -119,6 +116,10 @@ fn rejection_matrix() {
             "id = \"a\"\ncapabilities = [\"image\"]\nexecution = \"stream\"\n[invoke]\ncommand = \"x\"",
         ),
         (
+            "audio as stream",
+            "id = \"a\"\ncapabilities = [\"audio\"]\nexecution = \"stream\"\n[serve]\nentrypoint = \"m.py\"",
+        ),
+        (
             "invoke + stream",
             "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"stream\"\n[invoke]\ncommand = \"x\"",
         ),
@@ -138,6 +139,7 @@ fn accepts_sync_invoke_job_invoke_and_serve_stream() {
         "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"sync\"\n[invoke]\ncommand = \"x\"",
         "id = \"a\"\ncapabilities = [\"image\"]\nexecution = \"job\"\n[invoke]\ncommand = \"x\"",
         "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"stream\"\n[serve]\nentrypoint = \"m.py\"",
+        "id = \"a\"\ncapabilities = [\"audio\"]\nexecution = \"job\"\n[serve]\nentrypoint = \"m.py\"",
     ];
     for text in good {
         assert!(parse(text).is_ok(), "expected acceptance: {text}");
@@ -154,6 +156,14 @@ fn invoke_stream_error_names_the_reason() {
             .contains("invoke manifests run to completion"),
         "{err}"
     );
+}
+
+#[test]
+fn job_mismatch_error_names_the_generating_capabilities() {
+    let text =
+        "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"job\"\n[invoke]\ncommand = \"x\"";
+    let err = parse(text).expect_err("rejected");
+    assert!(err.to_string().contains("image or audio"), "{err}");
 }
 
 #[test]
@@ -216,6 +226,183 @@ fn detect_rule_needs_a_file_or_extension() {
     let text = "id = \"a\"\ncapabilities = [\"chat\"]\nexecution = \"sync\"\n[invoke]\ncommand = \"x\"\n[detect]\ncontains = \"Flux\"";
     let err = parse(text).expect_err("rejected");
     assert!(err.to_string().contains("detect rule"), "{err}");
+}
+
+/// An audio job manifest with `extra` appended (a detect rule, params or
+/// companions).
+fn audio_manifest(extra: &str) -> String {
+    format!(
+        "id = \"python:song\"\nmodalities = [\"audio\"]\ncapabilities = [\"audio\"]\n\
+         execution = \"job\"\n{extra}\n[serve]\nentrypoint = \"main.py\"\n"
+    )
+}
+
+#[test]
+fn detect_reads_a_model_type_or_a_pipeline_class() {
+    let by_type = parse(&audio_manifest("detect = { model_type = \"yue2\" }")).expect("valid");
+    assert_eq!(
+        by_type.detect,
+        Some(ManifestDetect::ModelType("yue2".to_owned()))
+    );
+
+    let by_class = parse(&audio_manifest(
+        "detect = { pipeline = \"AceStepPipeline\" }",
+    ))
+    .expect("valid");
+    assert_eq!(
+        by_class.detect,
+        Some(ManifestDetect::Pipeline("AceStepPipeline".to_owned()))
+    );
+}
+
+#[test]
+fn a_detect_rule_uses_one_form() {
+    for (name, detect) in [
+        (
+            "two json forms",
+            "detect = { model_type = \"a\", pipeline = \"B\" }",
+        ),
+        (
+            "json and file",
+            "detect = { model_type = \"a\", file = \"config.json\" }",
+        ),
+        (
+            "json and contains",
+            "detect = { model_type = \"a\", contains = \"x\" }",
+        ),
+        (
+            "contains alone",
+            "detect = { extension = \"pt\", contains = \"x\" }",
+        ),
+        ("empty model type", "detect = { model_type = \"\" }"),
+    ] {
+        assert!(parse(&audio_manifest(detect)).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn params_become_the_schema_a_model_carries() {
+    let manifest = parse(&audio_manifest(
+        "detect = { model_type = \"yue2\" }\n\
+         [[params]]\nkey = \"lyrics\"\ntype = \"string\"\n\
+         [[params]]\nkey = \"cot\"\ntype = \"enum\"\nvalues = [\"full\", \"off\"]\ndefault = \"full\"\n\
+         [[params]]\nkey = \"cfg_scale\"\ntype = \"float\"\nrange = [1, 3.5]\ndefault = 2\n\
+         [[params]]\nkey = \"seed\"\ntype = \"int\"\nrange = [0, 4294967295]\n\
+         [[params]]\nkey = \"instrumental\"\ntype = \"bool\"\ndefault = false",
+    ))
+    .expect("valid");
+    let keys: Vec<&str> = manifest
+        .params
+        .iter()
+        .map(|spec| spec.key.as_str())
+        .collect();
+    assert_eq!(keys, ["lyrics", "cot", "cfg_scale", "seed", "instrumental"]);
+    let cot = &manifest.params[1];
+    assert_eq!(cot.param_type, ParamType::Enum);
+    assert_eq!(cot.default_value, Some(JsonValue::String("full".into())));
+    let cfg = &manifest.params[2];
+    assert_eq!(
+        cfg.range,
+        Some(vec![JsonValue::Double(1.0), JsonValue::Double(3.5)]),
+        "an integer bound of a float widens"
+    );
+    assert_eq!(cfg.default_value, Some(JsonValue::Double(2.0)));
+    assert_eq!(
+        manifest.params[3].range,
+        Some(vec![JsonValue::Int(0), JsonValue::Int(4294967295)])
+    );
+    assert_eq!(
+        manifest.params[4].default_value,
+        Some(JsonValue::Bool(false))
+    );
+}
+
+#[test]
+fn malformed_params_are_refused() {
+    for (name, param) in [
+        ("no key", "type = \"int\""),
+        ("uppercase key", "key = \"Seed\"\ntype = \"int\""),
+        ("no type", "key = \"seed\""),
+        ("unknown type", "key = \"seed\"\ntype = \"number\""),
+        ("enum without values", "key = \"cot\"\ntype = \"enum\""),
+        (
+            "values on a string",
+            "key = \"cot\"\ntype = \"string\"\nvalues = [\"a\"]",
+        ),
+        (
+            "range on a string",
+            "key = \"x\"\ntype = \"string\"\nrange = [1, 2]",
+        ),
+        (
+            "inverted range",
+            "key = \"x\"\ntype = \"int\"\nrange = [5, 1]",
+        ),
+        (
+            "float range on an int",
+            "key = \"x\"\ntype = \"int\"\nrange = [0.5, 1]",
+        ),
+        (
+            "three bounds",
+            "key = \"x\"\ntype = \"float\"\nrange = [0, 1, 2]",
+        ),
+        (
+            "default off type",
+            "key = \"x\"\ntype = \"int\"\ndefault = \"one\"",
+        ),
+        (
+            "default off enum",
+            "key = \"c\"\ntype = \"enum\"\nvalues = [\"a\"]\ndefault = \"b\"",
+        ),
+    ] {
+        let text = audio_manifest(&format!(
+            "detect = {{ model_type = \"x\" }}\n[[params]]\n{param}"
+        ));
+        assert!(parse(&text).is_err(), "{name}");
+    }
+    let twice = audio_manifest(
+        "detect = { model_type = \"x\" }\n[[params]]\nkey = \"seed\"\ntype = \"int\"\n\
+         [[params]]\nkey = \"seed\"\ntype = \"int\"",
+    );
+    assert!(parse(&twice).is_err(), "a key declared twice");
+}
+
+#[test]
+fn companions_name_a_role_and_a_repo() {
+    let manifest = parse(&audio_manifest(
+        "detect = { model_type = \"yue2\" }\n[companions]\nvae = { repo = \"m-a-p/YuE2-Vae\" }",
+    ))
+    .expect("valid");
+    assert_eq!(
+        manifest.companions,
+        vec![ManifestCompanion {
+            role: "vae".into(),
+            repo: "m-a-p/YuE2-Vae".into()
+        }]
+    );
+    for (name, companions) in [
+        ("no repo", "vae = {}"),
+        ("bare name", "vae = { repo = \"YuE2-Vae\" }"),
+        ("nested path", "vae = { repo = \"m-a-p/YuE2-Vae/x\" }"),
+        ("dot start", "vae = { repo = \"m-a-p/.hidden\" }"),
+        ("bad role", "VAE = { repo = \"m-a-p/YuE2-Vae\" }"),
+        (
+            "five",
+            "a = { repo = \"o/a\" }\nb = { repo = \"o/b\" }\nc = { repo = \"o/c\" }\n\
+             d = { repo = \"o/d\" }\ne = { repo = \"o/e\" }",
+        ),
+    ] {
+        let text = audio_manifest(&format!(
+            "detect = {{ model_type = \"yue2\" }}\n[companions]\n{companions}"
+        ));
+        assert!(parse(&text).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn a_manifest_cannot_both_speak_and_make_audio() {
+    let text = "id = \"a\"\ncapabilities = [\"speak\", \"audio\"]\nexecution = \"job\"\n[serve]\nentrypoint = \"m.py\"";
+    let err = parse(text).expect_err("rejected");
+    assert!(err.to_string().contains("both speak and audio"), "{err}");
 }
 
 #[test]

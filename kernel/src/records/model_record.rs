@@ -117,6 +117,31 @@ pub struct ParamSpec {
     pub values: Option<Vec<String>>,
 }
 
+/// Another repository a model's runtime needs beside the model's own (YuE2's
+/// decoder): the role and repo its runtime names, and where the shelf holds it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Companion {
+    /// What it is to the runtime (`vae`).
+    pub role: String,
+    /// The Hugging Face repo it comes from (`m-a-p/YuE2-Vae`).
+    pub repo: String,
+    /// Its snapshot directory, when the shelf holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// What serving it loads, in bytes, when the shelf measured it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serving_bytes: Option<i64>,
+}
+
+impl Companion {
+    /// Whether its snapshot directory is on disk.
+    pub fn is_present(&self) -> bool {
+        self.path
+            .as_deref()
+            .is_some_and(|path| std::path::Path::new(path).is_dir())
+    }
+}
+
 /// A single model the kernel knows about: what it is, where it lives, how it runs,
 /// and how the user has configured it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,6 +222,10 @@ pub struct ModelRecord {
     /// A content fingerprint used to follow a model across moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_fingerprint: Option<String>,
+    /// The other repositories its runtime needs, as resolution last found
+    /// them on the shelf. Serving counts their size with the model's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub companions: Vec<Companion>,
 }
 
 impl ModelRecord {
@@ -233,6 +262,7 @@ impl ModelRecord {
             stop_tokens: None,
             downloading: false,
             content_fingerprint: None,
+            companions: Vec::new(),
         }
     }
 
@@ -271,13 +301,50 @@ impl ModelRecord {
     }
 
     /// What serving the model loads, in bytes: the serving figure when one
-    /// was measured and is positive, else the size on disk. Fit and the memory
-    /// budget read this; what the model takes on disk is
-    /// [`size_on_disk`](Self::size_on_disk).
+    /// was measured and is positive, else the size on disk, plus what the
+    /// companions on disk load. Fit and the memory budget read this; what the
+    /// model takes on disk is [`size_on_disk`](Self::size_on_disk).
     pub fn serving_size(&self) -> Option<i64> {
+        let own = self.own_serving_size()?;
+        Some(
+            self.companions
+                .iter()
+                .filter(|companion| companion.is_present())
+                .filter_map(|companion| companion.serving_bytes)
+                .fold(own, |total, bytes| total.saturating_add(bytes.max(0))),
+        )
+    }
+
+    /// Whether this record is Hugging Face repo `repo` held in full: in the hub
+    /// cache, not missing, not still downloading, and with its weights
+    /// measured, which the scan does only when the whole weight set is there
+    /// (a snapshot holding just a config is not a decoder). Repo ids are
+    /// matched without regard to case, as the hub resolves them.
+    pub fn holds_hub_repo(&self, repo: &str) -> bool {
+        self.source.kind == SourceKind::huggingface_cache()
+            && self
+                .source
+                .repo
+                .as_deref()
+                .is_some_and(|held| held.eq_ignore_ascii_case(repo))
+            && self.state != ModelState::Missing
+            && !self.downloading
+            && self.serving_bytes.is_some_and(|bytes| bytes > 0)
+    }
+
+    /// What serving this model's own weights loads, without its companions.
+    pub fn own_serving_size(&self) -> Option<i64> {
         self.serving_bytes
             .filter(|bytes| *bytes > 0)
             .or_else(|| self.size_on_disk())
+    }
+
+    /// The companions its runtime needs that are not on disk: never found on
+    /// the shelf, or removed since.
+    pub fn missing_companions(&self) -> impl Iterator<Item = &Companion> {
+        self.companions
+            .iter()
+            .filter(|companion| !companion.is_present())
     }
 
     /// What serving the model loads, in whole mebibytes, the unit the memory

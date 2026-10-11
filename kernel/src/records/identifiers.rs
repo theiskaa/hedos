@@ -90,6 +90,15 @@ string_id! {
         tools => "tools",
         judge => "judge",
         extract => "extract",
+        audio => "audio",
+    }
+}
+
+impl Capability {
+    /// Whether this capability makes an artifact (an image, a song) as a job,
+    /// rather than answering in a stream or a single reply.
+    pub fn generates(&self) -> bool {
+        *self == Self::image() || *self == Self::audio()
     }
 }
 
@@ -117,6 +126,7 @@ string_id! {
         openai_endpoint => "generic:openai-server",
         mflux => "python:mflux",
         diffusers => "python:diffusers",
+        audio => "python:audio",
         mlx_lm => "python:mlx-lm",
         mlx_audio => "python:mlx-audio",
         mlx_vlm => "python:mlx-vlm",
@@ -218,6 +228,8 @@ impl BidPreference {
     pub const MFLUX: i64 = 25;
     /// diffusers image runtime.
     pub const DIFFUSERS: i64 = 26;
+    /// diffusers and transformers audio-generation runtime.
+    pub const AUDIO: i64 = 26;
     /// ComfyUI daemon.
     pub const COMFY_UI: i64 = 27;
     /// Automatic1111 daemon.

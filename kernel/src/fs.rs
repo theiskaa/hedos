@@ -18,9 +18,10 @@ pub(crate) fn open_regular(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
-/// The whole of the file at `path`, read only when it is a regular file, as
-/// [`open_regular`] opens one.
-pub(crate) fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
+/// The whole of the file at `path`, read only when it is a regular file
+/// (following links): a named pipe where a small config file is expected would
+/// otherwise block the reader until something writes to it.
+pub fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     io::Read::read_to_end(&mut open_regular(path)?, &mut bytes)?;
     Ok(bytes)
