@@ -17,6 +17,7 @@ use crate::request::GatewayRequest;
 use crate::resolver::resolve_authorized;
 use crate::responder::GatewayResponder;
 
+pub mod audio_generation;
 pub mod chat;
 pub mod embeddings;
 pub mod extract;

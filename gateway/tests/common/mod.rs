@@ -86,6 +86,13 @@ pub struct MockPort {
     pub open_streams: Option<Mutex<Vec<StreamSender>>>,
     /// When set, each invoke's stream ends with this error after `chunks`.
     pub stream_error: Option<RuntimeError>,
+    /// Every `submit` this port received, in order: the capability and payload.
+    pub submitted: Mutex<Vec<(Capability, JsonValue)>>,
+    /// Every job id `cancel` was called with.
+    pub cancelled: Mutex<Vec<String>>,
+    /// When set, a job's event stream stays open after `job_events`, its
+    /// sender kept here, as a job still running does.
+    pub open_jobs: Option<Mutex<Vec<mpsc::UnboundedSender<JobEvent>>>>,
 }
 
 /// The sending half of a runtime's chunk stream.
@@ -105,6 +112,9 @@ impl Default for MockPort {
             invoked: Mutex::new(Vec::new()),
             open_streams: None,
             stream_error: None,
+            submitted: Mutex::new(Vec::new()),
+            cancelled: Mutex::new(Vec::new()),
+            open_jobs: None,
         }
     }
 }
@@ -191,10 +201,11 @@ impl GatewayPort for MockPort {
     fn submit<'a>(
         &'a self,
         _model_id: &'a str,
-        _capability: Capability,
-        _payload: JsonValue,
+        capability: Capability,
+        payload: JsonValue,
     ) -> PortFuture<'a, Result<String, KernelError>> {
-        Box::pin(async { Ok(String::new()) })
+        self.submitted.lock().unwrap().push((capability, payload));
+        Box::pin(async { Ok("job-1".to_owned()) })
     }
 
     fn job<'a>(&'a self, _id: &'a str) -> PortFuture<'a, Option<Job>> {
@@ -208,12 +219,20 @@ impl GatewayPort for MockPort {
             for event in events {
                 let _ = tx.send(event);
             }
+            if let Some(open) = &self.open_jobs {
+                open.lock().unwrap().push(tx);
+            }
             rx
         })
     }
 
-    fn cancel<'a>(&'a self, _job_id: &'a str) -> PortFuture<'a, ()> {
+    fn cancel<'a>(&'a self, job_id: &'a str) -> PortFuture<'a, ()> {
+        self.cancelled.lock().unwrap().push(job_id.to_owned());
         Box::pin(async {})
+    }
+
+    fn abandon(&self, job_id: &str) {
+        self.cancelled.lock().unwrap().push(job_id.to_owned());
     }
 
     fn voices<'a>(

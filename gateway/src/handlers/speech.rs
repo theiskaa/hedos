@@ -56,6 +56,13 @@ impl GatewayHandling for OpenAISpeechHandler {
                 identity,
             )
             .await?;
+            if !record.can(&Capability::speak()) && record.can(&Capability::audio()) {
+                return Err(bad_request(format!(
+                    "{} makes audio from a description rather than reading text aloud; \
+                     use POST /v1/audio/generations",
+                    record.display_name()
+                )));
+            }
 
             let mut voice = body
                 .get("voice")
