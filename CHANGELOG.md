@@ -2,7 +2,7 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
-## Unreleased
+## v1.5.2 - 2026-10-12
 
 - Audio generation (#30). A new `audio` capability covers models that make songs, music or sound effects from a description. `hedos audio <model> <prompt>` writes the piece to a FLAC or WAV file, and `POST /v1/audio/generations` (also at `/v1/audio/music-generations`, with the request fields mlx-serve's music API uses) returns the file, or streams progress events ending with the file when `stream` is set. Each request is checked against what the model takes, so lyrics sent to a model that cannot sing are a 400 naming what it does take. A client that disconnects cancels its job.
 - A built-in `python:audio` runtime serves the models diffusers and transformers run by themselves: Stable Audio Open, AudioLDM, AudioLDM2, MusicLDM, ACE-Step 1.5 (which sings from lyrics) and MusicGen.
