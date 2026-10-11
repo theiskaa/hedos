@@ -50,7 +50,7 @@ fn an_unknown_class_has_no_profile() {
 }
 
 #[test]
-fn edit_and_video_and_audio_families_carry_only_a_modality() {
+fn edit_and_video_families_carry_only_a_modality() {
     let registry = PipelineFamilyRegistry::builtin();
     let edit = registry
         .profile("StableDiffusionImg2ImgPipeline", None, None)
@@ -63,11 +63,45 @@ fn edit_and_video_and_audio_families_carry_only_a_modality() {
         .profile("CogVideoXPipeline", None, None)
         .expect("video profile");
     assert_eq!(video.modality, Modality::video());
+}
 
-    let audio = registry
-        .profile("StableAudioPipeline", None, None)
-        .expect("audio profile");
-    assert_eq!(audio.modality, Modality::audio());
+/// The `[min, max]` range of `key` in `params`, as floats.
+fn range_of(params: &[ParamSpec], key: &str) -> (f64, f64) {
+    let range = params
+        .iter()
+        .find(|spec| spec.key == key)
+        .and_then(|spec| spec.range.clone())
+        .unwrap_or_else(|| panic!("{key} has a range"));
+    let number = |value: &JsonValue| match value {
+        JsonValue::Int(value) => *value as f64,
+        JsonValue::Double(value) => *value,
+        other => panic!("{other:?} is not a number"),
+    };
+    (number(&range[0]), number(&range[1]))
+}
+
+#[test]
+fn audio_pipelines_generate_audio_for_as_long_as_each_was_trained_to() {
+    let registry = PipelineFamilyRegistry::builtin();
+    for (class, longest) in [
+        ("StableAudioPipeline", 47.0),
+        ("AudioLDMPipeline", 30.0),
+        ("AudioLDM2Pipeline", 30.0),
+        ("MusicLDMPipeline", 30.0),
+        ("AceStepPipeline", 600.0),
+    ] {
+        let profile = registry.profile(class, None, None).expect(class);
+        assert_eq!(profile.modality, Modality::audio(), "{class}");
+        assert_eq!(profile.capabilities, vec![Capability::audio()], "{class}");
+        assert_eq!(range_of(&profile.params, "duration").1, longest, "{class}");
+    }
+    let sings = |class: &str| {
+        registry
+            .profile(class, None, None)
+            .is_some_and(|profile| profile.params.iter().any(|spec| spec.key == "lyrics"))
+    };
+    assert!(sings("AceStepPipeline"));
+    assert!(!sings("StableAudioPipeline"));
 }
 
 #[test]

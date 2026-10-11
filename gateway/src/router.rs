@@ -12,6 +12,7 @@ use crate::auth::Authenticating;
 use crate::defaults::SATURATED_RETRY_AFTER_SECONDS;
 use crate::error::{GatewayError, GatewayErrorKind};
 use crate::handlers::GatewayHandling;
+use crate::handlers::audio_generation::AudioGenerationHandler;
 use crate::handlers::chat::{OllamaChatHandler, OpenAIChatHandler};
 use crate::handlers::embeddings::{OllamaEmbedHandler, OpenAIEmbeddingsHandler};
 use crate::handlers::extract::ExtractHandler;
@@ -154,6 +155,22 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
         GatewayRoute::new("POST", "/v1/audio/speech", Box::new(OpenAISpeechHandler))
             .inference()
             .described("OpenAI", "Synthesize speech from text"),
+        GatewayRoute::new(
+            "POST",
+            "/v1/audio/generations",
+            Box::new(AudioGenerationHandler),
+        )
+        .inference()
+        .described("hedos", "Make a song, music or a sound from a description")
+        .max_body(32 * 1024 * 1024),
+        GatewayRoute::new(
+            "POST",
+            "/v1/audio/music-generations",
+            Box::new(AudioGenerationHandler),
+        )
+        .inference()
+        .described("mlx-serve", "Make music (alias of /v1/audio/generations)")
+        .max_body(32 * 1024 * 1024),
         GatewayRoute::new(
             "POST",
             "/v1/audio/transcriptions",

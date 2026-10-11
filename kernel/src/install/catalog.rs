@@ -16,15 +16,18 @@ pub enum InstallCategory {
     Voice,
     /// Image generation.
     Image,
+    /// Music, songs and sound effects from a description.
+    Audio,
 }
 
 impl InstallCategory {
     /// Every category, in the order they are shown.
-    pub const ALL: [InstallCategory; 4] = [
+    pub const ALL: [InstallCategory; 5] = [
         InstallCategory::Chat,
         InstallCategory::Code,
         InstallCategory::Voice,
         InstallCategory::Image,
+        InstallCategory::Audio,
     ];
 
     /// The stable string form.
@@ -34,6 +37,7 @@ impl InstallCategory {
             InstallCategory::Code => "code",
             InstallCategory::Voice => "voice",
             InstallCategory::Image => "image",
+            InstallCategory::Audio => "audio",
         }
     }
 
@@ -137,7 +141,7 @@ impl InstallCatalogEntry {
 /// reads the network). Each serving size is what the shelf measures for the
 /// pulled repo, pinned by `catalog_servable` over the repo's captured listing.
 pub fn entries() -> Vec<InstallCatalogEntry> {
-    use InstallCategory::{Chat, Code, Image, Voice};
+    use InstallCategory::{Audio, Chat, Code, Image, Voice};
     vec![
         InstallCatalogEntry::ollama(
             "qwen3.5:0.8b",
@@ -220,22 +224,36 @@ pub fn entries() -> Vec<InstallCatalogEntry> {
         InstallCatalogEntry::hugging_face(
             "mlx-community/Kokoro-82M-bf16",
             "Tiny, warm text-to-speech. Instant on Apple Silicon.",
-            (332_922_211, 327_117_503),
+            (332_922_747, 327_117_503),
             Voice,
             Engine::Mlx,
         ),
         InstallCatalogEntry::hugging_face(
             "stabilityai/sdxl-turbo",
             "Images in one to four steps, fast enough to iterate on.",
-            (26_927_360_164, 26_927_360_164),
+            (26_927_366_047, 26_927_366_047),
             Image,
             Engine::Torch,
         ),
         InstallCatalogEntry::hugging_face(
             "stabilityai/stable-diffusion-xl-base-1.0",
             "Dependable, well-supported image workhorse.",
-            (41_165_626_911, 41_165_626_911),
+            (41_165_635_579, 41_165_635_579),
             Image,
+            Engine::Torch,
+        ),
+        InstallCatalogEntry::hugging_face(
+            "facebook/musicgen-small",
+            "Instrumental clips up to 30 seconds from a description. Non-commercial licence.",
+            (2_367_666_280, 2_367_653_971),
+            Audio,
+            Engine::Torch,
+        ),
+        InstallCatalogEntry::hugging_face(
+            "ACE-Step/acestep-v15-xl-turbo-diffusers",
+            "Whole songs with vocals from lyrics and a style, in a few steps.",
+            (11_101_505_469, 11_101_505_469),
+            Audio,
             Engine::Torch,
         ),
     ]

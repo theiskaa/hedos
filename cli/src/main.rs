@@ -67,8 +67,10 @@ enum Command {
     Speak(commands::speak::SpeakArgs),
     /// Transcribe an audio file to text.
     Transcribe(commands::transcribe::TranscribeArgs),
-    /// Generate an image to a PNG file.
+    /// Generate an image to a file.
     Image(commands::image::ImageArgs),
+    /// Make a song, music or a sound from a description, to a file.
+    Audio(commands::audio::AudioArgs),
     /// Show aggregate statistics from the gateway audit log.
     Stats(commands::stats::StatsArgs),
     /// Measure what each model does on this machine.
@@ -178,6 +180,7 @@ async fn dispatch(command: Command, out: &Out) -> Result<(), CliError> {
         Command::Speak(args) => commands::speak::run(args, out).await,
         Command::Transcribe(args) => commands::transcribe::run(args, out).await,
         Command::Image(args) => commands::image::run(args, out).await,
+        Command::Audio(args) => commands::audio::run(args, out).await,
         Command::Stats(args) => commands::stats::run(args, out).await,
         Command::Bench(args) => commands::bench::run(args, out).await,
         Command::Shelf(args) => commands::shelf::run(args, out).await,

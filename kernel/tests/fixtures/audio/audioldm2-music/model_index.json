@@ -1,0 +1,48 @@
+{
+  "_class_name": "AudioLDM2Pipeline",
+  "_diffusers_version": "0.20.0.dev0",
+  "feature_extractor": [
+    "transformers",
+    "ClapFeatureExtractor"
+  ],
+  "language_model": [
+    "transformers",
+    "GPT2Model"
+  ],
+  "projection_model": [
+    "audioldm2",
+    "AudioLDM2ProjectionModel"
+  ],
+  "scheduler": [
+    "diffusers",
+    "DDIMScheduler"
+  ],
+  "text_encoder": [
+    "transformers",
+    "ClapModel"
+  ],
+  "text_encoder_2": [
+    "transformers",
+    "T5EncoderModel"
+  ],
+  "tokenizer": [
+    "transformers",
+    "RobertaTokenizerFast"
+  ],
+  "tokenizer_2": [
+    "transformers",
+    "T5TokenizerFast"
+  ],
+  "unet": [
+    "audioldm2",
+    "AudioLDM2UNet2DConditionModel"
+  ],
+  "vae": [
+    "diffusers",
+    "AutoencoderKL"
+  ],
+  "vocoder": [
+    "transformers",
+    "SpeechT5HifiGan"
+  ]
+}

@@ -2,6 +2,17 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## Unreleased
+
+- Audio generation (#30). A new `audio` capability covers models that make songs, music or sound effects from a description. `hedos audio <model> <prompt>` writes the piece to a FLAC or WAV file, and `POST /v1/audio/generations` (also at `/v1/audio/music-generations`, with the request fields mlx-serve's music API uses) returns the file, or streams progress events ending with the file when `stream` is set. Each request is checked against what the model takes, so lyrics sent to a model that cannot sing are a 400 naming what it does take. A client that disconnects cancels its job.
+- A built-in `python:audio` runtime serves the models diffusers and transformers run by themselves: Stable Audio Open, AudioLDM, AudioLDM2, MusicLDM, ACE-Step 1.5 (which sings from lyrics) and MusicGen.
+- YuE2 writes whole songs with vocals from a style prompt and lyrics, at 48 kHz stereo, on a shipped `python:yue2` runtime. The runtime installs YuE2's own package from its repo, pinned by commit and hash. Pull `m-a-p/YuE2-3B`, then `hedos runtimes approve python:yue2`, which offers to pull its decoder, `m-a-p/YuE2-Vae`.
+- A manifest runtime can name a companion: a second repo its models need, such as a decoder. hedos finds it on the shelf, passes it to the runtime and counts its size in the model's fit. A model whose companion is missing is refused with the `hedos pull` that fetches it, and `hedos ls` and the shelf's model card say the same. Manifests can also declare the parameters a request may carry and detect a model by the `model_type` in its config or its diffusers pipeline class. `docs/configuration.md` walks through bringing another audio model this way, with no change to hedos.
+- Voices and generators are told apart. Speech checks run first, so Kokoro is unchanged, and the model card's tags now count: Orpheus and OuteTTS (voices) and YuE2 (a generator) are no longer listed as chat models. `hedos pull` keeps a repo's `README.md` so its card can be read. The speech runtime takes only Kokoro, the one model its sidecar can load, and each command and route points a model of the other kind to the right one. A shelf that got any of these wrong is corrected the first time it is read, with no rescan.
+- `hedos recommend` and both pull surfaces have an `audio` kind: MusicGen-small and ACE-Step 1.5 XL turbo.
+- A job that fails because of the request itself, such as YuE2 sent no lyrics, is a 400 at the gateway rather than a 500. `hedos image` writes the image in the format the model made, not always as `.png`.
+- A manifest's `detect` rule must use exactly one form. A rule that set two (such as `file` beside `extension`) used to load with part of it ignored, and is now refused.
+
 ## v1.5.1 - 2026-10-10
 
 - `hedos recommend` reads this machine and recommends models to pull for it (#26). It shows the chip, memory, free disk, how much memory a model may use and which engines are installed, then picks up to three models each for chat, code, voice and image: the largest that run well here. A missing engine keeps the same picks and says what to install first. `--kind` narrows the list, `--all` shows every catalog model and why it is or is not a pick, and `--json` carries all of it.

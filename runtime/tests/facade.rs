@@ -552,6 +552,12 @@ async fn submit_runs_a_job_and_writes_a_provenanced_artifact() {
     assert_eq!(artifact.model, "voice");
     assert_eq!(artifact.runtime, "ollama");
     assert_eq!(artifact.capability, Capability::speak());
+    assert_eq!(
+        kernel.artifact_extension(&artifact_id).await.expect("read"),
+        Some("wav".to_owned()),
+        "the file keeps the format the runtime made"
+    );
+    assert_eq!(kernel.artifact_extension("nope").await.expect("read"), None);
 
     // The governor admitted the job, so the model is now accounted resident.
     assert!(

@@ -2,6 +2,7 @@
 //! visible text, and detecting stop sequences. Both hold back a partial-tag
 //! suffix so a delimiter split across chunk boundaries is still recognized.
 
+pub mod audio;
 pub mod chat;
 pub mod chunk;
 pub mod decision;
@@ -9,6 +10,7 @@ pub mod stop_matcher;
 pub mod think_splitter;
 pub mod tools;
 
+pub use audio::{AUDIO_FORMATS, AudioRequestError, audio_payload};
 pub use chat::{
     AttachmentKind, ChatAttachment, ChatMessage, ChatMlPrompt, ChatRole, ChatWireError,
     decode_tool_specs,

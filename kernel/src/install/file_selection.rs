@@ -123,8 +123,9 @@ fn is_support(sibling: &HFSibling) -> bool {
         && sibling.bytes.unwrap_or(0) <= CONFIG_CAP
 }
 
-/// Whether a sibling is a plausible model file: not hidden, not a readme, not an
-/// excluded extension, not a flax/tf checkpoint, and not under an excluded dir.
+/// Whether a sibling is a plausible model file: not hidden, not a readme other
+/// than the root model card, not an excluded extension, not a flax/tf
+/// checkpoint, and not under an excluded dir.
 fn is_eligible(sibling: &HFSibling) -> bool {
     let path = &sibling.rfilename;
     let segments = segments(path);
@@ -135,7 +136,10 @@ fn is_eligible(sibling: &HFSibling) -> bool {
         return false;
     }
     if filename.to_lowercase().starts_with("readme") {
-        return false;
+        // The root card's front matter (`pipeline_tag`, tags) is what tells a
+        // voice or an audio generator built on a causal LM from a chat model;
+        // any other readme is documentation.
+        return path == "README.md";
     }
     if EXCLUDED_EXTENSIONS.contains(&file_extension(filename).as_str()) {
         return false;

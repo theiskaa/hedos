@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use kernel::manifests::ManifestDetect;
-use kernel::records::{Capability, JsonValue, Modality, ModelRecord, SourceKind};
+use kernel::records::{Capability, ExecutionMode, JsonValue, Modality, ModelRecord, SourceKind};
 use kernel::resolution::{IdentifiedModel, ModelFormat, identify};
 
 /// The largest output file a manifest command may produce before it is refused
@@ -105,29 +105,48 @@ pub fn error_summary(raw: &str) -> String {
     }
 }
 
-/// Whether `detect` recognizes `record`: a weight-file extension match, or a
-/// marker file in the model's snapshot (optionally required to contain a string).
+/// Whether `detect` recognizes `record`: the `model_type` its `config.json`
+/// names, the pipeline class its `model_index.json` names, a weight-file
+/// extension match, or a marker file in the model's snapshot (optionally
+/// required to contain a string).
 pub fn detect_matches(detect: &ManifestDetect, record: &ModelRecord) -> bool {
-    if let Some(extension) = &detect.file_extension {
-        let candidate = record
-            .primary_weight_path
-            .as_deref()
-            .unwrap_or(&record.source.path);
-        return candidate
-            .to_lowercase()
-            .ends_with(&format!(".{}", extension.to_lowercase()));
+    let snapshot = SidecarModelPaths::resolve(record).snapshot;
+    let snapshot = Path::new(&snapshot);
+    match detect {
+        ManifestDetect::ModelType(model_type) => {
+            json_string(&snapshot.join("config.json"), "model_type").as_ref() == Some(model_type)
+        }
+        ManifestDetect::Pipeline(pipeline) => {
+            json_string(&snapshot.join("model_index.json"), "_class_name").as_ref()
+                == Some(pipeline)
+        }
+        ManifestDetect::Extension(extension) => {
+            let candidate = record
+                .primary_weight_path
+                .as_deref()
+                .unwrap_or(&record.source.path);
+            candidate
+                .to_lowercase()
+                .ends_with(&format!(".{}", extension.to_lowercase()))
+        }
+        ManifestDetect::File { path, contains } => {
+            let target = snapshot.join(path);
+            match contains {
+                None => target.exists(),
+                Some(contains) => kernel::fs::read_regular(&target).is_ok_and(|content| {
+                    String::from_utf8_lossy(&content).contains(contains.as_str())
+                }),
+            }
+        }
     }
-    let Some(file) = &detect.file else {
-        return false;
-    };
-    let target = Path::new(&SidecarModelPaths::resolve(record).snapshot).join(file);
-    if !target.exists() {
-        return false;
-    }
-    let Some(contains) = &detect.contains else {
-        return true;
-    };
-    std::fs::read_to_string(&target).is_ok_and(|content| content.contains(contains))
+}
+
+/// The string at top-level `key` of the JSON object in `path`, when the file
+/// reads, parses as an object, and holds a string there.
+fn json_string(path: &Path, key: &str) -> Option<String> {
+    let data = kernel::fs::read_regular(path).ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    json.get(key)?.as_str().map(str::to_owned)
 }
 
 /// A filesystem-safe slug of `id`: every non-alphanumeric character becomes `-`.
@@ -301,12 +320,17 @@ pub fn template_for(record: &ModelRecord) -> String {
 fn render_template(record: &ModelRecord, identified: &IdentifiedModel) -> String {
     let slug = slug(&record.display_name().to_lowercase());
     let modality = identified.modality.as_ref().unwrap_or(&record.modality);
-    let execution = if *modality == Modality::image() {
+    let capabilities = if identified.capabilities.is_empty() {
+        default_capabilities(modality, identified.execution)
+    } else {
+        identified.capabilities.clone()
+    };
+    let execution = if capabilities.iter().any(Capability::generates) {
         "job"
     } else {
         "stream"
     };
-    let capabilities = default_capabilities(modality)
+    let capabilities = capabilities
         .iter()
         .map(|capability| format!("\"{}\"", capability.as_str()))
         .collect::<Vec<_>>()
@@ -322,12 +346,16 @@ fn render_template(record: &ModelRecord, identified: &IdentifiedModel) -> String
     )
 }
 
-/// The capabilities a manifest starts with for `modality`.
-fn default_capabilities(modality: &Modality) -> Vec<Capability> {
+/// The capabilities a manifest starts with for `modality` when identification
+/// named none. An `audio` model identified as a job makes audio; any other
+/// `audio` model transcribes it.
+fn default_capabilities(modality: &Modality, execution: ExecutionMode) -> Vec<Capability> {
     if *modality == Modality::image() {
         vec![Capability::image()]
     } else if *modality == Modality::speech() {
         vec![Capability::speak()]
+    } else if *modality == Modality::audio() && execution == ExecutionMode::Job {
+        vec![Capability::audio()]
     } else if *modality == Modality::audio() {
         vec![Capability::transcribe()]
     } else {
@@ -336,15 +364,18 @@ fn default_capabilities(modality: &Modality) -> Vec<Capability> {
 }
 
 /// The `detect = { … }` line that recognizes `record`: a diffusers pipeline
-/// class, else a weight-file extension, else a `config.json` architecture, else a
-/// bare `config.json` presence check.
+/// class, else the `model_type` its `config.json` names, else a weight-file
+/// extension, else a `config.json` architecture, else a bare `config.json`
+/// presence check.
 fn detect_line(record: &ModelRecord, identified: &IdentifiedModel) -> String {
     if identified.format == ModelFormat::Diffusers
         && let Some(pipeline_class) = &identified.pipeline_class
     {
-        return format!(
-            "detect       = {{ file = \"model_index.json\", contains = \"{pipeline_class}\" }}"
-        );
+        return format!("detect       = {{ pipeline = \"{pipeline_class}\" }}");
+    }
+    let snapshot = SidecarModelPaths::resolve(record).snapshot;
+    if let Some(model_type) = json_string(&Path::new(&snapshot).join("config.json"), "model_type") {
+        return format!("detect       = {{ model_type = \"{model_type}\" }}");
     }
     if let Some(weight) = &record.primary_weight_path {
         let extension = Path::new(weight)
@@ -368,7 +399,7 @@ fn detect_line(record: &ModelRecord, identified: &IdentifiedModel) -> String {
 /// bare `config.json` detect rule).
 fn config_architecture(record: &ModelRecord) -> Option<String> {
     let paths = SidecarModelPaths::resolve(record);
-    let data = std::fs::read(Path::new(&paths.snapshot).join("config.json")).ok()?;
+    let data = kernel::fs::read_regular(&Path::new(&paths.snapshot).join("config.json")).ok()?;
     let json: serde_json::Value = serde_json::from_slice(&data).ok()?;
     let architectures: Vec<&str> = json
         .get("architectures")?
@@ -384,7 +415,7 @@ fn config_architecture(record: &ModelRecord) -> Option<String> {
 #[cfg(test)]
 mod template_tests {
     use super::*;
-    use kernel::records::{ExecutionMode, ModelSource};
+    use kernel::records::ModelSource;
     use kernel::resolution::ModelFormat;
 
     fn record(name: &str, modality: Modality) -> ModelRecord {
@@ -414,6 +445,36 @@ mod template_tests {
     }
 
     #[test]
+    fn an_audio_generator_renders_an_audio_job_manifest() {
+        let record = record("YuE2-3B", Modality::audio());
+        let mut identified = identified(ModelFormat::Safetensors, Some(Modality::audio()));
+        identified.execution = ExecutionMode::Job;
+        let manifest = render_template(&record, &identified);
+        assert!(
+            manifest.contains("capabilities = [\"audio\"]"),
+            "{manifest}"
+        );
+        assert!(manifest.contains("execution    = \"job\""), "{manifest}");
+    }
+
+    #[test]
+    fn identified_capabilities_win_over_the_modality_default() {
+        let record = record("Stable Audio", Modality::audio());
+        let identified = IdentifiedModel::new(
+            ModelFormat::Diffusers,
+            Some(Modality::audio()),
+            vec![Capability::audio()],
+            ExecutionMode::Job,
+        );
+        let manifest = render_template(&record, &identified);
+        assert!(
+            manifest.contains("capabilities = [\"audio\"]"),
+            "{manifest}"
+        );
+        assert!(manifest.contains("execution    = \"job\""), "{manifest}");
+    }
+
+    #[test]
     fn an_image_model_renders_a_job_manifest() {
         let record = record("SDXL", Modality::image());
         let manifest = render_template(&record, &identified(ModelFormat::Diffusers, None));
@@ -428,7 +489,7 @@ mod template_tests {
         identified.pipeline_class = Some("FluxPipeline".to_owned());
         assert_eq!(
             detect_line(&record, &identified),
-            "detect       = { file = \"model_index.json\", contains = \"FluxPipeline\" }"
+            "detect       = { pipeline = \"FluxPipeline\" }"
         );
     }
 
@@ -448,6 +509,98 @@ mod template_tests {
         assert_eq!(
             detect_line(&record, &identified(ModelFormat::Safetensors, None)),
             "detect       = { file = \"config.json\" }"
+        );
+    }
+
+    /// A directory under the system temp dir, removed when dropped.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// A folder record over a fresh directory holding `file` with `contents`,
+    /// with the directory.
+    fn folder_with(name: &str, file: &str, contents: &str) -> (Scratch, ModelRecord) {
+        let dir = std::env::temp_dir().join(format!(
+            "hedos-manifest-detect-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), contents).unwrap();
+        let mut record = record("m", Modality::audio());
+        record.source.path = dir.to_string_lossy().into_owned();
+        (Scratch(dir), record)
+    }
+
+    #[test]
+    fn a_model_type_rule_reads_config_json_whatever_its_spacing() {
+        let yue2 = ManifestDetect::ModelType("yue2".to_owned());
+        let (_spaced, spaced) = folder_with(
+            "spaced",
+            "config.json",
+            "{\n  \"model_type\" :\t\"yue2\"\n}",
+        );
+        assert!(detect_matches(&yue2, &spaced));
+        let (_decoder, decoder) =
+            folder_with("decoder", "config.json", r#"{"model_type":"yue2_vae"}"#);
+        assert!(!detect_matches(&yue2, &decoder), "a prefix is not a match");
+        let (_nested, nested) =
+            folder_with("nested", "config.json", r#"{"text":{"model_type":"yue2"}}"#);
+        assert!(
+            !detect_matches(&yue2, &nested),
+            "only the top-level key counts"
+        );
+    }
+
+    #[test]
+    fn a_pipeline_rule_reads_model_index_json() {
+        let ace = ManifestDetect::Pipeline("AceStepPipeline".to_owned());
+        let (_index, index) = folder_with(
+            "ace",
+            "model_index.json",
+            r#"{"_class_name": "AceStepPipeline", "_diffusers_version": "0.38.0"}"#,
+        );
+        assert!(detect_matches(&ace, &index));
+        let (_other, other) = folder_with(
+            "ldm",
+            "model_index.json",
+            r#"{"_class_name":"AudioLDM2Pipeline"}"#,
+        );
+        assert!(!detect_matches(&ace, &other));
+    }
+
+    #[test]
+    fn the_detect_line_prefers_a_config_model_type() {
+        let (_dir, record) = folder_with(
+            "template",
+            "config.json",
+            r#"{"model_type":"yue2","architectures":["YuE2ForCausalLM"]}"#,
+        );
+        assert_eq!(
+            detect_line(&record, &identified(ModelFormat::Safetensors, None)),
+            "detect       = { model_type = \"yue2\" }"
+        );
+    }
+
+    #[test]
+    fn a_stable_audio_snapshot_scaffolds_an_audio_job() {
+        let (_dir, record) = folder_with(
+            "stable-audio",
+            "model_index.json",
+            r#"{"_class_name":"StableAudioPipeline","_diffusers_version":"0.30.0"}"#,
+        );
+        let manifest = template_for(&record);
+        assert!(
+            manifest.contains("capabilities = [\"audio\"]"),
+            "{manifest}"
+        );
+        assert!(manifest.contains("execution    = \"job\""), "{manifest}");
+        assert!(
+            manifest.contains("detect       = { pipeline = \"StableAudioPipeline\" }"),
+            "{manifest}"
         );
     }
 
@@ -479,20 +632,25 @@ mod template_tests {
 
     #[test]
     fn default_capabilities_map_each_modality() {
+        let stream = ExecutionMode::Stream;
         assert_eq!(
-            default_capabilities(&Modality::image()),
+            default_capabilities(&Modality::image(), ExecutionMode::Job),
             vec![Capability::image()]
         );
         assert_eq!(
-            default_capabilities(&Modality::speech()),
+            default_capabilities(&Modality::speech(), stream),
             vec![Capability::speak()]
         );
         assert_eq!(
-            default_capabilities(&Modality::audio()),
+            default_capabilities(&Modality::audio(), stream),
             vec![Capability::transcribe()]
         );
         assert_eq!(
-            default_capabilities(&Modality::text()),
+            default_capabilities(&Modality::audio(), ExecutionMode::Job),
+            vec![Capability::audio()]
+        );
+        assert_eq!(
+            default_capabilities(&Modality::text(), stream),
             vec![Capability::chat(), Capability::complete()]
         );
     }

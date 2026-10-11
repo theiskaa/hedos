@@ -2,6 +2,7 @@
 //! — multi-part GGUF shard grouping and duplicate-weight detection. The
 //! directory scanners and reconciliation into the registry build on these.
 
+mod card;
 pub mod duplicates;
 pub mod gguf_models;
 pub mod gguf_shards;

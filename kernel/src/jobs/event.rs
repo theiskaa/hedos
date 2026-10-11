@@ -43,8 +43,8 @@ pub enum JobEvent {
     Preview(Vec<u8>),
     /// The job finished, with its result artifact ids.
     Done { result: Vec<String> },
-    /// The job failed, with a message.
-    Failed { message: String },
+    /// The job failed, with a message, and whether the request was at fault.
+    Failed { message: String, rejected: bool },
     /// The job was cancelled.
     Cancelled,
 }

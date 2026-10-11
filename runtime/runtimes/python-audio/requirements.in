@@ -1,0 +1,14 @@
+# torchaudio (MusicGen-Melody's feature extractor) is built against one torch
+# release, and 2.11 is its last, so torch is held to it.
+torch==2.11.0
+torchaudio==2.11.0
+diffusers
+# Stable Audio's scheduler (CosineDPMSolverMultistepScheduler) is built on it.
+torchsde
+transformers
+accelerate
+safetensors
+sentencepiece
+protobuf
+soundfile
+numpy

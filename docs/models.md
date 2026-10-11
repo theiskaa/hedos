@@ -56,16 +56,17 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 | OpenAI-compatible endpoint (`generic:openai-server`) | Remote models reached by URL and key | A reachable server, with its API key (if it needs one) in `HEDOS_OPENAI_API_KEY` |
 | mlx-lm (`python:mlx-lm`) | MLX text models | [`uv`](https://astral.sh/uv) |
 | mlx-vlm (`python:mlx-vlm`) | MLX vision-language models | `uv` |
-| mlx-audio (`python:mlx-audio`) | Speech synthesis | `uv` |
+| mlx-audio (`python:mlx-audio`) | Speech synthesis with Kokoro | `uv` |
+| audio (`python:audio`) | Songs, music and sound effects: the diffusers audio pipelines (Stable Audio, AudioLDM, AudioLDM2, MusicLDM, ACE-Step) and MusicGen | `uv` |
 | embeddings (`python:embeddings`) | Safetensors embedders | `uv` |
 | diffusers (`python:diffusers`) | Diffusers image pipelines | `uv` |
 | mflux (`python:mflux`) | The FLUX pipelines it supports, ahead of diffusers | `uv` |
 | whisper.cpp (`whisper-cpp`) | Transcription, from GGUF or GGML `.bin` weights | `uv` |
 | ComfyUI (`comfyui`), AUTOMATIC1111 (`a1111`) | Image models the running daemon serves | The daemon running |
 | Apple Intelligence (`apple-foundation`) | Apple's on-device model, with tool calls | A Mac where the model is enabled and ready, plus the bridge library (below) |
-| Manifest runtimes (`python:laya`, `python:zerank`, `cli:tessera`, or your own) | Whatever the manifest declares | Approval with `hedos runtimes approve <id>`, and `uv` for a Python one |
+| Manifest runtimes (`python:laya`, `python:zerank`, `python:yue2`, `cli:tessera`, or your own) | Whatever the manifest declares | Approval with `hedos runtimes approve <id>`, and `uv` for a Python one |
 
-The Python sidecars provision their own environment through `uv` on first use; their runtime code ships inside the binary. A manifest runtime runs code on the host, so it neither bids on a model nor serves one until you approve it, and the approval is bound to a hash of its files: editing any of them asks for it again. hedos ships `python:laya`, `python:zerank` and `cli:tessera` this way, and reads your own from `runtimes.d` in the data directory. `hedos runtimes` lists them and where each approval stands.
+The Python sidecars provision their own environment through `uv` on first use; their runtime code ships inside the binary. A manifest runtime runs code on the host, so it neither bids on a model nor serves one until you approve it, and the approval is bound to a hash of its files: editing any of them asks for it again. hedos ships `python:laya`, `python:zerank`, `python:yue2` and `cli:tessera` this way, and reads your own from `runtimes.d` in the data directory. `hedos runtimes` lists them and where each approval stands.
 
 ### GGUF models on llama.cpp
 
@@ -110,6 +111,7 @@ Each model declares what it can be asked to do. `hedos ls` shows them, and `hedo
 | `extract` | Finds contacts in text | `/v1/extract`; `hedos run` |
 | `image` | Generates images | `/v1/images/generations`; `hedos image` |
 | `speak` | Synthesizes speech | `/v1/audio/speech`; `hedos speak` |
+| `audio` | Makes songs, music or sound effects from a description | `/v1/audio/generations`; `hedos audio` |
 | `transcribe` | Turns speech into text | `/v1/audio/transcriptions`; `hedos transcribe` |
 
 ## Fit and memory
@@ -220,4 +222,27 @@ Extractors declare the `extract` capability (`hedos ls --capability extract`). E
 Use one with `hedos run` (see [cli.md](cli.md#extractors)), on the shelf's [try screen](shelf.md#extractors-on-the-try-screen), or over the gateway's `/v1/extract` ([gateway.md](gateway.md#extractors)), which answers exactly what Tessera's own `tessera json` would.
 
 Tessera's model is experimental and was trained on United States documents: it finds US phone numbers and addresses best, and a request that names no region is read as one from the US, the hint its detector expects. Its confidences say how sure it is, and a result it suggests a person look at is marked.
+
+## Audio generation
+
+An audio generator makes a song, music or a sound from a description, and declares the `audio` capability (`hedos ls --capability audio`). It runs as a job that ends in a file, FLAC (24-bit) or WAV at the model's own rate. Two kinds of model are served:
+
+- **Models diffusers and transformers run by themselves**, on the built-in `python:audio` runtime: Stable Audio Open, AudioLDM and AudioLDM2, MusicLDM, ACE-Step 1.5 (its `-diffusers` repos, which sing from lyrics), and MusicGen (and MusicGen-Melody). Each takes the parameters its pipeline has: a duration within what it was trained on (47 s for Stable Audio, 30 s for AudioLDM and MusicGen, up to 600 s for ACE-Step), steps, guidance, a negative prompt where the pipeline takes one, lyrics only where the model sings.
+- **Models that ship their own code**, each on a manifest runtime of its own. hedos ships `python:yue2` for [YuE2](https://huggingface.co/m-a-p/YuE2-3B), which writes whole songs with vocals from a style prompt and lyrics, at 48 kHz stereo. It runs YuE2's own package, installed from the wheel in YuE2's repo at a pinned commit and hash. YuE2 decodes through a second repo, `m-a-p/YuE2-Vae`, which hedos treats as its companion:
+
+```sh
+hedos pull m-a-p/YuE2-3B
+hedos runtimes approve python:yue2      # offers to pull m-a-p/YuE2-Vae
+hedos audio YuE2-3B "warm indie pop, female vocals, acoustic guitar" --lyrics song.txt
+```
+
+YuE2 needs lyrics, with `[verse]` and `[chorus]` tags on their own lines (`--instrumental` for none); the song is as long as the lyrics make it, so it takes no duration. `--set cot=melody` plans only the melody first, `--set abc=...` gives a score for a cover or an edit, and `--set cfg_scale=...` sets guidance. It runs on Apple Silicon through Metal: on an M5 Pro with 64 GB, songs of 20 to 45 seconds took about one to one and a half minutes each, after a first run that also builds the runtime's environment (about four minutes in all). A fixed seed gives the same song again, sample for sample. YuE2's model card reports about 71 seconds for a 3.6-minute song on an RTX 4090.
+
+A model that needs a companion counts the companion's size in its fit. Until the companion is on the shelf, the model is refused with the `hedos pull` that fetches it, and `hedos ls` says so; a companion on the shelf reads as a part of its owner's runtime.
+
+### Voices and generators
+
+Speech and audio generation stay apart. A voice reads text aloud (`speak`, streamed, with a voice and a speed); a generator makes a piece from a description (`audio`, a job, a file). No model claims both. Each route and command refuses the other's models and names the one to use instead.
+
+hedos tells them apart from the model's files. Speech checks run first (Kokoro by its config, Bark, Parler and others by architecture), then the model type (`yue2`, `acestep`, `heartmula`, `diffrhythm`, `minimax_music3`, `musicgen`), then the model card: a card filed under `text-to-speech` is a voice, one filed under `text-to-audio` or `text-to-music` makes audio, and a `music` tag counts only when no chat template ships. A model hedos pulled before it kept model cards has none on disk, so a voice built on a plain Llama checkpoint (Orpheus, OuteTTS) still reads as a chat model there: `hedos pull` it again, which fetches the card and nothing it already holds. A model recognized this way never inherits `chat` from an architecture name such as `YuE2ForCausalLM`; a model that makes audio with its own code claims no capability until a runtime that drives it is approved. The speech runtime `python:mlx-audio` serves Kokoro; other voices (Bark, Orpheus, CSM) are recognized but wait for a runtime that can load them.
 

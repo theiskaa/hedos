@@ -54,10 +54,55 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
     let warm = session.warm_set_anywhere(&shelf).await;
     let records: Vec<&_> = shelf.iter().collect();
     out.line(&shelf_table::table(&records, &warm, &machine));
-    for hint in approval_hints(&session, &shelf) {
+    for hint in approval_hints(&session, &shelf)
+        .into_iter()
+        .chain(companion_hints(&shelf))
+    {
         out.line(&hint);
     }
     Ok(())
+}
+
+/// One line per companion a served model's runtime needs and the shelf does
+/// not hold, with the pull that fetches it, and one per companion the shelf
+/// does hold, so it does not read as a broken model: it is a part of another's
+/// runtime and nothing serves it alone.
+fn companion_hints(shelf: &[ModelRecord]) -> Vec<String> {
+    let mut hints = Vec::new();
+    for record in shelf
+        .iter()
+        .filter(|record| record.state != ModelState::Missing)
+    {
+        for companion in record.missing_companions() {
+            hints.push(format!(
+                "\n{} needs {} (its {}): `hedos pull {}`",
+                record.display_name(),
+                companion.repo,
+                companion.role,
+                companion.repo
+            ));
+        }
+    }
+    for part in shelf.iter().filter(|part| part.runtime.id.is_none()) {
+        let owners: Vec<&str> = shelf
+            .iter()
+            .filter(|owner| {
+                owner
+                    .companions
+                    .iter()
+                    .any(|companion| companion.is_present() && part.holds_hub_repo(&companion.repo))
+            })
+            .map(ModelRecord::display_name)
+            .collect();
+        if !owners.is_empty() {
+            hints.push(format!(
+                "\n{} is a part of {}'s runtime and runs with it",
+                part.display_name(),
+                owners.join(", ")
+            ));
+        }
+    }
+    hints
 }
 
 /// One line per unapproved manifest runtime that a model on the shelf waits on.
@@ -122,7 +167,7 @@ fn shelf_json(shelf: &[ModelRecord], machine: &Machine) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::records::{Modality, ModelSource, SourceKind};
+    use kernel::records::{Companion, Modality, ModelSource, RuntimeId, SourceKind};
 
     const GIB: u64 = 1 << 30;
 
@@ -186,5 +231,56 @@ mod tests {
     fn json_fit_is_null_when_the_footprint_is_unknown() {
         let value = shelf_json(&[model("mystery", None)], &Machine::with_memory(16 * GIB));
         assert!(value[0].get("fit").expect("fit key present").is_null());
+    }
+
+    fn hub(repo: &str) -> ModelRecord {
+        let mut source = ModelSource::new(SourceKind::huggingface_cache(), &format!("/hub/{repo}"));
+        source.repo = Some(repo.to_owned());
+        ModelRecord::new(repo, Modality::audio(), Vec::new(), source)
+    }
+
+    fn song(path: Option<&str>) -> ModelRecord {
+        let mut record = hub("m-a-p/YuE2-3B");
+        record.name = "YuE2-3B".to_owned();
+        record.runtime.id = Some(RuntimeId::from("python:yue2"));
+        record.companions = vec![Companion {
+            role: "vae".to_owned(),
+            repo: "m-a-p/YuE2-Vae".to_owned(),
+            path: path.map(str::to_owned),
+            serving_bytes: None,
+        }];
+        record
+    }
+
+    #[test]
+    fn a_missing_companion_is_named_with_its_pull() {
+        let hints = companion_hints(&[song(None)]);
+        assert_eq!(hints.len(), 1);
+        // One removed since resolution found it reads as missing too.
+        assert_eq!(companion_hints(&[song(Some("/nowhere/YuE2-Vae"))]), hints);
+        assert_eq!(
+            hints,
+            vec!["\nYuE2-3B needs m-a-p/YuE2-Vae (its vae): `hedos pull m-a-p/YuE2-Vae`"]
+        );
+    }
+
+    #[test]
+    fn a_gone_owner_asks_for_nothing() {
+        let mut gone = song(None);
+        gone.state = ModelState::Missing;
+        assert!(companion_hints(&[gone]).is_empty());
+    }
+
+    #[test]
+    fn a_held_companion_reads_as_a_part_of_its_owner() {
+        let mut decoder = hub("m-a-p/YuE2-Vae");
+        decoder.name = "YuE2-Vae".to_owned();
+        decoder.serving_bytes = Some(530_000_000);
+        let snapshot = std::env::temp_dir();
+        let hints = companion_hints(&[song(snapshot.to_str()), decoder]);
+        assert_eq!(
+            hints,
+            vec!["\nYuE2-Vae is a part of YuE2-3B's runtime and runs with it"]
+        );
     }
 }

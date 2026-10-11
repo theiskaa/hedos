@@ -25,6 +25,8 @@ fn eligibility_drops_docs_images_hidden_and_excluded_dirs() {
         ("model.safetensors", Some(100)),
         ("config.json", Some(10)),
         ("README.md", Some(1)),
+        ("docs/README.md", Some(1)),
+        ("notes.md", Some(1)),
         ("preview.png", Some(1)),
         ("weights.msgpack", Some(1)),
         ("flax_model.msgpack", Some(1)),
@@ -33,8 +35,12 @@ fn eligibility_drops_docs_images_hidden_and_excluded_dirs() {
         ("onnx/model.onnx", Some(1)),
         ("logo/.hidden", Some(1)),
     ]));
-    // Only the safetensors weight and the config survive.
-    assert_eq!(names(&picked), set(&["model.safetensors", "config.json"]));
+    // The safetensors weight, the config and the root model card survive; the
+    // card's front matter is read to identify the model.
+    assert_eq!(
+        names(&picked),
+        set(&["model.safetensors", "config.json", "README.md"])
+    );
 }
 
 #[test]
@@ -367,6 +373,7 @@ fn transformers_selects_a_flat_repo_exactly_as_it_always_did() {
             "config.json",
             "tokenizer.json",
             "tokenizer_config.json",
+            "README.md",
         ])
     );
 }

@@ -167,10 +167,12 @@ fn support_files(snapshot: &Path, primary: &Path) -> Vec<PathBuf> {
 /// (`.imatrix`, `imatrix.dat`) is what a quantization was made with, kept
 /// beside the weights by a pull but never loaded to serve them. A variant's
 /// safetensors index is a map of the weights, not something loaded, and is
-/// left out as the default index already is.
+/// left out as the default index already is. The model card is read to
+/// identify the model, not to serve it.
 fn read_to_serve(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    !(lower.ends_with(".imatrix")
+    !(lower == "readme.md"
+        || lower.ends_with(".imatrix")
         || (lower.contains("imatrix") && lower.ends_with(".dat"))
         || is_safetensors_index(name))
 }

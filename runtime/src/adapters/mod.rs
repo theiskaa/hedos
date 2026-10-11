@@ -11,6 +11,7 @@
 
 mod a1111;
 mod apple_foundation;
+mod audio_gen;
 mod comfy_ui;
 mod daemon_liveness;
 mod diffusers;
@@ -40,6 +41,7 @@ pub use apple_foundation::loaded_apple_backend;
 pub use apple_foundation::{
     AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner, MissingAppleBackend,
 };
+pub use audio_gen::AudioGenAdapter;
 pub use comfy_ui::ComfyUiAdapter;
 pub use daemon_liveness::{Daemon, DaemonLiveness, DaemonState, Snapshot};
 pub use diffusers::DiffusersAdapter;

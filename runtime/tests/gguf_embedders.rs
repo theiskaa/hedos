@@ -18,6 +18,9 @@ use runtime::facade::{Kernel, KernelError};
 use runtime::settings::SettingsStore;
 use support::{TempDir, gguf, kv_string, kv_u32};
 
+/// The migration level of a shelf every migration has run on.
+const MIGRATED: u32 = 3;
+
 struct Fixture {
     root: TempDir,
     dirs: HedosDirs,
@@ -309,7 +312,7 @@ async fn a_stranded_embedder_whose_file_is_gone_or_unreadable_is_left_as_it_was(
         assert_eq!(record.state, ModelState::Ready);
         assert_eq!(record.runtime.id, Some(RuntimeId::llama_cpp()));
     }
-    assert_eq!(fixture.registry().migration_level(), 2);
+    assert_eq!(fixture.registry().migration_level(), MIGRATED);
 }
 
 #[tokio::test]
@@ -461,7 +464,7 @@ async fn the_stranded_embedder_migration_runs_once_per_shelf() {
     let first = fixture.kernel();
     let record = on_shelf(&first.shelf().await, &id);
     assert_eq!(record.capabilities, vec![Capability::embed()]);
-    assert_eq!(fixture.registry().migration_level(), 2);
+    assert_eq!(fixture.registry().migration_level(), MIGRATED);
 
     // The row put back as a chat model: a later process does not look again.
     fixture.register_as("qwen3-embedding.gguf", &header, served_as_chat);
@@ -479,7 +482,7 @@ async fn the_stranded_embedder_migration_runs_once_per_shelf() {
     let after_downgrade = fixture.kernel();
     let record = on_shelf(&after_downgrade.shelf().await, &id);
     assert_eq!(record.capabilities, vec![Capability::embed()]);
-    assert_eq!(fixture.registry().migration_level(), 2);
+    assert_eq!(fixture.registry().migration_level(), MIGRATED);
 }
 
 #[tokio::test]
@@ -497,7 +500,7 @@ async fn a_chat_gguf_that_is_gone_settles_the_migration_and_one_that_cannot_be_r
     deleted.register_as("deleted-chat.gguf", &llama_chat(), served_as_chat);
     std::fs::remove_file(deleted.root.join("deleted-chat.gguf")).unwrap();
     deleted.kernel().shelf().await;
-    assert_eq!(deleted.registry().migration_level(), 2);
+    assert_eq!(deleted.registry().migration_level(), MIGRATED);
 
     let garbled = Fixture::new();
     garbled.register_as("garbled-chat.gguf", &llama_chat(), served_as_chat);
@@ -506,7 +509,7 @@ async fn a_chat_gguf_that_is_gone_settles_the_migration_and_one_that_cannot_be_r
     assert_eq!(garbled.registry().migration_level(), 0);
     std::fs::write(garbled.root.join("garbled-chat.gguf"), gguf(&llama_chat())).unwrap();
     garbled.kernel().shelf().await;
-    assert_eq!(garbled.registry().migration_level(), 2);
+    assert_eq!(garbled.registry().migration_level(), MIGRATED);
 }
 
 #[tokio::test]
@@ -622,7 +625,7 @@ async fn decision_ggufs_an_older_shelf_stranded_are_judges_on_first_sight_of_the
     let chat = on_shelf(&shelf, &chat);
     assert!(chat.capabilities.contains(&Capability::chat()));
     assert!(!chat.capabilities.contains(&Capability::judge()));
-    assert_eq!(fixture.registry().migration_level(), 2);
+    assert_eq!(fixture.registry().migration_level(), MIGRATED);
 }
 
 #[tokio::test]
@@ -646,7 +649,7 @@ async fn a_decision_gguf_that_cannot_be_read_defers_the_migration_until_it_can()
         on_shelf(&shelf, &clef).capabilities,
         vec![Capability::judge()]
     );
-    assert_eq!(fixture.registry().migration_level(), 2);
+    assert_eq!(fixture.registry().migration_level(), MIGRATED);
 }
 
 #[tokio::test]

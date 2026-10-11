@@ -1,9 +1,12 @@
 //! The mlx-audio speech adapter: serves the `speak` (text-to-speech) capability
-//! for safetensors / MLX-safetensors speech models through a Python sidecar.
+//! for Kokoro checkpoints (safetensors or MLX safetensors) through a Python
+//! sidecar. The sidecar drives Kokoro's own pipeline and voice packs, so other
+//! voices (Bark, Parler, an MMS Vits) are left for a runtime that can load them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use kernel::discovery::modality_hints::is_kokoro_layout;
 use kernel::records::{
     BidPreference, Capability, JsonValue, Modality, ModelRecord, RunTier, RuntimeId,
 };
@@ -13,6 +16,7 @@ use super::sidecar_adapter::{CancelMode, SidecarAdapter, SidecarSpec};
 use super::{ChunkStream, RuntimeAdapter};
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
+use crate::manifests::SidecarModelPaths;
 use crate::sidecar::SidecarSupervisor;
 
 /// How long a loaded speech model stays warm after its last use.
@@ -63,13 +67,14 @@ impl RuntimeAdapter for MlxAudioAdapter {
         record.runtime.id.as_ref() == Some(self.base.id()) && capability == &Capability::speak()
     }
 
-    fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
+    fn bid(&self, record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
         if identified.modality == Some(Modality::speech())
             && identified.capabilities.contains(&Capability::speak())
             && matches!(
                 identified.format,
                 ModelFormat::Safetensors | ModelFormat::MlxSafetensors
             )
+            && is_kokoro_layout(Path::new(&SidecarModelPaths::resolve(record).snapshot))
         {
             Some(RuntimeBid::new(RunTier::Managed, BidPreference::MLX_AUDIO))
         } else {
@@ -139,13 +144,45 @@ mod tests {
         assert!(!adapter.can_serve(&other, &Capability::speak()));
     }
 
+    /// A directory under the system temp dir, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("hedos-mlx-audio-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// A speech record over a folder whose `config.json` is `config`, with the
+    /// folder that holds it.
+    fn speech_folder(name: &str, config: &str) -> (Scratch, ModelRecord) {
+        let dir = Scratch::new(name);
+        std::fs::write(dir.0.join("config.json"), config).unwrap();
+        let mut record = record();
+        record.source = ModelSource::new(SourceKind::folder(), dir.0.to_str().unwrap());
+        (dir, record)
+    }
+
+    const KOKORO_CONFIG: &str =
+        r#"{"istftnet":{"upsample_rates":[10,6]},"plbert":{},"style_dim":128,"n_mels":80}"#;
+
     #[test]
-    fn it_bids_on_speech_speak_models_in_either_safetensors_format() {
+    fn it_bids_on_kokoro_in_either_safetensors_format() {
         let adapter = adapter();
+        let (_dir, kokoro) = speech_folder("kokoro", KOKORO_CONFIG);
         for format in [ModelFormat::Safetensors, ModelFormat::MlxSafetensors] {
             let bid = adapter
                 .bid(
-                    &record(),
+                    &kokoro,
                     &identified(format, Modality::speech(), vec![Capability::speak()]),
                 )
                 .unwrap();
@@ -156,13 +193,54 @@ mod tests {
     }
 
     #[test]
+    fn it_bids_on_the_real_kokoro_in_the_hub_cache() {
+        let cache = Scratch::new("hub");
+        let snapshot = cache.0.join("snapshots").join("abc");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../kernel/tests/fixtures/audio/kokoro-82m-bf16/config.json");
+        std::fs::copy(fixture, snapshot.join("config.json")).unwrap();
+        let mut kokoro = record();
+        kokoro.source =
+            ModelSource::new(SourceKind::huggingface_cache(), cache.0.to_str().unwrap());
+        kokoro.source.reference = Some("abc".to_owned());
+        let speech = identified(
+            ModelFormat::MlxSafetensors,
+            Modality::speech(),
+            vec![Capability::speak()],
+        );
+        assert!(adapter().bid(&kokoro, &speech).is_some());
+    }
+
+    #[test]
+    fn it_leaves_a_voice_its_kokoro_pipeline_cannot_load() {
+        let adapter = adapter();
+        let (_dir, bark) = speech_folder(
+            "bark",
+            r#"{"architectures":["BarkModel"],"model_type":"bark"}"#,
+        );
+        let speech = identified(
+            ModelFormat::Safetensors,
+            Modality::speech(),
+            vec![Capability::speak()],
+        );
+        assert!(adapter.bid(&bark, &speech).is_none());
+        assert!(
+            adapter.bid(&record(), &speech).is_none(),
+            "no config on disk"
+        );
+    }
+
+    #[test]
     fn it_does_not_bid_without_speech_modality_speak_capability_or_a_supported_format() {
         let adapter = adapter();
+        // A Kokoro folder, so only the condition under test can refuse.
+        let (_dir, kokoro) = speech_folder("kokoro-refusals", KOKORO_CONFIG);
         // Wrong modality.
         assert!(
             adapter
                 .bid(
-                    &record(),
+                    &kokoro,
                     &identified(
                         ModelFormat::Safetensors,
                         Modality::text(),
@@ -175,7 +253,7 @@ mod tests {
         assert!(
             adapter
                 .bid(
-                    &record(),
+                    &kokoro,
                     &identified(
                         ModelFormat::Safetensors,
                         Modality::speech(),
@@ -188,7 +266,7 @@ mod tests {
         assert!(
             adapter
                 .bid(
-                    &record(),
+                    &kokoro,
                     &identified(
                         ModelFormat::Gguf,
                         Modality::speech(),

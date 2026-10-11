@@ -82,6 +82,10 @@ impl GatewayPort for KernelGateway {
         Box::pin(async move { self.kernel.scheduler().cancel(job_id) })
     }
 
+    fn abandon(&self, job_id: &str) {
+        self.kernel.scheduler().cancel(job_id);
+    }
+
     fn voices<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, Result<Vec<String>, KernelError>> {
         Box::pin(self.kernel.voices(model_id))
     }

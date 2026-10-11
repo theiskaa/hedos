@@ -1,0 +1,57 @@
+# YuE2 (m-a-p/YuE2-3B) writes whole songs, vocals and accompaniment, from a
+# style prompt and lyrics: it plans a score, generates audio tokens, shapes
+# them with flow matching and decodes 48 kHz stereo. It runs its own package,
+# `yue2-infer`, the wheel its repo ships, installed here from that repo at a
+# pinned commit and hash, so no code from the model folder runs.
+#
+# Lyrics are required, written with section tags ([verse], [chorus]) on their
+# own lines; the song is as long as the lyrics make it, so there is no
+# duration. `cot` chooses how much of the score is planned first (full,
+# melody, or off), `abc` supplies a score for a cover or an edit, and
+# `cfg_scale` sets guidance.
+#
+# The decoder is a second repo, m-a-p/YuE2-Vae, which hedos passes as the
+# `vae` companion. Detected by the model type in config.json.
+id           = "python:yue2"
+modalities   = ["audio"]
+capabilities = ["audio"]
+execution    = "job"
+detect       = { model_type = "yue2" }
+
+[[params]]
+key  = "lyrics"
+type = "string"
+
+[[params]]
+key     = "cot"
+type    = "enum"
+values  = ["full", "melody", "off"]
+default = "full"
+
+[[params]]
+key  = "abc"
+type = "string"
+
+[[params]]
+key  = "cfg_scale"
+type = "float"
+
+[[params]]
+key  = "seed"
+type = "int"
+
+[companions]
+vae = { repo = "m-a-p/YuE2-Vae" }
+
+[env]
+manager  = "uv"
+python   = "3.12"
+lockfile = "requirements.lock"
+
+[serve]
+entrypoint = "main.py"
+protocol   = "ndjson+frames"
+
+[permissions]
+network = false
+paths   = ["{model}", "{workdir}"]

@@ -52,7 +52,7 @@ pub(super) async fn run(args: &PullArgs, out: &Out) -> Result<(), CliError> {
     if rejoined(out, &store, &provider, &plan.reference, args.detach).await? {
         return Ok(());
     }
-    if interactive::is_interactive(out) && !confirmed(out, &plan)? {
+    if interactive::is_interactive(out) && !args.confirmed && !confirmed(out, &plan)? {
         out.line("Cancelled.");
         return Ok(());
     }

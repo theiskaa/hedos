@@ -1,4 +1,4 @@
-//! `hedos image <model> <prompt>` — generate an image and write a PNG file.
+//! `hedos image <model> <prompt>`: generate an image and write it to a file.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -26,7 +26,8 @@ pub struct ImageArgs {
     /// The random seed.
     #[arg(long)]
     seed: Option<i64>,
-    /// Where to write the `.png` (default: `<model>.png` in the current dir).
+    /// Where to write the image (default: the prompt as a file name, in the
+    /// format the model made, in the current dir).
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
@@ -65,7 +66,7 @@ pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
                 artifacts = result;
                 break;
             }
-            JobEvent::Failed { message } => {
+            JobEvent::Failed { message, .. } => {
                 spinner.clear();
                 return Err(CliError::new(message));
             }
@@ -86,9 +87,14 @@ pub async fn run(args: ImageArgs, out: &Out) -> Result<(), CliError> {
         .artifact_data(artifact)
         .await?
         .ok_or_else(|| CliError::new("the image artifact is missing"))?;
+    let extension = session
+        .kernel
+        .artifact_extension(artifact)
+        .await?
+        .unwrap_or_else(|| "png".to_owned());
     let path = args
         .output
-        .unwrap_or_else(|| crate::support::paths::default_path(&prompt, "png"));
+        .unwrap_or_else(|| crate::support::paths::default_path(&prompt, &extension));
     std::fs::write(&path, bytes)?;
 
     out.line(&format!("wrote {}", path.display()));

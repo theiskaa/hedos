@@ -149,8 +149,8 @@ fn folder_bundle(dir: &Path) -> Option<DiscoveredModel> {
         return None;
     }
 
-    let mut hint = modality_hints::from_config_json(&dir.join("config.json"))
-        .unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync));
+    let mut hint =
+        modality_hints::from_snapshot(dir).unwrap_or_else(|| Hint::unknown(ExecutionMode::Sync));
     if names.contains("model_index.json") {
         hint = modality_hints::from_model_index(&dir.join("model_index.json"));
     }

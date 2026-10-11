@@ -7,7 +7,8 @@ mod manifest;
 mod provenance;
 
 pub use manifest::{
-    InstallTarget, InvokeStdin, ManifestDetect, ManifestEnv, ManifestInstall, ManifestInvoke,
-    ManifestPermissions, ManifestServe, ManifestValidationError, ManifestVm, RuntimeManifest,
+    InstallTarget, InvokeStdin, ManifestCompanion, ManifestDetect, ManifestEnv, ManifestInstall,
+    ManifestInvoke, ManifestPermissions, ManifestServe, ManifestValidationError, ManifestVm,
+    RuntimeManifest,
 };
 pub use provenance::RuntimeProvenance;

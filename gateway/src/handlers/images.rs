@@ -29,10 +29,8 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(600);
 /// `POST /v1/images/generations`.
 ///
 /// A runaway render is bounded by [`RUN_TIMEOUT`], which cancels the job. A
-/// client that disconnects mid-render is not yet propagated to a job cancel —
-/// the borrowed port cannot be cancelled from a `Drop` (cancel is async); prompt
-/// disconnect-cancel belongs in the server bridge that owns the port. Either way
-/// the job still terminates on its own within the timeout.
+/// client that disconnects mid-render does not cancel it; the job still ends
+/// on its own within the timeout.
 pub struct OpenAIImagesHandler;
 
 impl GatewayHandling for OpenAIImagesHandler {
@@ -84,7 +82,7 @@ impl GatewayHandling for OpenAIImagesHandler {
                 while let Some(event) = events.recv().await {
                     match event {
                         JobEvent::Done { result } => return Ok(result),
-                        JobEvent::Failed { message } => return Err(server_error(message)),
+                        JobEvent::Failed { message, .. } => return Err(server_error(message)),
                         JobEvent::Cancelled => {
                             return Err(server_error("generation was cancelled"));
                         }

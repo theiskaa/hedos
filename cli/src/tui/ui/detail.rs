@@ -32,7 +32,8 @@ use crate::tui::palette::{
 use crate::tui::text;
 
 /// The labels the pane uses; the column is as wide as the widest, plus a gap.
-const LABELS: [&str; 14] = [
+const LABELS: [&str; 15] = [
+    "needs",
     "size",
     "fit",
     "residency",
@@ -232,9 +233,26 @@ fn full_lines(
         Line::default(),
         chips_line(record, width),
         Line::default(),
+    ];
+    // A runtime that cannot start without a repo the shelf lacks says which,
+    // and how to fetch it, before anything about memory.
+    let missing: Vec<Line<'static>> = record
+        .missing_companions()
+        .map(|companion| {
+            row(
+                "needs",
+                format!("{} · hedos pull {}", companion.repo, companion.repo),
+            )
+        })
+        .collect();
+    if !missing.is_empty() {
+        lines.extend(missing);
+        lines.push(Line::default());
+    }
+    lines.extend([
         section("MEMORY", width),
         fit_row(record, facts, value_width),
-    ];
+    ]);
     lines.extend(gauge_row(record, facts, value_width, look));
     lines.push(residency_line(record, facts, value_width, Some(look)));
     lines.push(Line::default());

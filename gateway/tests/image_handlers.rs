@@ -123,6 +123,7 @@ async fn a_failed_job_surfaces_a_server_error() {
     let (mut port, _id) = MockPort::with_capable_model("sdxl", Capability::image());
     port.job_events = vec![JobEvent::Failed {
         message: "the renderer crashed".to_owned(),
+        rejected: false,
     }];
     let (responder, rx) = GatewayResponder::new();
     let error = OpenAIImagesHandler

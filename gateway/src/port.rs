@@ -69,6 +69,11 @@ pub trait GatewayPort: Send + Sync {
     /// Cancel a running job.
     fn cancel<'a>(&'a self, job_id: &'a str) -> PortFuture<'a, ()>;
 
+    /// Cancel a job from code that cannot wait for it: a guard dropped along
+    /// with the request that started the job, when the client went away or
+    /// the server cut the request short.
+    fn abandon(&self, job_id: &str);
+
     /// The voices a speech model offers.
     fn voices<'a>(&'a self, model_id: &'a str) -> PortFuture<'a, Result<Vec<String>, KernelError>>;
 
@@ -173,6 +178,8 @@ mod tests {
         fn cancel<'a>(&'a self, _job_id: &'a str) -> PortFuture<'a, ()> {
             Box::pin(async {})
         }
+
+        fn abandon(&self, _job_id: &str) {}
         fn voices<'a>(
             &'a self,
             _model_id: &'a str,

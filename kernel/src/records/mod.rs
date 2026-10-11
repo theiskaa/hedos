@@ -13,6 +13,6 @@ pub use identifiers::{
 };
 pub use json_value::JsonValue;
 pub use model_record::{
-    ModelRecord, ModelSource, ParamSpec, ParamType, Resolution, RuntimeRef, stable_id,
+    Companion, ModelRecord, ModelSource, ParamSpec, ParamType, Resolution, RuntimeRef, stable_id,
 };
 pub use text_budget::{Clip, clip};

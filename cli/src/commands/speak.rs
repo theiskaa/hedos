@@ -37,6 +37,13 @@ pub async fn run(args: SpeakArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
     let warm = session.warm_set_anywhere(&shelf).await;
+    if let Some(name) = args.model.as_deref()
+        && let Ok(found) = crate::support::session::resolve(name, &shelf, None)
+        && !found.can(&Capability::speak())
+        && let Some(pointer) = crate::support::elsewhere::pointer(found, Some(&Capability::speak()))
+    {
+        return Err(CliError::new(pointer));
+    }
     let record = interactive::choose_model(
         out,
         args.model.as_deref(),

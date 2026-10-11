@@ -276,9 +276,10 @@ fn the_json_carries_the_machine_and_each_shown_model() {
 fn kinds_parse_by_name() {
     assert_eq!(parse_kind("code"), Ok(InstallCategory::Code));
     assert_eq!(parse_kind("Image"), Ok(InstallCategory::Image));
+    assert_eq!(parse_kind("audio"), Ok(InstallCategory::Audio));
     let error = parse_kind("speech").unwrap_err();
     assert_eq!(
         error,
-        "speech is not a kind. use one of chat, code, voice, image"
+        "speech is not a kind. use one of chat, code, voice, image, audio"
     );
 }

@@ -85,10 +85,15 @@ pub async fn run(args: RunArgs, out: &Out) -> Result<(), CliError> {
         && let Ok(found) = session::resolve(name, &shelf, None)
         && !runnable.iter().any(|record| record.id == found.id)
     {
-        return Err(CliError::new(format!(
-            "{} neither chats, answers typed questions nor extracts contacts; `hedos ls` shows what it does",
-            found.display_name()
-        )));
+        return Err(CliError::new(
+            crate::support::elsewhere::pointer(found, None).unwrap_or_else(|| {
+                format!(
+                    "{} neither chats, answers typed questions nor extracts contacts; \
+                     `hedos ls` shows what it does",
+                    found.display_name()
+                )
+            }),
+        ));
     }
     if args.model.is_none() && runnable.is_empty() {
         let wanted = if args.images.is_empty() {

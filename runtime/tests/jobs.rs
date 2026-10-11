@@ -508,3 +508,58 @@ async fn a_result_with_no_sink_fails_the_job() {
     );
     assert_eq!(scheduler.job(&id).map(|j| j.state), Some(JobState::Failed));
 }
+
+/// A runner whose runtime ends with `error` after starting.
+fn failing_runner(error: JobError) -> Runner {
+    Box::new(move || {
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let _ = tx.send(Ok(JobRuntimeEvent::Started));
+            let _ = tx.send(Err(error));
+        });
+        rx
+    })
+}
+
+#[tokio::test]
+async fn a_refused_request_fails_its_job_as_the_requests_fault() {
+    let dir = TempDir::new();
+    let scheduler = scheduler(&dir);
+    let refused = scheduler.submit(
+        "m",
+        Capability::audio(),
+        JsonValue::Null,
+        failing_runner(JobError::Rejected("YuE2 needs lyrics".to_owned())),
+    );
+    let events = drain(scheduler.events(&refused)).await;
+    assert_eq!(
+        events.last(),
+        Some(&JobEvent::Failed {
+            message: "YuE2 needs lyrics".to_owned(),
+            rejected: true,
+        })
+    );
+    let job = scheduler.job(&refused).expect("in history");
+    assert!(job.rejected);
+    // A replay of the finished job says the same.
+    assert!(matches!(
+        drain(scheduler.events(&refused)).await.last(),
+        Some(JobEvent::Failed { rejected: true, .. })
+    ));
+
+    let crashed = scheduler.submit(
+        "m",
+        Capability::audio(),
+        JsonValue::Null,
+        failing_runner(JobError::Failed("out of memory".to_owned())),
+    );
+    let events = drain(scheduler.events(&crashed)).await;
+    assert!(matches!(
+        events.last(),
+        Some(JobEvent::Failed {
+            rejected: false,
+            ..
+        })
+    ));
+    assert!(!scheduler.job(&crashed).expect("in history").rejected);
+}

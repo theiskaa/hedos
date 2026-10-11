@@ -186,7 +186,13 @@ async fn the_shipped_judge_bundles_load_and_the_hand_driven_bundles_do_not() {
         .collect();
     assert_eq!(
         ids,
-        ["python:laya", "python:zerank", "cli:tessera", "judge"]
+        [
+            "python:laya",
+            "python:yue2",
+            "python:zerank",
+            "cli:tessera",
+            "judge"
+        ]
     );
     assert!(
         kernel.runtime_issues().is_empty(),

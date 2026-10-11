@@ -39,6 +39,10 @@ pub struct PullArgs {
     /// Start the download and return instead of following it.
     #[arg(short, long)]
     detach: bool,
+    /// The caller already asked whether to download, so the pull does not ask
+    /// again.
+    #[arg(skip)]
+    confirmed: bool,
 }
 
 /// Managing the pulls that are already running.
@@ -143,6 +147,19 @@ pub async fn run(args: PullArgs, out: &Out) -> Result<(), CliError> {
             manage::clean(&store, keep, out)
         }
     }
+}
+
+/// Pull Hugging Face repo `repo` as `hedos pull <repo>` does, following it to
+/// the end, without asking again: the caller already got a yes.
+pub async fn pull_hugging_face(repo: &str, out: &Out) -> Result<(), CliError> {
+    let args = PullArgs {
+        command: None,
+        reference: Some(repo.to_owned()),
+        from: Some("hf".to_owned()),
+        detach: false,
+        confirmed: true,
+    };
+    start::run(&args, out).await
 }
 
 /// Pick the install provider: an explicit `--from`, else inferred from the
