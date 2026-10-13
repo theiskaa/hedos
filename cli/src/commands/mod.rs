@@ -19,4 +19,5 @@ pub mod speak;
 pub mod stats;
 pub mod transcribe;
 pub mod unload;
+pub mod upgrade;
 pub mod warm;

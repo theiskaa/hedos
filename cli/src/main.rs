@@ -16,6 +16,7 @@ use crate::error::CliError;
 use crate::support::banner::BANNER;
 use crate::support::output::{self, Out};
 use crate::support::signals;
+use crate::support::upgrade;
 
 /// The `hedos` command line.
 #[derive(Parser)]
@@ -81,6 +82,12 @@ enum Command {
     Warm(commands::warm::WarmArgs),
     /// Evict a model from residency.
     Unload(commands::unload::UnloadArgs),
+    /// Upgrade hedos to its newest release.
+    Upgrade(commands::upgrade::UpgradeArgs),
+    /// Look up the newest release and remember it, as the process each
+    /// command starts at most once a day.
+    #[command(hide = true)]
+    UpgradeCheck,
 }
 
 /// How long an exit forced by a termination waits for blocking work, such as a
@@ -90,6 +97,11 @@ const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let out = Out::new(cli.json);
+    // The background workers and `upgrade` itself say nothing of new releases.
+    let notices = !matches!(
+        cli.command,
+        Command::PullWorker(_) | Command::DiskCount | Command::Upgrade(_) | Command::UpgradeCheck
+    ) && upgrade::notices_on(&out);
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -100,7 +112,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = runtime.block_on(run(cli.command, &out));
+    let result = runtime.block_on(async {
+        if notices {
+            upgrade::refresh_in_background();
+        }
+        run(cli.command, &out).await
+    });
     // The model servers a command started are stopped when the tasks holding
     // them are dropped, which shutting the runtime down does. A command cut
     // short may leave a blocking read of the terminal that never returns, so
@@ -110,7 +127,8 @@ fn main() -> ExitCode {
     } else {
         drop(runtime);
     }
-    match result {
+    let ran_out = matches!(result, Ok(Ended::Finished) | Err(_));
+    let code = match result {
         Ok(Ended::Finished | Ended::OutputClosed) => match output::write_failure() {
             Some(failure) => {
                 out.err(&format!("could not write the output: {failure}"));
@@ -124,7 +142,11 @@ fn main() -> ExitCode {
             // As `exit` would: the status is the low byte of the code.
             ExitCode::from(error.code as u8)
         }
+    };
+    if notices && ran_out {
+        upgrade::notice(&out);
     }
+    code
 }
 
 /// How a command ended.
@@ -139,14 +161,18 @@ enum Ended {
 
 /// Run `command`. SIGTERM and SIGHUP stop it the way Ctrl-C stops `serve`:
 /// `serve` and the shelf screen stop themselves in order, a pull worker keeps
-/// the default disposition its controller relies on (as does the shelf's
-/// disk count, which a signal simply ends), and every other command
+/// the default disposition its controller relies on (as do the shelf's
+/// disk count and the release look, which a signal simply ends), and every
+/// other command
 /// is dropped where it stands, which stops the servers it started. A closed
 /// stdout stops those other commands the same way, as a success: `serve`
 /// keeps serving after its address was read, and the shelf draws on a
 /// terminal.
 async fn run(command: Command, out: &Out) -> Result<Ended, CliError> {
-    if matches!(command, Command::PullWorker(_) | Command::DiskCount) {
+    if matches!(
+        command,
+        Command::PullWorker(_) | Command::DiskCount | Command::UpgradeCheck
+    ) {
         return dispatch(command, out).await.map(|()| Ended::Finished);
     }
     signals::watch_termination();
@@ -186,5 +212,7 @@ async fn dispatch(command: Command, out: &Out) -> Result<(), CliError> {
         Command::Shelf(args) => commands::shelf::run(args, out).await,
         Command::Warm(args) => commands::warm::run(args, out).await,
         Command::Unload(args) => commands::unload::run(args, out).await,
+        Command::Upgrade(args) => commands::upgrade::run(args, out).await,
+        Command::UpgradeCheck => commands::upgrade::check().await,
     }
 }

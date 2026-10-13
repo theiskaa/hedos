@@ -28,3 +28,4 @@ pub mod spinner;
 pub mod table;
 pub mod text;
 pub mod tty;
+pub mod upgrade;
