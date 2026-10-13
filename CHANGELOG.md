@@ -2,6 +2,11 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.5.3 - 2026-10-13
+
+- `hedos upgrade` brings hedos up to its newest release, the way it was installed (#32). A Homebrew install is upgraded with `brew upgrade theiskaa/tap/hedos`, and a `cargo install` with `cargo install hedos --version <newest>`, so each tool's record of what is installed stays true. A binary from the install script or a release archive is replaced in place: the release archive for this platform is downloaded, checked against its published SHA-256, run to confirm its version, and moved over the old binary in a single rename. A checksum that does not match, or a binary that reports another version, installs nothing. A source build is left alone, with a note to pull and rebuild. `--check` only says whether a newer release is out and how it would be installed, and `--json` reports the current and newest versions, the install channel, the binary's path and whether it upgraded.
+- Every command ends with one line on stderr when a newer release is out: ``hedos 1.5.4 is available (you have 1.5.3). Run `hedos upgrade` to update.`` No command waits on the network for it: at most once a day a detached process looks up the newest release and remembers it in `upgrade-check.json` in the data directory, and the notice reads only that. It stays off under `--json`, when stderr is not a terminal, with `HEDOS_NO_UPDATE_CHECK` set, or with the new `[advanced] check_for_updates = false`.
+
 ## v1.5.2 - 2026-10-12
 
 - Audio generation (#30). A new `audio` capability covers models that make songs, music or sound effects from a description. `hedos audio <model> <prompt>` writes the piece to a FLAC or WAV file, and `POST /v1/audio/generations` (also at `/v1/audio/music-generations`, with the request fields mlx-serve's music API uses) returns the file, or streams progress events ending with the file when `stream` is set. Each request is checked against what the model takes, so lyrics sent to a model that cannot sing are a 400 naming what it does take. A client that disconnects cancels its job.
