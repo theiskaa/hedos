@@ -262,12 +262,16 @@ impl PullSettings {
 pub struct AdvancedSettings {
     /// How many completed jobs to retain in history.
     pub job_history_limit: i64,
+    /// Whether commands look, once a day, for a newer hedos release and say
+    /// when one is out.
+    pub check_for_updates: bool,
 }
 
 impl Default for AdvancedSettings {
     fn default() -> Self {
         Self {
             job_history_limit: 50,
+            check_for_updates: true,
         }
     }
 }
