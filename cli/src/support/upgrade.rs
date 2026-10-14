@@ -110,20 +110,12 @@ fn opted_out(value: Option<&str>) -> bool {
 /// Start a look for a newer release in the background when the last one is a
 /// day old. Call this from inside a tokio runtime.
 pub fn refresh_in_background() {
-    let dir = data_dir();
-    let now = kernel::time::now_millis();
-    let mut check = UpgradeCheck::load(&dir).unwrap_or_default();
-    if !check.is_due(now) {
-        return;
-    }
     // Claimed before the look starts, so the commands run while it is under
     // way do not start looks of their own, and a look that fails waits a day
     // like one that answered.
-    check.checked_at = now;
-    if check.save(&dir).is_err() {
-        return;
+    if UpgradeCheck::claim(&data_dir(), kernel::time::now_millis()) {
+        let _ = spawn_check();
     }
-    let _ = spawn_check();
 }
 
 #[cfg(unix)]

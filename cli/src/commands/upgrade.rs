@@ -3,7 +3,6 @@
 //! otherwise by replacing the binary in place with the release's own archive,
 //! checked against its published SHA-256 first.
 
-use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -15,6 +14,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::CliError;
 use crate::support::output::Out;
+use crate::support::signals;
 use crate::support::spinner::Spinner;
 use crate::support::upgrade::{self as releases, REPO_URL};
 
@@ -42,12 +42,11 @@ pub async fn run(args: UpgradeArgs, out: &Out) -> Result<(), CliError> {
     let latest = Version::parse(&tag)
         .ok_or_else(|| CliError::new(format!("the newest release, {tag}, has no version")))?;
     let exe = std::env::current_exe().and_then(|exe| exe.canonicalize())?;
-    let environment: HashMap<String, String> = std::env::vars().collect();
     // A debug build is never a release's binary, wherever its target dir is.
     let channel = if cfg!(debug_assertions) {
         Channel::Source
     } else {
-        Channel::detect(&exe, &environment)
+        Channel::detect(&exe)
     };
     let report = |upgraded: bool| {
         out.json(&serde_json::json!({
@@ -71,20 +70,48 @@ pub async fn run(args: UpgradeArgs, out: &Out) -> Result<(), CliError> {
     }
     if args.check {
         out.line(releases::available(&latest, &current).trim_start());
-        out.line(&format!("  {}", how(channel, &latest, &exe)));
+        out.line(&format!("  {}", how(&channel, &latest, &exe)));
         report(false);
         return Ok(());
     }
 
-    match channel {
-        Channel::Homebrew => delegate(out, "brew", &["upgrade", FORMULA]).await?,
-        Channel::Cargo => {
+    match &channel {
+        Channel::Homebrew { prefix } => {
+            delegate(out, "brew", &["upgrade", FORMULA]).await?;
+            // brew exits 0 when it finds nothing newer, as it does while the
+            // formula has not caught up with the release, so the result is
+            // read from the binary its link now points at.
+            let installed = prefix.join("bin").join("hedos");
+            reports(&installed, &latest).await.map_err(|reported| {
+                CliError::new(format!(
+                    "brew finished, but {} still reports {reported}: the Homebrew formula for {latest} may not be published yet. Run `brew update` and try again in a few minutes",
+                    installed.display()
+                ))
+            })?;
+        }
+        Channel::Cargo { root } => {
+            let version = latest.to_string();
+            let root_arg = root.display().to_string();
             delegate(
                 out,
                 "cargo",
-                &["install", "hedos", "--version", &latest.to_string()],
+                &[
+                    "install",
+                    "hedos",
+                    "--version",
+                    &version,
+                    "--root",
+                    &root_arg,
+                ],
             )
             .await?;
+            let installed = root.join("bin").join("hedos");
+            reports(&installed, &latest).await.map_err(|reported| {
+                CliError::new(format!(
+                    "cargo finished, but {} still reports {reported}",
+                    installed.display()
+                ))
+            })?;
         }
         Channel::Source => {
             return Err(CliError::new(format!(
@@ -92,7 +119,20 @@ pub async fn run(args: UpgradeArgs, out: &Out) -> Result<(), CliError> {
                 exe.display()
             )));
         }
-        Channel::Standalone => replace(out, &exe, &tag, &latest).await?,
+        Channel::Standalone => {
+            // Ctrl-C is caught for the replacement, so it ends through the
+            // scratch dir's cleanup rather than killing the process outright.
+            // The copy over the binary is not awaited, so it runs to its end
+            // once begun, and a replacement that finishes as Ctrl-C lands is
+            // reported as done.
+            tokio::select! {
+                biased;
+                result = replace(out, &exe, &tag, &latest) => result?,
+                () = signals::wait_for_ctrl_c() => {
+                    return Err(CliError::with_code("upgrade cancelled; nothing was installed", 130));
+                }
+            }
+        }
     }
     out.line(&format!("hedos upgraded from {current} to {latest}"));
     report(true);
@@ -100,13 +140,14 @@ pub async fn run(args: UpgradeArgs, out: &Out) -> Result<(), CliError> {
 }
 
 /// How `hedos upgrade` would install `latest` on `channel`.
-fn how(channel: Channel, latest: &Version, exe: &Path) -> String {
+fn how(channel: &Channel, latest: &Version, exe: &Path) -> String {
     match channel {
-        Channel::Homebrew => {
+        Channel::Homebrew { .. } => {
             format!("installed with Homebrew: `hedos upgrade` runs `brew upgrade {FORMULA}`")
         }
-        Channel::Cargo => format!(
-            "installed with cargo: `hedos upgrade` runs `cargo install hedos --version {latest}`"
+        Channel::Cargo { root } => format!(
+            "installed with cargo: `hedos upgrade` runs `cargo install hedos --version {latest} --root {}`",
+            root.display()
         ),
         Channel::Source => format!(
             "built from source ({}): pull the checkout and build it again",
@@ -120,7 +161,10 @@ fn how(channel: Channel, latest: &Version, exe: &Path) -> String {
 }
 
 /// Upgrade through the package manager that installed hedos, its output shown
-/// as it runs (on stderr under `--json`, so stdout stays one document).
+/// as it runs (on stderr under `--json`, so stdout stays one document). The
+/// manager is left to finish if hedos is stopped while it runs: one cut off
+/// mid-install is worse than one that completes. Ctrl-C reaches it from the
+/// terminal directly.
 async fn delegate(out: &Out, program: &str, args: &[&str]) -> Result<(), CliError> {
     let shown = format!("{program} {}", args.join(" "));
     out.err(&format!("running `{shown}`"));
@@ -227,6 +271,7 @@ async fn replace(out: &Out, exe: &Path, tag: &str, latest: &Version) -> Result<(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .status()
         .await
         .map_err(|error| {
@@ -241,7 +286,11 @@ async fn replace(out: &Out, exe: &Path, tag: &str, latest: &Version) -> Result<(
     if !binary.is_file() {
         return Err(CliError::new(format!("{archive} holds no hedos binary")));
     }
-    confirm_version(&binary, latest).await?;
+    reports(&binary, latest).await.map_err(|reported| {
+        CliError::new(format!(
+            "the downloaded hedos reports {reported} rather than {latest}; nothing was installed"
+        ))
+    })?;
 
     spinner.set(&format!("installing to {}", exe.display()));
     install_over(&binary, exe)?;
@@ -292,17 +341,16 @@ async fn download(
     file.flush().await.map_err(|error| error.to_string())
 }
 
-/// Run the unpacked `binary` and check it reports `latest`, so an archive that
-/// does not run here, or holds some other version, is never installed.
-async fn confirm_version(binary: &Path, latest: &Version) -> Result<(), CliError> {
+/// Run `binary` and check it reports `latest`: `Err` says what it reported
+/// instead, or why it did not run.
+async fn reports(binary: &Path, latest: &Version) -> Result<(), String> {
     let output = tokio::process::Command::new(binary)
         .arg("--version")
         .stdin(Stdio::null())
+        .kill_on_drop(true)
         .output()
         .await
-        .map_err(|error| {
-            CliError::new(format!("the downloaded hedos does not run here: {error}"))
-        })?;
+        .map_err(|error| format!("nothing (it does not run here: {error})"))?;
     let reported = String::from_utf8_lossy(&output.stdout);
     let says_latest = reported
         .split_whitespace()
@@ -311,57 +359,97 @@ async fn confirm_version(binary: &Path, latest: &Version) -> Result<(), CliError
     if output.status.success() && says_latest {
         Ok(())
     } else {
-        Err(CliError::new(format!(
-            "the downloaded hedos reports `{}` rather than {latest}; nothing was installed",
-            reported.trim()
-        )))
+        Err(format!("`{}`", reported.trim()))
     }
 }
 
-/// Copy `binary` beside `exe`, make it executable, and rename it over `exe`.
-/// The rename is atomic within the directory, and a process still running the
-/// old binary keeps it open until it exits.
+/// Copy `binary` beside `exe` into a file made fresh for it, make it
+/// executable, and rename it over `exe`. The rename is atomic within the
+/// directory, and a process still running the old binary keeps it open until
+/// it exits.
 fn install_over(binary: &Path, exe: &Path) -> Result<(), CliError> {
     let dir = exe
         .parent()
         .ok_or_else(|| CliError::new(format!("{} has no directory", exe.display())))?;
-    let staged = dir.join(format!(".hedos-upgrade-{}", std::process::id()));
+    let (staged, file) =
+        fresh_file(dir, ".hedos-upgrade").map_err(|error| refused(dir, exe, error))?;
     let result = (|| {
-        std::fs::copy(binary, &staged)?;
+        let mut file = file;
+        std::io::copy(&mut std::fs::File::open(binary)?, &mut file)?;
+        file.sync_all()?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+            file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
         }
+        drop(file);
         std::fs::rename(&staged, exe)
     })();
     result.map_err(|error| {
         let _ = std::fs::remove_file(&staged);
-        if error.kind() == std::io::ErrorKind::PermissionDenied {
-            CliError::new(format!(
-                "cannot write to {}: {error}. Run `hedos upgrade` as a user that may, or reinstall with `curl -fsSL https://hedos.ai/install | bash`",
-                dir.display()
-            ))
-        } else {
-            CliError::new(format!("could not install over {}: {error}", exe.display()))
-        }
+        refused(dir, exe, error)
     })
 }
 
-/// A scratch directory for the download, removed however the upgrade ends,
-/// a Ctrl-C included.
+fn refused(dir: &Path, exe: &Path, error: std::io::Error) -> CliError {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        CliError::new(format!(
+            "cannot write to {}: {error}. Run `hedos upgrade` as a user that may, or reinstall with `curl -fsSL https://hedos.ai/install | bash`",
+            dir.display()
+        ))
+    } else {
+        CliError::new(format!("could not install over {}: {error}", exe.display()))
+    }
+}
+
+/// A name under `dir` starting with `stem` that nothing holds yet, created
+/// here and now: an existing file, directory or link of that name is never
+/// reused or followed, so nothing placed there in advance can be written
+/// through or swapped in.
+fn fresh_name<T>(
+    dir: &Path,
+    stem: &str,
+    mut create: impl FnMut(&Path) -> std::io::Result<T>,
+) -> std::io::Result<(PathBuf, T)> {
+    let mut last = None;
+    for attempt in 0..16u32 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.subsec_nanos());
+        let path = dir.join(format!("{stem}-{}-{nanos}-{attempt}", std::process::id()));
+        match create(&path) {
+            Ok(made) => return Ok((path, made)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+}
+
+fn fresh_file(dir: &Path, stem: &str) -> std::io::Result<(PathBuf, std::fs::File)> {
+    fresh_name(dir, stem, |path| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o700);
+        options.open(path)
+    })
+}
+
+/// A scratch directory for the download, private to this user and made fresh
+/// for this upgrade, removed however the upgrade ends.
 struct Scratch {
     path: PathBuf,
 }
 
 impl Scratch {
     fn create() -> Result<Self, CliError> {
-        let path = std::env::temp_dir().join(format!(
-            "hedos-upgrade-{}-{}",
-            std::process::id(),
-            kernel::time::now_millis()
-        ));
-        std::fs::create_dir_all(&path)?;
+        let (path, ()) = fresh_name(&std::env::temp_dir(), "hedos-upgrade", |path| {
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+            builder.create(path)
+        })?;
         Ok(Self { path })
     }
 }

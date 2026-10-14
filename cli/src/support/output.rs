@@ -81,6 +81,11 @@ pub fn write_failure() -> Option<&'static str> {
     WRITE_FAILURE.get().map(String::as_str)
 }
 
+/// Whether a write to stdout has found the pipe's reader gone.
+pub fn stdout_is_closed() -> bool {
+    *closing().borrow()
+}
+
 /// Resolve once a write to stdout has found the pipe's reader gone.
 pub async fn stdout_closed() {
     let mut closed = closing().subscribe();

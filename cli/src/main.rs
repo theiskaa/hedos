@@ -127,7 +127,11 @@ fn main() -> ExitCode {
     } else {
         drop(runtime);
     }
-    let ran_out = matches!(result, Ok(Ended::Finished) | Err(_));
+    // A command can see a termination or a closed stdout and still end as
+    // finished (`serve` stops itself in order), so both are read again here.
+    let ran_out = matches!(result, Ok(Ended::Finished) | Err(_))
+        && signals::termination().is_none()
+        && !output::stdout_is_closed();
     let code = match result {
         Ok(Ended::Finished | Ended::OutputClosed) => match output::write_failure() {
             Some(failure) => {
