@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,9 +20,13 @@ pub const CHECK_INTERVAL_MILLIS: i64 = 24 * 60 * 60 * 1000;
 /// The file, in the data dir, that remembers the last look for a newer release.
 pub const CHECK_FILE: &str = "upgrade-check.json";
 
+/// The lock, in the data dir, held while a process claims the next look.
+const CLAIM_LOCK: &str = "upgrade-check.lock";
+
 /// A release version: `major.minor.patch`, with an optional pre-release after
 /// a `-`. A leading `v`, as on the release tags, is accepted. Build metadata
-/// after a `+` is dropped, since it never orders one release before another.
+/// after a `+` is checked and dropped, since it never orders one release
+/// before another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
     /// The major number.
@@ -40,7 +44,11 @@ impl Version {
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim();
         let text = text.strip_prefix('v').unwrap_or(text);
-        let text = text.split_once('+').map_or(text, |(core, _)| core);
+        let text = match text.split_once('+') {
+            Some((core, build)) if build.split('.').all(well_formed) => core,
+            Some(_) => return None,
+            None => text,
+        };
         let (core, pre) = match text.split_once('-') {
             Some((core, pre)) => (core, Some(pre)),
             None => (text, None),
@@ -53,12 +61,13 @@ impl Version {
         let pre = match pre {
             Some(pre) => {
                 let identifiers: Vec<String> = pre.split('.').map(str::to_owned).collect();
-                if identifiers.iter().any(|identifier| {
-                    identifier.is_empty()
-                        || !identifier
-                            .bytes()
-                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                }) {
+                let valid = identifiers.iter().all(|identifier| {
+                    well_formed(identifier)
+                        && !(is_numeric(identifier)
+                            && identifier.len() > 1
+                            && identifier.starts_with('0'))
+                });
+                if !valid {
                     return None;
                 }
                 identifiers
@@ -76,13 +85,23 @@ impl Version {
 
 /// A run of ASCII digits as a number; a leading zero is refused, as semver does.
 fn number(text: &str) -> Option<u64> {
-    if text.is_empty()
-        || !text.bytes().all(|byte| byte.is_ascii_digit())
-        || (text.len() > 1 && text.starts_with('0'))
-    {
+    if !is_numeric(text) || (text.len() > 1 && text.starts_with('0')) {
         return None;
     }
     text.parse().ok()
+}
+
+fn is_numeric(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// A pre-release or build identifier: one or more ASCII letters, digits or
+/// hyphens.
+fn well_formed(identifier: &str) -> bool {
+    !identifier.is_empty()
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 impl Ord for Version {
@@ -109,11 +128,13 @@ impl PartialOrd for Version {
 /// before words, and a shorter list first when one is a prefix of the other.
 fn compare_pre(left: &[String], right: &[String]) -> Ordering {
     for (a, b) in left.iter().zip(right) {
-        let order = match (number(a), number(b)) {
-            (Some(a), Some(b)) => a.cmp(&b),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => a.cmp(b),
+        // Numeric identifiers carry no leading zeros, so the longer is the
+        // larger, and two of one length order as text, at any size.
+        let order = match (is_numeric(a), is_numeric(b)) {
+            (true, true) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => a.cmp(b),
         };
         if order != Ordering::Equal {
             return order;
@@ -135,35 +156,35 @@ impl fmt::Display for Version {
 /// How the running binary was installed, which decides how it is upgraded:
 /// a package manager's binary is upgraded through that manager, so its record
 /// of what is installed stays true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Channel {
     /// Installed by Homebrew, from the `theiskaa/tap` formula.
-    Homebrew,
+    Homebrew {
+        /// The Homebrew prefix, whose `bin/hedos` links to the installed keg.
+        prefix: PathBuf,
+    },
     /// Installed by `cargo install`.
-    Cargo,
-    /// Run from a cargo build directory, a checkout's `target/`.
+    Cargo {
+        /// The install root, whose `bin/` holds the binary.
+        root: PathBuf,
+    },
+    /// Run from a cargo build directory.
     Source,
     /// A binary placed by hand or by the install script, replaced in place.
     Standalone,
 }
 
 impl Channel {
-    /// The channel of the binary at `exe` (its path with links resolved), read
-    /// against `env`, the process environment.
-    pub fn detect(exe: &Path, env: &HashMap<String, String>) -> Self {
+    /// The channel of the binary at `exe`, its path with links resolved.
+    pub fn detect(exe: &Path) -> Self {
         // Homebrew links its binaries into `<prefix>/bin`, but the link
-        // resolves into the keg, so the keg's `Cellar` is what marks it, on
+        // resolves into the keg, `<prefix>/Cellar/hedos/<version>/bin`, on
         // every prefix (`/opt/homebrew`, `/usr/local`, Linuxbrew).
-        if has_component(exe, "Cellar") {
-            return Self::Homebrew;
+        if let Some(prefix) = homebrew_prefix(exe) {
+            return Self::Homebrew { prefix };
         }
-        let cargo_home = env
-            .get("CARGO_HOME")
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| env.get("HOME").map(|home| Path::new(home).join(".cargo")));
-        if cargo_home.is_some_and(|cargo| exe.starts_with(cargo.join("bin"))) {
-            return Self::Cargo;
+        if let Some(root) = cargo_root(exe) {
+            return Self::Cargo { root };
         }
         if in_build_dir(exe) {
             return Self::Source;
@@ -172,24 +193,75 @@ impl Channel {
     }
 
     /// The channel's name, as `--json` reports it.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Homebrew => "homebrew",
-            Self::Cargo => "cargo",
+            Self::Homebrew { .. } => "homebrew",
+            Self::Cargo { .. } => "cargo",
             Self::Source => "source",
             Self::Standalone => "standalone",
         }
     }
 }
 
-fn has_component(path: &Path, name: &str) -> bool {
-    path.components()
-        .any(|component| matches!(component, Component::Normal(part) if part == name))
+/// The prefix above the `Cellar` that holds `exe`, if one does.
+fn homebrew_prefix(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors()
+        .find(|dir| dir.file_name().is_some_and(|name| name == "Cellar"))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
 }
 
-/// Whether `exe` sits in a cargo profile directory: `target/<profile>/` or,
-/// for a cross build, `target/<triple>/<profile>/`.
+/// The cargo install root holding `exe`: the directory above its `bin/` whose
+/// install records (`.crates2.json`, or the older `.crates.toml`) list the
+/// `hedos` binary. Reading the records rather than comparing with `CARGO_HOME`
+/// covers a `--root` install and a cargo home reached through a link.
+fn cargo_root(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let root = bin.parent()?;
+    let listed = match crate::fs::read_regular(&root.join(".crates2.json")) {
+        Ok(bytes) => serde_json::from_slice::<CargoInstalls>(&bytes)
+            .is_ok_and(|records| records.lists_hedos()),
+        Err(_) => crate::fs::read_regular(&root.join(".crates.toml"))
+            .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("\"hedos ")),
+    };
+    listed.then(|| root.to_path_buf())
+}
+
+/// The part of cargo's `.crates2.json` that says which binaries came from
+/// which package.
+#[derive(Deserialize)]
+struct CargoInstalls {
+    installs: HashMap<String, CargoInstall>,
+}
+
+#[derive(Deserialize)]
+struct CargoInstall {
+    #[serde(default)]
+    bins: Vec<String>,
+}
+
+impl CargoInstalls {
+    fn lists_hedos(&self) -> bool {
+        self.installs.iter().any(|(package, install)| {
+            package.starts_with("hedos ") && install.bins.iter().any(|bin| bin == "hedos")
+        })
+    }
+}
+
+/// Whether `exe` sits in a cargo profile directory, which cargo fills with
+/// its `.fingerprint/` and `deps/` beside the binaries, wherever the target
+/// dir is. A `target/<profile>/` or `target/<triple>/<profile>/` path counts
+/// even with those gone.
 fn in_build_dir(exe: &Path) -> bool {
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    if dir.join(".fingerprint").is_dir() && dir.join("deps").is_dir() {
+        return true;
+    }
     let mut ancestors = exe.ancestors().skip(2).take(2);
     ancestors.any(|dir| dir.file_name().is_some_and(|name| name == "target"))
 }
@@ -201,9 +273,17 @@ pub fn target_triple() -> Option<&'static str> {
         Some("aarch64-apple-darwin")
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         Some("x86_64-apple-darwin")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_env = "gnu",
+        target_arch = "aarch64"
+    )) {
         Some("aarch64-unknown-linux-gnu")
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_env = "gnu",
+        target_arch = "x86_64"
+    )) {
         Some("x86_64-unknown-linux-gnu")
     } else {
         None
@@ -238,6 +318,35 @@ impl UpgradeCheck {
     /// Remember this look in `data_dir`.
     pub fn save(&self, data_dir: &Path) -> Result<(), StoreError> {
         persistence::write_json_atomic(&data_dir.join(CHECK_FILE), self)
+    }
+
+    /// Claim the next look at `now` for this process, when the last one in
+    /// `data_dir` is due: the claim is remembered as the look's start, so the
+    /// processes that read it after do not start looks of their own. Only one
+    /// process at a time may claim; one that finds the claim being made by
+    /// another stands aside. `false` when there is nothing to claim, someone
+    /// else is claiming, or the claim cannot be written.
+    pub fn claim(data_dir: &Path, now: i64) -> bool {
+        if std::fs::create_dir_all(data_dir).is_err() {
+            return false;
+        }
+        let Ok(lock) = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(data_dir.join(CLAIM_LOCK))
+        else {
+            return false;
+        };
+        if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+            return false;
+        }
+        let mut check = Self::load(data_dir).unwrap_or_default();
+        if !check.is_due(now) {
+            return false;
+        }
+        check.checked_at = now;
+        check.save(data_dir).is_ok()
     }
 
     /// Whether the last look is old enough, at `now`, for another.
@@ -291,13 +400,6 @@ mod tests {
         Version::parse(text).unwrap()
     }
 
-    fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-            .collect()
-    }
-
     #[test]
     fn versions_read_with_or_without_the_tag_prefix() {
         assert_eq!(version("v1.5.2"), version("1.5.2"));
@@ -312,6 +414,9 @@ mod tests {
             "1.x.2",
             "1.5.2-",
             "1.5.2-a..b",
+            "1.0.0-01",
+            "1.0.0+",
+            "1.0.0+a..b",
             "latest",
         ] {
             assert_eq!(Version::parse(bad), None, "{bad}");
@@ -328,6 +433,8 @@ mod tests {
             "1.0.0-beta.2",
             "1.0.0-beta.11",
             "1.0.0-rc.1",
+            "1.0.0-rc.99999999999999999999",
+            "1.0.0-rc.2a",
             "1.0.0",
             "1.0.1",
             "1.2.0",
@@ -339,46 +446,109 @@ mod tests {
         }
     }
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hedos-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn channels_are_told_apart_by_where_the_binary_lives() {
-        let home = env(&[("HOME", "/Users/me")]);
-        let detect =
-            |path: &str, env: &HashMap<String, String>| Channel::detect(Path::new(path), env);
+        let detect = |path: &Path| Channel::detect(path);
         assert_eq!(
-            detect("/opt/homebrew/Cellar/hedos/1.5.2/bin/hedos", &home),
-            Channel::Homebrew
+            detect(Path::new("/opt/homebrew/Cellar/hedos/1.5.2/bin/hedos")),
+            Channel::Homebrew {
+                prefix: PathBuf::from("/opt/homebrew")
+            }
         );
         assert_eq!(
-            detect(
-                "/home/linuxbrew/.linuxbrew/Cellar/hedos/1.5.2/bin/hedos",
-                &home
-            ),
-            Channel::Homebrew
-        );
-        assert_eq!(detect("/Users/me/.cargo/bin/hedos", &home), Channel::Cargo);
-        assert_eq!(
-            detect(
-                "/opt/cargo/bin/hedos",
-                &env(&[("HOME", "/Users/me"), ("CARGO_HOME", "/opt/cargo")])
-            ),
-            Channel::Cargo
+            detect(Path::new(
+                "/home/linuxbrew/.linuxbrew/Cellar/hedos/1.5.2/bin/hedos"
+            )),
+            Channel::Homebrew {
+                prefix: PathBuf::from("/home/linuxbrew/.linuxbrew")
+            }
         );
         assert_eq!(
-            detect("/Users/me/dev/hedos/target/release/hedos", &home),
+            detect(Path::new("/Users/me/dev/hedos/target/release/hedos")),
             Channel::Source
         );
         assert_eq!(
-            detect(
-                "/Users/me/dev/hedos/target/aarch64-apple-darwin/dist/hedos",
-                &home
-            ),
+            detect(Path::new(
+                "/Users/me/dev/hedos/target/aarch64-apple-darwin/dist/hedos"
+            )),
             Channel::Source
         );
         assert_eq!(
-            detect("/Users/me/.local/bin/hedos", &home),
+            detect(Path::new("/Users/me/.local/bin/hedos")),
             Channel::Standalone
         );
-        assert_eq!(detect("/usr/local/bin/hedos", &home), Channel::Standalone);
+    }
+
+    #[test]
+    fn a_cargo_install_is_known_by_its_records_at_any_root() {
+        let root = scratch("cargo-root");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let exe = root.join("bin/hedos");
+        assert_eq!(Channel::detect(&exe), Channel::Standalone);
+
+        std::fs::write(
+            root.join(".crates2.json"),
+            r#"{"installs":{"hedos 1.5.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["hedos"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(Channel::detect(&exe), Channel::Cargo { root: root.clone() });
+
+        std::fs::write(
+            root.join(".crates2.json"),
+            r#"{"installs":{"exa 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["exa"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(Channel::detect(&exe), Channel::Standalone);
+
+        std::fs::remove_file(root.join(".crates2.json")).unwrap();
+        std::fs::write(
+            root.join(".crates.toml"),
+            "[v1]\n\"hedos 1.5.2 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"hedos\"]\n",
+        )
+        .unwrap();
+        assert_eq!(Channel::detect(&exe), Channel::Cargo { root: root.clone() });
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_build_in_any_target_dir_is_a_source_build() {
+        let profile = scratch("build-dir").join("release");
+        std::fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+        std::fs::create_dir_all(profile.join("deps")).unwrap();
+        assert_eq!(Channel::detect(&profile.join("hedos")), Channel::Source);
+        std::fs::remove_dir_all(profile.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn only_one_process_claims_a_due_look() {
+        let dir = scratch("claim");
+        let now = 20 * CHECK_INTERVAL_MILLIS;
+        assert!(UpgradeCheck::claim(&dir, now));
+        assert!(
+            !UpgradeCheck::claim(&dir, now + 1),
+            "a claimed look is not due again"
+        );
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(CLAIM_LOCK))
+            .unwrap();
+        fs2::FileExt::lock_exclusive(&held).unwrap();
+        let later = now + CHECK_INTERVAL_MILLIS;
+        assert!(
+            !UpgradeCheck::claim(&dir, later),
+            "a claim being made elsewhere is stood aside for"
+        );
+        fs2::FileExt::unlock(&held).unwrap();
+        assert!(UpgradeCheck::claim(&dir, later));
+        assert_eq!(UpgradeCheck::load(&dir).unwrap().checked_at, later);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
