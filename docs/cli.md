@@ -25,6 +25,7 @@
 | [`hedos bench`](#hedos-bench) | Measure what each model does on this machine. |
 | [`hedos stats`](#hedos-stats) | Report usage from the gateway's audit log. |
 | [`hedos shelf`](#hedos-shelf) | Open the shelf as a terminal screen. |
+| [`hedos upgrade`](#hedos-upgrade) | Upgrade hedos to its newest release. |
 
 ## Global options
 
@@ -958,6 +959,45 @@ hedos shelf
 It takes no flags and needs a terminal on both stdin and stdout. Every key is a subcommand: `p` pulls, `w` and `u` warm and unload, `x` removes, `S` serves.
 
 The full guide, with every key and screen, is in [the shelf guide](shelf.md).
+
+## Keeping hedos current
+
+### `hedos upgrade`
+
+Upgrade hedos to its newest release, the way it was installed.
+
+```sh
+hedos upgrade [--check]
+```
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `--check` | Only say whether a newer release is out, and how `hedos upgrade` would install it. Installs nothing. | off |
+
+It looks up the newest release on GitHub, then upgrades through whatever put this `hedos` on the machine, judged by where the binary lives (links resolved):
+
+| Installed with | What `hedos upgrade` does |
+| --- | --- |
+| Homebrew (the binary is in a keg under `Cellar`) | Runs `brew upgrade theiskaa/tap/hedos`, then checks that `<prefix>/bin/hedos` reports the new version. |
+| `cargo install` (cargo's install records beside the binary's `bin/` list it) | Runs `cargo install hedos --version <newest> --root <root>`, for the root it was installed to, then checks the new binary's version. |
+| The install script, or a release archive | Downloads the release archive for this platform, checks it against the release's published SHA-256, runs the new binary to confirm its version, and moves it over the old one in a single rename. |
+| A source build (cargo's build directory, wherever the target dir is, or any debug build) | Nothing: pull the checkout and build it again. |
+
+A package manager's binary is upgraded through that manager, so its record of what is installed stays true. In-place replacement needs write access to the binary's directory; without it, hedos says so and installs nothing. A checksum that does not match, or a binary that reports some other version, also installs nothing. Ctrl-C during a download or unpacking stops it, removes what was downloaded, and leaves the old binary as it was. A running `hedos serve` keeps the old binary until it is restarted.
+
+The GitHub release goes out a little before the Homebrew formula. Upgrading in between, `brew` finds nothing newer, and `hedos upgrade` says the formula is not published yet rather than claiming an upgrade.
+
+When this binary is already the newest release, it says so and exits `0`. Under `--json` it prints `current`, `latest`, `upgrade_available`, `channel` (`homebrew`, `cargo`, `standalone` or `source`), `path` and `upgraded`; the package manager's own output goes to stderr.
+
+#### The new-release notice
+
+A command that runs to its end, or fails, ends with one line on stderr when a newer release is out:
+
+```
+hedos 1.5.4 is available (you have 1.5.3). Run `hedos upgrade` to update.
+```
+
+No command waits on the network for it. At most once a day, a command starts a detached process that looks up the newest release and remembers the answer in `upgrade-check.json` in the data directory; the notice reads only that file. Only one command at a time starts it. The notice and the daily look stay off under `--json`, when stderr is not a terminal, when `HEDOS_NO_UPDATE_CHECK` is set to anything but an empty value, `0` or `false`, and when `advanced.check_for_updates` is `false`. A command stopped by a signal, or whose stdout reader went away, ends without it. `hedos upgrade` itself always looks, and never adds the notice.
 
 ## Exit codes
 

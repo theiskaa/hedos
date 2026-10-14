@@ -48,6 +48,13 @@ Prebuilt versions are available in our [GitHub releases](https://github.com/thei
 | [hedos-aarch64-unknown-linux-gnu.tar.xz](https://github.com/theiskaa/hedos/releases/latest/download/hedos-aarch64-unknown-linux-gnu.tar.xz) | ARM64 Linux | [checksum](https://github.com/theiskaa/hedos/releases/latest/download/hedos-aarch64-unknown-linux-gnu.tar.xz.sha256) |
 | [hedos-x86_64-unknown-linux-gnu.tar.xz](https://github.com/theiskaa/hedos/releases/latest/download/hedos-x86_64-unknown-linux-gnu.tar.xz) | x64 Linux | [checksum](https://github.com/theiskaa/hedos/releases/latest/download/hedos-x86_64-unknown-linux-gnu.tar.xz.sha256) |
 
+### Upgrade
+```sh
+hedos upgrade
+```
+
+It upgrades the way hedos was installed: through Homebrew or cargo when one of them installed it, by replacing the binary with the newest release's (checked against its SHA-256) when the install script or a release archive did, and not at all for a source build, which you pull and rebuild. `hedos upgrade --check` only says whether a newer release is out. Every command also ends with a one-line notice when one is; see [`hedos upgrade`](docs/cli.md#hedos-upgrade) to turn it off.
+
 ### Optional backends
 hedos serves whatever your machine can already run, so nothing else is required to start. Add these when you want the runtimes that need them:
 

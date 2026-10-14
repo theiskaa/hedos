@@ -64,6 +64,7 @@ Values outside a range are clamped to it.
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `job_history_limit` | integer | `50` | How many finished jobs (image generation and the like) to keep in history. |
+| `check_for_updates` | boolean | `true` | Whether commands look, once a day, for a newer hedos release and end with a line saying when one is out. See [`hedos upgrade`](cli.md#hedos-upgrade). |
 
 #### Keys hedos writes but does not read
 
@@ -100,6 +101,7 @@ keep_ended = 20
 
 [advanced]
 job_history_limit = 50
+check_for_updates = true
 ```
 
 Every value here is optional. A file with only `[models] keep_warm = "one_hour"` is complete.
@@ -121,6 +123,7 @@ State lives under `~/.local/share/hedos`, or `$XDG_DATA_HOME/hedos` when that va
 | `runtimes.d/` | Your own runtime manifests. See below. |
 | `launch/` | The harness configuration `hedos launch` generates. Your own harness config is never touched. |
 | `ui/` | What the shelf screen remembers between runs. |
+| `upgrade-check.json` | When hedos last looked for a newer release, and the newest it found. |
 
 None of this holds model weights. Removing the whole directory loses the registry, generated artifacts, history and pull records, but no model: the next `hedos scan` finds them all again.
 
@@ -168,6 +171,12 @@ The Python sidecars do not inherit your whole environment. They get an allowlist
 | `HEDOS_THEME` | `light` or `dark` says which kind of background the terminal has, and the shelf draws on it even when the terminal does not answer the colour query. Anything else, or unset, goes by the terminal's answer; a terminal that does not answer gets the shelf's own painted dark ground. See [Colour](shelf.md#colour). |
 
 The Ollama daemon and the image daemons (ComfyUI, AUTOMATIC1111) are reached over HTTP on their standard local ports. If Ollama is installed but not running, hedos starts it.
+
+### New releases
+
+| Variable | Effect |
+|---|---|
+| `HEDOS_NO_UPDATE_CHECK` | Any value but empty, `0` or `false` stops commands looking for a newer release and saying when one is out, as `advanced.check_for_updates = false` does. `hedos upgrade` still looks. |
 
 ### The install script
 
