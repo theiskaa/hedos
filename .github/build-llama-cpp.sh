@@ -56,16 +56,8 @@ if [ "$found" != "$source_sha256" ]; then
 fi
 
 archive="llama-$build-bin-linux-${target%%-*}.tar.gz"
-# One built here before (a CI cache) is reused only when it is still what that
-# build recorded, after its --version check passed.
-built="$dir/$archive.sha256"
-if [ -f "$dir/$archive" ] && [ -f "$built" ] && [ "$(digest "$dir/$archive")" = "$(cat "$built")" ]; then
-  reuse=1
-else
-  reuse=0
-  rm -f "$dir/$archive" "$built"
-fi
-[ "$reuse" = 1 ] || docker run --rm --platform "$platform" -v "$dir:/work" "$image" bash -euo pipefail -c "
+rm -f "$dir/$archive"
+docker run --rm --platform "$platform" -v "$dir:/work" "$image" bash -euo pipefail -c "
   cd /tmp
   tar -xzf /work/$source
   cd llama.cpp-$build
@@ -95,7 +87,8 @@ fi
   tar -czf /work/$archive.partial -C /tmp/pack llama-$build
   mv /work/$archive.partial /work/$archive
 "
-[ "$reuse" = 1 ] || digest "$dir/$archive" > "$built"
+# What the pin takes: the archive's size and sha256.
+echo "$archive $(wc -c < "$dir/$archive" | tr -d ' ') bytes, sha256 $(digest "$dir/$archive")" >&2
 
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "HEDOS_LLAMA_CPP_ARCHIVE=$dir/$archive" >> "$GITHUB_ENV"
