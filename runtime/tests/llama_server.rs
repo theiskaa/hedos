@@ -581,48 +581,33 @@ fn a_decision_record_is_served_only_for_judge_with_its_capped_window_and_no_opti
 
 #[test]
 fn effective_context_clamps_into_the_model_window() {
+    let (adapter, _) = adapter_over(Ok("http://x".to_owned()));
+    let window = |rec: &ModelRecord, requested| {
+        adapter
+            .effective_context_window(rec, requested)
+            .expect("a chat model has a window")
+    };
     let mut rec = gguf_record();
     // No declared context → the 4096 default.
     rec.context_length = None;
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, None),
-        4096
-    );
+    assert_eq!(window(&rec, None), 4096);
 
     rec.context_length = Some(8192);
     // A request is honored within the window...
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, Some(2000)),
-        2000
-    );
+    assert_eq!(window(&rec, Some(2000)), 2000);
     // ...clamped up to the window ceiling...
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, Some(100_000)),
-        8192
-    );
+    assert_eq!(window(&rec, Some(100_000)), 8192);
     // ...and up to the 512 floor.
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, Some(100)),
-        512
-    );
+    assert_eq!(window(&rec, Some(100)), 512);
 
     // A huge window caps the default at 32768 but honors a larger explicit request.
     rec.context_length = Some(131_072);
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, None),
-        32768
-    );
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, Some(65_000)),
-        65_000
-    );
+    assert_eq!(window(&rec, None), 32768);
+    assert_eq!(window(&rec, Some(65_000)), 65_000);
 
     // A tiny window pulls the floor down with it.
     rec.context_length = Some(300);
-    assert_eq!(
-        LlamaServerAdapter::effective_context_tokens(&rec, None),
-        300
-    );
+    assert_eq!(window(&rec, None), 300);
 }
 
 #[test]

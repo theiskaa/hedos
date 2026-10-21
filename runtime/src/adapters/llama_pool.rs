@@ -10,8 +10,8 @@
 //! [`LlamaServerPool::evict`] is the escape hatch for a hung-but-alive server (the
 //! pool can't detect one, only a crash); slot-map entries are not evicted (bounded
 //! by the number of distinct model ids); and `free_port` is a bind-then-drop that
-//! can, rarely, race a concurrent cold-start for a different model (which then
-//! surfaces as a clean `Unavailable`, no retry).
+//! can, rarely, lose the port before the server binds it, which is then tried
+//! again on another port.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -180,7 +180,7 @@ fn launch_args(server: &ServerLaunch<'_>, launch: Launch) -> Vec<String> {
 /// Finds the `llama-server` to run as things stand at a launch and makes it
 /// ready, which can take a while and touch the disk (unpacking the build hedos
 /// carries); or says why there is none.
-pub type Prepare = Arc<dyn Fn() -> Result<PathBuf, String> + Send + Sync>;
+pub type Prepare = Arc<dyn Fn() -> Result<PathBuf, RuntimeError> + Send + Sync>;
 
 /// The production spawner: runs the `llama-server` binary.
 pub struct LlamaServerSpawner {
@@ -226,7 +226,7 @@ impl LlamaServerSpawner {
     fn binary(&self) -> Result<PathBuf, RuntimeError> {
         match &self.binary {
             Binary::Fixed(path) => Ok(path.clone()),
-            Binary::Located(prepare) => prepare().map_err(RuntimeError::Unavailable),
+            Binary::Located(prepare) => prepare(),
         }
     }
 
@@ -478,13 +478,14 @@ async fn ensure(
         let vanished = || binary.as_deref().is_some_and(|path| !path.exists());
         let mut ports_tried = 0;
         let started = loop {
+            let port = free_port()?;
             let started = start(
                 spawner.as_ref(),
                 client,
                 ready_timeout,
                 &ServerLaunch {
                     gguf_path: gguf,
-                    port: free_port()?,
+                    port,
                     context_tokens,
                     mode,
                     projector: projector.as_deref(),
@@ -499,7 +500,9 @@ async fn ensure(
                 // connections, as its local port), and a server that cannot
                 // bind exits at once: another port is tried.
                 Err(error)
-                    if ports_tried < PORT_ATTEMPTS && lost_its_port(&error) && !vanished() =>
+                    if ports_tried < PORT_ATTEMPTS
+                        && lost_its_port(&error, port)
+                        && !vanished() =>
                 {
                     ports_tried += 1;
                 }
@@ -563,11 +566,12 @@ async fn start(
 /// How many more ports a launch whose port was taken tries.
 const PORT_ATTEMPTS: u32 = 2;
 
-/// Whether a launch failed the way one whose port was taken does: the server
-/// exited while starting, or the port could not be bound.
-fn lost_its_port(error: &RuntimeError) -> bool {
-    matches!(error, RuntimeError::Unavailable(reason)
-        if reason == STARTUP_EXIT || reason.contains("Address already in use"))
+/// Whether a launch on `port` failed because the port was taken: the server
+/// exited while starting (it cannot bind a taken port) and something else
+/// holds the port now. A server that exited for any other reason (a file it
+/// cannot load, say) would only exit again, after loading the model again.
+fn lost_its_port(error: &RuntimeError, port: u16) -> bool {
+    exited_during_startup(error) && std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
 }
 
 /// An ephemeral free TCP port on the loopback. The listener is dropped so the
@@ -683,8 +687,9 @@ mod tests {
 
     #[test]
     fn a_locating_spawner_with_nothing_to_run_says_how_to_install_llama_cpp() {
-        let spawner =
-            LlamaServerSpawner::locating(Arc::new(|| Err(LLAMA_CPP_INSTALL_HINT.to_owned())));
+        let spawner = LlamaServerSpawner::locating(Arc::new(|| {
+            Err(RuntimeError::Unavailable(LLAMA_CPP_INSTALL_HINT.to_owned()))
+        }));
         match spawner.prepare() {
             Err(RuntimeError::Unavailable(message)) => {
                 assert_eq!(message, LLAMA_CPP_INSTALL_HINT);

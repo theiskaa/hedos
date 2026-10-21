@@ -28,6 +28,7 @@ struct Fake {
     id: RuntimeId,
     serves: Vec<Capability>,
     window: Option<i64>,
+    follows_memory: bool,
     wires_tools: bool,
     job_result: Option<(Vec<u8>, String)>,
     last_invoke: Arc<StdMutex<Option<JsonValue>>>,
@@ -40,6 +41,7 @@ impl Fake {
             id: RuntimeId::ollama(),
             serves,
             window: None,
+            follows_memory: false,
             wires_tools: false,
             job_result: None,
             last_invoke: Arc::new(StdMutex::new(None)),
@@ -54,6 +56,11 @@ impl Fake {
 
     fn wires_tools(mut self) -> Self {
         self.wires_tools = true;
+        self
+    }
+
+    fn follows_memory(mut self) -> Self {
+        self.follows_memory = true;
         self
     }
 
@@ -98,6 +105,10 @@ impl RuntimeAdapter for Fake {
         _requested: Option<i64>,
     ) -> Option<i64> {
         self.window
+    }
+
+    fn window_follows_memory(&self) -> bool {
+        self.follows_memory
     }
 
     fn wires_tools(&self) -> bool {
@@ -529,6 +540,31 @@ async fn invoke_clamps_max_tokens_to_the_window() {
         .and_then(|o| o.get("max_tokens"))
         .and_then(JsonValue::as_i64);
     assert_eq!(clamped, Some(999));
+}
+
+#[tokio::test]
+async fn a_window_picked_from_free_memory_is_the_one_the_server_is_asked_for() {
+    for (follows, expected) in [(true, Some(1000)), (false, None)] {
+        let dir = TempDir::new();
+        let fake = Fake::new(vec![Capability::chat()]).window(1000);
+        let fake = Arc::new(if follows { fake.follows_memory() } else { fake });
+        let seen = Arc::clone(&fake.last_invoke);
+        let kernel = kernel(
+            &dir,
+            Some(record("m")),
+            vec![RegisteredAdapter::streaming(fake)],
+        );
+        let _ = kernel
+            .invoke("m", Capability::chat(), chat_payload("hi"))
+            .await
+            .expect("invoke");
+        let payload = seen.lock().unwrap().clone().expect("payload");
+        let window = payload
+            .as_object()
+            .and_then(|o| o.get("context_length"))
+            .and_then(JsonValue::as_i64);
+        assert_eq!(window, expected, "follows memory: {follows}");
+    }
 }
 
 #[tokio::test]

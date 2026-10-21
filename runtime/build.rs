@@ -1,6 +1,8 @@
 //! Packs `runtime/runtimes/` into one gzip-compressed archive at build time, so
 //! `bundled.rs` can embed a single small blob instead of the raw tree, which is
-//! dominated by `requirements.lock` files.
+//! dominated by `requirements.lock` files. A release build also embeds the
+//! pinned llama.cpp build its job fetched (`bundle_llama_cpp`), and a macOS
+//! build compiles the Apple Intelligence shim (`build_apple_shim`).
 //!
 //! Archive format: for each file, in deterministic sorted-by-path order,
 //! `u32 LE path_byte_len`, the relative path (forward-slash separated, relative

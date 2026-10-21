@@ -61,10 +61,7 @@ impl ModelRemover {
     pub async fn remove(&self, record: &ModelRecord) -> Result<ModelDeletionReport, RemovalError> {
         let details = self.preview(record);
         if let Some(why) = details.blocked {
-            return Err(RemovalError::DaemonUnavailable(format!(
-                "Ollama isn't installed to delete {}, and {why}.",
-                details.name
-            )));
+            return Err(RemovalError::DaemonUnavailable(why));
         }
         if details.via_daemon {
             let tag = record
@@ -140,7 +137,7 @@ impl OllamaModelRemover {
     /// How an Ollama model is deleted here: through the daemon when Ollama
     /// is installed or something answers where it listens, by its files
     /// otherwise.
-    pub fn route(&self) -> OllamaRoute {
+    pub(crate) fn route(&self) -> OllamaRoute {
         if self.has_binary() || daemon_listening_at(&self.base_url) {
             OllamaRoute::Daemon
         } else {

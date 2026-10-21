@@ -38,6 +38,11 @@ pub trait Host {
     fn free_disk(&self) -> Vec<FreeDisk>;
     /// Metal's recommended working set, on a GPU sharing system memory.
     fn metal_working_set(&self) -> Option<u64>;
+    /// On macOS, the memory free or reclaimable without swapping right now:
+    /// free and inactive pages, as `psutil` reads it. `None` elsewhere.
+    fn reclaimable_memory(&self) -> Option<u64> {
+        None
+    }
     /// `program` on PATH.
     fn find(&self, program: &str) -> Option<PathBuf>;
     /// What `program` prints on stdout when it exits 0 in time.
@@ -128,6 +133,17 @@ impl Host for SystemHost {
         #[cfg(target_os = "macos")]
         {
             crate::metal::recommended_working_set()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
+    fn reclaimable_memory(&self) -> Option<u64> {
+        #[cfg(target_os = "macos")]
+        {
+            crate::sys::reclaimable_memory()
         }
         #[cfg(not(target_os = "macos"))]
         {

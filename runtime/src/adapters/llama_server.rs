@@ -537,13 +537,6 @@ impl LlamaServerAdapter {
         let (limit, _) = self.window_bounds(record);
         clamped_window(limit, None).min(MAX_DECISION_CONTEXT)
     }
-
-    /// The effective context window: the requested size (or a capped default)
-    /// clamped into `[min(512, base), base]`, where `base` is the model's declared
-    /// context length or 4096.
-    pub fn effective_context_tokens(record: &ModelRecord, requested: Option<i64>) -> i64 {
-        clamped_window(record.context_length, requested)
-    }
 }
 
 /// The bytes of the GGUF at `path` and, when it is one shard of a split model
@@ -673,6 +666,10 @@ impl RuntimeAdapter for LlamaServerAdapter {
             return None;
         }
         Some(RuntimeBid::new(RunTier::Native, BidPreference::LLAMA_CPP))
+    }
+
+    fn window_follows_memory(&self) -> bool {
+        true
     }
 
     fn effective_context_window(
@@ -1224,17 +1221,8 @@ mod tests {
 
     #[test]
     fn effective_context_treats_nonpositive_declared_length_as_the_default() {
-        let mut rec = record();
-        rec.context_length = Some(0);
-        assert_eq!(
-            LlamaServerAdapter::effective_context_tokens(&rec, None),
-            4096
-        );
-        rec.context_length = Some(-5);
-        assert_eq!(
-            LlamaServerAdapter::effective_context_tokens(&rec, None),
-            4096
-        );
+        assert_eq!(clamped_window(Some(0), None), 4096);
+        assert_eq!(clamped_window(Some(-5), None), 4096);
     }
 
     /// A GGUF header with `kvs`, each a key and a `u32`, and no tensors.

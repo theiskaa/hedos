@@ -251,7 +251,11 @@ async fn refused(manifest: &std::path::Path) {
     assert!(remover.preview(&rec).blocked.is_some());
     match remover.remove(&rec).await {
         Err(RemovalError::DaemonUnavailable(why)) => {
-            assert!(why.contains("hedos deleted nothing"), "{why}")
+            assert!(
+                why.starts_with("Ollama isn't installed to delete ")
+                    && why.ends_with(", so hedos deletes nothing"),
+                "{why}"
+            )
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

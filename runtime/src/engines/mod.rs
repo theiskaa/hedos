@@ -50,9 +50,20 @@ pub fn variant_for(machine: &Machine) -> Option<Variant> {
     Variant::default_for(machine, glibc().as_deref())
 }
 
+/// Why a llama.cpp build would not start on this system, and what runs
+/// instead.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{reason}; {instead}")]
+pub struct WontStart {
+    /// Why it would not start.
+    pub reason: String,
+    /// What runs here instead.
+    pub instead: &'static str,
+}
+
 /// Whether `asset` starts on this system, or why not and what runs instead:
 /// llama.cpp's own Linux builds need a newer glibc than hedos does.
-pub fn runs_here(asset: &Asset) -> Result<(), String> {
+pub fn runs_here(asset: &Asset) -> Result<(), WontStart> {
     let glibc = glibc();
     let Some(reason) = asset.blocked(glibc.as_deref()) else {
         return Ok(());
@@ -67,5 +78,5 @@ pub fn runs_here(asset: &Asset) -> Result<(), String> {
     } else {
         "build llama.cpp for this system and name its llama-server in `[engines] llama_server`"
     };
-    Err(format!("{reason}; {instead}"))
+    Err(WontStart { reason, instead })
 }

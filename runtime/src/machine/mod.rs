@@ -46,6 +46,15 @@ fn hardware() -> &'static Machine {
     HARDWARE.get_or_init(|| probe_with(&SystemHost))
 }
 
+/// Read this machine's hardware now, off the calling thread, so the first
+/// request a server takes does not wait on it (finding cards can run
+/// `nvidia-smi` or `llama-server --list-devices`).
+pub fn warm_hardware() {
+    std::thread::spawn(|| {
+        hardware();
+    });
+}
+
 /// The memory the llama-server hedos would run can take as it starts, read
 /// now: see [`launch_memory`].
 pub fn llama_launch_memory() -> Option<u64> {
@@ -123,9 +132,12 @@ fn cgroup_limit(host: &dyn Host, paths: &CgroupPaths) -> Option<u64> {
 }
 
 /// The memory a new process can take right now without swapping: Linux's
-/// `MemAvailable`, within the room left under this process's cgroup limit.
-/// `None` elsewhere.
+/// `MemAvailable`, within the room left under this process's cgroup limit;
+/// macOS's free and inactive pages. `None` elsewhere.
 pub(crate) fn available_memory(host: &dyn Host) -> Option<u64> {
+    if host.os() == Os::Macos {
+        return host.reclaimable_memory();
+    }
     if host.os() != Os::Linux {
         return None;
     }

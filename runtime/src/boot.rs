@@ -19,7 +19,8 @@ use crate::adapters::{
     AudioGenAdapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter,
     LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, ManifestCommandAdapter,
     ManifestSidecarAdapter, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter,
-    MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
+    MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, RuntimeError, WhisperCppAdapter,
+    WhisperEngine,
 };
 use crate::engines::llama_cpp;
 use crate::environment::EnvironmentManager;
@@ -211,10 +212,14 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
     let preparing = Arc::new(move || {
         let configured = SettingsStore::discover().load().engines.llama_server;
         let server = llama_cpp::locate(&configured, &data)
-            .ok_or_else(|| LLAMA_CPP_INSTALL_HINT.to_owned())?;
+            .ok_or_else(|| RuntimeError::Unavailable(LLAMA_CPP_INSTALL_HINT.to_owned()))?;
         if server.from == llama_cpp::Source::Bundled
-            && let Some(unpacked) = crate::engines::install::unpack_bundled(&data)
-                .map_err(|error| format!("unpacking the llama.cpp hedos carries: {error}"))?
+            && let Some(unpacked) =
+                crate::engines::install::unpack_bundled(&data).map_err(|error| {
+                    RuntimeError::Unavailable(format!(
+                        "unpacking the llama.cpp hedos carries: {error}"
+                    ))
+                })?
         {
             return Ok(unpacked.path);
         }

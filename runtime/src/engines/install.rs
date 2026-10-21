@@ -1,6 +1,8 @@
-//! Installing the pinned llama.cpp build, and removing it, when a person asks.
-//! Nothing calls this on its own: `hedos engines install` and the shelf's
-//! install action do, after saying what will be fetched and getting a yes.
+//! Installing the pinned llama.cpp build, and removing it, when a person asks:
+//! `hedos engines install` and the shelf's install action, after saying what
+//! will be fetched and getting a yes. Unpacking the build this binary carries,
+//! the first time a model runs, goes through the same steps and fetches
+//! nothing.
 //!
 //! A build is the release's whole `llama-b<N>/` directory: `llama-server` and
 //! the libraries it loads from beside itself, symlinks included. It is
@@ -19,7 +21,7 @@ use flate2::read::GzDecoder;
 use fs2::FileExt;
 use kernel::engines::llama_cpp::{
     Asset, INSTALLED_FILE, InstallSource, Installed, InstalledFile, LlamaVersion, PINNED, Release,
-    Variant, install_dir_name, loader_failure, parse_llama_version,
+    Variant, install_dir_name, loader_failure, parse_build_tag, parse_llama_version,
 };
 use kernel::machine::Os;
 use sha2::{Digest, Sha256};
@@ -41,6 +43,9 @@ const LOCK_FILE: &str = ".lock";
 const LOCK_PATIENCE: Duration = Duration::from_secs(1);
 /// How often it is retried meanwhile.
 const LOCK_RETRY: Duration = Duration::from_millis(20);
+/// How long unpacking the carried build waits for another process holding
+/// the lock before saying llama.cpp is being installed.
+const UNPACK_WAIT: Duration = Duration::from_secs(60);
 /// The prefix of a staging directory an install unpacks into.
 const STAGING_PREFIX: &str = ".staging-";
 /// How long the unpacked `llama-server` may take to say its version.
@@ -166,7 +171,9 @@ pub async fn install(
                 os: Os::current().as_str().to_owned(),
                 arch: arch.to_owned(),
             })?;
-    super::runs_here(asset).map_err(|reason| EngineInstallError::WontRun { reason })?;
+    super::runs_here(asset).map_err(|refusal| EngineInstallError::WontRun {
+        reason: refusal.to_string(),
+    })?;
     install_from(
         &PINNED,
         asset,
@@ -188,16 +195,19 @@ pub(crate) async fn install_from(
 ) -> Result<LlamaServer, EngineInstallError> {
     let root = hedos_root(data);
     create_dir_all(&root)?;
-    // Taking the lock may wait a moment (`lock`), which must not stall this
-    // runtime's other tasks.
-    let locking = root.clone();
-    let lock = Arc::new(
-        tokio::task::spawn_blocking(move || lock(&locking))
-            .await
-            .map_err(|error| io_error(&root, error))??,
-    );
-    recover(&root)?;
-    let staging = fresh_staging(&root)?;
+    // Taking the lock may wait a moment (`lock`), and putting right what an
+    // interrupted install left can delete most of a gigabyte: neither may
+    // stall this runtime's other tasks.
+    let preparing = root.clone();
+    let (lock, staging) = tokio::task::spawn_blocking(move || {
+        let lock = lock(&preparing)?;
+        recover(&preparing)?;
+        let staging = fresh_staging(&preparing)?;
+        Ok::<_, EngineInstallError>((lock, staging))
+    })
+    .await
+    .map_err(|error| io_error(&root, error))??;
+    let lock = Arc::new(lock);
     let result = install_into(release, asset, base, &root, &staging, &lock, &progress).await;
     if !matches!(result, Err(EngineInstallError::Stranded { .. })) {
         let leftover = staging.clone();
@@ -361,7 +371,7 @@ fn finish(
         // running beside this one during an upgrade: removing it would have the
         // two unpack over each other at every launch.
         let superseded = source == InstallSource::Requested
-            || parse_build(&built.build).is_some_and(|this| build <= this);
+            || parse_build_tag(&built.build).is_some_and(|this| build <= this);
         if other != destination && source == built.source && superseded {
             let _ = remove_entry(&other);
         }
@@ -407,7 +417,7 @@ fn origin_of(dir: &Path) -> Option<(InstallSource, u64)> {
     let recorded = kernel::fs::read_regular(&dir.join(INSTALLED_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Installed>(&bytes).ok())
-        .and_then(|record| Some((record.source, parse_build(&record.build)?)));
+        .and_then(|record| Some((record.source, parse_build_tag(&record.build)?)));
     if recorded.is_some() {
         return recorded;
     }
@@ -418,22 +428,13 @@ fn origin_of(dir: &Path) -> Option<(InstallSource, u64)> {
     };
     let (build, variant) = named.split_once('-')?;
     Variant::parse(variant)?;
-    Some((source, parse_build(build)?))
-}
-
-/// The number of a build tag (`11669` for `b11669`).
-fn parse_build(tag: &str) -> Option<u64> {
-    let digits = tag.strip_prefix('b')?;
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    digits.parse().ok()
+    Some((source, parse_build_tag(build)?))
 }
 
 /// Unpack the llama.cpp build this binary carries under `data`, if it carries
 /// one and it is not unpacked there already. Another process unpacking it is
 /// waited for, not refused, and what it unpacked is then used.
-pub fn unpack_bundled(data: &Path) -> Result<Option<LlamaServer>, EngineInstallError> {
+pub(crate) fn unpack_bundled(data: &Path) -> Result<Option<LlamaServer>, EngineInstallError> {
     match bundled() {
         Some(bundle) => unpack_bundle(&bundle, &PINNED, data).map(Some),
         None => Ok(None),
@@ -446,18 +447,37 @@ pub(crate) fn unpack_bundle(
     release: &Release,
     data: &Path,
 ) -> Result<LlamaServer, EngineInstallError> {
+    unpack_bundle_within(bundle, release, data, UNPACK_WAIT)
+}
+
+/// [`unpack_bundle`], waiting at most `wait` for another process holding the
+/// lock (one unpacking the same build, or an install downloading).
+fn unpack_bundle_within(
+    bundle: &Bundled,
+    release: &Release,
+    data: &Path,
+    wait: Duration,
+) -> Result<LlamaServer, EngineInstallError> {
     let root = hedos_root(data);
     create_dir_all(&root)?;
     let name = install_dir_name(release.build, bundle.variant, InstallSource::Bundled);
-    let lock = lock_waiting(&root)?;
+    let unpacked = || LlamaServer {
+        path: root.join(&name).join("llama-server"),
+        from: Source::Bundled,
+    };
+    // An install on request can hold the lock for a whole download; a build
+    // unpacked whole is used meanwhile instead of waited on. That install put
+    // right what an interrupted one left when it took the lock.
+    let lock = match try_lock(&root)? {
+        Some(lock) => lock,
+        None if unpacked_whole(&root.join(&name), bundle) => return Ok(unpacked()),
+        None => lock_within(&root, wait)?,
+    };
     // What an interrupted install left is put right first, whatever is found
     // unpacked: a build it set aside must not stay hidden behind this one.
     recover(&root)?;
     if unpacked_whole(&root.join(&name), bundle) {
-        return Ok(LlamaServer {
-            path: root.join(&name).join("llama-server"),
-            from: Source::Bundled,
-        });
+        return Ok(unpacked());
     }
     let staging = fresh_staging(&root)?;
     let result = unpack_bundle_into(bundle, release, &root, &staging);
@@ -688,8 +708,9 @@ async fn download(
     Ok(received)
 }
 
-/// Unpack the gzipped tar at `archive` into `target`, dropping its top-level
-/// directory (`llama-b11669/llama-server` lands as `target/llama-server`).
+/// Unpack the tar `archive` (already decompressed) into `target`, dropping
+/// its top-level directory (`llama-b11669/llama-server` lands as
+/// `target/llama-server`).
 /// Only plain files, directories and symlinks within `target` are written:
 /// an absolute path, a `..`, a link that leads out, or any other kind of entry
 /// refuses the whole archive.
@@ -805,15 +826,7 @@ fn create_dir_all(path: &Path) -> Result<(), EngineInstallError> {
 /// is starting holds a copy of every open file, the lock among them, until it
 /// execs, and that must not read as an install running.
 fn lock(root: &Path) -> Result<File, EngineInstallError> {
-    let file = open_lock(&root.join(LOCK_FILE))?;
-    let started = Instant::now();
-    while file.try_lock_exclusive().is_err() {
-        if started.elapsed() >= LOCK_PATIENCE {
-            return Err(EngineInstallError::Busy);
-        }
-        std::thread::sleep(LOCK_RETRY);
-    }
-    Ok(file)
+    lock_within(root, LOCK_PATIENCE)
 }
 
 /// The lock file at `path`, opened as it is, never truncated, never through a
@@ -834,13 +847,25 @@ fn open_lock(path: &Path) -> Result<File, EngineInstallError> {
     Ok(file)
 }
 
-/// The install lock on `root`, waited for: an unpack of the build hedos
-/// carries that another process is doing finishes before this one looks.
-fn lock_waiting(root: &Path) -> Result<File, EngineInstallError> {
-    let path = root.join(LOCK_FILE);
-    let file = open_lock(&path)?;
-    file.lock_exclusive()
-        .map_err(|error| io_error(&path, error))?;
+/// The install lock on `root` if nothing holds it, without waiting at all.
+fn try_lock(root: &Path) -> Result<Option<File>, EngineInstallError> {
+    let file = open_lock(&root.join(LOCK_FILE))?;
+    Ok(file.try_lock_exclusive().is_ok().then_some(file))
+}
+
+/// The install lock on `root`, waited for up to `wait`: an unpack of the build
+/// hedos carries that another process is doing takes seconds, and is waited
+/// out; an install on request downloading can take minutes, and is refused
+/// as [`EngineInstallError::Busy`] once `wait` runs out.
+fn lock_within(root: &Path, wait: Duration) -> Result<File, EngineInstallError> {
+    let file = open_lock(&root.join(LOCK_FILE))?;
+    let started = Instant::now();
+    while file.try_lock_exclusive().is_err() {
+        if started.elapsed() >= wait {
+            return Err(EngineInstallError::Busy);
+        }
+        std::thread::sleep(LOCK_RETRY);
+    }
     Ok(file)
 }
 
@@ -1361,8 +1386,8 @@ mod tests {
         assert!(root.join("b11669-cpu-bundled/llama-server").exists());
         assert!(root.join("b11669-metal/llama-server").exists());
 
-        // A newer carried build replaces the older one, and only it.
-        std::fs::remove_dir_all(root.join("b11669-cpu-bundled")).unwrap();
+        // Another carried build, of this release or a newer one, replaces the
+        // carried one there, and only it.
         unpack_bundle(
             &bundle_of(&good_build(), Variant::Metal),
             &RELEASE,
@@ -1370,7 +1395,48 @@ mod tests {
         )
         .expect("unpacked");
         assert!(root.join("b11669-metal-bundled/llama-server").exists());
+        assert!(!root.join("b11669-cpu-bundled").exists(), "replaced");
         assert!(root.join("b11669-metal/llama-server").exists());
+    }
+
+    #[test]
+    fn a_carried_build_unpacked_whole_is_used_while_an_install_holds_the_lock() {
+        let scratch = Scratch::new("bundle-busy");
+        let root = hedos_root(&scratch.0);
+        let bundle = bundle_of(&good_build(), Variant::Metal);
+        unpack_bundle(&bundle, &RELEASE, &scratch.0).expect("unpacked");
+        // An install on request downloading, holding the lock.
+        let held = lock(&root).unwrap();
+        let data = scratch.0.clone();
+        let using = std::thread::spawn(move || unpack_bundle(&bundle, &RELEASE, &data));
+        std::thread::sleep(Duration::from_millis(300));
+        let finished = using.is_finished();
+        drop(held);
+        let server = using.join().unwrap().expect("the unpacked build");
+        assert!(finished, "it does not wait for the install");
+        assert_eq!(server.path, root.join("b11669-metal-bundled/llama-server"));
+    }
+
+    #[test]
+    fn a_carried_build_not_unpacked_waits_for_an_install_only_so_long() {
+        let scratch = Scratch::new("bundle-wait-bound");
+        let root = hedos_root(&scratch.0);
+        std::fs::create_dir_all(&root).unwrap();
+        // An install on request downloading, holding the lock throughout.
+        let held = lock(&root).unwrap();
+        let started = Instant::now();
+        let refused = unpack_bundle_within(
+            &bundle_of(&good_build(), Variant::Metal),
+            &RELEASE,
+            &scratch.0,
+            Duration::from_millis(200),
+        );
+        assert!(
+            matches!(refused, Err(EngineInstallError::Busy)),
+            "{refused:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+        drop(held);
     }
 
     #[test]

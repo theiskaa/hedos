@@ -578,12 +578,13 @@ async fn evict_forces_a_respawn() {
 
 #[tokio::test]
 async fn a_process_dead_on_arrival_is_unavailable() {
-    struct DeadSpawner;
+    struct DeadSpawner(AtomicUsize);
     impl ServerSpawner for DeadSpawner {
         fn spawn(
             &self,
             _launch: &ServerLaunch<'_>,
         ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(DeadProcess))
         }
     }
@@ -593,14 +594,56 @@ async fn a_process_dead_on_arrival_is_unavailable() {
             false
         }
     }
-    // The readiness poll sees the process already exited → Unavailable, fast.
-    let pool =
-        LlamaServerPool::new(Arc::new(DeadSpawner)).with_ready_timeout(Duration::from_secs(5));
+    // The readiness poll sees the process already exited → Unavailable, fast,
+    // and only once: its port is free, so it died of something a retry would
+    // only meet again after loading the model again.
+    let spawner = Arc::new(DeadSpawner(AtomicUsize::new(0)));
+    let pool = LlamaServerPool::new(Arc::clone(&spawner) as Arc<dyn ServerSpawner>)
+        .with_ready_timeout(Duration::from_secs(5));
     let error = pool
         .base_url(&record("a"), 4096, ServerMode::Chat)
         .await
         .unwrap_err();
     assert!(matches!(error, RuntimeError::Unavailable(_)));
+    assert_eq!(spawner.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_server_that_exits_because_its_port_was_taken_tries_another() {
+    struct Taken {
+        tries: AtomicUsize,
+        holding: Mutex<Vec<std::net::TcpListener>>,
+        then: MockSpawner,
+    }
+    impl ServerSpawner for Taken {
+        fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            if self.tries.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Something else holds the port the pool picked, so the
+                // server cannot bind it and exits.
+                let held = std::net::TcpListener::bind(("127.0.0.1", launch.port)).unwrap();
+                self.holding.lock().unwrap().push(held);
+                struct Exited;
+                impl ServerProcess for Exited {
+                    fn is_alive(&self) -> bool {
+                        false
+                    }
+                }
+                return Ok(Box::new(Exited));
+            }
+            self.then.spawn(launch)
+        }
+    }
+    let spawner = Arc::new(Taken {
+        tries: AtomicUsize::new(0),
+        holding: Mutex::new(Vec::new()),
+        then: MockSpawner::new(true),
+    });
+    let pool = LlamaServerPool::new(Arc::clone(&spawner) as Arc<dyn ServerSpawner>)
+        .with_ready_timeout(Duration::from_secs(2));
+    pool.base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .expect("ready on another port");
+    assert_eq!(spawner.tries.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -657,34 +700,6 @@ async fn a_running_chat_server_says_its_window() {
         alive.store(false, Ordering::SeqCst);
     }
     assert_eq!(pool.resident_window(&rec), None);
-}
-
-#[tokio::test]
-async fn a_launch_whose_port_was_taken_tries_another() {
-    struct PortTaken {
-        tries: AtomicUsize,
-        then: MockSpawner,
-    }
-    impl ServerSpawner for PortTaken {
-        fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
-            if self.tries.fetch_add(1, Ordering::SeqCst) == 0 {
-                return Err(RuntimeError::Unavailable(
-                    "Address already in use (os error 48)".to_owned(),
-                ));
-            }
-            self.then.spawn(launch)
-        }
-    }
-    let spawner = Arc::new(PortTaken {
-        tries: AtomicUsize::new(0),
-        then: MockSpawner::new(true),
-    });
-    let pool = LlamaServerPool::new(Arc::clone(&spawner) as Arc<dyn ServerSpawner>)
-        .with_ready_timeout(Duration::from_secs(2));
-    pool.base_url(&record("a"), 4096, ServerMode::Chat)
-        .await
-        .expect("ready on another port");
-    assert_eq!(spawner.tries.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

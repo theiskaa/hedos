@@ -155,7 +155,7 @@ pub fn installed(data: &Path, source: InstallSource) -> Option<(PathBuf, Install
             let record = serde_json::from_slice::<Installed>(&bytes)
                 .ok()
                 .filter(|record| record.source == source)?;
-            let number = record.build.strip_prefix('b')?.parse::<u64>().ok()?;
+            let number = kernel::engines::llama_cpp::parse_build_tag(&record.build)?;
             let named = entry.file_name().to_str()
                 == Some(install_dir_name(&record.build, record.variant, record.source).as_str());
             (named && kernel::fs::is_executable(&dir.join(PROGRAM)))

@@ -713,6 +713,15 @@ fn clamp_to_window(
             {
                 fields.insert("max_tokens".to_owned(), JsonValue::Int(clamped));
             }
+            // Picked from the memory free now, so asked for as it is: picking
+            // again at launch could give a smaller one than the prompt and
+            // `max_tokens` were checked against.
+            if requested_context.is_none()
+                && adapter.window_follows_memory()
+                && let JsonValue::Object(fields) = &mut configured
+            {
+                fields.insert("context_length".to_owned(), JsonValue::Int(window));
+            }
             Ok(configured)
         }
     }

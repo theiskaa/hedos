@@ -187,6 +187,14 @@ pub trait RuntimeAdapter: Send + Sync {
         None
     }
 
+    /// Whether the window [`Self::effective_context_window`] picks with none
+    /// asked for follows the memory free at the moment, so two calls can
+    /// differ. The window a request was checked against is then passed on to
+    /// `invoke` as its `context_length`, so the server starts with that one.
+    fn window_follows_memory(&self) -> bool {
+        false
+    }
+
     /// Whether this runtime forwards a `tools` array to its backend and parses
     /// tool calls out of the response. Resolution folds the `tools` capability
     /// onto a record only when its winning runtime does.

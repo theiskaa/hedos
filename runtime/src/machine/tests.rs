@@ -15,6 +15,7 @@ struct FakeHost {
     os: Os,
     arch: &'static str,
     metal: Option<u64>,
+    reclaimable: Option<u64>,
     programs: Vec<&'static str>,
     outputs: HashMap<&'static str, &'static str>,
     files: HashMap<PathBuf, &'static str>,
@@ -30,6 +31,7 @@ impl FakeHost {
             os,
             arch,
             metal: None,
+            reclaimable: None,
             programs: Vec::new(),
             outputs: HashMap::new(),
             files: HashMap::new(),
@@ -81,6 +83,10 @@ impl Host for FakeHost {
     }
     fn metal_working_set(&self) -> Option<u64> {
         self.metal
+    }
+
+    fn reclaimable_memory(&self) -> Option<u64> {
+        self.reclaimable
     }
     fn find(&self, program: &str) -> Option<PathBuf> {
         self.programs
@@ -319,4 +325,58 @@ fn available_memory_is_linuxs_own_figure_within_the_tightest_cgroup_limit() {
     );
     assert_eq!(available_memory(&v1), Some(GIB));
     assert_eq!(available_memory(&FakeHost::new(Os::Macos, "aarch64")), None);
+    let mac = FakeHost {
+        reclaimable: Some(25 * GIB),
+        ..FakeHost::new(Os::Macos, "aarch64")
+    };
+    assert_eq!(available_memory(&mac), Some(25 * GIB));
+    let linux = FakeHost {
+        reclaimable: Some(25 * GIB),
+        ..FakeHost::new(Os::Linux, "x86_64")
+    };
+    assert_eq!(
+        available_memory(&linux),
+        None,
+        "macOS's reading, not Linux's"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn this_mac_says_how_much_memory_is_free_or_reclaimable() {
+    use super::host::SystemHost;
+    let reclaimable = crate::sys::reclaimable_memory().expect("the kernel says");
+    let total = SystemHost.memory_bytes();
+    assert!(
+        reclaimable > 0 && reclaimable <= total,
+        "{reclaimable} of {total}"
+    );
+    // In the units `vm_stat` reads, the kernel's own page size: within a
+    // quarter, as pages move between the two reads.
+    let said = std::process::Command::new("vm_stat")
+        .output()
+        .expect("vm_stat");
+    let said = String::from_utf8_lossy(&said.stdout);
+    let page: u64 = said
+        .split("page size of ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|size| size.parse().ok())
+        .expect("a page size");
+    let pages = |label: &str| -> u64 {
+        said.lines()
+            .find(|line| line.starts_with(label))
+            .and_then(|line| line.rsplit(' ').next())
+            .and_then(|count| count.trim_end_matches('.').parse().ok())
+            .expect("a count")
+    };
+    // `vm_stat` prints speculative pages apart from free ones; the kernel
+    // counts them as free.
+    let expected =
+        (pages("Pages free:") + pages("Pages speculative:") + pages("Pages inactive:")) * page;
+    let (low, high) = (expected - expected / 4, expected + expected / 4);
+    assert!(
+        (low..=high).contains(&reclaimable),
+        "{reclaimable} against vm_stat's {expected}"
+    );
 }
