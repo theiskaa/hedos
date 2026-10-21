@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::machine::{DevicesFrom, Machine, Os};
 
 /// The llama.cpp release this hedos installs: its version, the build tag its
-/// binaries are published under, and each build with its pinned sha256.
+/// binaries are published under, and each build with its pinned sha256. The
+/// Linux CPU builds are hedos's own, built from the tag's source (see
+/// [`Publisher::Hedos`]); every other build is llama.cpp's.
 pub const PINNED: Release = Release {
     version: "0.7.0",
     build: "b11669",
@@ -24,6 +26,7 @@ pub const PINNED: Release = Release {
             sha256: "dbed55493d72bc1ba2babc8770d669c2289b5bc4ee9fb2a4dfc158d45b7d13fd",
             bytes: 12_191_582,
             cudart: None,
+            publisher: Publisher::LlamaCpp,
         },
         Asset {
             os: Os::Macos,
@@ -33,24 +36,27 @@ pub const PINNED: Release = Release {
             sha256: "cab28238d78158109b48deb27b05d50e0dcef56275d2e76da9ca8281526c7532",
             bytes: 11_677_404,
             cudart: None,
+            publisher: Publisher::LlamaCpp,
         },
         Asset {
             os: Os::Linux,
             arch: "x86_64",
             variant: Variant::Cpu,
-            file: "llama-b11669-bin-ubuntu-x64.tar.gz",
-            sha256: "cf07c1c112d709bd67e522017471de57ed0ec8bea031d732c5422351c07f65ac",
-            bytes: 17_851_611,
+            file: "llama-b11669-bin-linux-x86_64.tar.gz",
+            sha256: "2f28233ef38a1ee6afe59d612634b6fa6c712fe16de0a7b22f9e700d76f25a8a",
+            bytes: 17_676_284,
             cudart: None,
+            publisher: Publisher::Hedos,
         },
         Asset {
             os: Os::Linux,
             arch: "aarch64",
             variant: Variant::Cpu,
-            file: "llama-b11669-bin-ubuntu-arm64.tar.gz",
-            sha256: "9ac6fda2058d35677608a06f751a50122ddfa4ce0ddb7f084466b8e79b6d4a99",
-            bytes: 13_900_160,
+            file: "llama-b11669-bin-linux-aarch64.tar.gz",
+            sha256: "9d67ff79f063e01033153cc068be6dd69717f841859269f960ec469f6fec2414",
+            bytes: 13_043_665,
             cudart: None,
+            publisher: Publisher::Hedos,
         },
         Asset {
             os: Os::Linux,
@@ -60,6 +66,7 @@ pub const PINNED: Release = Release {
             sha256: "e8709e5ba6c1b093dea7f3de57f4aba842f9a188fba6b465782d65d6fcfa4d9f",
             bytes: 30_497_889,
             cudart: None,
+            publisher: Publisher::LlamaCpp,
         },
         Asset {
             os: Os::Linux,
@@ -69,6 +76,7 @@ pub const PINNED: Release = Release {
             sha256: "d283522e479c0d532e3a04d715dd852ffb2d95925caa6d41ef2ba53a65e46a51",
             bytes: 24_187_561,
             cudart: None,
+            publisher: Publisher::LlamaCpp,
         },
         Asset {
             os: Os::Linux,
@@ -82,6 +90,7 @@ pub const PINNED: Release = Release {
                 sha256: "ab3eda89a82096bcba00b6448218c3c11eec2016b0f38d64884dc29736549f26",
                 bytes: 594_377_811,
             }),
+            publisher: Publisher::LlamaCpp,
         },
         Asset {
             os: Os::Linux,
@@ -95,6 +104,7 @@ pub const PINNED: Release = Release {
                 sha256: "6c81453d16a574eef3273662a7a8ceafa3537699a5b2ffec3fc853eb1a08f67c",
                 bytes: 552_521_396,
             }),
+            publisher: Publisher::LlamaCpp,
         },
         Asset {
             os: Os::Linux,
@@ -104,6 +114,7 @@ pub const PINNED: Release = Release {
             sha256: "02d36f06accd8fdcb2d41078361b21fb2df5d139f169bf4efcb8424a7dbbef01",
             bytes: 245_070_738,
             cudart: None,
+            publisher: Publisher::LlamaCpp,
         },
     ],
 };
@@ -112,8 +123,12 @@ pub const PINNED: Release = Release {
 /// 0.6.0's.
 pub const DECISION_MODELS_BUILD: u64 = 11429;
 
-/// Where release assets are published.
+/// Where llama.cpp's release assets are published.
 const RELEASES: &str = "https://github.com/ggml-org/llama.cpp/releases/download";
+
+/// Where hedos's own builds of a llama.cpp release are published, each
+/// release's under the tag `llama.cpp-<build>`.
+const HEDOS_RELEASES: &str = "https://github.com/theiskaa/hedos/releases/download";
 
 /// Where a tag's source tarball is published.
 const SOURCES: &str = "https://github.com/ggml-org/llama.cpp/archive/refs/tags";
@@ -128,8 +143,7 @@ pub struct Release {
     pub version: &'static str,
     /// The build tag its binaries are published under (`b11669`).
     pub build: &'static str,
-    /// The tag's source, which hedos builds the server it carries on Linux
-    /// from.
+    /// The tag's source, which hedos builds its own Linux builds from.
     pub source: SourceTarball,
     /// Every build of it hedos knows how to install.
     pub assets: &'static [Asset],
@@ -161,14 +175,28 @@ impl Release {
             .collect()
     }
 
+    /// The variants this release has a build of for `os`/`arch` that start
+    /// on a system whose glibc is `glibc`.
+    pub fn variants_starting(&self, os: Os, arch: &str, glibc: Option<&str>) -> Vec<Variant> {
+        self.assets
+            .iter()
+            .filter(|asset| asset.os == os && asset.arch == arch && asset.blocked(glibc).is_none())
+            .map(|asset| asset.variant)
+            .collect()
+    }
+
     /// The build number of the tag (`11669` for `b11669`).
     pub fn build_number(&self) -> Option<u64> {
         self.build.strip_prefix('b')?.parse().ok()
     }
 
-    /// Where `file`, one of this release's assets, is downloaded from.
-    pub fn url(&self, file: &str) -> String {
-        format!("{RELEASES}/{}/{file}", self.build)
+    /// Where `file`, one of this release's assets that `publisher` publishes,
+    /// is downloaded from.
+    pub fn url(&self, publisher: Publisher, file: &str) -> String {
+        match publisher {
+            Publisher::LlamaCpp => format!("{RELEASES}/{}/{file}", self.build),
+            Publisher::Hedos => format!("{HEDOS_RELEASES}/llama.cpp-{}/{file}", self.build),
+        }
     }
 
     /// Where the tag's source tarball is downloaded from.
@@ -196,6 +224,8 @@ pub struct Asset {
     /// The CUDA runtime a CUDA build needs beside it, published as an archive
     /// of its own.
     pub cudart: Option<Runtime>,
+    /// Who builds and publishes it.
+    pub publisher: Publisher,
 }
 
 impl Asset {
@@ -203,6 +233,29 @@ impl Asset {
     pub fn download_bytes(&self) -> u64 {
         self.bytes + self.cudart.map_or(0, |runtime| runtime.bytes)
     }
+
+    /// Why it cannot start on a system whose glibc is `glibc`, when it
+    /// cannot: llama.cpp's own Linux builds need 2.38, hedos's do not.
+    pub fn blocked(&self, glibc: Option<&str>) -> Option<String> {
+        if self.os != Os::Linux || self.publisher != Publisher::LlamaCpp {
+            return None;
+        }
+        published_build_blocked(glibc?)
+    }
+}
+
+/// Who builds and publishes a build of a llama.cpp release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Publisher {
+    /// llama.cpp itself, on its GitHub releases.
+    LlamaCpp,
+    /// hedos, from the release's pinned source, on hedos's GitHub releases.
+    /// llama.cpp's own Linux archives are built on Ubuntu 24.04 and need
+    /// glibc 2.38, GCC 13's libstdc++, libgomp and OpenSSL 3, so they do not
+    /// start on Ubuntu 22.04 or Debian 12; hedos's CPU builds are made in
+    /// manylinux_2_28 (glibc 2.28) with the C++ runtime linked in and no
+    /// OpenMP or OpenSSL (`.github/build-llama-cpp.sh`).
+    Hedos,
 }
 
 /// An archive of libraries a build loads, unpacked beside it.
@@ -266,13 +319,15 @@ impl Variant {
             .find(|variant| variant.as_str().eq_ignore_ascii_case(name))
     }
 
-    /// The build that suits `machine`: Metal on a Mac with Apple's chip, the
-    /// CPU build on an Intel Mac, whose GPU no engine here runs a model on;
-    /// on Linux, CUDA for NVIDIA cards (12 on x86_64, 13 where the release
-    /// only builds that for arm64), Vulkan for AMD cards (ROCm has to be
-    /// installed on its own, so it is taken only when asked for), and the CPU
-    /// build otherwise. `None` where the release has no build at all.
-    pub fn default_for(machine: &Machine) -> Option<Self> {
+    /// The build that suits `machine`, whose glibc is `glibc`: Metal on a
+    /// Mac with Apple's chip, the CPU build on an Intel Mac, whose GPU no
+    /// engine here runs a model on; on Linux, CUDA for NVIDIA cards (12 on
+    /// x86_64, 13 where the release only builds that for arm64), Vulkan for
+    /// AMD cards (ROCm has to be installed on its own, so it is taken only
+    /// when asked for), and the CPU build otherwise, or where the build that
+    /// suits the cards cannot start on this glibc. `None` where the release
+    /// has no build at all.
+    pub fn default_for(machine: &Machine, glibc: Option<&str>) -> Option<Self> {
         let arch = machine.arch.as_str();
         let chosen = match (machine.os, arch, machine.devices_from) {
             (Os::Macos, "aarch64", _) => Variant::Metal,
@@ -281,9 +336,13 @@ impl Variant {
             (Os::Linux, _, DevicesFrom::AmdSysfs) => Variant::Vulkan,
             _ => Variant::Cpu,
         };
-        PINNED
-            .asset(machine.os, arch, chosen)
-            .map(|asset| asset.variant)
+        let suits = PINNED.asset(machine.os, arch, chosen)?;
+        if suits.blocked(glibc).is_some() {
+            return PINNED
+                .asset(machine.os, arch, Variant::Cpu)
+                .map(|asset| asset.variant);
+        }
+        Some(suits.variant)
     }
 }
 
@@ -299,15 +358,6 @@ pub fn bundled_variant(os: Os, arch: &str) -> Option<Variant> {
     }
 }
 
-/// Whether the build hedos carries for `os` is built from the pinned source
-/// rather than taken from llama.cpp's own archives. On Linux it is: those are
-/// built on Ubuntu 24.04 and need glibc 2.38, GCC 13's libstdc++, libgomp and
-/// OpenSSL 3, so they do not start on Ubuntu 22.04 or Debian 12, where hedos
-/// itself runs.
-pub fn built_from_source(os: Os) -> bool {
-    os == Os::Linux
-}
-
 /// The oldest glibc llama.cpp's own Linux archives start on: they are built on
 /// Ubuntu 24.04.
 pub const PUBLISHED_LINUX_GLIBC: (u32, u32) = (2, 38);
@@ -321,7 +371,8 @@ pub fn parse_glibc(version: &str) -> Option<(u32, u32)> {
 }
 
 /// Why llama.cpp's own Linux builds cannot start on a system whose glibc is
-/// `glibc`, when they cannot.
+/// `glibc`, when they cannot. hedos's own builds start there
+/// ([`Asset::blocked`]).
 pub fn published_build_blocked(glibc: &str) -> Option<String> {
     let found = parse_glibc(glibc)?;
     (found < PUBLISHED_LINUX_GLIBC).then(|| {
@@ -494,36 +545,89 @@ mod tests {
     #[test]
     fn each_machine_gets_the_build_that_suits_it() {
         assert_eq!(
-            Variant::default_for(&apple_silicon(64, 53084)),
+            Variant::default_for(&apple_silicon(64, 53084), None),
             Some(Variant::Metal)
         );
         let intel_mac = Machine {
             arch: "x86_64".to_owned(),
             ..apple_silicon(16, 10923)
         };
-        assert_eq!(Variant::default_for(&intel_mac), Some(Variant::Cpu));
+        assert_eq!(Variant::default_for(&intel_mac, None), Some(Variant::Cpu));
         let nvidia = linux(64, vec![card("RTX 4090", 24)]);
-        assert_eq!(Variant::default_for(&nvidia), Some(Variant::Cuda12));
+        assert_eq!(Variant::default_for(&nvidia, None), Some(Variant::Cuda12));
         let nvidia_arm = Machine {
             arch: "aarch64".to_owned(),
             ..linux(64, vec![card("GH200", 96)])
         };
-        assert_eq!(Variant::default_for(&nvidia_arm), Some(Variant::Cuda13));
+        assert_eq!(
+            Variant::default_for(&nvidia_arm, None),
+            Some(Variant::Cuda13)
+        );
         let amd = Machine {
             devices_from: DevicesFrom::AmdSysfs,
             ..linux(64, vec![card("RX 7900", 24)])
         };
-        assert_eq!(Variant::default_for(&amd), Some(Variant::Vulkan));
+        assert_eq!(Variant::default_for(&amd, None), Some(Variant::Vulkan));
         let plain = Machine {
             devices_from: DevicesFrom::None,
             ..linux(32, Vec::new())
         };
-        assert_eq!(Variant::default_for(&plain), Some(Variant::Cpu));
+        assert_eq!(Variant::default_for(&plain, None), Some(Variant::Cpu));
         let other = Machine {
             os: Os::Other,
             ..plain
         };
-        assert_eq!(Variant::default_for(&other), None);
+        assert_eq!(Variant::default_for(&other, None), None);
+    }
+
+    #[test]
+    fn an_older_linux_gets_the_cpu_build_where_the_one_for_its_cards_would_not_start() {
+        let nvidia = linux(64, vec![card("RTX 4090", 24)]);
+        assert_eq!(
+            Variant::default_for(&nvidia, Some("2.35")),
+            Some(Variant::Cpu)
+        );
+        assert_eq!(
+            Variant::default_for(&nvidia, Some("2.38")),
+            Some(Variant::Cuda12)
+        );
+        let amd = Machine {
+            devices_from: DevicesFrom::AmdSysfs,
+            ..linux(64, vec![card("RX 7900", 24)])
+        };
+        assert_eq!(Variant::default_for(&amd, Some("2.36")), Some(Variant::Cpu));
+        assert_eq!(
+            Variant::default_for(&apple_silicon(64, 53084), Some("2.17")),
+            Some(Variant::Metal)
+        );
+    }
+
+    #[test]
+    fn only_llama_cpp_s_own_linux_builds_are_blocked_by_an_older_glibc() {
+        let cpu = PINNED
+            .asset(Os::Linux, "x86_64", Variant::Cpu)
+            .expect("pinned");
+        assert_eq!(cpu.publisher, Publisher::Hedos);
+        assert_eq!(cpu.blocked(Some("2.28")), None);
+        let vulkan = PINNED
+            .asset(Os::Linux, "aarch64", Variant::Vulkan)
+            .expect("pinned");
+        let blocked = vulkan.blocked(Some("2.35")).expect("blocked");
+        assert!(blocked.contains("2.38"), "{blocked}");
+        assert_eq!(vulkan.blocked(Some("2.39")), None);
+        assert_eq!(vulkan.blocked(None), None);
+        let metal = PINNED
+            .asset(Os::Macos, "aarch64", Variant::Metal)
+            .expect("pinned");
+        assert_eq!(metal.blocked(Some("2.17")), None);
+        assert_eq!(
+            PINNED.variants_starting(Os::Linux, "x86_64", Some("2.35")),
+            [Variant::Cpu]
+        );
+        assert_eq!(
+            PINNED.variants_starting(Os::Linux, "x86_64", Some("2.39")),
+            PINNED.variants(Os::Linux, "x86_64")
+        );
     }
 
     #[test]
@@ -543,9 +647,18 @@ mod tests {
         assert_eq!(PINNED.build_number(), Some(11669));
         assert!(PINNED.build_number() >= Some(DECISION_MODELS_BUILD));
         assert_eq!(
-            PINNED.url("x.tar.gz"),
+            PINNED.url(Publisher::LlamaCpp, "x.tar.gz"),
             "https://github.com/ggml-org/llama.cpp/releases/download/b11669/x.tar.gz"
         );
+        assert_eq!(
+            PINNED.url(Publisher::Hedos, "x.tar.gz"),
+            "https://github.com/theiskaa/hedos/releases/download/llama.cpp-b11669/x.tar.gz"
+        );
+        // hedos builds the Linux CPU builds and nothing else.
+        for asset in PINNED.assets {
+            let hedos = asset.os == Os::Linux && asset.variant == Variant::Cpu;
+            assert_eq!(asset.publisher == Publisher::Hedos, hedos, "{}", asset.file);
+        }
         assert_eq!(
             PINNED.variants(Os::Linux, "x86_64"),
             [

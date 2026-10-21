@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 
 use flate2::read::GzDecoder;
 
-use crate::engines::llama_cpp::{Release, Variant, built_from_source, bundled_variant};
+use crate::engines::llama_cpp::{Release, Variant, bundled_variant};
 use crate::machine::Os;
 
 /// The program the cut-down archive is for.
@@ -73,82 +73,22 @@ pub enum CarryError {
         /// The pinned digest.
         expected: String,
     },
-    /// On a target where the carried build is built from source, the archive
-    /// does not say it was.
-    #[error(
-        "on {os} hedos carries a llama.cpp built from its pinned source, since llama.cpp's own {os} archives need glibc 2.38: build it with .github/build-llama-cpp.sh and export the HEDOS_LLAMA_CPP_ARCHIVE and HEDOS_LLAMA_CPP_SOURCE it prints (see CONTRIBUTING.md)"
-    )]
-    SourceBuildRequired {
-        /// The target's operating system.
-        os: String,
-    },
-    /// The archive is llama.cpp's own, where hedos carries one built from
-    /// source.
-    #[error(
-        "the archive is llama.cpp's own {file}, which needs glibc 2.38; on {os} hedos carries one built from the pinned source with .github/build-llama-cpp.sh"
-    )]
-    Published {
-        /// The published archive's name.
-        file: String,
-        /// The target's operating system.
-        os: String,
-    },
-    /// The source the archive is declared to be built from is not the pinned
-    /// one.
-    #[error(
-        "HEDOS_LLAMA_CPP_SOURCE names source {found}, not llama.cpp {build}'s (sha256 {expected})"
-    )]
-    OtherSource {
-        /// The release's tag.
-        build: String,
-        /// The source the archive says it was built from.
-        found: String,
-        /// The pinned source.
-        expected: String,
-    },
 }
 
 /// The build a binary for `os`/`arch` carries, when `archive_sha256` is the
-/// digest of the archive it is given and `source` the sha256 of the source
-/// that archive says it was built from: llama.cpp's own archive where hedos
-/// carries that, checked against the pin, or one built from the pinned source
-/// where hedos builds its own.
+/// digest of the archive it is given: the pinned build of the variant hedos
+/// carries there (llama.cpp's own on macOS, hedos's on Linux), and nothing
+/// else.
 pub fn carried_build(
     release: &Release,
     os: Os,
     arch: &str,
     archive_sha256: &str,
-    source: Option<&str>,
 ) -> Result<Variant, CarryError> {
     let variant = bundled_variant(os, arch).ok_or_else(|| CarryError::NoBuild {
         os: os.as_str().to_owned(),
         arch: arch.to_owned(),
     })?;
-    if built_from_source(os) {
-        // llama.cpp's own archive for this system is the one thing a source
-        // build must never be mistaken for.
-        if let Some(published) = release
-            .assets
-            .iter()
-            .find(|asset| asset.os == os && asset.sha256 == archive_sha256)
-        {
-            return Err(CarryError::Published {
-                file: published.file.to_owned(),
-                os: os.as_str().to_owned(),
-            });
-        }
-        return match source {
-            None => Err(CarryError::SourceBuildRequired {
-                os: os.as_str().to_owned(),
-            }),
-            Some(found) if found != release.source.sha256 => Err(CarryError::OtherSource {
-                build: release.build.to_owned(),
-                found: found.to_owned(),
-                expected: release.source.sha256.to_owned(),
-            }),
-            Some(_) => Ok(variant),
-        };
-    }
     let asset = release
         .asset(os, arch, variant)
         .ok_or_else(|| CarryError::NotPinned {
@@ -525,64 +465,46 @@ mod tests {
     }
 
     #[test]
-    fn a_mac_carries_the_published_archive_checked_against_the_pin() {
-        use crate::engines::llama_cpp::PINNED;
+    fn a_binary_carries_only_the_pinned_archive_of_its_target() {
+        use crate::engines::llama_cpp::{PINNED, Publisher};
         let metal = PINNED
             .asset(Os::Macos, "aarch64", Variant::Metal)
             .expect("pinned");
         assert_eq!(
-            carried_build(&PINNED, Os::Macos, "aarch64", metal.sha256, None),
+            carried_build(&PINNED, Os::Macos, "aarch64", metal.sha256),
             Ok(Variant::Metal)
         );
         assert!(matches!(
-            carried_build(&PINNED, Os::Macos, "aarch64", &"0".repeat(64), None),
+            carried_build(&PINNED, Os::Macos, "aarch64", &"0".repeat(64)),
             Err(CarryError::Digest { .. })
         ));
         assert!(matches!(
-            carried_build(&PINNED, Os::Other, "riscv64", metal.sha256, None),
+            carried_build(&PINNED, Os::Other, "riscv64", metal.sha256),
             Err(CarryError::NoBuild { .. })
         ));
-    }
-
-    #[test]
-    fn linux_carries_only_a_build_from_the_pinned_source() {
-        use crate::engines::llama_cpp::PINNED;
-        let published = PINNED
-            .asset(Os::Linux, "x86_64", Variant::Cpu)
+        let linux = PINNED
+            .asset(Os::Linux, "aarch64", Variant::Cpu)
             .expect("pinned");
-        let refused = carried_build(&PINNED, Os::Linux, "x86_64", published.sha256, None);
-        assert!(matches!(refused, Err(CarryError::Published { .. })));
-        assert!(refused.unwrap_err().to_string().contains("glibc 2.38"));
-        let undeclared = carried_build(&PINNED, Os::Linux, "x86_64", "built", None);
-        assert!(matches!(
-            undeclared,
-            Err(CarryError::SourceBuildRequired { .. })
-        ));
-        assert!(matches!(
-            carried_build(&PINNED, Os::Linux, "aarch64", "any", Some(&"0".repeat(64))),
-            Err(CarryError::OtherSource { .. })
-        ));
-        // Declared as built from source, llama.cpp's own archive is still
-        // refused.
-        assert!(matches!(
-            carried_build(
-                &PINNED,
-                Os::Linux,
-                "x86_64",
-                published.sha256,
-                Some(PINNED.source.sha256)
-            ),
-            Err(CarryError::Published { .. })
-        ));
+        assert_eq!(linux.publisher, Publisher::Hedos);
         assert_eq!(
+            carried_build(&PINNED, Os::Linux, "aarch64", linux.sha256),
+            Ok(Variant::Cpu)
+        );
+        // llama.cpp's own ubuntu-arm64 archive, which needs glibc 2.38, is
+        // not the build hedos carries.
+        assert!(matches!(
             carried_build(
                 &PINNED,
                 Os::Linux,
                 "aarch64",
-                "any",
-                Some(PINNED.source.sha256)
+                "9ac6fda2058d35677608a06f751a50122ddfa4ce0ddb7f084466b8e79b6d4a99"
             ),
-            Ok(Variant::Cpu)
-        );
+            Err(CarryError::Digest { .. })
+        ));
+        // Another arch's archive is not this one's.
+        assert!(matches!(
+            carried_build(&PINNED, Os::Linux, "x86_64", linux.sha256),
+            Err(CarryError::Digest { .. })
+        ));
     }
 }
