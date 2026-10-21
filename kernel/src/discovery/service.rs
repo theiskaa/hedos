@@ -11,10 +11,13 @@ use crate::discovery::duplicates::{
     DEFAULT_THRESHOLD, DuplicateCandidate, DuplicateGroup, DuplicateMember, content_fingerprint,
     find, passed_links,
 };
+use crate::discovery::loose_file_scanner::place_of;
 use crate::discovery::on_disk::{bytes_by_store, linked_reach, removal_roots, removal_set};
 use crate::discovery::scanner::{DiscoveredModel, StoreScanner};
 use crate::records::byte_format::BYTES_PER_MIB;
-use crate::records::{Modality, ModelRecord, ModelState, SourceKind, format_bytes, stable_id};
+use crate::records::{
+    Modality, ModelRecord, ModelState, Resolution, RuntimeRef, SourceKind, format_bytes, stable_id,
+};
 use crate::registry::{Registry, RegistryError};
 
 /// The count and byte total of models found for one source kind.
@@ -283,16 +286,23 @@ impl DiscoveryService {
             }
         }
 
+        // An alias of a model found here gives its config to that model, or
+        // keeps it when the two conflict; either way it is no orphan for a
+        // moved model to claim.
+        let (retired, held) = retire_aliases(&mut to_register, &seen_ids, &existing);
         let missing_candidates: Vec<&ModelRecord> = existing
             .iter()
             .filter(|record| {
                 !seen_ids.contains(&record.id)
+                    && !retired.contains(&record.id)
+                    && !held.contains(&record.id)
                     && (record.state == ModelState::Missing
                         || scanned_kinds.contains(&record.source.kind))
             })
             .collect();
-        let migrated_away =
+        let mut migrated_away =
             migrate_moved_config(&mut to_register, &new_record_ids, &missing_candidates);
+        migrated_away.extend(retired);
 
         let keep: Vec<ModelRecord> = to_register
             .into_iter()
@@ -494,6 +504,83 @@ fn fingerprint(model: &DiscoveredModel, existing: Option<&ModelRecord>) -> Optio
 /// Move a newly-found model's saved config (params, system prompt, alias) from a
 /// uniquely-matching missing record (same fingerprint and footprint) — the model
 /// moved on disk. Returns the ids of the claimed (orphaned) records to remove.
+/// The loose-file records an earlier scan made for a model this scan found by
+/// another path to the same place (a folder reached two ways, or spelled two
+/// ways on a disk that ignores case), which the scanner now gives once: they
+/// are retired once what was set on them is on the record kept (see
+/// [`absorb`]); returned with those held back because their settings conflict.
+fn retire_aliases(
+    to_register: &mut [ModelRecord],
+    seen_ids: &HashSet<String>,
+    existing: &[ModelRecord],
+) -> (HashSet<String>, HashSet<String>) {
+    let loose = |kind: &SourceKind| *kind == SourceKind::file() || *kind == SourceKind::folder();
+    let mut retired = HashSet::new();
+    let mut held = HashSet::new();
+    for alias in existing.iter().filter(|record| {
+        loose(&record.source.kind) && !seen_ids.contains(&record.id) && weights_present(record)
+    }) {
+        let place = place_of(Path::new(&alias.source.path));
+        let Some(kept) = to_register.iter_mut().find(|record| {
+            seen_ids.contains(&record.id)
+                && record.id != alias.id
+                && record.source.kind == alias.source.kind
+                && place_of(Path::new(&record.source.path)) == place
+        }) else {
+            continue;
+        };
+        if absorb(kept, alias) {
+            retired.insert(alias.id.clone());
+        } else {
+            held.insert(alias.id.clone());
+        }
+    }
+    (retired, held)
+}
+
+/// Take what was set on `donor` (its parameters, system prompt, alias, and a
+/// runtime the user pinned) onto `kept`, which may already hold some of its own (given by an alias this
+/// scan retired), and say whether the donor can go. Parameters merge key by
+/// key. Where the two hold different values for one thing, nothing is moved
+/// and the donor stays, so no setting is lost.
+fn absorb(kept: &mut ModelRecord, donor: &ModelRecord) -> bool {
+    let differ = |ours: &Option<String>, theirs: &Option<String>| matches!((ours, theirs), (Some(ours), Some(theirs)) if ours != theirs);
+    let params_conflict = donor
+        .param_values
+        .iter()
+        .any(|(key, value)| kept.param_values.get(key).is_some_and(|ours| ours != value));
+    let pinned = |record: &ModelRecord| record.runtime.resolved == Resolution::User;
+    let pins_conflict = pinned(kept) && pinned(donor) && kept.runtime.id != donor.runtime.id;
+    // Resolution leaves a pinned record alone, so a pin set on one it has not
+    // made ready (new this scan, or one nothing bids on) would keep it from
+    // ever being identified. The donor, ready under its pin, stays until a
+    // scan finds the kept record ready.
+    let pin_waits = pinned(donor) && kept.state != ModelState::Ready;
+    if params_conflict
+        || pins_conflict
+        || pin_waits
+        || differ(&kept.system_prompt, &donor.system_prompt)
+        || differ(&kept.alias, &donor.alias)
+    {
+        return false;
+    }
+    if pinned(donor) && !pinned(kept) {
+        kept.runtime = donor.runtime.clone();
+    }
+    for (key, value) in &donor.param_values {
+        kept.param_values
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    if kept.system_prompt.is_none() {
+        kept.system_prompt = donor.system_prompt.clone();
+    }
+    if kept.alias.is_none() {
+        kept.alias = donor.alias.clone();
+    }
+    true
+}
+
 fn migrate_moved_config(
     to_register: &mut [ModelRecord],
     new_record_ids: &HashSet<String>,
@@ -517,22 +604,19 @@ fn migrate_moved_config(
                     && !claimed.contains(&candidate.id)
             });
             match (matches.next(), matches.next()) {
-                (Some(orphan), None) => Some((
-                    orphan.id.clone(),
-                    orphan.param_values.clone(),
-                    orphan.system_prompt.clone(),
-                    orphan.alias.clone(),
-                )),
+                (Some(orphan), None) => Some((*orphan).clone()),
                 _ => None,
             }
         };
-        let Some((orphan_id, param_values, system_prompt, alias)) = orphan else {
+        let Some(mut orphan) = orphan else {
             continue;
         };
-        record.param_values = param_values;
-        record.system_prompt = system_prompt;
-        record.alias = alias;
-        claimed.insert(orphan_id);
+        // A moved model's pin is not carried to the record found in its
+        // place, which resolution has yet to see.
+        orphan.runtime = RuntimeRef::default();
+        if absorb(record, &orphan) {
+            claimed.insert(orphan.id);
+        }
     }
     claimed
 }

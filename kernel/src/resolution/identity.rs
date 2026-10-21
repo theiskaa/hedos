@@ -3,12 +3,16 @@
 //! offers to serve it ([`RuntimeBid`]). The `identify` orchestration and the bid
 //! auction build on these.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use crate::discovery::gguf_models::is_mmproj_name;
 use crate::discovery::modality_hints::{
     Hint, SentenceTransformersLayout, from_snapshot, sentence_transformers_layout,
 };
+use crate::discovery::ollama_scanner::manifest_projector;
 use crate::discovery::weights::{gguf_tree, primary_of};
 use crate::records::{
     Capability, ExecutionMode, JsonValue, Modality, ModelRecord, ParamSpec, ParamType, RunTier,
@@ -46,6 +50,15 @@ pub struct IdentifiedModel {
     pub has_chat_template: Option<bool>,
     /// The quantization the weights carry, as their format names it.
     pub quantization: Option<String>,
+    /// For a model in Ollama's store, whether its GGUF weights carry a chat
+    /// template of their own. `has_chat_template` also counts the template
+    /// layer Ollama keeps beside the weights, which only Ollama reads. `None`
+    /// when the header could not be read far enough to say.
+    pub gguf_chat_template: Option<bool>,
+    /// For a model in Ollama's store, whether its weights carry their own
+    /// vision or audio encoder inside the file, which llama.cpp cannot load.
+    /// `None` when the header could not be read far enough to say.
+    pub bundled_encoders: Option<bool>,
 }
 
 impl IdentifiedModel {
@@ -66,6 +79,8 @@ impl IdentifiedModel {
             context_length: None,
             has_chat_template: None,
             quantization: None,
+            gguf_chat_template: None,
+            bundled_encoders: None,
         }
     }
 }
@@ -122,24 +137,46 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     }
     if *kind == SourceKind::ollama() {
         // The blob a manifest points at is a GGUF, so its header says what the
-        // manifest does not: the architecture and the quantization.
+        // manifest does not: the architecture, how it pools, the quantization.
+        let has_projector = manifest_has_projector_layer(&record.source.path);
         let facts = record
             .primary_weight_path
             .as_deref()
             .and_then(|path| gguf_facts(Path::new(path)));
-        let profile = ollama_profile(
-            manifest_has_projector_layer(&record.source.path),
-            facts
-                .as_ref()
-                .and_then(|facts| facts.architecture.as_deref()),
-        );
+        let Some(facts) = facts else {
+            let profile = ollama_profile(has_projector, None);
+            return IdentifiedModel::new(
+                ModelFormat::OllamaStore,
+                Some(profile.modality),
+                profile.capabilities,
+                profile.execution,
+            );
+        };
+        // Read by the rules a loose GGUF is, so an embedder built on a chat
+        // architecture embeds whoever serves it. Ollama gives a model that
+        // reads images either a projector layer or its encoders inside the
+        // weights.
+        let sees = has_projector || facts.bundled_encoders;
+        let (modality, mut capabilities, execution) = classify_gguf(Some(&facts), sees);
+        if sees
+            && capabilities.contains(&Capability::chat())
+            && !capabilities.contains(&Capability::see())
+        {
+            capabilities.push(Capability::see());
+        }
         let mut model = IdentifiedModel::new(
             ModelFormat::OllamaStore,
-            Some(profile.modality),
-            profile.capabilities,
-            profile.execution,
+            Some(modality),
+            capabilities,
+            execution,
         );
-        model.quantization = facts.and_then(|facts| facts.quantization);
+        // What llama.cpp needs to serve the blob without Ollama: a template of
+        // its own, and no encoder packed in beside the text model. A key never
+        // reached is not a key the file lacks.
+        let found_or_absent = |found: bool| (found || facts.metadata_complete).then_some(found);
+        model.gguf_chat_template = found_or_absent(facts.has_chat_template);
+        model.bundled_encoders = found_or_absent(facts.bundled_encoders);
+        model.quantization = facts.quantization;
         return model;
     }
 
@@ -247,9 +284,23 @@ fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
         );
     }
     let facts = gguf_facts(base);
-    let decision = facts.as_ref().and_then(|facts| facts.decision.as_deref());
-    let pooling = facts.as_ref().and_then(|facts| facts.pooling);
-    let (modality, capabilities, execution) = match (decision, pooling) {
+    let (modality, capabilities, execution) = classify_gguf(facts.as_ref(), has_projector);
+    let mut model =
+        IdentifiedModel::new(ModelFormat::Gguf, Some(modality), capabilities, execution);
+    apply_facts(&mut model, facts.as_ref());
+    model
+}
+
+/// What a GGUF with header `facts` does: a judge for a decision model, an
+/// embedder for one that pools, nothing for a reranker, else its
+/// architecture's profile, seeing only when `has_projector`.
+fn classify_gguf(
+    facts: Option<&GgufFacts>,
+    has_projector: bool,
+) -> (Modality, Vec<Capability>, ExecutionMode) {
+    let decision = facts.and_then(|facts| facts.decision.as_deref());
+    let pooling = facts.and_then(|facts| facts.pooling);
+    match (decision, pooling) {
         // A decision model answers typed questions with probabilities and
         // nothing else, whatever its architecture, chat template or pooling
         // says: llama.cpp serves every decision type on `/v1/systemone` only.
@@ -270,12 +321,8 @@ fn identify_gguf(base: &Path, has_projector: bool) -> IdentifiedModel {
         // One relevance score per pair: a reranker, read the way a
         // cross-encoder in safetensors is.
         (None, Some(GgufPooling::Rank)) => (Modality::text(), Vec::new(), ExecutionMode::Stream),
-        _ => profiled(facts.as_ref(), has_projector),
-    };
-    let mut model =
-        IdentifiedModel::new(ModelFormat::Gguf, Some(modality), capabilities, execution);
-    apply_facts(&mut model, facts.as_ref());
-    model
+        _ => profiled(facts, has_projector),
+    }
 }
 
 /// The decision types whose prompt has a place for images, as llama.cpp's
@@ -409,7 +456,131 @@ fn container_url(base: &Path, record: &ModelRecord) -> PathBuf {
     base.to_path_buf()
 }
 
-/// Whether an Ollama manifest at `path` declares a `.projector` (vision) layer.
+/// The path `llama-server` should load `record`'s weights by. A hub
+/// snapshot's files are links into blobs named by their hash, and llama.cpp
+/// finds the other shards of a split model from the first one's name
+/// (`<base>-00001-of-00003.gguf`), so a hub model is loaded by the snapshot's
+/// link named so, when there is one, rather than the blob it reaches.
+/// Anything else is loaded by its primary weight.
+pub fn launch_gguf_path(record: &ModelRecord) -> PathBuf {
+    let primary = PathBuf::from(
+        record
+            .primary_weight_path
+            .as_deref()
+            .unwrap_or(&record.source.path),
+    );
+    if record.source.kind != SourceKind::huggingface_cache() || shard_named(&primary) {
+        return primary;
+    }
+    // The record's own snapshot, and no other: a walk from the repo above it
+    // could find another revision's link to the same blob.
+    let Some(snapshot) = record
+        .source
+        .reference
+        .as_ref()
+        .map(|reference| {
+            Path::new(&record.source.path)
+                .join("snapshots")
+                .join(reference)
+        })
+        .filter(|snapshot| snapshot.is_dir())
+    else {
+        return primary;
+    };
+    let Ok(target) = std::fs::canonicalize(&primary) else {
+        return primary;
+    };
+    // Asked at every request, so the answer is kept: by snapshot and blob,
+    // with the blob's size and modification time, so a blob still being
+    // written is read again once it changes. A link kept is used only while
+    // it still reaches the blob.
+    type Signature = Option<(u64, SystemTime)>;
+    type Found = HashMap<(PathBuf, PathBuf), (Signature, Option<PathBuf>)>;
+    static FOUND: Mutex<Option<Found>> = Mutex::new(None);
+    let signature: Signature = std::fs::metadata(&target)
+        .ok()
+        .and_then(|meta| Some((meta.len(), meta.modified().ok()?)));
+    let key = (snapshot.clone(), target.clone());
+    let cached = FOUND
+        .lock()
+        .ok()
+        .and_then(|found| found.as_ref().and_then(|found| found.get(&key).cloned()));
+    match cached {
+        Some((seen, None)) if seen == signature && signature.is_some() => return primary,
+        Some((seen, Some(link)))
+            if seen == signature
+                && signature.is_some()
+                && std::fs::canonicalize(&link).is_ok_and(|real| real == target) =>
+        {
+            return link;
+        }
+        _ => {}
+    }
+    let facts = gguf_facts(&target);
+    let split = facts
+        .as_ref()
+        .and_then(|facts| facts.split_count)
+        .is_some_and(|count| count > 1);
+    // Only a header read to its end says a file is not split; one that could
+    // not be read, or stopped early, is asked about again.
+    let known = facts
+        .as_ref()
+        .is_some_and(|facts| facts.split_count.is_some() || facts.metadata_complete);
+    let link = if split {
+        linked_shard(&snapshot, &target, 0)
+    } else {
+        None
+    };
+    // A split model whose link is not there yet (still downloading) is
+    // looked for again next time.
+    let settled = link.is_some() || (known && !split);
+    if settled && let Ok(mut found) = FOUND.lock() {
+        found
+            .get_or_insert_with(HashMap::new)
+            .insert(key, (signature, link.clone()));
+    }
+    link.unwrap_or(primary)
+}
+
+/// Whether `path`'s name is a shard's (`<base>-00001-of-00003.gguf`).
+fn shard_named(path: &Path) -> bool {
+    shard_index(path).is_some()
+}
+
+/// The index `path`'s name gives it as a shard.
+fn shard_index(path: &Path) -> Option<usize> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(crate::discovery::parse)
+        .map(|shard| shard.index)
+}
+
+/// The entry under `dir`, a few levels down at most, named as a first shard
+/// and reaching `target`, the blob of the first shard llama.cpp is given.
+fn linked_shard(dir: &Path, target: &Path, depth: usize) -> Option<PathBuf> {
+    if depth > 3 {
+        return None;
+    }
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    entries.sort();
+    for path in &entries {
+        if shard_index(path) == Some(1)
+            && std::fs::canonicalize(path).is_ok_and(|real| real == target)
+        {
+            return Some(path.clone());
+        }
+    }
+    entries
+        .iter()
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir()))
+        .find_map(|path| linked_shard(path, target, depth + 1))
+}
+
+/// Whether an Ollama manifest at `path` declares a `.projector` (vision) layer./// Whether an Ollama manifest at `path` declares a `.projector` (vision) layer.
 fn manifest_has_projector_layer(path: &str) -> bool {
     let Ok(bytes) = crate::fs::read_regular(Path::new(path)) else {
         return false;
@@ -530,18 +701,22 @@ fn projectors_of(
 /// snapshot's tree, and only one that fits the weights and holds its data. Among several (a repo
 /// that ships the projector at more than one precision), the one named for the
 /// weights' own quantization, else the smallest, since a projector's precision
-/// costs memory and barely changes what it reads. `None` for a record that is
-/// not a GGUF file or snapshot, or one with no projector.
+/// costs memory and barely changes what it reads. A model in Ollama's store is
+/// served with the projector layer its manifest names, when that fits its
+/// weights. `None` for a record that is not a GGUF file, snapshot or Ollama
+/// model, or one with no projector.
 pub fn projector_for(record: &ModelRecord) -> Option<PathBuf> {
     let kind = &record.source.kind;
-    if *kind == SourceKind::ollama()
-        || *kind == SourceKind::builtin()
-        || *kind == SourceKind::endpoint()
-    {
+    if *kind == SourceKind::builtin() || *kind == SourceKind::endpoint() {
         return None;
     }
     let base = Path::new(&record.source.path);
-    let (weights, candidates) = if is_gguf_file(base) {
+    let (weights, candidates) = if *kind == SourceKind::ollama() {
+        let weights = PathBuf::from(record.primary_weight_path.as_deref()?);
+        let projector = manifest_projector(base)?;
+        let bytes = std::fs::metadata(&projector).map_or(0, |meta| meta.len());
+        (weights, vec![(projector, bytes)])
+    } else if is_gguf_file(base) {
         (base.to_path_buf(), mmproj_companions(base))
     } else {
         let tree = gguf_tree(&container_url(base, record));
@@ -560,30 +735,49 @@ pub fn projector_for(record: &ModelRecord) -> Option<PathBuf> {
 }
 
 /// The projector [`projector_for`] takes out of `projectors` for weights of
-/// `quantization`. The quantization has to be a whole part of the name between
-/// dashes and dots, so `BF16` weights never take an `F16` projector.
+/// `quantization`, by [`pick_projector`]'s rule.
 fn choose_projector(projectors: &[(PathBuf, u64)], quantization: Option<&str>) -> Option<PathBuf> {
-    let named_for_weights = |path: &Path| {
-        let (Some(quantization), Some(name)) = (
-            quantization,
-            path.file_name().and_then(|name| name.to_str()),
-        ) else {
+    pick_projector(
+        projectors,
+        |(path, _)| path.to_string_lossy().into_owned(),
+        |(_, bytes)| *bytes,
+        quantization,
+    )
+    .map(|(path, _)| path.clone())
+}
+
+/// Of `projectors`, each at a `/`-separated path and of a size, the one a
+/// server is given for weights of `quantization`: the one whose file name has
+/// the quantization as a whole part between dashes and dots, so `BF16` weights
+/// never take an `F16` projector, else the smallest, since a projector's
+/// precision costs memory and barely changes what it reads. A tie goes to the
+/// earlier path. A pull keeps the same one it is served with.
+pub(crate) fn pick_projector<'a, T>(
+    projectors: &'a [T],
+    path: impl Fn(&T) -> String,
+    bytes: impl Fn(&T) -> u64,
+    quantization: Option<&str>,
+) -> Option<&'a T> {
+    let named_for_weights = |candidate: &T| {
+        let Some(quantization) = quantization else {
             return false;
         };
+        let path = path(candidate);
+        let name = path.rsplit('/').next().unwrap_or_default();
         name.split(['-', '.'])
             .any(|part| part.eq_ignore_ascii_case(quantization))
     };
-    let smallest = |candidates: &mut dyn Iterator<Item = &(PathBuf, u64)>| {
-        candidates
-            .min_by(|(left_path, left), (right_path, right)| {
-                left.cmp(right).then_with(|| left_path.cmp(right_path))
-            })
-            .map(|(path, _)| path.clone())
+    let smallest = |candidates: &mut dyn Iterator<Item = &'a T>| {
+        candidates.min_by(|left, right| {
+            bytes(left)
+                .cmp(&bytes(right))
+                .then_with(|| path(left).cmp(&path(right)))
+        })
     };
     smallest(
         &mut projectors
             .iter()
-            .filter(|(path, _)| named_for_weights(path)),
+            .filter(|candidate| named_for_weights(candidate)),
     )
     .or_else(|| smallest(&mut projectors.iter()))
 }

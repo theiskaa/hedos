@@ -224,6 +224,9 @@ impl BidPreference {
     pub const APPLE_FOUNDATION: i64 = 15;
     /// Ollama daemon.
     pub const OLLAMA: i64 = 20;
+    /// llama.cpp serving a model kept in Ollama's store: behind Ollama, so
+    /// Ollama keeps its own models while it is installed.
+    pub const LLAMA_CPP_OLLAMA_STORE: i64 = 21;
     /// mflux FLUX image runtime.
     pub const MFLUX: i64 = 25;
     /// diffusers image runtime.

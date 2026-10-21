@@ -1,7 +1,7 @@
 //! A minimal GGUF header reader: enough to pull the architecture, context
 //! length, chat-template presence, file type, pooling, decision-model marker,
-//! the widths a projector is matched by, and classifier head without loading
-//! the weights.
+//! the widths a projector is matched by, encoders bundled into the weights, and
+//! classifier head without loading the weights.
 //!
 //! Values are little-endian. The reader streams over a buffered file handle and
 //! seeks past values it does not need, so it never reads the tensor data: the
@@ -26,6 +26,7 @@ const MAX_TENSOR_DIMS: u32 = 8;
 /// The alignment of the tensor data when `general.alignment` names none.
 const DEFAULT_ALIGNMENT: u64 = 32;
 
+const TYPE_UINT16: u32 = 2;
 const TYPE_UINT32: u32 = 4;
 const TYPE_INT32: u32 = 5;
 const TYPE_BOOL: u32 = 7;
@@ -72,10 +73,14 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
     let mut poolings: BTreeMap<String, i64> = BTreeMap::new();
     let mut decisions: BTreeMap<String, String> = BTreeMap::new();
     let mut embedding_lengths: BTreeMap<String, i64> = BTreeMap::new();
+    // `None` for a key that is there but not one integer (a per-layer array).
+    let mut attention_shape: BTreeMap<String, Option<i64>> = BTreeMap::new();
     let mut has_vision_encoder = false;
+    let mut encoder_keys: BTreeSet<String> = BTreeSet::new();
     let mut alignment = DEFAULT_ALIGNMENT;
     let mut has_chat_template = false;
     let mut file_type: Option<i64> = None;
+    let mut split_count: Option<i64> = None;
     let mut kvs_read = 0u64;
 
     for _ in 0..kv_count.min(MAX_KV_PAIRS) {
@@ -99,6 +104,22 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
             has_chat_template = true;
             if !reader.skip_value(value_type) {
                 break;
+            }
+        } else if key == "split.count" {
+            // Written as a 16-bit integer, which no other key read here is.
+            let read = match value_type {
+                TYPE_UINT16 => reader
+                    .read_array::<2>()
+                    .map(|bytes| i64::from(u16::from_le_bytes(bytes))),
+                _ => read_integer(&mut reader, value_type),
+            };
+            match read {
+                Some(value) => split_count = Some(value),
+                None => {
+                    if !reader.skip_value(value_type) {
+                        break;
+                    }
+                }
             }
         } else if key == "general.file_type" {
             match read_integer(&mut reader, value_type) {
@@ -160,14 +181,36 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
                 break;
             };
             decisions.insert(key, value);
+        } else if is_model_key(&key, "vision.block_count")
+            || is_model_key(&key, "audio.block_count")
+        {
+            if !reader.skip_value(value_type) {
+                break;
+            }
+            encoder_keys.insert(key);
+        } else if ATTENTION_SHAPE.iter().any(|name| is_model_key(&key, name)) {
+            // A per-layer array (some models vary their heads by layer) is
+            // passed over: the shape is then unknown.
+            match read_integer(&mut reader, value_type) {
+                Some(value) => {
+                    attention_shape.insert(key, Some(value));
+                }
+                None => {
+                    if !reader.skip_value(value_type) {
+                        break;
+                    }
+                    attention_shape.insert(key, None);
+                }
+            }
         } else if !reader.skip_value(value_type) {
             break;
         }
         kvs_read += 1;
     }
+    let metadata_complete = kvs_read == kv_count;
     // The tensor infos follow the last value, so they can be found only when
     // every value before them was read or skipped.
-    let tensors = (kvs_read == kv_count)
+    let tensors = metadata_complete
         .then(|| reader.scan_tensors(tensor_count, alignment))
         .flatten();
 
@@ -183,6 +226,24 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
         "embedding_length",
         &embedding_lengths,
     );
+    let shape = |name| own_value(architecture.as_deref(), name, &attention_shape);
+    let kv_bytes_per_token = kv_bytes_per_token(
+        metadata_complete,
+        shape("block_count"),
+        shape("attention.head_count"),
+        shape("attention.head_count_kv"),
+        shape("attention.key_length"),
+        shape("attention.value_length"),
+        embedding_length,
+    );
+    // A projector is `clip` and describes its encoders under that name: that is
+    // where they belong, not a model carrying its own.
+    let bundled_encoders = architecture.as_deref().is_some_and(|arch| {
+        arch != "clip"
+            && ["vision", "audio"]
+                .iter()
+                .any(|encoder| encoder_keys.contains(&format!("{arch}.{encoder}.block_count")))
+    });
 
     Some(GgufFacts {
         architecture,
@@ -193,10 +254,67 @@ pub fn gguf_facts(path: &Path) -> Option<GgufFacts> {
         decision,
         embedding_length,
         has_vision_encoder,
+        bundled_encoders,
+        split_count,
+        kv_bytes_per_token,
+        metadata_complete,
         has_classifier_head: tensors.as_ref().is_some_and(|scan| scan.classifier_head),
         tensors_present: tensors.as_ref().is_some_and(|scan| scan.data_reached),
         tensor_dimensions: tensors.map(|scan| scan.dimensions),
     })
+}
+
+/// The header keys that give the shape of a model's attention, under its
+/// architecture.
+const ATTENTION_SHAPE: [&str; 5] = [
+    "block_count",
+    "attention.head_count",
+    "attention.head_count_kv",
+    "attention.key_length",
+    "attention.value_length",
+];
+
+/// The bytes of f16 KV cache one token takes: for every layer, a key and a
+/// value for each KV head. A model that keeps as many KV heads as query heads
+/// says only `head_count`, and one whose heads are the embedding split evenly
+/// says no key or value length; that is read from the absence of those keys
+/// only in a header read to its end (`complete`). Each value is `None` when
+/// the header lacks
+/// the key and `Some(None)` when it holds something other than one integer
+/// (a per-layer array); a key that is there but unusable, or zero, leaves the
+/// size unknown rather than taken from another key.
+fn kv_bytes_per_token(
+    complete: bool,
+    layers: Option<Option<i64>>,
+    heads: Option<Option<i64>>,
+    kv_heads: Option<Option<i64>>,
+    key_length: Option<Option<i64>>,
+    value_length: Option<Option<i64>>,
+    embedding_length: Option<i64>,
+) -> Option<u64> {
+    let usable = |value: Option<i64>| {
+        value
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+    };
+    // Missing reads as `Ok(None)`; there but unusable as `Err(())`. A key
+    // missing from a header not read to its end may be past where reading
+    // stopped, so nothing is taken from its absence.
+    let read = |value: Option<Option<i64>>| match value {
+        None if complete => Ok(None),
+        None => Err(()),
+        Some(value) => usable(value).map(Some).ok_or(()),
+    };
+    let layers = read(layers).ok()??;
+    let heads = read(heads).ok()?;
+    let kv_heads = read(kv_heads).ok()?.or(heads)?;
+    let even = heads.and_then(|heads| usable(embedding_length).map(|width| width / heads));
+    let key = read(key_length).ok()?.or(even)?;
+    let value = read(value_length).ok()?.or(even)?;
+    layers
+        .checked_mul(kv_heads)?
+        .checked_mul(key.checked_add(value)?)?
+        .checked_mul(2)
 }
 
 /// Whether `key` is `{arch}.{name}` for some architecture, and not a key nested
@@ -224,6 +342,14 @@ fn lone_value<T: Clone>(values: &BTreeMap<String, T>) -> Option<T> {
     } else {
         None
     }
+}
+
+/// Whether `name` is a weight type llama.cpp names (`Q4_K_M`, `BF16`), in any
+/// case, as a file name spells its quantization.
+pub(crate) fn is_quantization_name(name: &str) -> bool {
+    (0..64)
+        .filter_map(file_type_name)
+        .any(|known| known.eq_ignore_ascii_case(name))
 }
 
 /// llama.cpp's guessed-type bit: set when the converter inferred the file type

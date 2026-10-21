@@ -900,12 +900,14 @@ name = "hedos-kernel"
 version = "1.5.3"
 dependencies = [
  "base64",
+ "flate2",
  "fs2",
  "hex",
  "regex",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tar",
  "thiserror 2.0.19",
  "toml",
 ]

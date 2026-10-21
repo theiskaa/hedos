@@ -76,17 +76,19 @@ pub struct InstallCatalogEntry {
 }
 
 impl InstallCatalogEntry {
-    /// An Ollama tag: what it downloads is what it serves.
-    fn ollama(reference: &str, blurb: &str, bytes: u64, category: InstallCategory) -> Self {
+    /// A Hugging Face repo of GGUF weights, served by llama.cpp, shown as
+    /// `name` rather than by the repo's own (`gemma-4-e4b`, not
+    /// `gemma-4-e4b-it-gguf`).
+    fn gguf(
+        reference: &str,
+        name: &str,
+        blurb: &str,
+        bytes: (u64, u64),
+        category: InstallCategory,
+    ) -> Self {
         Self {
-            provider: InstallProviderId::ollama(),
-            reference: reference.to_owned(),
-            name: reference.to_owned(),
-            blurb: blurb.to_owned(),
-            download_bytes: bytes,
-            serving_bytes: bytes,
-            category,
-            engine: Engine::Ollama,
+            name: name.to_owned(),
+            ..Self::hugging_face(reference, blurb, bytes, category, Engine::LlamaCpp)
         }
     }
 
@@ -143,82 +145,95 @@ impl InstallCatalogEntry {
 pub fn entries() -> Vec<InstallCatalogEntry> {
     use InstallCategory::{Audio, Chat, Code, Image, Voice};
     vec![
-        InstallCatalogEntry::ollama(
-            "qwen3.5:0.8b",
+        InstallCatalogEntry::gguf(
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "qwen3.5-0.8b",
             "Tiny and instant. Fits anywhere.",
-            1_322_069_043,
+            (738_702_022, 738_639_072),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "qwen3.5:4b",
+        InstallCatalogEntry::gguf(
+            "unsloth/Qwen3.5-4B-GGUF",
+            "qwen3.5-4b",
             "Quick everyday chat on modest memory.",
-            3_324_173_757,
+            (3_417_066_906, 3_416_988_000),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "gemma4:e4b",
+        InstallCatalogEntry::gguf(
+            "ggml-org/gemma-4-E4B-it-GGUF",
+            "gemma-4-e4b",
             "Fast everyday chat, light on memory.",
-            6_583_656_264,
+            (5_151_390_940, 5_151_390_280),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "gemma4:12b",
+        InstallCatalogEntry::gguf(
+            "ggml-org/gemma-4-12B-it-GGUF",
+            "gemma-4-12b",
             "Stronger reasoning, still nimble.",
-            8_021_618_699,
+            (7_379_100_685, 7_379_100_025),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "gpt-oss:20b",
+        InstallCatalogEntry::gguf(
+            "ggml-org/gpt-oss-20b-GGUF",
+            "gpt-oss-20b",
             "OpenAI's open model. A mixture of experts, quick for its size.",
-            13_793_441_427,
+            (12_109_723_039, 12_109_722_538),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "qwen3.8:27b",
-            "Qwen's newest, strong on research and long tasks.",
-            17_741_871_939,
-            Chat,
-        ),
-        InstallCatalogEntry::ollama(
-            "gemma4:26b",
+        InstallCatalogEntry::gguf(
+            "ggml-org/gemma-4-26B-A4B-it-GGUF",
+            "gemma-4-26b",
             "A mixture of experts: big-model answers at a small model's pace.",
-            18_731_025_387,
+            (15_425_099_233, 15_425_098_493),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "gemma4:31b",
+        InstallCatalogEntry::gguf(
+            "ggml-org/gemma-4-31B-it-GGUF",
+            "gemma-4-31b",
             "Gemma's flagship, for a machine with room to spare.",
-            20_385_457_992,
+            (18_802_495_759, 18_802_495_051),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "gpt-oss:120b",
+        InstallCatalogEntry::gguf(
+            "ggml-org/Qwen3.8-27B-GGUF",
+            "qwen3.8-27b",
+            "Qwen's newest, strong on research and long tasks.",
+            (19_603_657_041, 19_603_656_553),
+            Chat,
+        ),
+        InstallCatalogEntry::gguf(
+            "ggml-org/gpt-oss-120b-GGUF",
+            "gpt-oss-120b",
             "The big one. Wants a lot of memory.",
-            65_369_819_443,
+            (63_387_561_263, 63_387_560_767),
             Chat,
         ),
-        InstallCatalogEntry::ollama(
-            "qwen2.5-coder:7b",
+        InstallCatalogEntry::gguf(
+            "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+            "qwen2.5-coder-7b",
             "Everyday coding help that fits most machines.",
-            4_683_087_074,
+            (4_683_090_549, 4_683_084_879),
             Code,
         ),
-        InstallCatalogEntry::ollama(
-            "qwen2.5-coder:14b",
+        InstallCatalogEntry::gguf(
+            "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+            "qwen2.5-coder-14b",
             "A strong local coding model with a large context.",
-            8_988_123_810,
+            (8_988_127_305, 8_988_121_615),
             Code,
         ),
-        InstallCatalogEntry::ollama(
-            "qwen3.6:27b-coding",
-            "Qwen3.6 tuned for agentic coding.",
-            17_769_076_721,
-            Code,
-        ),
-        InstallCatalogEntry::ollama(
-            "qwen3-coder:30b",
+        InstallCatalogEntry::gguf(
+            "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            "qwen3-coder-30b",
             "Agentic coding over long context. A mixture of experts.",
-            18_556_700_222,
+            (18_556_699_641, 18_556_691_228),
+            Code,
+        ),
+        InstallCatalogEntry::gguf(
+            "ggml-org/Qwen3.6-27B-GGUF",
+            "qwen3.6-27b",
+            "Qwen3.6, strong at agentic coding.",
+            (19_725_525_457, 19_725_524_971),
             Code,
         ),
         InstallCatalogEntry::hugging_face(
@@ -266,7 +281,7 @@ mod tests {
     #[test]
     fn ids_are_provider_and_reference() {
         let entry = &entries()[0];
-        assert_eq!(entry.id(), format!("ollama|{}", entry.reference));
+        assert_eq!(entry.id(), format!("huggingface|{}", entry.reference));
     }
 
     #[test]
@@ -293,15 +308,31 @@ mod tests {
     }
 
     #[test]
-    fn ollama_tags_are_served_by_ollama() {
+    fn every_chat_and_code_entry_is_a_hugging_face_gguf_llama_cpp_serves() {
         for entry in entries() {
-            assert_eq!(
-                entry.provider == InstallProviderId::ollama(),
-                entry.engine == Engine::Ollama,
-                "{}",
-                entry.reference
-            );
+            if matches!(
+                entry.category,
+                InstallCategory::Chat | InstallCategory::Code
+            ) {
+                assert_eq!(
+                    entry.provider,
+                    InstallProviderId::huggingface(),
+                    "{}",
+                    entry.reference
+                );
+                assert_eq!(entry.engine, Engine::LlamaCpp, "{}", entry.reference);
+            }
+            assert_ne!(entry.engine, Engine::Ollama, "{}", entry.reference);
         }
+    }
+
+    #[test]
+    fn a_gguf_entry_is_shown_by_its_short_name() {
+        let entry = entries()
+            .into_iter()
+            .find(|entry| entry.reference == "ggml-org/gemma-4-E4B-it-GGUF")
+            .unwrap();
+        assert_eq!(entry.name, "gemma-4-e4b");
     }
 
     #[test]

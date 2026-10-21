@@ -307,3 +307,85 @@ fn readiness_names_what_to_install() {
         assert_eq!(machine.readiness(engine), Readiness::Ready);
     }
 }
+
+#[test]
+fn the_window_that_fits_leaves_room_beside_the_weights() {
+    let gib = 1u64 << 30;
+    // Mistral 7B (128 KiB a token) in 7 GiB beside 4.7 GiB loaded: 1.3 GiB
+    // of cache, 10240 tokens in steps of 1024.
+    let loaded = 4 * gib + 7 * gib / 10;
+    assert_eq!(window_that_fits(7 * gib, loaded, 131_072), Some(10_240));
+    assert_eq!(window_that_fits(64 * gib, loaded, 131_072), Some(477_184));
+    assert_eq!(window_that_fits(5 * gib, loaded, 131_072), Some(0));
+    assert_eq!(window_that_fits(64 * gib, loaded, 0), None);
+}
+
+#[test]
+fn the_memory_a_server_can_take_is_read_from_what_the_system_says() {
+    let meminfo = "MemTotal:        8122332 kB\nMemFree:  100 kB\nMemAvailable:    7340032 kB\n";
+    assert_eq!(parse_mem_available(meminfo), Some(7 * GIB));
+    assert_eq!(parse_mem_available("MemTotal: 1 kB\n"), None);
+    assert_eq!(cgroup_room("7516192768\n", "1073741824\n"), Some(6 * GIB));
+    assert_eq!(cgroup_room("max\n", "1"), None);
+
+    let cpu = linux(8, Vec::new());
+    assert_eq!(launch_memory(&cpu, Some(5 * GIB), true), Some(5 * GIB));
+    assert_eq!(launch_memory(&cpu, None, true), Some(8 * GIB));
+    let mac = m5_pro();
+    let working_set = mac.budget(Engine::LlamaCpp).map(|budget| budget.bytes);
+    assert_eq!(launch_memory(&mac, Some(GIB), true), working_set);
+    let nvidia = linux(32, vec![card("RTX 4090", 24)]);
+    assert_eq!(launch_memory(&nvidia, Some(20 * GIB), true), Some(44 * GIB));
+    // A CPU build (the one hedos carries on Linux) has only system memory.
+    assert_eq!(
+        launch_memory(&nvidia, Some(20 * GIB), false),
+        Some(20 * GIB)
+    );
+}
+
+#[test]
+fn this_processs_cgroups_and_their_ancestors_are_found() {
+    let v2 = parse_proc_cgroup("0::/system.slice/hedos.service\n");
+    assert_eq!(v2.unified.as_deref(), Some("/system.slice/hedos.service"));
+    assert_eq!(v2.memory, None);
+    let v1 = parse_proc_cgroup("12:cpu,cpuacct:/a\n9:memory:/docker/abc\n1:name=systemd:/x\n");
+    assert_eq!(v1.memory.as_deref(), Some("/docker/abc"));
+    assert_eq!(v1.unified, None);
+    assert_eq!(
+        cgroup_ancestors("/system.slice/hedos.service"),
+        ["/system.slice/hedos.service", "/system.slice", "/"]
+    );
+    assert_eq!(cgroup_ancestors("/"), ["/"]);
+    assert_eq!(cgroup_room("9223372036854771712", "1"), None);
+}
+
+#[test]
+fn cgroup_mounts_are_read_with_the_cgroup_they_show() {
+    let mountinfo = "\
+24 30 0:22 / /sys rw,nosuid shared:7 - sysfs sysfs rw
+35 24 0:30 / /sys/fs/cgroup rw,nosuid shared:9 - cgroup2 cgroup2 rw,nsdelegate
+40 24 0:35 /docker/abc /sys/fs/cgroup/cpu,memory rw shared:12 - cgroup cgroup rw,cpu,memory
+";
+    let (unified, memory) = parse_cgroup_mounts(mountinfo);
+    let unified = unified.expect("cgroup2");
+    assert_eq!(unified.mount_point, "/sys/fs/cgroup");
+    assert_eq!(
+        unified.dir_of("/system.slice").as_deref(),
+        Some("/sys/fs/cgroup/system.slice")
+    );
+    assert_eq!(unified.dir_of("/").as_deref(), Some("/sys/fs/cgroup"));
+    let memory = memory.expect("memory");
+    assert_eq!(
+        memory.dir_of("/docker/abc/inner").as_deref(),
+        Some("/sys/fs/cgroup/cpu,memory/inner")
+    );
+    assert_eq!(
+        memory.dir_of("/docker/abc").as_deref(),
+        Some("/sys/fs/cgroup/cpu,memory")
+    );
+    assert_eq!(memory.dir_of("/elsewhere"), None);
+    let (spaced, _) =
+        parse_cgroup_mounts("35 24 0:30 / /run/my\\040cgroup rw - cgroup2 cgroup2 rw\n");
+    assert_eq!(spaced.expect("cgroup2").mount_point, "/run/my cgroup");
+    assert_eq!(memory.dir_of("/docker/abcd"), None);
+}
