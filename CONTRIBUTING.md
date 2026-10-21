@@ -20,6 +20,26 @@ All four of these should pass before you open a pull request. `cargo fmt` (witho
 `cargo clippy -- -D warnings` on each commit so formatting/lint failures are
 caught before CI. Bypass a single commit with `git commit --no-verify` if you must.
 
+**The llama.cpp build hedos carries:** release builds embed the pinned
+`llama-server` build (`kernel/src/engines/llama_cpp.rs`) for their target, so
+GGUF models run without installing anything. A plain `cargo build` embeds
+nothing and never reaches the network. To build the way a release does, fetch
+the pinned archive for your machine and build with it:
+
+```sh
+fetched="$(.github/fetch-llama-cpp.sh "$(rustc -vV | sed -n 's/^host: //p')" target/llama.cpp)" &&
+  eval "$fetched" &&
+  cargo build --release
+```
+
+On macOS that downloads llama.cpp's own release archive, whose sha256 the
+build script checks against the pin. On Linux it builds the pinned source in a
+`manylinux_2_28` container (Docker needed, a few minutes), because llama.cpp's
+own Linux archives need glibc 2.38 and do not start on Ubuntu 22.04 or
+Debian 12. When the pin changes, update `.github/fetch-llama-cpp.sh` and
+`.github/build-llama-cpp.sh` with it; `kernel/tests/bundle_setup.rs` fails
+until they agree.
+
 ## How the code is organized
 
 The workspace has four crates, and dependencies only ever flow in one direction: `kernel` to `runtime` to `gateway` to `cli`. Nothing points back up.

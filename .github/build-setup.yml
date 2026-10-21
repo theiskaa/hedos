@@ -1,0 +1,5 @@
+# Steps dist inserts into each release build, before `dist build`: fetch the
+# llama.cpp build hedos carries for the job's target.
+- name: Fetch the llama.cpp build hedos carries
+  shell: bash
+  run: .github/fetch-llama-cpp.sh "${{ join(matrix.targets, ' ') }}" "$RUNNER_TEMP/llama.cpp"

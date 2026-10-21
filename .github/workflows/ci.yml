@@ -49,6 +49,50 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  bundled:
+    # Release builds carry the pinned llama.cpp build; this builds the way
+    # they do, with the real archive for the runner, so the embedded path
+    # compiles and every test runs against it, one of them unpacking it and
+    # asking it its version.
+    name: bundled (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: bundled
+
+      # On Linux it is built from source (a few minutes); kept between runs
+      # until the scripts that make it change.
+      - name: Cache the llama.cpp build hedos carries
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/llama.cpp
+          key: llama-cpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/fetch-llama-cpp.sh', '.github/build-llama-cpp.sh') }}
+
+      - name: Fetch the llama.cpp build hedos carries
+        run: |
+          .github/fetch-llama-cpp.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/llama.cpp"
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
   python-lint:
     name: python-lint
     runs-on: ubuntu-latest
