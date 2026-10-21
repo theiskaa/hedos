@@ -1,13 +1,14 @@
 //! `.github/fetch-llama-cpp.sh`, which release builds and CI run, fetches for
 //! each target dist builds the llama.cpp archive the pin says hedos carries
-//! there, or hands Linux to `.github/build-llama-cpp.sh`, which builds it from
-//! the pinned source. The build script checks what they make against the pin;
-//! this keeps the names in the scripts in step with it, so a new pin that
-//! forgets them fails here, not in a release.
+//! there, from whoever publishes it: llama.cpp for macOS, hedos for Linux,
+//! whose archives `.github/build-llama-cpp.sh` makes from the pinned source.
+//! The build script checks what they fetch against the pin; this keeps the
+//! names in the scripts in step with it, so a new pin that forgets them fails
+//! here, not in a release.
 
 use std::path::Path;
 
-use kernel::engines::llama_cpp::{PINNED, built_from_source, bundled_variant};
+use kernel::engines::llama_cpp::{PINNED, Publisher, bundled_variant};
 use kernel::machine::Os;
 
 fn repo_file(name: &str) -> String {
@@ -29,14 +30,13 @@ fn dist_targets() -> Vec<String> {
 }
 
 #[test]
-fn every_release_target_fetches_or_builds_the_pinned_build_hedos_carries_there() {
+fn every_release_target_fetches_the_pinned_build_hedos_carries_there() {
     let fetch = repo_file(".github/fetch-llama-cpp.sh");
-    let build = repo_file(".github/build-llama-cpp.sh");
-    let base = PINNED.url("");
-    assert!(
-        fetch.contains(&format!("base={}", base.trim_end_matches('/'))),
-        "fetch-llama-cpp.sh downloads from another release than {base}"
-    );
+    for (name, publisher) in [("llama", Publisher::LlamaCpp), ("hedos", Publisher::Hedos)] {
+        let base = PINNED.url(publisher, "");
+        let line = format!("{name}={}", base.trim_end_matches('/'));
+        assert!(fetch.contains(&line), "fetch-llama-cpp.sh lacks `{line}`");
+    }
     let targets = dist_targets();
     assert_eq!(targets.len(), 4, "{targets:?}");
     for target in targets {
@@ -50,18 +50,36 @@ fn every_release_target_fetches_or_builds_the_pinned_build_hedos_carries_there()
         let arch = target.split('-').next().unwrap_or_default();
         let variant = bundled_variant(os, arch)
             .unwrap_or_else(|| panic!("hedos carries no llama.cpp for {target}"));
-        if built_from_source(os) {
-            assert!(
-                fetch.contains(&target) && build.contains(&format!("{target})")),
-                "{target} is not handed to build-llama-cpp.sh"
-            );
-            continue;
-        }
         let asset = PINNED
             .asset(os, arch, variant)
             .unwrap_or_else(|| panic!("the pin has no {} build for {target}", variant.as_str()));
-        let case = format!("{target}) file={} ;;", asset.file);
+        let base = match asset.publisher {
+            Publisher::LlamaCpp => "llama",
+            Publisher::Hedos => "hedos",
+        };
+        let case = format!("{target}) base=${base}; file={} ;;", asset.file);
         assert!(fetch.contains(&case), "fetch-llama-cpp.sh lacks `{case}`");
+    }
+}
+
+#[test]
+fn hedos_s_own_builds_are_the_archives_build_llama_cpp_makes() {
+    let build = repo_file(".github/build-llama-cpp.sh");
+    assert!(
+        build.contains(r#"archive="llama-$build-bin-linux-${target%%-*}.tar.gz""#),
+        "build-llama-cpp.sh names its archive differently"
+    );
+    for asset in PINNED.assets {
+        if asset.publisher != Publisher::Hedos {
+            continue;
+        }
+        assert_eq!(asset.os, Os::Linux, "{}", asset.file);
+        assert_eq!(
+            asset.file,
+            format!("llama-{}-bin-linux-{}.tar.gz", PINNED.build, asset.arch)
+        );
+        let target = format!("{}-unknown-linux-gnu)", asset.arch);
+        assert!(build.contains(&target), "build-llama-cpp.sh lacks {target}");
     }
 }
 

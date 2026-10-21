@@ -75,14 +75,6 @@ jobs:
         with:
           key: bundled
 
-      # On Linux it is built from source (a few minutes); kept between runs
-      # until the scripts that make it change.
-      - name: Cache the llama.cpp build hedos carries
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/llama.cpp
-          key: llama-cpp-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/fetch-llama-cpp.sh', '.github/build-llama-cpp.sh') }}
-
       - name: Fetch the llama.cpp build hedos carries
         run: |
           .github/fetch-llama-cpp.sh "$(rustc -vV | sed -n 's/^host: //p')" "$RUNNER_TEMP/llama.cpp"

@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Build the llama.cpp server hedos carries on Linux from the pinned source,
-# and point HEDOS_LLAMA_CPP_ARCHIVE at it (with HEDOS_LLAMA_CPP_SOURCE, the
-# source's sha256, which the build script checks against the pin): in
-# $GITHUB_ENV on a runner, else as export lines on stdout.
+# Build hedos's own llama.cpp Linux build from the pinned source, and point
+# HEDOS_LLAMA_CPP_ARCHIVE at it: in $GITHUB_ENV on a runner, else as an export
+# line on stdout. Its archives are what a new pin publishes under the hedos
+# release tag llama.cpp-<build> and pins by sha256: release builds carry them
+# and `hedos engines install` fetches them on Linux (fetch-llama-cpp.sh).
 #
 # llama.cpp's own Linux archives are built on Ubuntu 24.04 and need glibc 2.38,
 # GCC 13's libstdc++, libgomp and OpenSSL 3, so they do not start on Ubuntu
 # 22.04 or Debian 12. This builds the same release in manylinux_2_28 (glibc
 # 2.28, GCC 14) with the C++ runtime linked in, no OpenMP and no OpenSSL, so it
 # starts wherever hedos does. kernel/tests/bundle_setup.rs keeps the tag,
-# commit and digest here in step with the pin in kernel/src/engines/llama_cpp.rs.
+# commit, digest and archive names here in step with the pin in
+# kernel/src/engines/llama_cpp.rs.
 #
 #   .github/build-llama-cpp.sh <target-triple> <directory>
 set -euo pipefail
@@ -96,11 +98,7 @@ fi
 [ "$reuse" = 1 ] || digest "$dir/$archive" > "$built"
 
 if [ -n "${GITHUB_ENV:-}" ]; then
-  {
-    echo "HEDOS_LLAMA_CPP_ARCHIVE=$dir/$archive"
-    echo "HEDOS_LLAMA_CPP_SOURCE=$source_sha256"
-  } >> "$GITHUB_ENV"
+  echo "HEDOS_LLAMA_CPP_ARCHIVE=$dir/$archive" >> "$GITHUB_ENV"
 else
   printf 'export HEDOS_LLAMA_CPP_ARCHIVE=%q\n' "$dir/$archive"
-  printf 'export HEDOS_LLAMA_CPP_SOURCE=%q\n' "$source_sha256"
 fi
