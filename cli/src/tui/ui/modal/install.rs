@@ -45,6 +45,7 @@ mod tests {
                 "llama.cpp 0.7.0 (b11669), the metal build".to_owned(),
                 format!("  from     https://example.com/{}", "a".repeat(200)),
             ],
+            variant: kernel::engines::llama_cpp::Variant::Metal,
         };
         let lines = install(&card, Rect::new(0, 0, INSTALL_WIDTH - 2, 10));
         assert_eq!(lines.len() as u16, height(&card) - BORDER_ROWS);

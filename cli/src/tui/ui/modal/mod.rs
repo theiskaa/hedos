@@ -332,6 +332,7 @@ mod tests {
         };
         let card = crate::tui::app::InstallCard {
             lines: crate::support::engines::card(cuda, &dirs),
+            variant: cuda.variant,
         };
         let install_inner = Rect::new(
             0,

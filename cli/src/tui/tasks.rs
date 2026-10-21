@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
 use kernel::discovery::service::DiscoverySummary;
-use kernel::engines::llama_cpp::PINNED;
+use kernel::engines::llama_cpp::{PINNED, Variant};
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -35,8 +35,6 @@ use super::jobs;
 use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
 use crate::support::bench_run::ShelfPrepare;
-use crate::support::engines::build_for;
-use crate::support::machine;
 use crate::support::pulls::{event_line, too_late};
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{self, is_resident, unload_anywhere, warm_request};
@@ -193,8 +191,8 @@ pub enum TaskKind {
     Unload { id: String, name: String },
     /// Delete a model's weights and forget its record.
     Remove { id: String, name: String },
-    /// Install the llama.cpp build that suits this machine, as its card said.
-    InstallLlamaCpp,
+    /// Install the llama.cpp build its card showed.
+    InstallLlamaCpp { variant: Variant },
 }
 
 /// What the strip calls a task: a verb and its subject.
@@ -226,7 +224,7 @@ impl TaskKind {
             TaskKind::Warm { .. } | TaskKind::WarmViaGateway { .. } => "warm",
             TaskKind::Unload { .. } => "unload",
             TaskKind::Remove { .. } => "remove",
-            TaskKind::InstallLlamaCpp => "install",
+            TaskKind::InstallLlamaCpp { .. } => "install",
         }
     }
 
@@ -234,7 +232,7 @@ impl TaskKind {
     pub fn subject(&self) -> &str {
         match self {
             TaskKind::Scan => "this machine",
-            TaskKind::InstallLlamaCpp => "llama.cpp",
+            TaskKind::InstallLlamaCpp { .. } => "llama.cpp",
             TaskKind::Warm { name, .. }
             | TaskKind::WarmViaGateway { name, .. }
             | TaskKind::Unload { name, .. }
@@ -245,7 +243,7 @@ impl TaskKind {
     /// The model this task concerns, if it concerns one.
     pub fn model_id(&self) -> Option<&str> {
         match self {
-            TaskKind::Scan | TaskKind::InstallLlamaCpp => None,
+            TaskKind::Scan | TaskKind::InstallLlamaCpp { .. } => None,
             TaskKind::Warm { id, .. }
             | TaskKind::WarmViaGateway { id, .. }
             | TaskKind::Unload { id, .. }
@@ -261,7 +259,7 @@ impl TaskKind {
             TaskKind::WarmViaGateway { .. } => "loading on the gateway",
             TaskKind::Unload { .. } => "evicting",
             TaskKind::Remove { .. } => "deleting",
-            TaskKind::InstallLlamaCpp => "downloading",
+            TaskKind::InstallLlamaCpp { .. } => "downloading",
         }
     }
 }
@@ -309,9 +307,10 @@ pub fn spawn(
 ) -> TaskId {
     let id = TaskId::next();
     let tx = tx.clone();
-    // Work quitting waits on: a removal, and an install the card said yes to,
-    // which would otherwise be cut off mid-download.
-    let mutating = matches!(kind, TaskKind::Remove { .. } | TaskKind::InstallLlamaCpp);
+    // Work quitting waits on: a removal, so it is never cut between deleting
+    // and forgetting. An install is not: dropped midway it leaves nothing the
+    // next install does not put right, and its download can take minutes.
+    let mutating = matches!(kind, TaskKind::Remove { .. });
     let runner = Arc::clone(context);
     let kind = kind.clone();
     let handle = tokio::spawn(async move {
@@ -326,7 +325,7 @@ pub fn spawn(
             TaskKind::WarmViaGateway { id, port, .. } => warm_on_gateway(session, &id, port).await,
             TaskKind::Unload { id, .. } => unload(session, &id).await,
             TaskKind::Remove { id, .. } => remove(session, &id).await,
-            TaskKind::InstallLlamaCpp => install_llama_cpp(&report).await,
+            TaskKind::InstallLlamaCpp { variant } => install_llama_cpp(variant, &report).await,
         };
         report(match outcome {
             Ok(summary) => TaskState::Done(summary),
@@ -344,13 +343,15 @@ pub fn spawn(
     id
 }
 
-/// Install the llama.cpp build that suits this machine, reporting how far it
-/// has got. Only the install card's yes starts this.
-async fn install_llama_cpp(report: &impl Fn(TaskState)) -> Result<String, String> {
-    let asset = build_for(None, &machine::machine()).map_err(|error| error.to_string())?;
+/// Install the llama.cpp build of `variant` the card showed, reporting how
+/// far it has got. Only the install card's yes starts this.
+async fn install_llama_cpp(
+    variant: Variant,
+    report: &impl Fn(TaskState),
+) -> Result<String, String> {
     let shown = Mutex::new(None::<u64>);
     let server =
-        runtime::engines::install::install(asset.variant, &HedosDirs::detect().data, |progress| {
+        runtime::engines::install::install(variant, &HedosDirs::detect().data, |progress| {
             let line = match progress {
                 EngineProgress::Downloading {
                     received, total, ..

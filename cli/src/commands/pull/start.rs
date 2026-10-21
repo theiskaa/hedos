@@ -103,9 +103,20 @@ async fn after(seen: Seen, reference: &str, out: &Out) -> Result<(), CliError> {
     };
     let shelf = session.shelf().await;
     if let Some(name) = served_by_llama_cpp(&shelf, reference) {
-        offer_after_pull(name, &machine::machine(), out).await?;
+        let offered = offer_after_pull(name, &machine::machine(), out).await;
+        install_after_landing(name, offered, out);
     }
     Ok(())
+}
+
+/// The pull landed whatever became of the llama.cpp install offered after
+/// it: one that failed is said, and the pull still succeeds.
+fn install_after_landing(name: &str, offered: Result<(), CliError>, out: &Out) {
+    if let Err(error) = offered {
+        out.err(&format!(
+            "{name} was pulled, but installing llama.cpp did not finish: {error}"
+        ));
+    }
 }
 
 /// The name of the model the pull of `reference` registered on `shelf`, the

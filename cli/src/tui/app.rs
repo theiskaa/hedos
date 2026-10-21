@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use kernel::bench::Status as BenchStatus;
+use kernel::engines::llama_cpp::Variant;
 use kernel::install::pulls::PullState;
-use kernel::machine::OLLAMA_ONLY_HINT;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
 use kernel::removal::{ModelDeletionPreview, is_deletable};
@@ -34,7 +34,7 @@ use super::state::UiState;
 use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
-use crate::support::bench_run::{machine_line, rows as bench_rows};
+use crate::support::bench_run::{machine_line, row_for as bench_row, rows as bench_rows};
 use crate::support::engines::{EngineNeed, build_for, card, needs_engine, runs_here};
 use crate::support::extract;
 use crate::support::judge;
@@ -112,6 +112,8 @@ pub struct InstallCard {
     /// What the card says: the release, each archive and its sha256, the
     /// size, and where it goes.
     pub lines: Vec<String>,
+    /// The build it says, which a yes installs.
+    pub variant: Variant,
 }
 
 /// Why a verb is refused for the selected model: quietly, when the model
@@ -446,6 +448,13 @@ impl App {
     /// Whether any task is still running.
     pub fn busy(&self) -> bool {
         self.tasks.busy()
+    }
+
+    /// Whether a task quitting waits for is running: anything but a llama.cpp
+    /// install, which quitting stops.
+    pub fn busy_beside_installs(&self) -> bool {
+        self.tasks
+            .any_running(|kind| !matches!(kind, TaskKind::InstallLlamaCpp { .. }))
     }
 
     /// Whether something changed since the last draw; reading it clears it.
@@ -925,10 +934,8 @@ impl App {
 
     /// Open the harness picker for the selected model, or say why not.
     fn launch(&mut self) -> Vec<Effect> {
-        if self.needs_llama_cpp() {
-            return self.install_engine();
-        }
         match self.chatting_record() {
+            Ok(_) if self.needs_llama_cpp() => self.install_engine(),
             Ok(record) => {
                 self.open(Modal::Launch(Box::new(LaunchModal::open(&record))));
                 Vec::new()
@@ -986,10 +993,8 @@ impl App {
 
     /// Hand off to `hedos chat` on the selected model.
     fn hand_off_chat(&mut self) -> Vec<Effect> {
-        if self.needs_llama_cpp() {
-            return self.install_engine();
-        }
         match self.chatting_record() {
+            Ok(_) if self.needs_llama_cpp() => self.install_engine(),
             Ok(record) => vec![Effect::HandOff(Box::new(HandOff::Chat {
                 record: Box::new(record),
             }))],
@@ -1001,9 +1006,6 @@ impl App {
     /// composer for a model that answers typed questions, or the extractor's
     /// for one that finds contacts.
     fn open_chat(&mut self) -> Vec<Effect> {
-        if self.needs_llama_cpp() {
-            return self.install_engine();
-        }
         let trying = match self.selected_record() {
             Some(record) if judge::is_judge(record) || extract::is_extractor(record) => {
                 Ok(record.clone())
@@ -1011,6 +1013,7 @@ impl App {
             _ => self.chatting_record(),
         };
         match trying {
+            Ok(_) if self.needs_llama_cpp() => self.install_engine(),
             Ok(record) => {
                 self.expanded = false;
                 let pane = match self.kept_chat.take() {
@@ -1176,10 +1179,7 @@ impl App {
         }
         let preview = deletion_preview(record);
         if let Some(why) = preview.blocked {
-            return self.refuse(Refusal::Because(format!(
-                "{} can't be removed: {why}",
-                preview.name
-            )));
+            return self.refuse(Refusal::Because(why));
         }
         self.open(Modal::Remove(preview));
         Vec::new()
@@ -1194,35 +1194,12 @@ impl App {
         })
     }
 
-    /// Why the engine `record` needs can't be installed from here, if it
-    /// can't: hedos installs llama.cpp, and nothing else.
-    fn installable(&self, record: &ModelRecord) -> Result<(), Refusal> {
-        let name = record.display_name();
-        match needs_engine(record, &self.facts.machine) {
-            None => Err(Refusal::Because(format!(
-                "{name} has the engine it runs on"
-            ))),
-            Some(EngineNeed::Ollama) => {
-                Err(Refusal::Because(format!("{name}: {OLLAMA_ONLY_HINT}")))
-            }
-            Some(EngineNeed::LlamaCpp)
-                if self.tasks.already_running(&TaskKind::InstallLlamaCpp) =>
-            {
-                Err(Refusal::Busy)
-            }
-            Some(EngineNeed::LlamaCpp) => Ok(()),
-        }
-    }
-
     /// Open the card that says what installing llama.cpp fetches, for the
     /// selected model that needs it (asked by warming or trying it), or say
     /// why not.
     fn install_engine(&mut self) -> Vec<Effect> {
-        let Some(record) = self.selected_record() else {
-            return Vec::new();
-        };
-        if let Err(refusal) = self.installable(record) {
-            return self.refuse(refusal);
+        if self.installing_llama_cpp() {
+            return self.refuse(Refusal::Busy);
         }
         let asset = match build_for(None, &self.facts.machine).and_then(|asset| {
             runs_here(asset)?;
@@ -1232,8 +1209,17 @@ impl App {
             Err(error) => return self.notify(error.to_string()),
         };
         let lines = card(asset, &HedosDirs::detect());
-        self.open(Modal::Install(InstallCard { lines }));
+        self.open(Modal::Install(InstallCard {
+            lines,
+            variant: asset.variant,
+        }));
         Vec::new()
+    }
+
+    /// Whether a llama.cpp install this shelf started is still running.
+    pub fn installing_llama_cpp(&self) -> bool {
+        self.tasks
+            .any_running(|kind| matches!(kind, TaskKind::InstallLlamaCpp { .. }))
     }
 
     /// `y` installs what the card showed; anything that closes it installs
@@ -1244,14 +1230,16 @@ impl App {
             Key::Char('n') | Key::Escape => false,
             _ => return Vec::new(),
         };
-        let Some(Modal::Install(_)) = self.modal.take() else {
+        let Some(Modal::Install(card)) = self.modal.take() else {
             return Vec::new();
         };
         self.dirty = true;
         if !confirmed {
             return Vec::new();
         }
-        vec![Effect::Spawn(TaskKind::InstallLlamaCpp)]
+        vec![Effect::Spawn(TaskKind::InstallLlamaCpp {
+            variant: card.variant,
+        })]
     }
 
     /// Why `record` can't be removed right now, if it can't.
@@ -1418,12 +1406,16 @@ impl App {
     /// opens only if the bench does: `b` on a model nothing can measure should
     /// say so where the cursor already is.
     fn bench_selected(&mut self) -> Vec<Effect> {
-        if self.needs_llama_cpp() {
-            return self.install_engine();
-        }
         let Some(record) = self.selected_record() else {
             return self.notify("no model is selected".to_owned());
         };
+        // The install is offered only for a bench that could then run.
+        let benchable = !self.bench.running()
+            && record.capabilities.contains(&Capability::chat())
+            && bench_row(record, &self.facts.machine, true).status == BenchStatus::Waiting;
+        if benchable && self.needs_llama_cpp() {
+            return self.install_engine();
+        }
         let id = record.id.clone();
         let effects = self.start_bench(vec![id], true);
         if !effects.is_empty() {
@@ -1679,14 +1671,14 @@ impl App {
     }
 
     fn warm(&mut self) -> Vec<Effect> {
-        if self.needs_llama_cpp() {
-            return self.install_engine();
-        }
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
         if let Err(refusal) = self.warmable(record) {
             return self.refuse(refusal);
+        }
+        if self.needs_llama_cpp() {
+            return self.install_engine();
         }
         let id = record.id.clone();
         let name = record.display_name().to_owned();

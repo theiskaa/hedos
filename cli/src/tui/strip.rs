@@ -340,6 +340,13 @@ impl TaskStrip {
             .any(|row| row.running() && row.kind() == Some(kind))
     }
 
+    /// Whether a running task is of a kind `matches` takes.
+    pub fn any_running(&self, matches: impl Fn(&TaskKind) -> bool) -> bool {
+        self.rows
+            .iter()
+            .any(|row| row.running() && row.kind().is_some_and(&matches))
+    }
+
     /// The rows a strip `height` rows tall shows, in their order: every
     /// running row, and the newest finished rows in what room is left. More
     /// running rows than fit keep the newest.

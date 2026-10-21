@@ -178,8 +178,14 @@ pub async fn run(session: Session, out: &Out) -> Result<(), CliError> {
     app.remembered().save(&state_dir);
     // A removal is finished rather than cut between deleting and forgetting; a
     // scan runs to completion inside one poll anyway. A download is not waited
-    // for at all: it belongs to a worker that outlives this process.
-    if context.busy() || app.busy() {
+    // for at all: a model's belongs to a worker that outlives this process,
+    // and a llama.cpp install stops with it.
+    if app.installing_llama_cpp() {
+        out.line(
+            "quitting stops the llama.cpp install; hedos engines install llama.cpp finishes it",
+        );
+    }
+    if context.busy() || app.busy_beside_installs() {
         out.line("finishing background work…");
     }
     context.settle().await;

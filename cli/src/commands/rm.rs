@@ -1,4 +1,4 @@
-//! `hedos rm <model>` — remove an installed model. In a terminal it previews and
+//! `hedos rm <model>`: remove an installed model. In a terminal it previews and
 //! asks for confirmation; non-interactively it only previews unless `-y` is given.
 
 use clap::Args;
@@ -30,17 +30,14 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
 
     let preview = deletion_preview(record);
     let summary = format!(
-        "{} — {} item(s), ~{}",
+        "{}: {} item(s), ~{}",
         preview.name,
         preview.paths.len(),
         format_bytes(preview.bytes_estimate),
     );
 
     if let Some(why) = &preview.blocked {
-        return Err(CliError::new(format!(
-            "Ollama isn't installed to delete {}, and {why}.",
-            preview.name
-        )));
+        return Err(CliError::new(why.clone()));
     }
     if preview.kind == SourceKind::ollama() && !preview.via_daemon && !preview.missing {
         out.line("Ollama isn't installed, so hedos deletes this model's own files itself.");
@@ -73,7 +70,7 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
 
     let report = remove_and_forget(&session, record).await?;
     out.line(&format!(
-        "Deleted {} — {} item(s), ~{} freed{}",
+        "Deleted {}: {} item(s), ~{} freed{}",
         report.name,
         report.trashed_paths.len(),
         format_bytes(report.freed_bytes_estimate),

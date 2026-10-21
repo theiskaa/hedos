@@ -1688,6 +1688,63 @@ fn a_paste_on_the_shelf_is_never_run_as_keys() {
 }
 
 #[test]
+fn quitting_waits_for_a_removal_but_not_a_llama_cpp_install() {
+    let mut app = app(1);
+    app.started(
+        TaskId::next(),
+        TaskKind::InstallLlamaCpp {
+            variant: kernel::engines::llama_cpp::Variant::Cpu,
+        },
+    );
+    assert!(app.installing_llama_cpp());
+    assert!(
+        !app.busy_beside_installs(),
+        "an install alone is not waited for"
+    );
+    app.started(TaskId::next(), TaskKind::Scan);
+    assert!(app.busy_beside_installs());
+}
+
+#[test]
+fn an_action_that_could_not_run_says_why_rather_than_offering_llama_cpp() {
+    let without_llama_cpp = |gib| kernel::machine::Machine {
+        engines: kernel::machine::Engines {
+            llama_cpp: false,
+            ..testing::machine(gib).engines
+        },
+        ..testing::machine(gib)
+    };
+
+    // An embedder on llama.cpp: launching it needs a model that chats.
+    let mut embedder = record(0);
+    embedder.runtime.id = Some(RuntimeId::llama_cpp());
+    embedder.capabilities = vec![Capability::embed()];
+    let mut app = app_from(vec![embedder]);
+    app.facts.machine = without_llama_cpp(64);
+    press(&mut app, Key::Char('l'));
+    assert!(app.modal.is_none(), "l offers no install");
+    assert_eq!(
+        app.notice(),
+        Some("model-0 can't chat, so no harness can use it")
+    );
+    for key in ['T', 't'] {
+        press(&mut app, Key::Char(key));
+        assert!(app.modal.is_none(), "{key} offers no install");
+    }
+
+    // A model too big for the machine: warming it is refused as before.
+    let mut big = record(0);
+    big.runtime.id = Some(RuntimeId::llama_cpp());
+    big.capabilities = vec![Capability::chat()];
+    big.footprint_bytes = Some(40 << 30);
+    let mut app = app_from(vec![big]);
+    app.facts.machine = without_llama_cpp(16);
+    assert!(press(&mut app, Key::Char('w')).is_empty());
+    assert!(app.modal.is_none(), "w offers no install");
+    assert_eq!(app.notice(), Some("model-0 is too big for this machine"));
+}
+
+#[test]
 fn warming_or_trying_a_model_without_llama_cpp_offers_to_install_it_first() {
     let mut record = record(0);
     record.runtime.id = Some(RuntimeId::llama_cpp());
@@ -1713,10 +1770,14 @@ fn warming_or_trying_a_model_without_llama_cpp_offers_to_install_it_first() {
     assert!(app.modal.is_none());
 
     press(&mut app, Key::Char('t'));
-    assert!(matches!(app.modal, Some(Modal::Install(_))));
+    let Some(Modal::Install(card)) = &app.modal else {
+        panic!("the install card");
+    };
+    let shown = card.variant;
     assert_eq!(
         press(&mut app, Key::Char('y')),
-        vec![Effect::Spawn(TaskKind::InstallLlamaCpp)]
+        vec![Effect::Spawn(TaskKind::InstallLlamaCpp { variant: shown })],
+        "the build the card showed"
     );
     assert!(app.modal.is_none());
 

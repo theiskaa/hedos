@@ -111,7 +111,7 @@ pub fn faster_line(machine: &Machine) -> Option<String> {
 /// Refuse, before any card or question, to install a build that would not
 /// start on this system (llama.cpp's own Linux builds on an older glibc).
 pub fn runs_here(asset: &Asset) -> Result<(), CliError> {
-    runtime::engines::runs_here(asset).map_err(CliError::new)
+    runtime::engines::runs_here(asset).map_err(|refusal| CliError::new(refusal.to_string()))
 }
 
 /// What installing `asset` fetches, from where, how big, and where it goes,
@@ -159,7 +159,7 @@ pub async fn install_build(
     let animated = std::io::stderr().is_terminal();
     let spinner = Mutex::new(Spinner::start(out));
     let shown = Mutex::new(None::<u64>);
-    let result = install(asset.variant, &dirs.data, |progress| {
+    let installing = install(asset.variant, &dirs.data, |progress| {
         let message = match progress {
             InstallProgress::Downloading {
                 received, total, ..
@@ -185,12 +185,20 @@ pub async fn install_build(
         if let Ok(mut spinner) = spinner.lock() {
             spinner.set(&message);
         }
-    })
-    .await;
+    });
+    // Ctrl-C stops it, whatever handler a command before it (a pull it
+    // followed) left installed; what a stopped install leaves, the next one
+    // puts right.
+    let result = tokio::select! {
+        result = installing => result.map_err(|error| CliError::new(error.to_string())),
+        () = crate::support::signals::wait_for_ctrl_c() => Err(CliError::new(
+            "stopped installing llama.cpp; hedos engines install llama.cpp starts it again",
+        )),
+    };
     if let Ok(mut spinner) = spinner.lock() {
         spinner.clear();
     }
-    result.map_err(|error| CliError::new(error.to_string()))
+    result
 }
 
 /// After `name` was pulled for llama.cpp: when no `llama-server` is there to
@@ -203,7 +211,7 @@ pub async fn offer_after_pull(name: &str, machine: &Machine, out: &Out) -> Resul
     }
     let Ok(asset) = build_for(None, machine) else {
         out.err(&format!(
-            "{name} runs on llama.cpp, which isn't installed. {LLAMA_CPP_INSTALL_HINT}"
+            "{name} runs on llama.cpp. {LLAMA_CPP_INSTALL_HINT}"
         ));
         return Ok(());
     };
@@ -215,7 +223,7 @@ pub async fn offer_after_pull(name: &str, machine: &Machine, out: &Out) -> Resul
     }
     if !interactive::is_interactive(out) {
         out.err(&format!(
-            "{name} runs on llama.cpp, which isn't installed. {LLAMA_CPP_INSTALL_HINT}"
+            "{name} runs on llama.cpp. {LLAMA_CPP_INSTALL_HINT}"
         ));
         return Ok(());
     }

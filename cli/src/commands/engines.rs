@@ -91,7 +91,7 @@ fn rows() -> Vec<Row> {
             .filter(|(dir, _)| server.path.parent() == Some(dir.as_path()))
             .and_then(|(_, record)| {
                 Some(LlamaVersion {
-                    build: record.build.strip_prefix('b')?.parse().ok()?,
+                    build: kernel::engines::llama_cpp::parse_build_tag(&record.build)?,
                     version: Some(record.version),
                 })
             })
@@ -217,24 +217,47 @@ fn list(out: &Out) {
     ));
 }
 
-/// Refuse any engine but llama.cpp, saying where the others come from.
-fn llama_cpp_only(engine: &str) -> Result<(), CliError> {
-    match engine.to_ascii_lowercase().as_str() {
-        "llama.cpp" | "llama-cpp" | "llamacpp" | "llama-server" => Ok(()),
-        "ollama" => Err(CliError::new(
-            "hedos doesn't install Ollama; get it from ollama.com",
-        )),
-        "uv" => Err(CliError::new(
-            "hedos doesn't install uv; get it from astral.sh/uv",
-        )),
-        other => Err(CliError::new(format!(
-            "no engine named {other}; llama.cpp is the one hedos installs"
-        ))),
-    }
+/// What `engines install` or `engines remove` does to an engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Managing {
+    Install,
+    Remove,
+}
+
+/// Refuse any engine but llama.cpp: for an install, saying where the others
+/// come from; for a removal, that hedos removes only its own builds.
+fn llama_cpp_only(engine: &str, managing: Managing) -> Result<(), CliError> {
+    let name = match engine.to_ascii_lowercase().as_str() {
+        "llama.cpp" | "llama-cpp" | "llamacpp" | "llama-server" => return Ok(()),
+        "ollama" => "Ollama",
+        "uv" => "uv",
+        other => {
+            let verb = match managing {
+                Managing::Install => "installs",
+                Managing::Remove => "removes",
+            };
+            return Err(CliError::new(format!(
+                "no engine named {other}; llama.cpp is the one hedos {verb}"
+            )));
+        }
+    };
+    Err(CliError::new(match managing {
+        Managing::Install => format!(
+            "hedos doesn't install {name}; get it from {}",
+            if name == "uv" {
+                "astral.sh/uv"
+            } else {
+                "ollama.com"
+            }
+        ),
+        Managing::Remove => format!(
+            "hedos doesn't remove {name}; it removes only the llama.cpp builds it installed or unpacked"
+        ),
+    }))
 }
 
 async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
-    llama_cpp_only(&args.engine)?;
+    llama_cpp_only(&args.engine, Managing::Install)?;
     let variant = match &args.variant {
         Some(name) => Some(Variant::parse(name).ok_or_else(|| {
             CliError::new(format!(
@@ -269,14 +292,11 @@ async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
                 others.join(", --variant ")
             ));
         }
-        out.json(&serde_json::json!({
-            "engine": "llama.cpp",
-            "version": PINNED.version,
-            "build": PINNED.build,
-            "variant": carried.variant.as_str(),
-            "installed": false,
-            "carried": true,
-        }));
+        out.json(&install_json(
+            carried.variant,
+            located().map(|server| server.path),
+            "carried",
+        ));
         return Ok(());
     }
     runs_here(asset)?;
@@ -308,15 +328,26 @@ async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
             other.path.display()
         ));
     }
-    out.json(&serde_json::json!({
+    out.json(&install_json(asset.variant, Some(server.path), "installed"));
+    Ok(())
+}
+
+/// What `engines install --json` prints, one shape for both outcomes:
+/// `status` is `installed` when a build was fetched now, `carried` when the
+/// build hedos carries is the one asked for and nothing was.
+fn install_json(
+    variant: Variant,
+    path: Option<std::path::PathBuf>,
+    status: &str,
+) -> serde_json::Value {
+    serde_json::json!({
         "engine": "llama.cpp",
         "version": PINNED.version,
         "build": PINNED.build,
-        "variant": asset.variant.as_str(),
-        "path": server.path,
-        "installed": true,
-    }));
-    Ok(())
+        "variant": variant.as_str(),
+        "path": path,
+        "status": status,
+    })
 }
 
 /// The build hedos carries, when it is the `variant` asked for and the one
@@ -328,7 +359,7 @@ fn carried_answers(variant: Variant) -> Option<runtime::engines::bundled::Bundle
 }
 
 fn remove(args: RemoveArgs, out: &Out) -> Result<(), CliError> {
-    llama_cpp_only(&args.engine)?;
+    llama_cpp_only(&args.engine, Managing::Remove)?;
     let dirs = HedosDirs::detect();
     if !args.yes {
         if !interactive::is_interactive(out) {
@@ -379,21 +410,20 @@ mod tests {
     #[test]
     fn only_llama_cpp_is_installed_and_the_others_say_where_to_get_them() {
         for name in ["llama.cpp", "LLAMA-CPP", "llama-server"] {
-            assert!(llama_cpp_only(name).is_ok(), "{name}");
+            assert!(llama_cpp_only(name, Managing::Install).is_ok(), "{name}");
+            assert!(llama_cpp_only(name, Managing::Remove).is_ok(), "{name}");
         }
+        let said = |engine, managing| llama_cpp_only(engine, managing).unwrap_err().to_string();
+        assert!(said("ollama", Managing::Install).contains("ollama.com"));
+        assert!(said("uv", Managing::Install).contains("astral.sh/uv"));
+        assert!(said("vllm", Managing::Install).ends_with("hedos installs"));
+        // A removal says what hedos removes, not where to get the engine.
+        let removing = said("ollama", Managing::Remove);
         assert!(
-            llama_cpp_only("ollama")
-                .unwrap_err()
-                .to_string()
-                .contains("ollama.com")
+            removing.starts_with("hedos doesn't remove Ollama") && !removing.contains("get it"),
+            "{removing}"
         );
-        assert!(
-            llama_cpp_only("uv")
-                .unwrap_err()
-                .to_string()
-                .contains("astral.sh/uv")
-        );
-        assert!(llama_cpp_only("vllm").is_err());
+        assert!(said("vllm", Managing::Remove).ends_with("hedos removes"));
     }
 
     #[tokio::test]
