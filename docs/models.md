@@ -35,7 +35,8 @@ The bids, from most to least preferred:
 | 10 | llama.cpp, whisper.cpp, OpenAI-compatible endpoint |
 | 14 | mlx-vlm |
 | 15 | Apple Intelligence |
-| 20 | Ollama |
+| 20 | Ollama, while it is installed |
+| 21 | llama.cpp, for a model in Ollama's store |
 | 25, 26 | mflux, then diffusers |
 | 27, 28 | ComfyUI, then AUTOMATIC1111 |
 | 30 | mlx-audio |
@@ -43,7 +44,7 @@ The bids, from most to least preferred:
 | 40 | mlx-lm |
 | 100 | manifest runtimes |
 
-In practice few runtimes bid on the same model, since each bids only on its own formats: a GGUF goes to llama.cpp, a model in the Ollama store to Ollama, an MLX checkpoint to mlx-lm or mlx-vlm. A model no runtime bids on stays unresolved, and a model whose weights are gone is not re-resolved.
+In practice few runtimes bid on the same model, since each bids only on its own formats: a GGUF goes to llama.cpp, a model in the Ollama store to Ollama (or, with Ollama not installed, to llama.cpp when it can load it; see below), an MLX checkpoint to mlx-lm or mlx-vlm. A model no runtime bids on stays unresolved, and a model whose weights are gone is not re-resolved.
 
 ## Runtimes at a glance
 
@@ -51,8 +52,8 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 
 | Runtime (id) | Serves | Needs |
 | --- | --- | --- |
-| llama.cpp (`llama-cpp`) | GGUF chat models, embedders, and decision models, with sight when a projector is present | `llama-server` on `PATH`; llama.cpp 0.6.0 or newer for decision models |
-| Ollama (`ollama`) | Models the Ollama daemon manages | The Ollama daemon running |
+| llama.cpp (`llama-cpp`) | GGUF chat models, embedders, and decision models, with sight when a projector is present; the models in Ollama's store it can load when Ollama is not installed | A `llama-server`: the one `engines.llama_server` names, a build `hedos engines install llama.cpp` installed, the one hedos carries, or one on the `PATH`; llama.cpp 0.6.0 or newer for decision models |
+| Ollama (`ollama`) | The models in Ollama's store | Ollama installed, or its daemon answering; hedos starts the daemon if it is installed but not running |
 | OpenAI-compatible endpoint (`generic:openai-server`) | Remote models reached by URL and key | A reachable server, with its API key (if it needs one) in `HEDOS_OPENAI_API_KEY` |
 | mlx-lm (`python:mlx-lm`) | MLX text models | [`uv`](https://astral.sh/uv) |
 | mlx-vlm (`python:mlx-vlm`) | MLX vision-language models | `uv` |
@@ -72,9 +73,16 @@ The Python sidecars provision their own environment through `uv` on first use; t
 
 `llama-server` runs as a subprocess for `.gguf` files: chat models, the models that only embed, and the decision models.
 
+- **Window.** A chat server starts at the window asked for (`num_ctx` in the Ollama dialect, or a `context_length` saved on the model), never below 512 tokens (or the model's own context, when that is smaller) or past what the model declares; else, for a model in Ollama's store, the `num_ctx` Ollama saved with it; else the model's declared context up to 32768 tokens (4096 when it declares none). With no window asked for, hedos estimates what loading takes (the weights, every shard of a split model, and the projector of a model that sees, measured as the server starts, and never less than what the shelf measured serving the model takes; the KV cache each token of window takes, from the layers and heads the GGUF header describes; 1 GiB to spare) against the memory the server can take as it starts, and lowers the default to the widest window that fits, in steps of 1024 tokens. When nothing fits it still tries 2048 (or the default, if smaller), and when the model's shape cannot be read the default stands. That memory is: on Linux `MemAvailable`, under the limit of hedos's cgroup and those above it, else all of memory when neither can be read; on Apple Silicon, Metal's working set; with GPU cards, their memory and what is available beside them, unless hedos runs a CPU build it carries or installed (a `llama-server` the settings name or the PATH holds is taken to use the cards). The working set and the cards' memory are what the hardware offers, not what is free at that moment. It is an estimate, and one that errs toward a smaller window where it counts more cache than llama.cpp keeps. A running chat server keeps its window for the requests after it that ask for none; one asking for more replaces it. A server killed while loading (SIGKILL, how the kernel's out-of-memory killer ends a process) is reported as likely out of memory, with the window it was starting at.
 - **Embedders** answer on `/v1/embeddings` and `/api/embed` from a server started for embeddings. A GGUF embeds when its header pools its output to one vector (mean, cls, or last), whatever its architecture: the encoders (BERT, nomic-bert, jina, and similar) and the decoders converted to embed (Qwen3-Embedding) alike, and such a model never chats. One whose header ranks (a reranker such as Qwen3-Reranker), and an encoder that names no pooling (a diffusion pipeline's text encoder, or a reranker converted without its pooling), are not embedders and stay unresolved. See [gateway.md](gateway.md#embeddings) for how batches and windows are served.
 - **Decision models** are the GGUFs whose header names a decision type (`{arch}.decision.type`): clef and clef-flash, OpenJev, Kev, lev, Laya and Julia-1, as ggml-org publishes them. Each is a judge, whatever its architecture or chat template says, and answers typed questions on `/v1/systemone` and with `hedos run`, never chat. They need llama.cpp 0.6.0 or newer; an older `llama-server` fails with a message saying so. A decision server holds its declared window up to 16384 tokens.
 - **Sight.** A GGUF sees when a multimodal projector (an `mmproj` file) sits beside it, or anywhere in its snapshot, that encodes images and outputs the model's own embedding width, as llama.cpp checks it by its tensors. A projector of another width (another model's, kept in the same folder) and one that only encodes audio do not count. Its server is launched with the projector, taking the one named for the weights' quantization when there are several and the smallest otherwise, and never one cut short or unreadable, as an interrupted download leaves it. Among decision models, clef and OpenJev read images; the others read text only, projector or not.
+
+### Models in Ollama's store without Ollama
+
+Ollama is optional. The models already in its store are on the shelf either way, and Ollama serves them while it is installed (its binary is found, or something answers where its daemon listens). Without it, llama.cpp serves the ones it can load: Ollama keeps most models as plain GGUF, so `llama-server` runs the model blob directly, with the manifest's projector blob when the model reads images and that projector fits its width. Its window is the one the GGUF declares, starting at the `num_ctx` Ollama's parameters set, and a request that names no stop sequences gets the ones those parameters save.
+
+Two kinds stay with Ollama: a model whose vision or audio encoder is packed into its weights (an older `gemma4` pull, for one), and one whose only chat template is Ollama's own (`gpt-oss`). Neither loads in llama.cpp, so without Ollama they stay unresolved, and `hedos ls` and the shelf say they need Ollama. Installing Ollama or removing it moves the models in its store between the two the next time hedos starts; no scan is needed.
 
 ### Apple Intelligence
 
@@ -164,10 +172,10 @@ The download itself runs in a worker process of its own, so closing the terminal
 
 Installs write into each platform's native layout:
 
-- **Ollama** models pull through the daemon's own API. If Ollama is installed but not running, hedos starts the daemon first.
+- **Ollama** tags pull through the daemon's own API, so they need Ollama installed. If it is installed but not running, hedos starts the daemon first.
 - **Hugging Face** models download into the standard hub cache: content-addressed blobs, a snapshot directory of symlinks, and a ref pointing at the revision. Downloads resume with HTTP `Range`, and each file stored in LFS is verified with SHA-256 against the hash its listing names.
 
-hedos picks which files of a Hugging Face repo to fetch. For GGUF it takes one complete quantization, preferring Q4_K_M, then Q4_0, Q5_K_M, Q6_K, Q8_0, and F16 (else the smallest), along with any `mmproj` projector and small companion files. Otherwise it takes the safetensors (or PyTorch) weight set and the config and tokenizer files beside it. Documentation, images, and exports nothing here runs (ONNX, OpenVINO, Core ML, Flax, TensorFlow) are skipped.
+hedos picks which files of a Hugging Face repo to fetch. For GGUF it takes one complete quantization, preferring Q4_K_M, then Q4_0, Q5_K_M, Q6_K, Q8_0, and F16 (else the smallest), one `mmproj` projector (beside the weights, else at the repo's root, else anywhere in the repo: the one named for the weights' quantization, else the smallest, the same rule serving picks it by), and small companion files. The speculative-decoding drafts llama.cpp's own repos ship beside a model (`mtp-`, `dflash-`, `eagle3-` files) are never fetched. Otherwise it takes the safetensors (or PyTorch) weight set and the config and tokenizer files beside it. Documentation, images, and exports nothing here runs (ONNX, OpenVINO, Core ML, Flax, TensorFlow) are skipped.
 
 hedos owns no weights directory of its own, so the moment an install finishes, every other tool sees the model too. Installs do not touch the registry directly; the scan that follows discovers the result.
 
@@ -180,7 +188,7 @@ A gated Hugging Face repository needs a token with access to it. hedos reads `HF
 Removal is symmetric with install. `hedos rm <model>` first shows a deletion preview: how many items would go and the estimated size. In a terminal it then asks for a yes/no confirmation (the default is no) and removes nothing unless you agree; in a script or pipe it removes nothing unless you pass `-y`.
 
 - File-backed models are deleted from disk, permanently (they do not go to the trash).
-- Ollama models delete through the daemon, which hedos starts first if Ollama is installed but not running.
+- Ollama models delete through the daemon, which hedos starts first if Ollama is installed but not running. With Ollama not installed, hedos deletes the manifest and each blob no other tag in the store names, as the daemon would, and refuses (deleting nothing) when it cannot vouch for the store. See [`hedos rm`](cli.md#hedos-rm).
 
 The preview is honest about what remains. If duplicate copies of the same weights exist elsewhere on the machine, removing one does not remove the others, and the shelf will still show them. `hedos scan` lists the copies that can go because another model keeps everything they hold, with what removing each one frees. The exact rules for what counts as a copy, and how shared files, hard links, and symlinks are counted, are under `hedos scan` in [cli.md](cli.md#when-a-model-is-offered-for-removal).
 

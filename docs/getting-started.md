@@ -43,13 +43,13 @@ The binary is at `target/release/hedos`. Copy it somewhere on your `PATH`, or ru
 
 On a Mac whose SDK has Apple's `FoundationModels` framework, the build also produces the Apple Intelligence bridge, `libhedos_apple_shim.dylib`, under `target/release/build/hedos-runtime-*/out/`. A binary run in place finds it there. If you copy the binary elsewhere, copy the library next to it too, or Apple Intelligence will report that its bridge is not built in. The [README](../README.md#runtimes) shows how. No other runtime needs this, and installs that copy only the binary (the script, Homebrew, `cargo install`) do not include it.
 
-### Optional backends
+### Engines
 
-hedos serves whatever your machine can already run, so nothing else is required to start. Add these when you want the runtimes that need them:
+hedos runs models on engines, and installs one only when you ask. `hedos engines` lists them: where each was found, its version, and what to do when one is missing.
 
+- **llama.cpp**, for GGUF models (the chat and coding models `hedos recommend` offers among them), comes with hedos. The install script, Homebrew, and the release archives carry the build hedos pins, which unpacks the first time a model runs, and hedos runs it ahead of any `llama-server` on your `PATH`. `hedos engines install llama.cpp` fetches a faster build for your machine (CUDA for an NVIDIA card, Vulkan for AMD) after saying what it will fetch and asking. On Linux the build hedos carries runs from glibc 2.35 (Ubuntu 22.04, Debian 12) and needs no other package; the builds `hedos engines install` fetches are llama.cpp's own and need glibc 2.38 (Ubuntu 24.04, Debian 13), which it checks first. A `cargo install` or source build carries none: it runs a `llama-server` on your `PATH`, or the one that command installs, and a pull of a GGUF model offers it once it lands when none is here.
 - [`uv`](https://astral.sh/uv), for the Python sidecar runtimes (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, whisper). It builds their environments the first time they run; the runtime code ships inside the binary.
-- A `llama-server` binary on your `PATH`, for local GGUF files.
-- Ollama, for the models it manages. If it is installed but not running, hedos starts it.
+- Ollama, which is optional. The models already in its store are on the shelf either way: Ollama serves them while it is installed (and hedos starts it if it is not running), and llama.cpp serves the ones it can load when it is not.
 - An API key in `HEDOS_OPENAI_API_KEY`, for a remote OpenAI-compatible endpoint that needs one.
 
 ## Find your models
@@ -93,6 +93,8 @@ hedos ls
 ```
 
 Each row is one model: its name, the runtime it resolved to, the store it came from, whether it fits in what its runtime may use here (`fits`, `tight`, or `too big`; on Apple Silicon, the GPU's share of memory), and what it can do.
+
+The two Ollama models resolve to `ollama` here because Ollama is installed. Without it, `llava:latest` would resolve to `llama-cpp`, and `gemma4:latest`, which an older Ollama wrote in its own format, would have no runtime, with a line under the table saying only Ollama runs it.
 
 The first column is the model's state: `●` is warm (loaded right now), `○` is cold, and `✕` means its weights are gone from disk. A model with no runtime that can serve it shows a dash in the runtime column.
 
@@ -160,10 +162,10 @@ hedos recommend
 It reads the hardware (on Apple Silicon, the share of memory the GPU may give a model; on Linux, your NVIDIA or AMD cards) and lists the models worth pulling for each kind, chat, code, voice and image, with what to install first if an engine they need is missing. See [`hedos recommend`](cli.md#hedos-recommend).
 
 ```sh
-hedos pull qwen2.5:3b
+hedos pull ggml-org/gemma-4-E4B-it-GGUF
 ```
 
-hedos works out the provider from the shape of the reference: an `org/repo` goes to Hugging Face, a `name:tag` goes to Ollama, and a `huggingface.co` or `ollama.com` link goes where it points. Pass `--from ollama` or `--from hf` to choose. It plans the install (the files, their sizes, where they go), then downloads in a worker process of its own and shows the progress.
+hedos works out the provider from the shape of the reference: an `org/repo` goes to Hugging Face, a `name:tag` goes to Ollama (which has to be installed to pull it), and a `huggingface.co` or `ollama.com` link goes where it points. Pass `--from ollama` or `--from hf` to choose. It plans the install (the files, their sizes, where they go), then downloads in a worker process of its own and shows the progress.
 
 Ctrl-C detaches and leaves the download running; `hedos pull ls` lists every pull, and `hedos pull attach <id>` follows one again. When the files have landed, a scan puts the model on the shelf. See [models.md](models.md) for how installs and removal work.
 

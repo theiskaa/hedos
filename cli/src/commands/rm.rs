@@ -2,12 +2,12 @@
 //! asks for confirmation; non-interactively it only previews unless `-y` is given.
 
 use clap::Args;
-use kernel::records::format_bytes;
+use kernel::records::{SourceKind, format_bytes};
 
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
-use crate::support::removal::remove_and_forget;
+use crate::support::removal::{deletion_preview, remove_and_forget};
 use crate::support::session::Session;
 
 /// Arguments for `rm`.
@@ -28,13 +28,23 @@ pub async fn run(args: RmArgs, out: &Out) -> Result<(), CliError> {
     let record =
         interactive::choose_any_model(out, args.model.as_deref(), &shelf, None, "remove", &warm)?;
 
-    let preview = kernel::removal::preview(record);
+    let preview = deletion_preview(record);
     let summary = format!(
         "{} — {} item(s), ~{}",
         preview.name,
         preview.paths.len(),
         format_bytes(preview.bytes_estimate),
     );
+
+    if let Some(why) = &preview.blocked {
+        return Err(CliError::new(format!(
+            "Ollama isn't installed to delete {}, and {why}.",
+            preview.name
+        )));
+    }
+    if preview.kind == SourceKind::ollama() && !preview.via_daemon && !preview.missing {
+        out.line("Ollama isn't installed, so hedos deletes this model's own files itself.");
+    }
 
     if !args.yes {
         // A real terminal gets a y/N confirmation so one command completes the

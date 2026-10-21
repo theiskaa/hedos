@@ -86,6 +86,7 @@ fn every_task_verb_is_listed() {
             id: "m".to_owned(),
             name: "m".to_owned(),
         },
+        TaskKind::InstallLlamaCpp,
     ];
     let hand_offs = [
         HandOff::Launch {
@@ -105,7 +106,8 @@ fn every_task_verb_is_listed() {
             | TaskKind::Warm { .. }
             | TaskKind::WarmViaGateway { .. }
             | TaskKind::Unload { .. }
-            | TaskKind::Remove { .. } => {}
+            | TaskKind::Remove { .. }
+            | TaskKind::InstallLlamaCpp => {}
         }
         let verb = kind.verb();
         assert!(TaskKind::VERBS.contains(&verb), "{verb} is not listed");
@@ -129,7 +131,7 @@ fn a_failed_row_keeps_the_reason_plain_and_offers_dismiss() {
     let line = line(&row, 120, hinted);
     let read = text(&line);
     assert!(
-        read.starts_with(" remove mistral  is warm; unload it first  "),
+        read.starts_with(" remove  mistral  is warm; unload it first  "),
         "{read:?}"
     );
     assert!(read.ends_with("d dismiss"), "{read:?}");

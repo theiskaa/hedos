@@ -17,6 +17,7 @@ use super::{
     styled_field, value_width,
 };
 use crate::support::clock;
+use crate::support::engines::{EngineNeed, needs_engine};
 use crate::support::residency::Holder;
 use crate::support::shelf_table::runtime_label;
 use crate::support::table::DASH;
@@ -235,8 +236,9 @@ fn full_lines(
         Line::default(),
     ];
     // A runtime that cannot start without a repo the shelf lacks says which,
-    // and how to fetch it, before anything about memory.
-    let missing: Vec<Line<'static>> = record
+    // and how to fetch it, before anything about memory; so does a model
+    // whose engine is not here.
+    let mut missing: Vec<Line<'static>> = record
         .missing_companions()
         .map(|companion| {
             row(
@@ -245,6 +247,10 @@ fn full_lines(
             )
         })
         .collect();
+    missing.extend(needs_engine(record, &facts.machine).map(|need| match need {
+        EngineNeed::LlamaCpp => row("needs", "llama.cpp · w or t installs it".to_owned()),
+        EngineNeed::Ollama => row("needs", "Ollama · only it runs this format".to_owned()),
+    }));
     if !missing.is_empty() {
         lines.extend(missing);
         lines.push(Line::default());

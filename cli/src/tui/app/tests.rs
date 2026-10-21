@@ -1686,3 +1686,60 @@ fn a_paste_on_the_shelf_is_never_run_as_keys() {
         "no removal card opened from the pasted x"
     );
 }
+
+#[test]
+fn warming_or_trying_a_model_without_llama_cpp_offers_to_install_it_first() {
+    let mut record = record(0);
+    record.runtime.id = Some(RuntimeId::llama_cpp());
+    record.capabilities = vec![Capability::chat()];
+    let mut app = app_from(vec![record]);
+    // This machine as the install would see it, with no llama-server.
+    app.facts.machine = kernel::machine::Machine {
+        os: kernel::machine::Os::current(),
+        arch: std::env::consts::ARCH.to_owned(),
+        engines: kernel::machine::Engines {
+            llama_cpp: false,
+            ..testing::machine(64).engines
+        },
+        ..testing::machine(64)
+    };
+
+    // A Linux older than llama.cpp's own builds need says so instead of
+    // offering a card for a build that would not start.
+    if let Err(reason) = runtime::engines::published_builds_run_here() {
+        assert!(press(&mut app, Key::Char('w')).is_empty());
+        assert!(app.modal.is_none());
+        assert_eq!(app.notice(), Some(reason.as_str()));
+        return;
+    }
+
+    assert!(press(&mut app, Key::Char('w')).is_empty());
+    assert!(matches!(app.modal, Some(Modal::Install(_))));
+    assert!(
+        press(&mut app, Key::Char('n')).is_empty(),
+        "no installs nothing"
+    );
+    assert!(app.modal.is_none());
+
+    press(&mut app, Key::Char('t'));
+    assert!(matches!(app.modal, Some(Modal::Install(_))));
+    assert_eq!(
+        press(&mut app, Key::Char('y')),
+        vec![Effect::Spawn(TaskKind::InstallLlamaCpp)]
+    );
+    assert!(app.modal.is_none());
+
+    for key in ['T', 'l', 'b'] {
+        press(&mut app, Key::Char(key));
+        assert!(
+            matches!(app.modal, Some(Modal::Install(_))),
+            "{key} offers the install"
+        );
+        press(&mut app, Key::Char('n'));
+    }
+
+    // With llama.cpp here, warming warms.
+    app.facts.machine.engines.llama_cpp = true;
+    press(&mut app, Key::Char('w'));
+    assert!(!matches!(app.modal, Some(Modal::Install(_))));
+}

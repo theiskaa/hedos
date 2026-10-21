@@ -104,9 +104,10 @@ fn provider(offer: &Offer) -> &'static str {
 
 /// The name, after its owner or registry, arriving letter by letter.
 fn name_line(offer: &Offer, modal: &PullModal, look: &Look, width: usize) -> Line<'static> {
-    let name = match offer.reference.rsplit_once('/') {
-        Some((_, name)) => name,
-        None => &offer.reference,
+    let name = match (&offer.name, offer.reference.rsplit_once('/')) {
+        (Some(name), _) => name.as_str(),
+        (None, Some((_, name))) => name,
+        (None, None) => &offer.reference,
     };
     Line::from(
         look.motion
@@ -153,6 +154,8 @@ fn full(
     width: usize,
 ) -> Vec<Line<'static>> {
     let owner = match offer.reference.rsplit_once('/') {
+        // A short name stands for the repo, so the repo is said in full.
+        Some(_) if offer.name.is_some() => offer.reference.clone(),
         Some((owner, _)) => format!("{owner}/"),
         None if offer.provider.as_str() == "ollama" => "registry.ollama.ai/library/".to_owned(),
         None => String::new(),

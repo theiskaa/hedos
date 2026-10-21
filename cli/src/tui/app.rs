@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use kernel::bench::Status as BenchStatus;
 use kernel::install::pulls::PullState;
+use kernel::machine::OLLAMA_ONLY_HINT;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
-use kernel::removal::{ModelDeletionPreview, is_deletable, preview};
+use kernel::removal::{ModelDeletionPreview, is_deletable};
 use ratatui::widgets::TableState;
 use runtime::bench::BenchPlan;
+use runtime::boot::HedosDirs;
 use runtime::install::WorkerError;
 
 use kernel::install::plan::InstallPlan;
@@ -33,8 +35,10 @@ use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
 use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::bench_run::{machine_line, rows as bench_rows};
+use crate::support::engines::{EngineNeed, build_for, card, needs_engine, runs_here};
 use crate::support::extract;
 use crate::support::judge;
+use crate::support::removal::deletion_preview;
 use crate::support::residency::{Holder, warm_request};
 use crate::support::shelf_table::verdict;
 use crate::tui::bench_view::Board;
@@ -95,8 +99,19 @@ pub enum Modal {
     Help,
     /// Choosing a harness to launch on the selected model.
     Launch(Box<LaunchModal>),
+    /// Confirming llama.cpp's install, with what it would fetch.
+    Install(InstallCard),
     /// A conversation with the selected model, in place of the shelf.
     Chat(Box<ChatPane>),
+}
+
+/// What installing llama.cpp would fetch, shown before it is: the build that
+/// suits this machine, as the install task fetches it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallCard {
+    /// What the card says: the release, each archive and its sha256, the
+    /// size, and where it goes.
+    pub lines: Vec<String>,
 }
 
 /// Why a verb is refused for the selected model: quietly, when the model
@@ -703,6 +718,7 @@ impl App {
             Some(Modal::Stop(_)) => return self.stop_key(key),
             Some(Modal::Help) => return self.help_key(key),
             Some(Modal::Launch(_)) => return self.launch_key(key),
+            Some(Modal::Install(_)) => return self.install_key(key),
             None => {}
         }
         if self.screen == Screen::Pulls {
@@ -909,6 +925,9 @@ impl App {
 
     /// Open the harness picker for the selected model, or say why not.
     fn launch(&mut self) -> Vec<Effect> {
+        if self.needs_llama_cpp() {
+            return self.install_engine();
+        }
         match self.chatting_record() {
             Ok(record) => {
                 self.open(Modal::Launch(Box::new(LaunchModal::open(&record))));
@@ -967,6 +986,9 @@ impl App {
 
     /// Hand off to `hedos chat` on the selected model.
     fn hand_off_chat(&mut self) -> Vec<Effect> {
+        if self.needs_llama_cpp() {
+            return self.install_engine();
+        }
         match self.chatting_record() {
             Ok(record) => vec![Effect::HandOff(Box::new(HandOff::Chat {
                 record: Box::new(record),
@@ -979,6 +1001,9 @@ impl App {
     /// composer for a model that answers typed questions, or the extractor's
     /// for one that finds contacts.
     fn open_chat(&mut self) -> Vec<Effect> {
+        if self.needs_llama_cpp() {
+            return self.install_engine();
+        }
         let trying = match self.selected_record() {
             Some(record) if judge::is_judge(record) || extract::is_extractor(record) => {
                 Ok(record.clone())
@@ -1149,8 +1174,84 @@ impl App {
         if let Err(refusal) = self.removable(record) {
             return self.refuse(refusal);
         }
-        self.open(Modal::Remove(preview(record)));
+        let preview = deletion_preview(record);
+        if let Some(why) = preview.blocked {
+            return self.refuse(Refusal::Because(format!(
+                "{} can't be removed: {why}",
+                preview.name
+            )));
+        }
+        self.open(Modal::Remove(preview));
         Vec::new()
+    }
+
+    /// Whether the selected model runs on llama.cpp and none is here, so
+    /// warming, trying, launching, chatting with or benching it offers to
+    /// install it first.
+    fn needs_llama_cpp(&self) -> bool {
+        self.selected_record().is_some_and(|record| {
+            needs_engine(record, &self.facts.machine) == Some(EngineNeed::LlamaCpp)
+        })
+    }
+
+    /// Why the engine `record` needs can't be installed from here, if it
+    /// can't: hedos installs llama.cpp, and nothing else.
+    fn installable(&self, record: &ModelRecord) -> Result<(), Refusal> {
+        let name = record.display_name();
+        match needs_engine(record, &self.facts.machine) {
+            None => Err(Refusal::Because(format!(
+                "{name} has the engine it runs on"
+            ))),
+            Some(EngineNeed::Ollama) => {
+                Err(Refusal::Because(format!("{name}: {OLLAMA_ONLY_HINT}")))
+            }
+            Some(EngineNeed::LlamaCpp)
+                if self.tasks.already_running(&TaskKind::InstallLlamaCpp) =>
+            {
+                Err(Refusal::Busy)
+            }
+            Some(EngineNeed::LlamaCpp) => Ok(()),
+        }
+    }
+
+    /// Open the card that says what installing llama.cpp fetches, for the
+    /// selected model that needs it (asked by warming or trying it), or say
+    /// why not.
+    fn install_engine(&mut self) -> Vec<Effect> {
+        let Some(record) = self.selected_record() else {
+            return Vec::new();
+        };
+        if let Err(refusal) = self.installable(record) {
+            return self.refuse(refusal);
+        }
+        let asset = match build_for(None, &self.facts.machine).and_then(|asset| {
+            runs_here()?;
+            Ok(asset)
+        }) {
+            Ok(asset) => asset,
+            Err(error) => return self.notify(error.to_string()),
+        };
+        let lines = card(asset, &HedosDirs::detect());
+        self.open(Modal::Install(InstallCard { lines }));
+        Vec::new()
+    }
+
+    /// `y` installs what the card showed; anything that closes it installs
+    /// nothing.
+    fn install_key(&mut self, key: Key) -> Vec<Effect> {
+        let confirmed = match key {
+            Key::Char('y') => true,
+            Key::Char('n') | Key::Escape => false,
+            _ => return Vec::new(),
+        };
+        let Some(Modal::Install(_)) = self.modal.take() else {
+            return Vec::new();
+        };
+        self.dirty = true;
+        if !confirmed {
+            return Vec::new();
+        }
+        vec![Effect::Spawn(TaskKind::InstallLlamaCpp)]
     }
 
     /// Why `record` can't be removed right now, if it can't.
@@ -1191,7 +1292,7 @@ impl App {
         if let Err(refusal) = self.removable(record) {
             return self.refuse(refusal);
         }
-        if preview(record) != shown {
+        if deletion_preview(record) != shown {
             return self.notify(format!("{} changed on disk; look again", shown.name));
         }
         vec![Effect::Spawn(TaskKind::Remove {
@@ -1317,6 +1418,9 @@ impl App {
     /// opens only if the bench does: `b` on a model nothing can measure should
     /// say so where the cursor already is.
     fn bench_selected(&mut self) -> Vec<Effect> {
+        if self.needs_llama_cpp() {
+            return self.install_engine();
+        }
         let Some(record) = self.selected_record() else {
             return self.notify("no model is selected".to_owned());
         };
@@ -1575,6 +1679,9 @@ impl App {
     }
 
     fn warm(&mut self) -> Vec<Effect> {
+        if self.needs_llama_cpp() {
+            return self.install_engine();
+        }
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };

@@ -3,8 +3,8 @@
 //! running gateway).
 
 use clap::Args;
-use kernel::machine::Machine;
-use kernel::records::{Capability, ModelRecord, ModelState};
+use kernel::machine::{Machine, OLLAMA_ONLY_HINT};
+use kernel::records::{Capability, ModelRecord, ModelState, SourceKind};
 use runtime::manifests::{host_consent, servable_models};
 
 use crate::error::CliError;
@@ -57,10 +57,27 @@ pub async fn run(args: LsArgs, out: &Out) -> Result<(), CliError> {
     for hint in approval_hints(&session, &shelf)
         .into_iter()
         .chain(companion_hints(&shelf))
+        .chain(ollama_only_hint(&shelf))
     {
         out.line(&hint);
     }
     Ok(())
+}
+
+/// One line naming the models in Ollama's store that nothing serves, which
+/// happens only when Ollama is not here and llama.cpp cannot load them.
+fn ollama_only_hint(shelf: &[ModelRecord]) -> Option<String> {
+    let stranded: Vec<&str> = shelf
+        .iter()
+        .filter(|record| {
+            record.source.kind == SourceKind::ollama()
+                && record.runtime.id.is_none()
+                && record.state != ModelState::Missing
+                && !record.downloading
+        })
+        .map(ModelRecord::display_name)
+        .collect();
+    (!stranded.is_empty()).then(|| format!("\n{}: {OLLAMA_ONLY_HINT}", stranded.join(", ")))
 }
 
 /// One line per companion a served model's runtime needs and the shelf does
@@ -231,6 +248,21 @@ mod tests {
     fn json_fit_is_null_when_the_footprint_is_unknown() {
         let value = shelf_json(&[model("mystery", None)], &Machine::with_memory(16 * GIB));
         assert!(value[0].get("fit").expect("fit key present").is_null());
+    }
+
+    #[test]
+    fn the_ollama_models_nothing_serves_are_named_in_one_hint() {
+        let mut served = model("llava:latest", Some(GIB as i64));
+        served.runtime.id = Some(RuntimeId::llama_cpp());
+        let stranded = model("gemma4:latest", Some(GIB as i64));
+        let mut gone = model("old:latest", Some(GIB as i64));
+        gone.state = ModelState::Missing;
+        let hint = ollama_only_hint(&[served, stranded, gone]).expect("a hint");
+        assert_eq!(hint, format!("\ngemma4:latest: {OLLAMA_ONLY_HINT}"));
+
+        let mut served = model("llava:latest", Some(GIB as i64));
+        served.runtime.id = Some(RuntimeId::ollama());
+        assert_eq!(ollama_only_hint(&[served]), None);
     }
 
     fn hub(repo: &str) -> ModelRecord {

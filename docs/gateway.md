@@ -447,6 +447,8 @@ Every request is recorded, one JSON object per line, in `audit.jsonl` under the 
 
 **A TypeSafe SDK times out on the first call.** The model is loading. Run `hedos warm <model>` first.
 
-**A decision model fails with a message about llama.cpp 0.6.0.** The `llama-server` on your `PATH` is too old to serve decision models. Upgrade it (`brew upgrade llama.cpp`).
+**A decision model fails with a message about llama.cpp 0.6.0.** The `llama-server` hedos runs is too old to serve decision models; `hedos engines` shows which one that is. A release build of hedos carries one new enough and runs it unless `engines.llama_server` names another or an older build `hedos engines install llama.cpp` installed comes first; reinstall with that command, or upgrade the one the settings name.
+
+**A GGUF model answers 503 with "llama.cpp isn't installed".** No `llama-server` is there to start for it, which happens only with a build of hedos that carries none (`cargo install`, a source build). Run `hedos engines install llama.cpp`, or put one on your `PATH`. The gateway never installs anything itself; it only unpacks the build hedos carries, the first time a model needs it.
 
 **A `500` with a runtime's message.** The runtime's own error is passed through (a stopped daemon, a model out of memory) because it is the only thing that explains the failure. The audit log keeps the same text under `detail`.

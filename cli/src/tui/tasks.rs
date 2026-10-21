@@ -12,6 +12,7 @@ use std::time::SystemTime;
 use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
 use kernel::discovery::service::DiscoverySummary;
+use kernel::engines::llama_cpp::PINNED;
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -19,6 +20,8 @@ use kernel::install::pulls::{PullControl, PullError, PullJobDir, PullStore};
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use kernel::time::now_millis;
 use runtime::bench::{BenchPlan, Cancel};
+use runtime::boot::HedosDirs;
+use runtime::engines::install::InstallProgress as EngineProgress;
 use runtime::install::service::InstallService;
 use runtime::install::{
     STOP_ANSWER_WINDOW, Started, Stopped, WorkerError, await_answer, restart, start_or_join, stop,
@@ -32,6 +35,8 @@ use super::jobs;
 use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
 use crate::support::bench_run::ShelfPrepare;
+use crate::support::engines::build_for;
+use crate::support::machine;
 use crate::support::pulls::{event_line, too_late};
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{self, is_resident, unload_anywhere, warm_request};
@@ -188,6 +193,8 @@ pub enum TaskKind {
     Unload { id: String, name: String },
     /// Delete a model's weights and forget its record.
     Remove { id: String, name: String },
+    /// Install the llama.cpp build that suits this machine, as its card said.
+    InstallLlamaCpp,
 }
 
 /// What the strip calls a task: a verb and its subject.
@@ -200,8 +207,8 @@ pub struct TaskLabel {
 impl TaskKind {
     /// Every verb a strip row can start with, the hand-offs' included; the
     /// strip's verb column is as wide as the widest.
-    pub const VERBS: [&'static str; 8] = [
-        "scan", "warm", "unload", "pull", "remove", "launch", "chat", "serve",
+    pub const VERBS: [&'static str; 9] = [
+        "scan", "warm", "unload", "pull", "remove", "install", "launch", "chat", "serve",
     ];
 
     /// The label the strip shows for this kind.
@@ -219,6 +226,7 @@ impl TaskKind {
             TaskKind::Warm { .. } | TaskKind::WarmViaGateway { .. } => "warm",
             TaskKind::Unload { .. } => "unload",
             TaskKind::Remove { .. } => "remove",
+            TaskKind::InstallLlamaCpp => "install",
         }
     }
 
@@ -226,6 +234,7 @@ impl TaskKind {
     pub fn subject(&self) -> &str {
         match self {
             TaskKind::Scan => "this machine",
+            TaskKind::InstallLlamaCpp => "llama.cpp",
             TaskKind::Warm { name, .. }
             | TaskKind::WarmViaGateway { name, .. }
             | TaskKind::Unload { name, .. }
@@ -236,7 +245,7 @@ impl TaskKind {
     /// The model this task concerns, if it concerns one.
     pub fn model_id(&self) -> Option<&str> {
         match self {
-            TaskKind::Scan => None,
+            TaskKind::Scan | TaskKind::InstallLlamaCpp => None,
             TaskKind::Warm { id, .. }
             | TaskKind::WarmViaGateway { id, .. }
             | TaskKind::Unload { id, .. }
@@ -252,6 +261,7 @@ impl TaskKind {
             TaskKind::WarmViaGateway { .. } => "loading on the gateway",
             TaskKind::Unload { .. } => "evicting",
             TaskKind::Remove { .. } => "deleting",
+            TaskKind::InstallLlamaCpp => "downloading",
         }
     }
 }
@@ -299,7 +309,9 @@ pub fn spawn(
 ) -> TaskId {
     let id = TaskId::next();
     let tx = tx.clone();
-    let mutating = matches!(kind, TaskKind::Remove { .. });
+    // Work quitting waits on: a removal, and an install the card said yes to,
+    // which would otherwise be cut off mid-download.
+    let mutating = matches!(kind, TaskKind::Remove { .. } | TaskKind::InstallLlamaCpp);
     let runner = Arc::clone(context);
     let kind = kind.clone();
     let handle = tokio::spawn(async move {
@@ -314,6 +326,7 @@ pub fn spawn(
             TaskKind::WarmViaGateway { id, port, .. } => warm_on_gateway(session, &id, port).await,
             TaskKind::Unload { id, .. } => unload(session, &id).await,
             TaskKind::Remove { id, .. } => remove(session, &id).await,
+            TaskKind::InstallLlamaCpp => install_llama_cpp(&report).await,
         };
         report(match outcome {
             Ok(summary) => TaskState::Done(summary),
@@ -329,6 +342,39 @@ pub fn spawn(
         handles.push(handle);
     }
     id
+}
+
+/// Install the llama.cpp build that suits this machine, reporting how far it
+/// has got. Only the install card's yes starts this.
+async fn install_llama_cpp(report: &impl Fn(TaskState)) -> Result<String, String> {
+    let asset = build_for(None, &machine::machine()).map_err(|error| error.to_string())?;
+    let shown = Mutex::new(None::<u64>);
+    let server =
+        runtime::engines::install::install(asset.variant, &HedosDirs::detect().data, |progress| {
+            let line = match progress {
+                EngineProgress::Downloading {
+                    received, total, ..
+                } => {
+                    let percent = received.saturating_mul(100) / total.max(1);
+                    let mut shown = shown.lock().unwrap_or_else(PoisonError::into_inner);
+                    if *shown == Some(percent) {
+                        return;
+                    }
+                    *shown = Some(percent);
+                    format!("downloading {percent}%")
+                }
+                EngineProgress::Unpacking => "unpacking".to_owned(),
+                EngineProgress::Checking => "checking it runs".to_owned(),
+            };
+            report(TaskState::Status(line));
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(format!(
+        "installed llama.cpp {} at {}",
+        PINNED.version,
+        text::at_home(&server.path.to_string_lossy())
+    ))
 }
 
 /// Read the pull jobs and hand the rows to the loop.

@@ -66,6 +66,12 @@ Values outside a range are clamped to it.
 | `job_history_limit` | integer | `50` | How many finished jobs (image generation and the like) to keep in history. |
 | `check_for_updates` | boolean | `true` | Whether commands look, once a day, for a newer hedos release and end with a line saying when one is out. See [`hedos upgrade`](cli.md#hedos-upgrade). |
 
+#### `[engines]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `llama_server` | string | `""` | An absolute path to the `llama-server` hedos runs GGUF models with, ahead of a build `hedos engines install llama.cpp` installed, the build hedos carries, and the one on the `PATH`. Empty means unset; a path that is not absolute or not executable is passed over. Read again each time a model server starts. See [`hedos engines`](cli.md#hedos-engines). |
+
 #### Keys hedos writes but does not read
 
 When hedos saves the file it writes every key it knows, so a saved file also carries `[models] approved_network_runtimes` and `approved_network_runtime_hashes`, `[chat] default_model_id`, `show_stats`, `send_with_enter` and `default_bench`, a `[voice]` table (`default_voice`, `speed`, `auto_speak`), and `[gateway] enabled`, `host` and `max_connections`. The current build does not act on any of them. In particular, changing `host` does not move the gateway off `127.0.0.1`.
@@ -102,6 +108,9 @@ keep_ended = 20
 [advanced]
 job_history_limit = 50
 check_for_updates = true
+
+[engines]
+llama_server = ""
 ```
 
 Every value here is optional. A file with only `[models] keep_warm = "one_hour"` is complete.
@@ -124,6 +133,7 @@ State lives under `~/.local/share/hedos`, or `$XDG_DATA_HOME/hedos` when that va
 | `launch/` | The harness configuration `hedos launch` generates. Your own harness config is never touched. |
 | `ui/` | What the shelf screen remembers between runs. |
 | `upgrade-check.json` | When hedos last looked for a newer release, and the newest it found. |
+| `engines/llama.cpp/` | The llama.cpp builds hedos runs: the one it carries, unpacked the first time a model runs (`b11669-metal-bundled/`, with llama.cpp's `LICENSE`), and one `hedos engines install llama.cpp` installed (`b11669-cuda-12/`), each with an `installed.json` saying which. `hedos engines remove llama.cpp` removes both; the carried one unpacks again when next needed. |
 
 None of this holds model weights. Removing the whole directory loses the registry, generated artifacts, history and pull records, but no model: the next `hedos scan` finds them all again.
 
@@ -154,7 +164,7 @@ hedos sees exactly one Hugging Face cache from the environment, the same rule th
 
 | Variable | Effect |
 |---|---|
-| `PATH` | Where hedos finds `llama-server`, the coding harnesses for `hedos launch`, and (after a few standard install locations) `ollama` and `uv`. |
+| `PATH` | Where hedos finds `llama-server` (after `engines.llama_server`, the build hedos installed, and the one it carries, and before Homebrew's `/opt/homebrew/bin` and `/usr/local/bin`), the coding harnesses for `hedos launch`, and (after a few standard install locations) `ollama` and `uv`. |
 | `HEDOS_OPENAI_API_KEY` | The API key the OpenAI-compatible endpoint runtime sends, to every endpoint. |
 | `HEDOS_APPLE_SHIM` | The full path to `libhedos_apple_shim.dylib`, the Apple Intelligence bridge. Tried before the copy next to the `hedos` binary. |
 

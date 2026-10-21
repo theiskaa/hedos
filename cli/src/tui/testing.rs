@@ -86,6 +86,7 @@ pub fn deletion_preview(paths: Vec<String>) -> ModelDeletionPreview {
         bytes_estimate: 0,
         via_daemon: false,
         missing: false,
+        blocked: None,
     }
 }
 
