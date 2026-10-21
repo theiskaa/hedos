@@ -397,6 +397,23 @@ impl HFCacheWriter {
         self.reap_incompletes(keeping, cutoff)
     }
 
+    /// Remove the partial blobs named in `superseded`, whatever their age:
+    /// files the repo lists that the current selection no longer takes (a pull
+    /// paused under an older rule), which nothing will resume and which would
+    /// keep the model reading as still downloading.
+    pub fn remove_superseded_incompletes(&self, superseded: &HashSet<String>) {
+        let blobs = self.layout.blobs_directory();
+        let one_component = |name: &&String| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        };
+        for name in superseded.iter().filter(one_component) {
+            let _ = fs::remove_file(blobs.join(format!("{name}.incomplete")));
+        }
+    }
+
     /// The reaping core with an explicit cutoff (the seam tests drive). A missing
     /// blobs dir is fine (nothing to reap); other read errors surface.
     fn reap_incompletes(
@@ -599,6 +616,32 @@ mod tests {
         assert!(blobs.join("keepme.incomplete").exists(), "kept name spared");
         assert!(!blobs.join("stale.incomplete").exists(), "stale reaped");
         assert!(blobs.join("realblob").exists(), "non-incomplete untouched");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_fresh_partial_the_selection_dropped_is_removed_and_nothing_else() {
+        let (root, writer) = temp_writer();
+        writer.prepare_skeleton("rev", None).expect("skeleton");
+        let blobs = writer.layout.blobs_directory();
+        fs::write(blobs.join("dropped.incomplete"), b"x").unwrap();
+        fs::write(blobs.join("wanted.incomplete"), b"y").unwrap();
+        fs::write(blobs.join("dropped"), b"z").unwrap();
+        fs::write(root.join("outside.incomplete"), b"w").unwrap();
+
+        let superseded: HashSet<String> = ["dropped", "../outside", ""]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        writer.remove_superseded_incompletes(&superseded);
+
+        assert!(!blobs.join("dropped.incomplete").exists());
+        assert!(blobs.join("wanted.incomplete").exists());
+        assert!(
+            blobs.join("dropped").exists(),
+            "a finished blob is no partial"
+        );
+        assert!(root.join("outside.incomplete").exists());
         fs::remove_dir_all(&root).ok();
     }
 

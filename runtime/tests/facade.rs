@@ -14,8 +14,10 @@ use kernel::capabilities::CapabilityChunk;
 use kernel::discovery::{DiscoveredModel, ScanResult, StoreScanner};
 use kernel::jobs::{JobHistoryStore, JobRuntimeEvent, JobState};
 use kernel::records::{
-    Capability, JsonValue, Modality, ModelRecord, ModelSource, RuntimeId, SourceKind,
+    BidPreference, Capability, JsonValue, Modality, ModelRecord, ModelSource, RunTier, RuntimeId,
+    SourceKind,
 };
+use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 use runtime::adapters::{ChunkStream, JobRunning, JobStream, RuntimeAdapter};
 use runtime::facade::{Kernel, KernelError, RegisteredAdapter};
 use runtime::governor::{GovernorConfig, MemoryGovernor};
@@ -68,6 +70,13 @@ impl RuntimeAdapter for Fake {
 
     fn can_serve(&self, _record: &ModelRecord, capability: &Capability) -> bool {
         self.serves.contains(capability)
+    }
+
+    /// Bids on a model in Ollama's store, as the Ollama adapter it stands in
+    /// for does while Ollama is installed.
+    fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
+        (identified.format == ModelFormat::OllamaStore)
+            .then(|| RuntimeBid::new(RunTier::Native, BidPreference::OLLAMA))
     }
 
     fn invoke(

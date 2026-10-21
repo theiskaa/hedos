@@ -51,6 +51,9 @@ regex = "1"
 fs2 = "0.4"
 flate2 = "1"
 tar = "0.4"
+# xz for the llama.cpp build release binaries carry, built from its own sources
+# so no system liblzma is needed.
+liblzma = { version = "0.4", features = ["static"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 [profile.release]

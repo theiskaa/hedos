@@ -167,9 +167,10 @@ async fn explain_reports_the_bids_without_mutating() {
     assert_eq!(explanations.len(), 1);
     assert_eq!(explanations[0].winner(), Some(&RuntimeId::ollama()));
 
-    // Explain did not resolve the record — it is still unresolved on the shelf.
-    let shelf = kernel.shelf().await;
-    assert_eq!(shelf[0].runtime.id, None);
+    // Explain did not resolve the record: it is still unresolved in the store.
+    // Read the store itself, since a shelf read resolves Ollama's models.
+    let stored = Registry::open(dir.path()).expect("registry");
+    assert_eq!(stored.list()[0].runtime.id, None);
 }
 
 #[tokio::test]

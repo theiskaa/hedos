@@ -4,6 +4,7 @@
 //! [`Aggregator`](kernel::install::ollama_pull::Aggregator).
 
 use std::collections::HashMap;
+use std::net::{SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -24,6 +25,8 @@ use super::provider::{InstallEventStream, InstallFuture, InstallProvider};
 
 pub(crate) const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long the daemon may take to accept a connection on loopback.
+const LISTEN_TIMEOUT: Duration = Duration::from_millis(300);
 /// Cap on connecting to the daemon, so a host that accepts then never answers
 /// can't hang `send()` forever.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -371,6 +374,23 @@ pub(crate) async fn start_daemon(
         }
         .to_owned(),
     ))
+}
+
+/// Whether Ollama is here to serve: its binary is installed, or something
+/// accepts connections where its daemon listens, since a daemon running from a
+/// container or an install hedos cannot find the binary of still serves.
+pub(crate) fn ollama_present(environment: &HashMap<String, String>) -> bool {
+    daemon_binary(environment).is_some() || daemon_listening_at(DEFAULT_BASE_URL)
+}
+
+/// Whether something accepts connections at `base_url`, an `http://` address
+/// of an IP and a port.
+pub(crate) fn daemon_listening_at(base_url: &str) -> bool {
+    base_url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .parse::<SocketAddr>()
+        .is_ok_and(|address| TcpStream::connect_timeout(&address, LISTEN_TIMEOUT).is_ok())
 }
 
 /// Find an `ollama` executable in the well-known locations, then on `PATH`.

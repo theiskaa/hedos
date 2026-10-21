@@ -1178,3 +1178,125 @@ async fn a_server_that_stops_mid_request_is_reported_without_its_address() {
         other => panic!("expected Failed, got {other:?}"),
     }
 }
+
+/// A model in an Ollama store under `dir`, resolved to llama.cpp, whose
+/// weight blob declares `declared` tokens and whose record carries Ollama's
+/// `num_ctx` as its context length.
+fn ollama_on_llama_cpp(dir: &TempDir, declared: u32, num_ctx: Option<i64>) -> ModelRecord {
+    let weights = support::gguf(&[
+        support::kv_string("general.architecture", "llama"),
+        support::kv_u32("llama.context_length", declared),
+        support::kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ]);
+    let (manifest, blob) = support::ollama_store_model(dir.path(), &weights, None);
+    let mut rec = ModelRecord::new(
+        "model:latest",
+        Modality::text(),
+        vec![Capability::chat(), Capability::complete()],
+        ModelSource::new(SourceKind::ollama(), manifest.to_str().unwrap()),
+    );
+    rec.primary_weight_path = Some(blob.to_str().unwrap().to_owned());
+    rec.runtime.id = Some(RuntimeId::llama_cpp());
+    rec.context_length = num_ctx;
+    rec
+}
+
+#[test]
+fn an_ollama_model_is_bounded_by_its_gguf_window_and_starts_at_ollamas_num_ctx() {
+    let (adapter, _) = adapter_over(Err(RuntimeError::Unavailable("unused".to_owned())));
+
+    let dir = TempDir::new();
+    let unset = ollama_on_llama_cpp(&dir, 32768, None);
+    assert_eq!(
+        adapter.effective_context_window(&unset, Some(8192)),
+        Some(8192)
+    );
+    assert_eq!(adapter.effective_context_window(&unset, None), Some(32768));
+    assert_eq!(
+        adapter.effective_context_window(&unset, Some(100_000)),
+        Some(32768)
+    );
+
+    let dir = TempDir::new();
+    let small = ollama_on_llama_cpp(&dir, 32768, Some(2048));
+    assert_eq!(adapter.effective_context_window(&small, None), Some(2048));
+    assert_eq!(
+        adapter.effective_context_window(&small, Some(8192)),
+        Some(8192)
+    );
+}
+
+#[test]
+fn an_ollama_model_sees_on_llama_cpp_only_through_a_projector_it_loads() {
+    let (adapter, _) = adapter_over(Err(RuntimeError::Unavailable("unused".to_owned())));
+    let weights = support::gguf(&[
+        support::kv_string("general.architecture", "llama"),
+        support::kv_u32("llama.embedding_length", 64),
+        support::kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ]);
+    let sighted = |projector_width: u64| {
+        let dir = TempDir::new();
+        let projector = support::projector_gguf(projector_width, 0);
+        let (manifest, blob) = support::ollama_store_model(dir.path(), &weights, Some(&projector));
+        let mut rec = ModelRecord::new(
+            "llava:latest",
+            Modality::text(),
+            vec![Capability::chat(), Capability::see()],
+            ModelSource::new(SourceKind::ollama(), manifest.to_str().unwrap()),
+        );
+        rec.primary_weight_path = Some(blob.to_str().unwrap().to_owned());
+        rec.runtime.id = Some(RuntimeId::llama_cpp());
+        (dir, rec)
+    };
+    let (_fits, fits) = sighted(64);
+    assert!(adapter.can_serve(&fits, &Capability::see()));
+    let (_misfit, misfit) = sighted(32);
+    assert!(!adapter.can_serve(&misfit, &Capability::see()));
+    assert!(adapter.can_serve(&misfit, &Capability::chat()));
+}
+
+/// A backend that never starts a server, for questions about windows.
+struct NoServer;
+
+impl LlamaBackend for NoServer {
+    fn base_url(&self, _: &ModelRecord, _: i64, _: ServerMode) -> BackendFuture {
+        Box::pin(async { Err(RuntimeError::Unavailable("no server".to_owned())) })
+    }
+}
+
+#[test]
+fn a_projector_counts_toward_the_window_only_for_a_model_that_sees() {
+    use support::{gguf, kv_string, kv_u32, projector_gguf};
+    let dir = TempDir::new();
+    // Mistral 7B's shape (128 KiB of KV cache a token), 4096 wide, with a
+    // 256 MiB projector of the same width beside it.
+    let weights = dir.join("m.gguf");
+    std::fs::write(
+        &weights,
+        gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.block_count", 32),
+            kv_u32("llama.embedding_length", 4096),
+            kv_u32("llama.attention.head_count", 32),
+            kv_u32("llama.attention.head_count_kv", 8),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(dir.join("mmproj-m.gguf"), projector_gguf(4096, 256 << 20)).unwrap();
+    let mut record = ModelRecord::new(
+        "m",
+        Modality::text(),
+        vec![Capability::chat()],
+        ModelSource::new(SourceKind::file(), &weights.to_string_lossy()),
+    );
+    record.context_length = Some(32768);
+    let memory = (1u64 << 30) + (513 << 20);
+    let adapter =
+        LlamaServerAdapter::new(Arc::new(NoServer)).with_memory(Arc::new(move || Some(memory)));
+
+    // Blind, the projector is not loaded: 512 MiB of cache, 4096 tokens.
+    assert_eq!(adapter.effective_context_window(&record, None), Some(4096));
+    // Seeing, it is: 256 MiB of cache left, 2048 tokens.
+    record.capabilities.push(Capability::see());
+    assert_eq!(adapter.effective_context_window(&record, None), Some(2048));
+}

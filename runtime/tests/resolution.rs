@@ -12,9 +12,12 @@ use kernel::records::{
 };
 use kernel::registry::Registry;
 use kernel::resolution::{IdentificationCache, IdentifiedModel, RuntimeBid};
-use runtime::adapters::{ChunkStream, OllamaAdapter, RuntimeAdapter, RuntimeError};
+use runtime::adapters::{
+    BackendFuture, ChunkStream, LlamaBackend, LlamaServerAdapter, OllamaAdapter, RuntimeAdapter,
+    RuntimeError, ServerMode,
+};
 use runtime::resolution::ResolutionEngine;
-use support::TempDir;
+use support::{TempDir, gguf, kv_string, kv_u32, ollama_store_model, projector_gguf};
 
 /// An adapter that offers a fixed bid regardless of the model.
 struct FakeAdapter {
@@ -691,4 +694,133 @@ fn resolve_stranded_embedders_skips_a_downloading_or_user_pinned_record() {
     for untouched in &before {
         assert_eq!(reg.get(&untouched.id), Some(untouched));
     }
+}
+
+/// A llama.cpp backend no test here ever asks for a server.
+struct NoServer;
+
+impl LlamaBackend for NoServer {
+    fn base_url(&self, _record: &ModelRecord, _context: i64, _mode: ServerMode) -> BackendFuture {
+        Box::pin(async { Err(RuntimeError::Unavailable("no server".to_owned())) })
+    }
+}
+
+/// The real Ollama and llama.cpp adapters, with Ollama here or not.
+fn ollama_and_llama_cpp(ollama_present: bool) -> ResolutionEngine {
+    ResolutionEngine::new(vec![
+        Arc::new(OllamaAdapter::new().with_presence(ollama_present)),
+        Arc::new(LlamaServerAdapter::new(Arc::new(NoServer))),
+    ])
+}
+
+/// A model in an Ollama store under `dir` whose weight blob has `weights` as
+/// its header, beside a projector layer when `projector` is set.
+fn ollama_store_record(dir: &TempDir, weights: &[u8], projector: bool) -> ModelRecord {
+    let projector = projector.then(|| projector_gguf(4096, 0));
+    let (manifest, blob) = ollama_store_model(dir.path(), weights, projector.as_deref());
+    let mut record = ModelRecord::new(
+        "model:latest",
+        Modality::text(),
+        Vec::new(),
+        ModelSource::new(SourceKind::ollama(), manifest.to_str().unwrap()),
+    );
+    record.primary_weight_path = Some(blob.to_string_lossy().into_owned());
+    record
+}
+
+/// llava's layout: the template in the GGUF, the projector beside it.
+fn classic_weights() -> Vec<u8> {
+    gguf(&[
+        kv_string("general.architecture", "llama"),
+        kv_u32("llama.embedding_length", 4096),
+        kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ])
+}
+
+#[test]
+fn an_ollama_model_goes_to_ollama_while_it_is_here_and_to_llama_cpp_once_it_is_gone() {
+    let dir = TempDir::new();
+    let record = ollama_store_record(&dir, &classic_weights(), true);
+
+    let (_store, mut reg) = registry();
+    reg.register(record.clone()).unwrap();
+    let with_ollama = ollama_and_llama_cpp(true)
+        .resolve(&record, &mut reg)
+        .unwrap()
+        .expect("changed");
+    assert_eq!(with_ollama.runtime.id, Some(RuntimeId::ollama()));
+    assert!(
+        with_ollama
+            .runtime
+            .alternatives
+            .contains(&RuntimeId::llama_cpp())
+    );
+
+    let (_store, mut reg) = registry();
+    reg.register(record.clone()).unwrap();
+    let without = ollama_and_llama_cpp(false)
+        .resolve(&record, &mut reg)
+        .unwrap()
+        .expect("changed");
+    assert_eq!(without.runtime.id, Some(RuntimeId::llama_cpp()));
+    assert!(without.capabilities.contains(&Capability::see()));
+}
+
+#[test]
+fn an_ollama_model_llama_cpp_cannot_load_stays_unresolved_without_ollama() {
+    let dir = TempDir::new();
+    // Ollama's own layout: encoders packed into the weights, no template.
+    let bundled = gguf(&[
+        kv_string("general.architecture", "gemma4"),
+        kv_u32("gemma4.vision.block_count", 16),
+    ]);
+    // A template only Ollama reads.
+    let untemplated = gguf(&[kv_string("general.architecture", "gpt-oss")]);
+    for weights in [bundled, untemplated] {
+        let record = ollama_store_record(&dir, &weights, false);
+        let (_store, mut reg) = registry();
+        reg.register(record.clone()).unwrap();
+        let resolved = ollama_and_llama_cpp(false)
+            .resolve(&record, &mut reg)
+            .unwrap()
+            .unwrap_or(record.clone());
+        assert_eq!(resolved.runtime.id, None);
+        assert_eq!(resolved.state, ModelState::Unresolved);
+    }
+}
+
+#[test]
+fn an_ollama_store_pass_moves_its_models_to_whoever_serves_them_now() {
+    let dir = TempDir::new();
+    let (_store, mut reg) = registry();
+    let mut on_ollama = ollama_store_record(&dir, &classic_weights(), false);
+    on_ollama.runtime.id = Some(RuntimeId::ollama());
+    on_ollama.state = ModelState::Ready;
+    let mut pinned = on_ollama.clone();
+    pinned.id = "pinned".to_owned();
+    pinned.runtime.resolved = Resolution::User;
+    let mut file = file_record();
+    file.id = "file".to_owned();
+    reg.register(on_ollama.clone()).unwrap();
+    reg.register(pinned.clone()).unwrap();
+    reg.register(file.clone()).unwrap();
+
+    let changed = ollama_and_llama_cpp(false)
+        .resolve_ollama_store(&mut reg)
+        .unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].id, on_ollama.id);
+    assert_eq!(changed[0].runtime.id, Some(RuntimeId::llama_cpp()));
+    assert_eq!(
+        reg.get("pinned").unwrap().runtime.id,
+        Some(RuntimeId::ollama())
+    );
+    assert_eq!(reg.get("file").unwrap().runtime.id, None);
+
+    // Ollama back: the model returns to it.
+    let changed = ollama_and_llama_cpp(true)
+        .resolve_ollama_store(&mut reg)
+        .unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].runtime.id, Some(RuntimeId::ollama()));
 }

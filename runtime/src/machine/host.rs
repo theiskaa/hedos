@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -16,8 +15,6 @@ use crate::governor::GovernorConfig;
 /// How long a tool may take to describe the machine. llama.cpp lists its
 /// devices in about 70 ms; a tool still going after this is wedged.
 const RUN_TIMEOUT: Duration = Duration::from_secs(3);
-/// How long the Ollama daemon may take to accept a connection on loopback.
-const OLLAMA_CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 /// The most of a tool's output read: a device list is a few lines.
 const OUTPUT_CAP: u64 = 64 * 1024;
 /// How long a tool's output may take to arrive after it exits, before a
@@ -49,6 +46,10 @@ pub trait Host {
     fn read(&self, path: &Path) -> Option<String>;
     /// The `/sys/class/drm/cardN` directories.
     fn drm_cards(&self) -> Vec<PathBuf>;
+    /// The `llama-server` hedos would run.
+    fn llama_server(&self) -> Option<PathBuf> {
+        self.find("llama-server")
+    }
     /// Whether Ollama is installed or its daemon answers.
     fn ollama(&self) -> bool;
     /// Whether `uv` is installed.
@@ -168,24 +169,18 @@ impl Host for SystemHost {
         cards
     }
 
+    fn llama_server(&self) -> Option<PathBuf> {
+        crate::engines::llama_cpp::located().map(|server| server.path)
+    }
+
     fn ollama(&self) -> bool {
         let environment: HashMap<String, String> = std::env::vars().collect();
-        crate::install::ollama::daemon_binary(&environment).is_some() || ollama_answers()
+        crate::install::ollama::ollama_present(&environment)
     }
 
     fn uv(&self) -> bool {
         crate::environment::uv_binary().is_some()
     }
-}
-
-/// Whether something accepts connections where the Ollama daemon listens: a
-/// daemon running from a container or another install hedos cannot find the
-/// binary of still serves.
-fn ollama_answers() -> bool {
-    let address = crate::install::ollama::DEFAULT_BASE_URL.trim_start_matches("http://");
-    address
-        .parse::<SocketAddr>()
-        .is_ok_and(|address| TcpStream::connect_timeout(&address, OLLAMA_CONNECT_TIMEOUT).is_ok())
 }
 
 /// The free space on the disk `path` is on, read at its nearest existing
@@ -203,18 +198,46 @@ fn free_at(path: &Path) -> Option<u64> {
 /// process the program started can hold the pipe open past the program's own
 /// end, and is left to it rather than waited on.
 fn run_bounded(program: &Path, args: &[&str], timeout: Duration) -> Option<String> {
+    run_bounded_reading(program, args, timeout, Stream::Stdout)
+}
+
+/// One of a program's output streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Stdout,
+    /// Where `llama-server --version` writes.
+    Stderr,
+}
+
+/// [`run_bounded`], reading `stream` rather than stdout.
+pub(crate) fn run_bounded_reading(
+    program: &Path,
+    args: &[&str],
+    timeout: Duration,
+    stream: Stream,
+) -> Option<String> {
+    let piped = |wanted: Stream| {
+        if stream == wanted {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        }
+    };
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stdout(piped(Stream::Stdout))
+        .stderr(piped(Stream::Stderr))
         .spawn()
         .ok()?;
-    let stdout = child.stdout.take()?;
+    let reader: Box<dyn Read + Send> = match stream {
+        Stream::Stdout => Box::new(child.stdout.take()?),
+        Stream::Stderr => Box::new(child.stderr.take()?),
+    };
     let (sender, output) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = Vec::new();
-        let _ = stdout.take(OUTPUT_CAP).read_to_end(&mut buffer);
+        let _ = reader.take(OUTPUT_CAP).read_to_end(&mut buffer);
         let _ = sender.send(buffer);
     });
     let deadline = Instant::now() + timeout;

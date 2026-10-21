@@ -1,0 +1,78 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   2206
+  ],
+  [
+   ".src_sha",
+   97
+  ],
+  [
+   "Qwen3.8-27B-BF16.gguf",
+   53808282048
+  ],
+  [
+   "Qwen3.8-27B-Q4_K_M.gguf",
+   18973870528
+  ],
+  [
+   "Qwen3.8-27B-Q8_0.gguf",
+   28595763648
+  ],
+  [
+   "README.md",
+   488
+  ],
+  [
+   "convert.log",
+   539017
+  ],
+  [
+   "dflash-Qwen3.8-27B-BF16.gguf",
+   3860292960
+  ],
+  [
+   "dflash-Qwen3.8-27B-Q4_0.gguf",
+   1094346080
+  ],
+  [
+   "dflash-Qwen3.8-27B-Q8_0.gguf",
+   2056414560
+  ],
+  [
+   "mmproj-Qwen3.8-27B-BF16.gguf",
+   931145888
+  ],
+  [
+   "mmproj-Qwen3.8-27B-Q8_0.gguf",
+   629247008
+  ],
+  [
+   "mtp-Qwen3.8-27B-BF16.gguf",
+   5946010016
+  ],
+  [
+   "mtp-Qwen3.8-27B-Q4_0.gguf",
+   1680271776
+  ],
+  [
+   "mtp-Qwen3.8-27B-Q8_0.gguf",
+   3164006816
+  ]
+ ],
+ "gguf": {
+  "Qwen3.8-27B-Q4_K_M.gguf": {
+   "architecture": "qwen35",
+   "chat_template": true,
+   "context_length": 262144,
+   "embedding_length": 5120
+  },
+  "mmproj-Qwen3.8-27B-Q8_0.gguf": {
+   "projector_width": 5120
+  }
+ },
+ "repo": "ggml-org/Qwen3.8-27B-GGUF",
+ "sha": "a316ea527fde32c12487be7574e2db5ac2ad2a7e",
+ "texts": {}
+}

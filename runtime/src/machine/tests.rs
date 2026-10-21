@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use kernel::install::InstallProviderId;
 use kernel::machine::{Cores, DeviceKind, DevicesFrom, Engine, FreeDisk, Os, Placement};
 
-use super::{Host, probe_with};
+use super::{Host, available_memory, probe_with};
 
 const GIB: u64 = 1 << 30;
 
@@ -252,4 +252,71 @@ fn this_mac_is_read_as_metal_reports_it() {
         }
         None => assert_ne!(machine.devices_from, DevicesFrom::Metal),
     }
+}
+
+#[test]
+fn available_memory_is_linuxs_own_figure_within_the_tightest_cgroup_limit() {
+    let mut host = FakeHost::new(Os::Linux, "x86_64");
+    host.files.insert(
+        PathBuf::from("/proc/meminfo"),
+        "MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\n",
+    );
+    assert_eq!(available_memory(&host), Some(6 * GIB));
+
+    // A service's own cgroup, limited above it.
+    host.files.insert(
+        PathBuf::from("/proc/self/cgroup"),
+        "0::/system.slice/hedos.service\n",
+    );
+    for (dir, max, current) in [
+        (
+            "/sys/fs/cgroup/system.slice/hedos.service",
+            "max\n",
+            "1073741824\n",
+        ),
+        (
+            "/sys/fs/cgroup/system.slice",
+            "4294967296\n",
+            "1073741824\n",
+        ),
+        ("/sys/fs/cgroup", "max\n", "0\n"),
+    ] {
+        host.files
+            .insert(PathBuf::from(dir).join("memory.max"), max);
+        host.files
+            .insert(PathBuf::from(dir).join("memory.current"), current);
+    }
+    assert_eq!(available_memory(&host), Some(3 * GIB));
+
+    // cgroup v1's memory controller.
+    let mut v1 = FakeHost::new(Os::Linux, "x86_64");
+    v1.files
+        .insert(PathBuf::from("/proc/meminfo"), "MemAvailable: 6291456 kB\n");
+    v1.files
+        .insert(PathBuf::from("/proc/self/cgroup"), "9:memory:/docker/abc\n");
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes"),
+        "2147483648\n",
+    );
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/memory/docker/abc/memory.usage_in_bytes"),
+        "0\n",
+    );
+    assert_eq!(available_memory(&v1), Some(2 * GIB));
+
+    // A memory hierarchy mounted elsewhere, showing a cgroup of its own.
+    v1.files.insert(
+        PathBuf::from("/proc/self/mountinfo"),
+        "40 24 0:35 /docker /sys/fs/cgroup/cpu,memory rw - cgroup cgroup rw,cpu,memory\n",
+    );
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/cpu,memory/abc/memory.limit_in_bytes"),
+        "1073741824\n",
+    );
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/cpu,memory/abc/memory.usage_in_bytes"),
+        "0\n",
+    );
+    assert_eq!(available_memory(&v1), Some(GIB));
+    assert_eq!(available_memory(&FakeHost::new(Os::Macos, "aarch64")), None);
 }

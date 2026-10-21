@@ -21,16 +21,19 @@ use crate::adapters::{
     ManifestSidecarAdapter, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter,
     MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
 };
+use crate::engines::llama_cpp;
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
 use crate::governor::{GovernorConfig, MemoryGovernor, ResidencyPolicy};
+use crate::install::ollama::ollama_present;
 use crate::install::{
     HFHubAPI, HuggingFaceInstallProvider, InstallProvider, InstallService, InstallTransport,
     OllamaInstallProvider, ReqwestTransport,
 };
 use crate::manifests::{StoreLoad, UserRuntimeStore, host_consent};
-use crate::settings::Settings;
+use crate::settings::{Settings, SettingsStore};
 use crate::sidecar::SidecarSupervisor;
+use kernel::machine::LLAMA_CPP_INSTALL_HINT;
 
 /// The per-user directories Hedos reads and writes.
 pub struct HedosDirs {
@@ -180,7 +183,8 @@ pub fn apple_foundation_scanner() -> Box<dyn StoreScanner> {
 /// The built-in adapter set — the port of the Swift `defaultAdapters`. Each
 /// adapter is present regardless of whether its backend (a `llama-server`
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
-/// capability only actually serves when its backend is available. The one
+/// capability only actually serves when its backend is available. Ollama alone
+/// bids only when it is here, so its models go to llama.cpp without it. The one
 /// framework-bound adapter still out is MLX-Swift (covered by the mlx
 /// sidecars); Apple Foundation serves through the Swift bridge wherever it
 /// could be built and loaded, else registers a missing backend.
@@ -199,16 +203,38 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
         )
     };
 
+    // The config is read again at each launch, as the machine probe reads it,
+    // so both name the same llama-server after `[engines]` changes. The build
+    // hedos carries is unpacked, or checked whole, before a launch that would
+    // run it.
+    let data = dirs.data.clone();
+    let preparing = Arc::new(move || {
+        let configured = SettingsStore::discover().load().engines.llama_server;
+        let server = llama_cpp::locate(&configured, &data)
+            .ok_or_else(|| LLAMA_CPP_INSTALL_HINT.to_owned())?;
+        if server.from == llama_cpp::Source::Bundled
+            && let Some(unpacked) = crate::engines::install::unpack_bundled(&data)
+                .map_err(|error| format!("unpacking the llama.cpp hedos carries: {error}"))?
+        {
+            return Ok(unpacked.path);
+        }
+        Ok(server.path)
+    });
+    let llama_server = LlamaServerSpawner::locating(preparing);
+
     // Streaming adapters.
     let mut adapters: Vec<RegisteredAdapter> = vec![
-        RegisteredAdapter::streaming(Arc::new(LlamaServerAdapter::new(Arc::new(
-            LlamaServerPool::new(Arc::new(LlamaServerSpawner::new("llama-server"))),
-        )))),
+        RegisteredAdapter::streaming(Arc::new(
+            LlamaServerAdapter::new(Arc::new(LlamaServerPool::new(Arc::new(llama_server))))
+                .with_memory(Arc::new(crate::machine::llama_launch_memory)),
+        )),
         RegisteredAdapter::streaming(Arc::new(WhisperCppAdapter::new(
             governor.clone(),
             WhisperEngine::new(Arc::new(MissingWhisperBackend)),
         ))),
-        RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())),
+        RegisteredAdapter::streaming(Arc::new(
+            OllamaAdapter::new().with_presence(ollama_present(&readable_env())),
+        )),
         RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(
             apple_foundation_backend(),
         ))),

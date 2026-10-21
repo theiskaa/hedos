@@ -110,3 +110,35 @@ pub fn projector_gguf(width: u64, padding: usize) -> Vec<u8> {
     bytes.resize(bytes.len().div_ceil(32) * 32 + padding + 1, 0);
     bytes
 }
+
+/// An Ollama store under `root` holding one model, laid out as the daemon
+/// writes it: a manifest naming the weight blob and, when given, a projector
+/// blob. Returns the manifest path and the weight blob path, as discovery
+/// records them.
+pub fn ollama_store_model(
+    root: &Path,
+    weights: &[u8],
+    projector: Option<&[u8]>,
+) -> (PathBuf, PathBuf) {
+    let blobs = root.join("blobs");
+    std::fs::create_dir_all(&blobs).unwrap();
+    let model_digest = format!("sha256:{}", "a".repeat(64));
+    let weight_blob = blobs.join(model_digest.replace(':', "-"));
+    std::fs::write(&weight_blob, weights).unwrap();
+    let mut layers = vec![format!(
+        r#"{{"mediaType":"application/vnd.ollama.image.model","digest":"{model_digest}","size":{}}}"#,
+        weights.len()
+    )];
+    if let Some(projector) = projector {
+        let digest = format!("sha256:{}", "b".repeat(64));
+        std::fs::write(blobs.join(digest.replace(':', "-")), projector).unwrap();
+        layers.push(format!(
+            r#"{{"mediaType":"application/vnd.ollama.image.projector","digest":"{digest}","size":{}}}"#,
+            projector.len()
+        ));
+    }
+    let manifest = root.join("manifests/registry.ollama.ai/library/model/latest");
+    std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+    std::fs::write(&manifest, format!(r#"{{"layers":[{}]}}"#, layers.join(","))).unwrap();
+    (manifest, weight_blob)
+}

@@ -48,12 +48,6 @@ impl MockSpawner {
 
 impl ServerSpawner for MockSpawner {
     fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
-        self.count.fetch_add(1, Ordering::SeqCst);
-        self.modes.lock().unwrap().push(launch.mode);
-        self.projectors
-            .lock()
-            .unwrap()
-            .push(launch.projector.map(str::to_owned));
         // The pool frees the port just before this binds it, and a server it
         // replaced may have held it a moment ago; like llama-server, take it
         // over rather than wait out the closed connections' TIME_WAIT.
@@ -64,6 +58,14 @@ impl ServerSpawner for MockSpawner {
             .bind(std::net::SocketAddr::from(([127, 0, 0, 1], launch.port)))
             .map_err(unavailable)?;
         let listener = socket.listen(64).map_err(unavailable)?;
+        // Counted once it holds its port: a launch whose port was taken is
+        // tried again on another, and that is still one server.
+        self.count.fetch_add(1, Ordering::SeqCst);
+        self.modes.lock().unwrap().push(launch.mode);
+        self.projectors
+            .lock()
+            .unwrap()
+            .push(launch.projector.map(str::to_owned));
         let health = Arc::new(AtomicBool::new(self.healthy));
         self.health_flags.lock().unwrap().push(Arc::clone(&health));
         let accept = tokio::spawn(async move {
@@ -602,6 +604,90 @@ async fn a_process_dead_on_arrival_is_unavailable() {
 }
 
 #[tokio::test]
+async fn a_server_killed_while_loading_is_said_to_have_run_out_of_memory() {
+    struct Killing;
+    impl ServerSpawner for Killing {
+        fn spawn(
+            &self,
+            _launch: &ServerLaunch<'_>,
+        ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            Ok(Box::new(Killed))
+        }
+    }
+    struct Killed;
+    impl ServerProcess for Killed {
+        fn is_alive(&self) -> bool {
+            false
+        }
+        fn killed(&self) -> bool {
+            true
+        }
+    }
+    let pool = LlamaServerPool::new(Arc::new(Killing)).with_ready_timeout(Duration::from_secs(5));
+    let error = pool
+        .base_url(&record("a"), 32768, ServerMode::Chat)
+        .await
+        .unwrap_err();
+    let RuntimeError::Unavailable(message) = error else {
+        panic!("expected Unavailable, got {error:?}");
+    };
+    assert!(message.contains("running out of memory"), "{message}");
+    assert!(message.contains("32768-token window"), "{message}");
+}
+
+#[tokio::test]
+async fn a_running_chat_server_says_its_window() {
+    let pool = fast_pool(Arc::new(MockSpawner::new(true)));
+    let rec = record("a");
+    assert_eq!(pool.resident_window(&rec), None);
+    pool.base_url(&rec, 8192, ServerMode::Chat)
+        .await
+        .expect("ready");
+    assert_eq!(pool.resident_window(&rec), Some(8192));
+    pool.evict(&rec.id).await;
+    assert_eq!(pool.resident_window(&rec), None);
+
+    // A server that died says nothing of its window.
+    let spawner = Arc::new(MockSpawner::new(true));
+    let pool = fast_pool(Arc::clone(&spawner));
+    pool.base_url(&rec, 8192, ServerMode::Chat)
+        .await
+        .expect("ready");
+    for alive in spawner.alive_flags.lock().unwrap().iter() {
+        alive.store(false, Ordering::SeqCst);
+    }
+    assert_eq!(pool.resident_window(&rec), None);
+}
+
+#[tokio::test]
+async fn a_launch_whose_port_was_taken_tries_another() {
+    struct PortTaken {
+        tries: AtomicUsize,
+        then: MockSpawner,
+    }
+    impl ServerSpawner for PortTaken {
+        fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            if self.tries.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(RuntimeError::Unavailable(
+                    "Address already in use (os error 48)".to_owned(),
+                ));
+            }
+            self.then.spawn(launch)
+        }
+    }
+    let spawner = Arc::new(PortTaken {
+        tries: AtomicUsize::new(0),
+        then: MockSpawner::new(true),
+    });
+    let pool = LlamaServerPool::new(Arc::clone(&spawner) as Arc<dyn ServerSpawner>)
+        .with_ready_timeout(Duration::from_secs(2));
+    pool.base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .expect("ready on another port");
+    assert_eq!(spawner.tries.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn a_spawn_failure_is_forwarded() {
     struct FailingSpawner;
     impl ServerSpawner for FailingSpawner {
@@ -618,6 +704,119 @@ async fn a_spawn_failure_is_forwarded() {
         .await
         .unwrap_err();
     assert!(matches!(error, RuntimeError::Unavailable(_)));
+}
+
+#[tokio::test]
+async fn preparing_runs_off_the_serving_thread_and_its_failure_spawns_nothing() {
+    struct Preparing {
+        on: Arc<Mutex<Vec<std::thread::ThreadId>>>,
+        spawned: Arc<AtomicUsize>,
+    }
+    impl ServerSpawner for Preparing {
+        fn prepare(&self) -> Result<Option<std::path::PathBuf>, RuntimeError> {
+            self.on.lock().unwrap().push(std::thread::current().id());
+            Err(RuntimeError::Unavailable("could not unpack".to_owned()))
+        }
+        fn spawn(
+            &self,
+            _launch: &ServerLaunch<'_>,
+        ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            self.spawned.fetch_add(1, Ordering::SeqCst);
+            Err(RuntimeError::Unavailable("spawned".to_owned()))
+        }
+    }
+    let on = Arc::new(Mutex::new(Vec::new()));
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let pool = LlamaServerPool::new(Arc::new(Preparing {
+        on: Arc::clone(&on),
+        spawned: Arc::clone(&spawned),
+    }));
+    let error = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("could not unpack"), "{error}");
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    let on = on.lock().unwrap();
+    assert_eq!(on.len(), 1);
+    // A current-thread test runtime serves on this thread; preparing must not.
+    assert_ne!(on[0], std::thread::current().id());
+}
+
+#[tokio::test]
+async fn the_spawn_runs_what_preparing_chose_and_prepares_again_once_when_it_vanished() {
+    struct Vanishing {
+        prepared: Arc<AtomicUsize>,
+        ran: Arc<Mutex<Vec<Option<std::path::PathBuf>>>>,
+    }
+    impl ServerSpawner for Vanishing {
+        fn prepare(&self) -> Result<Option<std::path::PathBuf>, RuntimeError> {
+            let n = self.prepared.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(format!("/no/such/llama-server-{n}").into()))
+        }
+        fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            self.ran
+                .lock()
+                .unwrap()
+                .push(launch.binary.map(std::path::Path::to_path_buf));
+            Err(RuntimeError::Unavailable("not there".to_owned()))
+        }
+    }
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let ran = Arc::new(Mutex::new(Vec::new()));
+    let pool = LlamaServerPool::new(Arc::new(Vanishing {
+        prepared: Arc::clone(&prepared),
+        ran: Arc::clone(&ran),
+    }));
+    let error = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RuntimeError::Unavailable(_)));
+    assert_eq!(prepared.load(Ordering::SeqCst), 2, "prepared again once");
+    assert_eq!(
+        *ran.lock().unwrap(),
+        [
+            Some("/no/such/llama-server-0".into()),
+            Some("/no/such/llama-server-1".into())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_server_whose_prepared_build_vanished_while_starting_is_prepared_again_once() {
+    struct DiesStarting {
+        prepared: Arc<AtomicUsize>,
+    }
+    impl ServerSpawner for DiesStarting {
+        fn prepare(&self) -> Result<Option<std::path::PathBuf>, RuntimeError> {
+            self.prepared.fetch_add(1, Ordering::SeqCst);
+            Ok(Some("/no/such/llama-server".into()))
+        }
+        fn spawn(
+            &self,
+            _launch: &ServerLaunch<'_>,
+        ) -> Result<Box<dyn ServerProcess>, RuntimeError> {
+            Ok(Box::new(Exited))
+        }
+    }
+    struct Exited;
+    impl ServerProcess for Exited {
+        fn is_alive(&self) -> bool {
+            false
+        }
+    }
+    let prepared = Arc::new(AtomicUsize::new(0));
+    let pool = LlamaServerPool::new(Arc::new(DiesStarting {
+        prepared: Arc::clone(&prepared),
+    }))
+    .with_ready_timeout(Duration::from_secs(5));
+    let error = pool
+        .base_url(&record("a"), 4096, ServerMode::Chat)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RuntimeError::Unavailable(_)));
+    assert_eq!(prepared.load(Ordering::SeqCst), 2, "prepared again once");
 }
 
 #[tokio::test]
