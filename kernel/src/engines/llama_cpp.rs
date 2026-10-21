@@ -123,6 +123,16 @@ pub const PINNED: Release = Release {
 /// 0.6.0's.
 pub const DECISION_MODELS_BUILD: u64 = 11429;
 
+/// The build number a llama.cpp build tag names (`11669` for `b11669`):
+/// a `b` and digits, nothing else.
+pub fn parse_build_tag(tag: &str) -> Option<u64> {
+    let digits = tag.strip_prefix('b')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Where llama.cpp's release assets are published.
 const RELEASES: &str = "https://github.com/ggml-org/llama.cpp/releases/download";
 
@@ -166,15 +176,6 @@ impl Release {
             .find(|asset| asset.os == os && asset.arch == arch && asset.variant == variant)
     }
 
-    /// The variants this release has a build of for `os`/`arch`.
-    pub fn variants(&self, os: Os, arch: &str) -> Vec<Variant> {
-        self.assets
-            .iter()
-            .filter(|asset| asset.os == os && asset.arch == arch)
-            .map(|asset| asset.variant)
-            .collect()
-    }
-
     /// The variants this release has a build of for `os`/`arch` that start
     /// on a system whose glibc is `glibc`.
     pub fn variants_starting(&self, os: Os, arch: &str, glibc: Option<&str>) -> Vec<Variant> {
@@ -187,7 +188,7 @@ impl Release {
 
     /// The build number of the tag (`11669` for `b11669`).
     pub fn build_number(&self) -> Option<u64> {
-        self.build.strip_prefix('b')?.parse().ok()
+        parse_build_tag(self.build)
     }
 
     /// Where `file`, one of this release's assets that `publisher` publishes,
@@ -360,10 +361,10 @@ pub fn bundled_variant(os: Os, arch: &str) -> Option<Variant> {
 
 /// The oldest glibc llama.cpp's own Linux archives start on: they are built on
 /// Ubuntu 24.04.
-pub const PUBLISHED_LINUX_GLIBC: (u32, u32) = (2, 38);
+const PUBLISHED_LINUX_GLIBC: (u32, u32) = (2, 38);
 
 /// A glibc version (`2.35`) as its major and minor numbers.
-pub fn parse_glibc(version: &str) -> Option<(u32, u32)> {
+fn parse_glibc(version: &str) -> Option<(u32, u32)> {
     let mut parts = version.trim().split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
@@ -373,7 +374,7 @@ pub fn parse_glibc(version: &str) -> Option<(u32, u32)> {
 /// Why llama.cpp's own Linux builds cannot start on a system whose glibc is
 /// `glibc`, when they cannot. hedos's own builds start there
 /// ([`Asset::blocked`]).
-pub fn published_build_blocked(glibc: &str) -> Option<String> {
+fn published_build_blocked(glibc: &str) -> Option<String> {
     let found = parse_glibc(glibc)?;
     (found < PUBLISHED_LINUX_GLIBC).then(|| {
         let (major, minor) = PUBLISHED_LINUX_GLIBC;
@@ -626,7 +627,7 @@ mod tests {
         );
         assert_eq!(
             PINNED.variants_starting(Os::Linux, "x86_64", Some("2.39")),
-            PINNED.variants(Os::Linux, "x86_64")
+            PINNED.variants_starting(Os::Linux, "x86_64", None)
         );
     }
 
@@ -645,6 +646,10 @@ mod tests {
             }
         }
         assert_eq!(PINNED.build_number(), Some(11669));
+        assert_eq!(parse_build_tag("b11669"), Some(11669));
+        for odd in ["b+1", "b", "11669", "b1a", " b1"] {
+            assert_eq!(parse_build_tag(odd), None, "{odd}");
+        }
         assert!(PINNED.build_number() >= Some(DECISION_MODELS_BUILD));
         assert_eq!(
             PINNED.url(Publisher::LlamaCpp, "x.tar.gz"),
@@ -660,7 +665,7 @@ mod tests {
             assert_eq!(asset.publisher == Publisher::Hedos, hedos, "{}", asset.file);
         }
         assert_eq!(
-            PINNED.variants(Os::Linux, "x86_64"),
+            PINNED.variants_starting(Os::Linux, "x86_64", None),
             [
                 Variant::Cpu,
                 Variant::Vulkan,

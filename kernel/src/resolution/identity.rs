@@ -138,7 +138,8 @@ pub fn identify(record: &ModelRecord) -> IdentifiedModel {
     if *kind == SourceKind::ollama() {
         // The blob a manifest points at is a GGUF, so its header says what the
         // manifest does not: the architecture, how it pools, the quantization.
-        let has_projector = manifest_has_projector_layer(&record.source.path);
+        let has_projector =
+            crate::discovery::ollama_scanner::declares_projector(Path::new(&record.source.path));
         let facts = record
             .primary_weight_path
             .as_deref()
@@ -578,26 +579,6 @@ fn linked_shard(dir: &Path, target: &Path, depth: usize) -> Option<PathBuf> {
         .iter()
         .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_dir()))
         .find_map(|path| linked_shard(path, target, depth + 1))
-}
-
-/// Whether an Ollama manifest at `path` declares a `.projector` (vision) layer./// Whether an Ollama manifest at `path` declares a `.projector` (vision) layer.
-fn manifest_has_projector_layer(path: &str) -> bool {
-    let Ok(bytes) = crate::fs::read_regular(Path::new(path)) else {
-        return false;
-    };
-    let Ok(JsonValue::Object(object)) = serde_json::from_slice::<JsonValue>(&bytes) else {
-        return false;
-    };
-    let Some(JsonValue::Array(layers)) = object.get("layers") else {
-        return false;
-    };
-    layers.iter().any(|layer| {
-        layer
-            .as_object()
-            .and_then(|fields| fields.get("mediaType"))
-            .and_then(JsonValue::as_str)
-            .is_some_and(|media| media.ends_with(".projector"))
-    })
 }
 
 /// Each sibling `mmproj` GGUF beside `base`, with its size in bytes.

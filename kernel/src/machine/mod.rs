@@ -434,7 +434,8 @@ pub fn cgroup_ancestors(path: &str) -> Vec<String> {
 /// The memory a llama-server can take as it starts on `machine`, given what
 /// the system says is `available` right now and whether the build is
 /// `accelerated` (a CPU build uses no GPU, whatever the machine has): on a GPU
-/// sharing system memory, the working set the GPU may take; with cards, their
+/// sharing system memory, the working set the GPU may take, within what is
+/// available (other models and programs hold the rest); with cards, their
 /// memory and what is available beside them (llama.cpp runs the layers, and
 /// their cache, that the cards cannot hold from memory); otherwise what is
 /// available, else all of memory.
@@ -451,7 +452,7 @@ pub fn launch_memory(machine: &Machine, available: Option<u64>, accelerated: boo
         (Scale::Accelerator, true) => budget
             .bytes
             .saturating_add(available.unwrap_or(machine.memory_bytes)),
-        (Scale::Accelerator, false) => budget.bytes,
+        (Scale::Accelerator, false) => available.unwrap_or(budget.bytes).min(budget.bytes),
         _ => available.unwrap_or(budget.bytes).min(budget.bytes),
     })
 }
@@ -459,7 +460,7 @@ pub fn launch_memory(machine: &Machine, available: Option<u64>, accelerated: boo
 /// What a llama-server needs beyond its weights and KV cache before it can
 /// answer: compute buffers, the server itself, and room for the rest of the
 /// machine.
-pub const LAUNCH_HEADROOM: u64 = 1 << 30;
+const LAUNCH_HEADROOM: u64 = 1 << 30;
 
 /// The largest window, in steps of 1024 tokens, whose KV cache fits in
 /// `memory` beside `loaded` bytes (the weights and any projector) and

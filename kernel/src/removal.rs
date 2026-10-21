@@ -75,7 +75,8 @@ pub struct ModelDeletionPreview {
     /// Whether the model's weights are already missing from disk.
     pub missing: bool,
     /// Why hedos will not delete it, when it will not: an Ollama model whose
-    /// store it cannot vouch for, with Ollama not here to delete it.
+    /// store it cannot vouch for, with Ollama not here to delete it, said in
+    /// full for a person.
     pub blocked: Option<String>,
 }
 
@@ -121,7 +122,10 @@ pub fn preview(record: &ModelRecord, ollama: OllamaRoute) -> ModelDeletionPrevie
     let mut blocked = None;
     let paths: Vec<PathBuf> = if is_ollama && ollama == OllamaRoute::Files {
         exclusive_files(Path::new(&record.source.path)).unwrap_or_else(|why| {
-            blocked = Some(why);
+            blocked = Some(format!(
+                "Ollama isn't installed to delete {}, and {why}, so hedos deletes nothing",
+                record.display_name()
+            ));
             Vec::new()
         })
     } else if is_ollama {

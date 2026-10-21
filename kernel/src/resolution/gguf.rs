@@ -279,10 +279,9 @@ const ATTENTION_SHAPE: [&str; 5] = [
 /// says only `head_count`, and one whose heads are the embedding split evenly
 /// says no key or value length; that is read from the absence of those keys
 /// only in a header read to its end (`complete`). Each value is `None` when
-/// the header lacks
-/// the key and `Some(None)` when it holds something other than one integer
-/// (a per-layer array); a key that is there but unusable, or zero, leaves the
-/// size unknown rather than taken from another key.
+/// the header lacks the key and `Some(None)` when it holds something other
+/// than one integer (a per-layer array); a key that is there but unusable, or
+/// zero, leaves the size unknown rather than taken from another key.
 fn kv_bytes_per_token(
     complete: bool,
     layers: Option<Option<i64>>,

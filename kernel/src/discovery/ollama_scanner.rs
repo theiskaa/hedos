@@ -57,6 +57,14 @@ struct Layer {
     digest: String,
 }
 
+impl Layer {
+    /// Whether this is the multimodal projector Ollama keeps beside a vision
+    /// model's weights.
+    fn is_projector(&self) -> bool {
+        self.media_type.ends_with(".projector")
+    }
+}
+
 impl StoreScanner for OllamaStoreScanner {
     fn kinds(&self) -> Vec<SourceKind> {
         vec![SourceKind::ollama()]
@@ -143,10 +151,7 @@ impl StoreScanner for OllamaStoreScanner {
                 .and_then(|layer| crate::fs::read_regular(&self.blob_path(&layer.digest)).ok())
                 .and_then(|bytes| String::from_utf8(bytes).ok())
                 .map(|template| template.contains(".Tools"));
-            let has_projector = manifest
-                .layers
-                .iter()
-                .any(|layer| layer.media_type.ends_with(".projector"));
+            let has_projector = manifest.layers.iter().any(Layer::is_projector);
             let architecture = weight_blob
                 .as_deref()
                 .and_then(|path| gguf_general_architecture(Path::new(path)));
@@ -222,8 +227,34 @@ pub(crate) fn manifest_projector(manifest: &Path) -> Option<PathBuf> {
     parsed
         .layers
         .iter()
-        .find(|layer| layer.media_type.ends_with(".projector"))
+        .find(|layer| layer.is_projector())
         .map(|layer| store.blob_path(&layer.digest))
+}
+
+/// Why hedos will not delete an Ollama model's files itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum StoreRefusal {
+    /// The manifest could not be read.
+    #[error("its manifest can't be read")]
+    ManifestUnreadable,
+    /// The manifest is not a plain file, or its path is not plain.
+    #[error("its manifest isn't a file in Ollama's store")]
+    NotAFile,
+    /// The manifest is not under a store's `manifests` with `blobs` beside.
+    #[error("its manifest isn't in Ollama's store")]
+    OutsideStore,
+    /// The manifest names a digest Ollama would not write.
+    #[error("its manifest names a blob Ollama would not")]
+    OddDigest,
+    /// Another manifest could not be read, so what it shares is unknown.
+    #[error("another manifest in Ollama's store can't be read")]
+    OtherManifestUnreadable,
+    /// A blob it names is not a plain file.
+    #[error("one of its blobs isn't a plain file")]
+    BlobNotPlain,
+    /// A blob it names could not be read.
+    #[error("one of its blobs can't be read")]
+    BlobUnreadable,
 }
 
 /// What deleting the model whose manifest is at `manifest` frees, as the
@@ -237,27 +268,29 @@ pub(crate) fn manifest_projector(manifest: &Path) -> Option<PathBuf> {
 /// the reason: a path that leaves the store, a symlink where a manifest, a
 /// manifest directory or a blob should be, a digest not spelled `sha256:` and
 /// 64 hex characters, or a manifest that cannot be read, since it may name a
-/// blob this one does. Only Ollama writes a store, and this runs when it is
-/// not here, so the store holds still while the files are deleted.
-pub(crate) fn exclusive_files(manifest: &Path) -> Result<Vec<PathBuf>, String> {
-    let refused = |why: &str| Err(format!("{why}, so hedos deleted nothing"));
+/// blob this one does. Only Ollama writes a store, and this runs when no
+/// `ollama` binary is found and nothing answers at its default address
+/// (`127.0.0.1:11434`), so the store holds still while the files are deleted.
+/// A daemon serving the same store from elsewhere (a container published on
+/// another port) is not seen.
+pub(crate) fn exclusive_files(manifest: &Path) -> Result<Vec<PathBuf>, StoreRefusal> {
     let metadata = match std::fs::symlink_metadata(manifest) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return refused("its manifest can't be read"),
+        Err(_) => return Err(StoreRefusal::ManifestUnreadable),
     };
     if !metadata.is_file()
         || manifest
             .components()
             .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
     {
-        return refused("its manifest isn't a file in Ollama's store");
+        return Err(StoreRefusal::NotAFile);
     }
     let Some(manifests) = manifest.ancestors().nth(4) else {
-        return refused("its manifest isn't in Ollama's store");
+        return Err(StoreRefusal::OutsideStore);
     };
     let Some(root) = manifests.parent() else {
-        return refused("its manifest isn't in Ollama's store");
+        return Err(StoreRefusal::OutsideStore);
     };
     let blobs = root.join("blobs");
     let is_real_dir =
@@ -269,19 +302,19 @@ pub(crate) fn exclusive_files(manifest: &Path) -> Result<Vec<PathBuf>, String> {
         .zip(std::fs::canonicalize(manifests).ok())
         .filter(|(manifest, manifests)| manifest.starts_with(manifests));
     let Some((own_manifest, manifests_dir)) = resolved else {
-        return refused("its manifest isn't in Ollama's store");
+        return Err(StoreRefusal::OutsideStore);
     };
     if manifests.file_name() != Some("manifests".as_ref())
         || !is_real_dir(manifests)
         || !is_real_dir(&blobs)
     {
-        return refused("its manifest isn't in Ollama's store");
+        return Err(StoreRefusal::OutsideStore);
     }
     let Ok(parsed) = crate::fs::read_regular(manifest)
         .map_err(|_| ())
         .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).map_err(|_| ()))
     else {
-        return refused("its manifest can't be read");
+        return Err(StoreRefusal::ManifestUnreadable);
     };
     let own: Vec<&str> = parsed.digests().collect();
     // Lowercase as Ollama writes them: on a disk that ignores case, `ABC` and
@@ -289,11 +322,11 @@ pub(crate) fn exclusive_files(manifest: &Path) -> Result<Vec<PathBuf>, String> {
     let canonical =
         |digest: &str| is_digest(digest) && !digest.bytes().any(|byte| byte.is_ascii_uppercase());
     if !own.iter().all(|digest| canonical(digest)) {
-        return refused("its manifest names a blob Ollama would not");
+        return Err(StoreRefusal::OddDigest);
     }
     let mut shared = HashSet::new();
     if names_under(&manifests_dir, &own_manifest, &mut shared).is_err() {
-        return refused("another manifest in Ollama's store can't be read");
+        return Err(StoreRefusal::OtherManifestUnreadable);
     }
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -304,9 +337,9 @@ pub(crate) fn exclusive_files(manifest: &Path) -> Result<Vec<PathBuf>, String> {
         let blob = blobs.join(digest.replace(':', "-"));
         match std::fs::symlink_metadata(&blob) {
             Ok(metadata) if metadata.is_file() => files.push(blob),
-            Ok(_) => return refused("one of its blobs isn't a plain file"),
+            Ok(_) => return Err(StoreRefusal::BlobNotPlain),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return refused("one of its blobs can't be read"),
+            Err(_) => return Err(StoreRefusal::BlobUnreadable),
         }
     }
     files.push(manifest.to_path_buf());
@@ -553,9 +586,19 @@ fn read_manifest(manifest: &Path) -> Option<(OllamaStoreScanner, Manifest)> {
         return None;
     }
     let store = OllamaStoreScanner::new(manifests.parent()?);
+    Some((store, parse_manifest(manifest)?))
+}
+
+/// The manifest at `manifest`, wherever it is.
+fn parse_manifest(manifest: &Path) -> Option<Manifest> {
     let bytes = crate::fs::read_regular(manifest).ok()?;
-    let parsed = serde_json::from_slice::<Manifest>(&bytes).ok()?;
-    Some((store, parsed))
+    serde_json::from_slice::<Manifest>(&bytes).ok()
+}
+
+/// Whether the Ollama manifest at `manifest` declares a projector (vision)
+/// layer.
+pub(crate) fn declares_projector(manifest: &Path) -> bool {
+    parse_manifest(manifest).is_some_and(|parsed| parsed.layers.iter().any(Layer::is_projector))
 }
 
 /// Recursively collect the regular files under `dir` (skipping hidden entries).

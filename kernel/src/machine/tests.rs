@@ -333,7 +333,10 @@ fn the_memory_a_server_can_take_is_read_from_what_the_system_says() {
     assert_eq!(launch_memory(&cpu, None, true), Some(8 * GIB));
     let mac = m5_pro();
     let working_set = mac.budget(Engine::LlamaCpp).map(|budget| budget.bytes);
-    assert_eq!(launch_memory(&mac, Some(GIB), true), working_set);
+    // What other models and programs hold is not the GPU's to take.
+    assert_eq!(launch_memory(&mac, Some(GIB), true), Some(GIB));
+    assert_eq!(launch_memory(&mac, None, true), working_set);
+    assert_eq!(launch_memory(&mac, Some(1 << 50), true), working_set);
     let nvidia = linux(32, vec![card("RTX 4090", 24)]);
     assert_eq!(launch_memory(&nvidia, Some(20 * GIB), true), Some(44 * GIB));
     // A CPU build (the one hedos carries on Linux) has only system memory.

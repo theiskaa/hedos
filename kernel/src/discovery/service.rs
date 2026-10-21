@@ -501,9 +501,6 @@ fn fingerprint(model: &DiscoveredModel, existing: Option<&ModelRecord>) -> Optio
     content_fingerprint(Path::new(path))
 }
 
-/// Move a newly-found model's saved config (params, system prompt, alias) from a
-/// uniquely-matching missing record (same fingerprint and footprint) — the model
-/// moved on disk. Returns the ids of the claimed (orphaned) records to remove.
 /// The loose-file records an earlier scan made for a model this scan found by
 /// another path to the same place (a folder reached two ways, or spelled two
 /// ways on a disk that ignores case), which the scanner now gives once: they
@@ -539,10 +536,10 @@ fn retire_aliases(
 }
 
 /// Take what was set on `donor` (its parameters, system prompt, alias, and a
-/// runtime the user pinned) onto `kept`, which may already hold some of its own (given by an alias this
-/// scan retired), and say whether the donor can go. Parameters merge key by
-/// key. Where the two hold different values for one thing, nothing is moved
-/// and the donor stays, so no setting is lost.
+/// runtime the user pinned) onto `kept`, which may already hold some of its
+/// own (given by an alias this scan retired), and say whether the donor can
+/// go. Parameters merge key by key. Where the two hold different values for
+/// one thing, nothing is moved and the donor stays, so no setting is lost.
 fn absorb(kept: &mut ModelRecord, donor: &ModelRecord) -> bool {
     let differ = |ours: &Option<String>, theirs: &Option<String>| matches!((ours, theirs), (Some(ours), Some(theirs)) if ours != theirs);
     let params_conflict = donor
@@ -581,6 +578,9 @@ fn absorb(kept: &mut ModelRecord, donor: &ModelRecord) -> bool {
     true
 }
 
+/// Move a newly-found model's saved config (params, system prompt, alias) from a
+/// uniquely-matching missing record (same fingerprint and footprint), the model
+/// moved on disk. Returns the ids of the claimed (orphaned) records to remove.
 fn migrate_moved_config(
     to_register: &mut [ModelRecord],
     new_record_ids: &HashSet<String>,
