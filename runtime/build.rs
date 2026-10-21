@@ -53,9 +53,8 @@ fn main() {
 
 /// Carry the pinned llama.cpp build when `HEDOS_LLAMA_CPP_ARCHIVE` names its
 /// archive for the target being built, which a release job fetches before
-/// building: on macOS llama.cpp's own release archive, checked against the
-/// pin; on Linux one `.github/build-llama-cpp.sh` built from the pinned
-/// source, which `HEDOS_LLAMA_CPP_SOURCE` names by its sha256. Anything else
+/// building, checked against the pin: on macOS llama.cpp's own release
+/// archive, on Linux hedos's own build of the pinned source. Anything else
 /// fails the build. It is cut down to what `llama-server`
 /// needs, compressed with xz into `OUT_DIR`, and the crate is built with
 /// `hedos_bundled_llama`, the digest of what it embeds, and the variant.
@@ -69,7 +68,6 @@ fn bundle_llama_cpp(out_dir: &str) {
 
     println!("cargo:rustc-check-cfg=cfg(hedos_bundled_llama)");
     println!("cargo:rerun-if-env-changed=HEDOS_LLAMA_CPP_ARCHIVE");
-    println!("cargo:rerun-if-env-changed=HEDOS_LLAMA_CPP_SOURCE");
     let Some(archive) = std::env::var_os("HEDOS_LLAMA_CPP_ARCHIVE").filter(|path| !path.is_empty())
     else {
         return;
@@ -85,17 +83,8 @@ fn bundle_llama_cpp(out_dir: &str) {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let release = std::fs::read(&archive)
         .unwrap_or_else(|error| panic!("reading {}: {error}", archive.display()));
-    let source = std::env::var("HEDOS_LLAMA_CPP_SOURCE")
-        .ok()
-        .filter(|source| !source.is_empty());
-    let variant = carried_build(
-        &PINNED,
-        os,
-        &arch,
-        &hex::encode(Sha256::digest(&release)),
-        source.as_deref(),
-    )
-    .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
+    let variant = carried_build(&PINNED, os, &arch, &hex::encode(Sha256::digest(&release)))
+        .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
     let server = server_files(&release)
         .unwrap_or_else(|error| panic!("cutting {} down: {error}", archive.display()));
     let mut encoder = liblzma::write::XzEncoder::new(Vec::new(), 9);

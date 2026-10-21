@@ -1,6 +1,7 @@
-//! Host-side process containment: enumerate a process tree, terminate it
-//! gracefully then forcefully, and drain a child's stdout/stderr into bounded
-//! buffers. The sidecar supervisor spawns and reaps subprocesses through here.
+//! Host-side process containment: start a program just written, enumerate a
+//! process tree, terminate it gracefully then forcefully, and drain a child's
+//! stdout/stderr into bounded buffers. The sidecar supervisor spawns and reaps
+//! subprocesses through here.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -11,8 +12,53 @@ use tokio::process::Child;
 /// Default per-stream byte cap for a [`drain_bounded`] collection.
 pub const MAX_BYTES_PER_STREAM: usize = 16 * 1024 * 1024;
 
+/// How long starting a program just written is retried while it is busy.
+const BUSY_PATIENCE: Duration = Duration::from_secs(1);
+/// How often it is retried meanwhile.
+const BUSY_RETRY: Duration = Duration::from_millis(20);
+
 const SIGTERM: i32 = 15;
 const SIGKILL: i32 = 9;
+
+/// Whether starting a program failed because it is open for writing
+/// somewhere (`ETXTBSY`). A process another thread is starting holds a copy
+/// of every file open at the time, a program being written among them, until
+/// it execs, so a program hedos has just written can be busy for a moment.
+fn busy(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+/// Start `command`, whose program hedos may just have written, retried for
+/// up to `BUSY_PATIENCE` while it is busy.
+pub(crate) fn spawn_written(
+    command: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    let started = std::time::Instant::now();
+    loop {
+        match command.spawn() {
+            Err(error) if busy(&error) && started.elapsed() < BUSY_PATIENCE => {
+                std::thread::sleep(BUSY_RETRY);
+            }
+            spawned => return spawned,
+        }
+    }
+}
+
+/// [`spawn_written`] for a tokio command, waiting without holding up the
+/// runtime.
+pub(crate) async fn spawn_written_async(
+    command: &mut tokio::process::Command,
+) -> std::io::Result<Child> {
+    let started = std::time::Instant::now();
+    loop {
+        match command.spawn() {
+            Err(error) if busy(&error) && started.elapsed() < BUSY_PATIENCE => {
+                tokio::time::sleep(BUSY_RETRY).await;
+            }
+            spawned => return spawned,
+        }
+    }
+}
 
 /// Whether a process with `pid` currently exists. Uses a signal-0 probe, which
 /// asks the kernel about deliverability without sending a signal.
@@ -185,4 +231,54 @@ fn signal(pid: i32, sig: i32) -> bool {
 #[cfg(not(unix))]
 fn signal(_pid: i32, _sig: i32) -> bool {
     false
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// A script in a directory of its own, and a writer still open on it,
+    /// closed 100 ms later on another thread.
+    fn script_open_for_writing(name: &str) -> (PathBuf, std::thread::JoinHandle<()>) {
+        let dir = std::env::temp_dir().join(format!(
+            "hedos-process-{name}-{}-{}",
+            std::process::id(),
+            kernel::time::now_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("program");
+        std::fs::write(&program, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&program)
+            .unwrap();
+        let closing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(writer);
+        });
+        (program, closing)
+    }
+
+    #[test]
+    fn a_program_still_open_for_writing_starts_once_it_is_closed() {
+        let (program, closing) = script_open_for_writing("blocking");
+        let started = spawn_written(&mut std::process::Command::new(&program));
+        closing.join().unwrap();
+        let _ = std::fs::remove_dir_all(program.parent().unwrap());
+        assert!(started.is_ok(), "{started:?}");
+        started.unwrap().wait().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_program_still_open_for_writing_starts_once_it_is_closed_without_blocking() {
+        let (program, closing) = script_open_for_writing("async");
+        let started = spawn_written_async(&mut tokio::process::Command::new(&program)).await;
+        closing.join().unwrap();
+        let _ = std::fs::remove_dir_all(program.parent().unwrap());
+        assert!(started.is_ok(), "{started:?}");
+        started.unwrap().wait().await.unwrap();
+    }
 }

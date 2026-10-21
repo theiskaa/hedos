@@ -36,6 +36,11 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// The lock file, in hedos's llama.cpp root, held while one install or
 /// removal runs.
 const LOCK_FILE: &str = ".lock";
+/// How long taking the install lock is retried before an install is taken to
+/// be running.
+const LOCK_PATIENCE: Duration = Duration::from_secs(1);
+/// How often it is retried meanwhile.
+const LOCK_RETRY: Duration = Duration::from_millis(20);
 /// The prefix of a staging directory an install unpacks into.
 const STAGING_PREFIX: &str = ".staging-";
 /// How long the unpacked `llama-server` may take to say its version.
@@ -161,8 +166,15 @@ pub async fn install(
                 os: Os::current().as_str().to_owned(),
                 arch: arch.to_owned(),
             })?;
-    super::published_builds_run_here().map_err(|reason| EngineInstallError::WontRun { reason })?;
-    install_from(&PINNED, asset, &PINNED.url(""), data, progress).await
+    super::runs_here(asset).map_err(|reason| EngineInstallError::WontRun { reason })?;
+    install_from(
+        &PINNED,
+        asset,
+        &PINNED.url(asset.publisher, ""),
+        data,
+        progress,
+    )
+    .await
 }
 
 /// Install `asset` of `release`, fetched from `base` (each archive at
@@ -176,7 +188,14 @@ pub(crate) async fn install_from(
 ) -> Result<LlamaServer, EngineInstallError> {
     let root = hedos_root(data);
     create_dir_all(&root)?;
-    let lock = Arc::new(lock(&root)?);
+    // Taking the lock may wait a moment (`lock`), which must not stall this
+    // runtime's other tasks.
+    let locking = root.clone();
+    let lock = Arc::new(
+        tokio::task::spawn_blocking(move || lock(&locking))
+            .await
+            .map_err(|error| io_error(&root, error))??,
+    );
     recover(&root)?;
     let staging = fresh_staging(&root)?;
     let result = install_into(release, asset, base, &root, &staging, &lock, &progress).await;
@@ -780,12 +799,20 @@ fn create_dir_all(path: &Path) -> Result<(), EngineInstallError> {
     std::fs::create_dir_all(path).map_err(|error| io_error(path, error))
 }
 
-/// The install lock on `root`, taken without waiting: a second install while
-/// one runs is refused rather than queued behind a long download.
+/// The install lock on `root`, taken without waiting on an install: a second
+/// install while one runs is refused rather than queued behind a long
+/// download. It is tried for up to `LOCK_PATIENCE`, since a process this one
+/// is starting holds a copy of every open file, the lock among them, until it
+/// execs, and that must not read as an install running.
 fn lock(root: &Path) -> Result<File, EngineInstallError> {
     let file = open_lock(&root.join(LOCK_FILE))?;
-    file.try_lock_exclusive()
-        .map_err(|_| EngineInstallError::Busy)?;
+    let started = Instant::now();
+    while file.try_lock_exclusive().is_err() {
+        if started.elapsed() >= LOCK_PATIENCE {
+            return Err(EngineInstallError::Busy);
+        }
+        std::thread::sleep(LOCK_RETRY);
+    }
     Ok(file)
 }
 
@@ -824,13 +851,14 @@ fn lock_waiting(root: &Path) -> Result<File, EngineInstallError> {
 /// pipe some process it started still holds.
 fn smoke(server: &Path, log: &Path) -> Result<LlamaVersion, String> {
     let written = File::create(log).map_err(|error| format!("{}: {error}", log.display()))?;
-    let mut child = std::process::Command::new(server)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::from(written))
-        .spawn()
-        .map_err(|error| format!("it could not start: {error}"))?;
+    let mut child = crate::process::spawn_written(
+        std::process::Command::new(server)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::from(written)),
+    )
+    .map_err(|error| format!("it could not start: {error}"))?;
     let deadline = Instant::now() + SMOKE_TIMEOUT;
     let status = loop {
         match child.try_wait() {
@@ -886,6 +914,7 @@ fn io_error(path: &Path, error: impl std::fmt::Display) -> EngineInstallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kernel::engines::llama_cpp::Publisher;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -979,6 +1008,7 @@ mod tests {
             sha256: Box::leak(hex::encode(Sha256::digest(bytes)).into_boxed_str()),
             bytes: bytes.len() as u64,
             cudart: None,
+            publisher: Publisher::LlamaCpp,
         }
     }
 
@@ -1480,6 +1510,35 @@ mod tests {
         unpack_bundle(&bundle, &RELEASE, &scratch.0).expect("there");
         assert!(root.join("b11669-cpu/llama-server").exists());
         assert!(!root.join(".staging-9-9").exists());
+    }
+
+    /// How a pin's archive for this machine is checked before it is
+    /// published: installed through the download path, it is the size and
+    /// digest pinned and its `llama-server` starts here as the pinned build.
+    #[tokio::test]
+    #[ignore = "needs HEDOS_PINNED_ARCHIVE, a pinned llama.cpp archive for this machine"]
+    async fn a_pinned_archive_installs_and_reports_the_pinned_version() {
+        let path = std::env::var("HEDOS_PINNED_ARCHIVE").expect("HEDOS_PINNED_ARCHIVE");
+        let published = std::fs::read(&path).expect("the archive");
+        let digest = hex::encode(Sha256::digest(&published));
+        let asset = PINNED
+            .assets
+            .iter()
+            .find(|asset| {
+                asset.sha256 == digest
+                    && asset.os == Os::current()
+                    && asset.arch == std::env::consts::ARCH
+                    && asset.cudart.is_none()
+            })
+            .expect("an archive the pin has for this machine, without a runtime archive beside it");
+        let scratch = Scratch::new("pinned-real");
+        let (base, accept) = serve(HashMap::from([(asset.file, published)])).await;
+        let server = install_from(&PINNED, asset, &base, &scratch.0, |_| {})
+            .await
+            .expect("installed");
+        accept.abort();
+        let version = crate::engines::llama_cpp::version(&server.path).expect("a version");
+        assert_eq!(Some(version.build), PINNED.build_number());
     }
 
     #[cfg(hedos_bundled_llama)]

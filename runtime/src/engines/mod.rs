@@ -8,8 +8,8 @@ pub mod llama_cpp;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use kernel::engines::llama_cpp::published_build_blocked;
-use kernel::machine::Os;
+use kernel::engines::llama_cpp::{Asset, PINNED, Variant};
+use kernel::machine::Machine;
 
 /// The `ollama` binary hedos would start, if it finds one.
 pub fn ollama_binary() -> Option<PathBuf> {
@@ -44,18 +44,26 @@ pub fn glibc() -> Option<String> {
     None
 }
 
-/// Whether llama.cpp's own builds, the ones `hedos engines install` fetches,
-/// start on this system, or why not and what runs instead. On Linux they need
-/// a newer glibc than hedos does.
-pub fn published_builds_run_here() -> Result<(), String> {
-    if Os::current() != Os::Linux {
-        return Ok(());
-    }
-    let Some(reason) = glibc().as_deref().and_then(published_build_blocked) else {
+/// The llama.cpp build that suits `machine`, given this system's glibc: on a
+/// Linux too old for llama.cpp's own builds, hedos's CPU build.
+pub fn variant_for(machine: &Machine) -> Option<Variant> {
+    Variant::default_for(machine, glibc().as_deref())
+}
+
+/// Whether `asset` starts on this system, or why not and what runs instead:
+/// llama.cpp's own Linux builds need a newer glibc than hedos does.
+pub fn runs_here(asset: &Asset) -> Result<(), String> {
+    let glibc = glibc();
+    let Some(reason) = asset.blocked(glibc.as_deref()) else {
         return Ok(());
     };
+    let cpu = PINNED
+        .asset(asset.os, asset.arch, Variant::Cpu)
+        .filter(|cpu| cpu.blocked(glibc.as_deref()).is_none());
     let instead = if bundled::bundled().is_some() {
         "the CPU build hedos carries runs here"
+    } else if cpu.is_some() {
+        "hedos's own CPU build runs here: hedos engines install llama.cpp --variant cpu"
     } else {
         "build llama.cpp for this system and name its llama-server in `[engines] llama_server`"
     };
