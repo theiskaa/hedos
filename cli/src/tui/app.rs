@@ -1225,7 +1225,7 @@ impl App {
             return self.refuse(refusal);
         }
         let asset = match build_for(None, &self.facts.machine).and_then(|asset| {
-            runs_here()?;
+            runs_here(asset)?;
             Ok(asset)
         }) {
             Ok(asset) => asset,

@@ -13,7 +13,7 @@ use runtime::boot::HedosDirs;
 use runtime::engines::bundled::bundled;
 use runtime::engines::install::{InstallProgress, install};
 use runtime::engines::llama_cpp::{LlamaServer, Source, hedos_root, located};
-use runtime::engines::published_builds_run_here;
+use runtime::engines::{glibc, variant_for};
 
 use crate::error::CliError;
 use crate::support::interactive;
@@ -54,7 +54,7 @@ pub fn build_for(variant: Option<Variant>, machine: &Machine) -> Result<&'static
     let os = Os::current();
     let chosen = match variant {
         Some(variant) => variant,
-        None => Variant::default_for(machine).ok_or_else(|| {
+        None => variant_for(machine).ok_or_else(|| {
             CliError::new(format!(
                 "llama.cpp {} has no build for {} {arch}. {LLAMA_CPP_INSTALL_HINT}",
                 PINNED.version,
@@ -64,7 +64,7 @@ pub fn build_for(variant: Option<Variant>, machine: &Machine) -> Result<&'static
     };
     PINNED.asset(os, arch, chosen).ok_or_else(|| {
         let offered: Vec<&str> = PINNED
-            .variants(os, arch)
+            .variants_starting(os, arch, glibc().as_deref())
             .into_iter()
             .map(Variant::as_str)
             .collect();
@@ -82,11 +82,15 @@ pub fn build_for(variant: Option<Variant>, machine: &Machine) -> Result<&'static
     })
 }
 
-/// The build of llama.cpp that suits `machine` better than `carried`, the
-/// build hedos carries (the CUDA build on a Linux machine with an NVIDIA
-/// card, say), when there is one to install.
-pub fn faster_than(carried: Variant, machine: &Machine) -> Option<&'static Asset> {
-    let suits = Variant::default_for(machine).filter(|suits| *suits != carried)?;
+/// The build of llama.cpp that suits `machine`, whose glibc is `glibc`,
+/// better than `carried`, the build hedos carries (the CUDA build on a Linux
+/// machine with an NVIDIA card, say), when there is one to install.
+pub fn faster_than(
+    carried: Variant,
+    machine: &Machine,
+    glibc: Option<&str>,
+) -> Option<&'static Asset> {
+    let suits = Variant::default_for(machine, glibc).filter(|suits| *suits != carried)?;
     PINNED.asset(machine.os, machine.arch.as_str(), suits)
 }
 
@@ -95,8 +99,7 @@ pub fn faster_than(carried: Variant, machine: &Machine) -> Option<&'static Asset
 pub fn faster_line(machine: &Machine) -> Option<String> {
     let carried = bundled()?.variant;
     located().filter(|server| server.from == Source::Bundled)?;
-    published_builds_run_here().ok()?;
-    let asset = faster_than(carried, machine)?;
+    let asset = faster_than(carried, machine, glibc().as_deref())?;
     Some(format!(
         "hedos engines install llama.cpp fetches the {} build ({}), faster here than the {} build hedos carries",
         asset.variant.as_str(),
@@ -107,8 +110,8 @@ pub fn faster_line(machine: &Machine) -> Option<String> {
 
 /// Refuse, before any card or question, to install a build that would not
 /// start on this system (llama.cpp's own Linux builds on an older glibc).
-pub fn runs_here() -> Result<(), CliError> {
-    published_builds_run_here().map_err(CliError::new)
+pub fn runs_here(asset: &Asset) -> Result<(), CliError> {
+    runtime::engines::runs_here(asset).map_err(CliError::new)
 }
 
 /// What installing `asset` fetches, from where, how big, and where it goes,
@@ -121,11 +124,14 @@ pub fn card(asset: &Asset, dirs: &HedosDirs) -> Vec<String> {
             PINNED.build,
             asset.variant.as_str()
         ),
-        format!("  from     {}", PINNED.url(asset.file)),
+        format!("  from     {}", PINNED.url(asset.publisher, asset.file)),
         format!("  sha256   {}", asset.sha256),
     ];
     if let Some(runtime) = asset.cudart {
-        lines.push(format!("  and      {}", PINNED.url(runtime.file)));
+        lines.push(format!(
+            "  and      {}",
+            PINNED.url(asset.publisher, runtime.file)
+        ));
         lines.push(format!("  sha256   {}", runtime.sha256));
     }
     lines.push(format!(
@@ -201,7 +207,7 @@ pub async fn offer_after_pull(name: &str, machine: &Machine, out: &Out) -> Resul
         ));
         return Ok(());
     };
-    if let Err(refused) = runs_here() {
+    if let Err(refused) = runs_here(asset) {
         out.err(&format!(
             "{name} runs on llama.cpp, which isn't installed. {refused}"
         ));
@@ -249,12 +255,15 @@ mod tests {
     fn an_nvidia_card_on_linux_has_a_faster_build_than_the_one_hedos_carries() {
         let nvidia = machine(Os::Linux, "x86_64", DevicesFrom::NvidiaSmi);
         assert_eq!(
-            faster_than(Variant::Cpu, &nvidia).map(|asset| asset.variant),
+            faster_than(Variant::Cpu, &nvidia, None).map(|asset| asset.variant),
             Some(Variant::Cuda12)
         );
+        // On a glibc too old for llama.cpp's CUDA build, the CPU build hedos
+        // carries is the one that suits.
+        assert_eq!(faster_than(Variant::Cpu, &nvidia, Some("2.35")), None);
         let plain = machine(Os::Linux, "x86_64", DevicesFrom::None);
-        assert_eq!(faster_than(Variant::Cpu, &plain), None);
+        assert_eq!(faster_than(Variant::Cpu, &plain, None), None);
         let mac = machine(Os::Macos, "aarch64", DevicesFrom::None);
-        assert_eq!(faster_than(Variant::Metal, &mac), None);
+        assert_eq!(faster_than(Variant::Metal, &mac, None), None);
     }
 }

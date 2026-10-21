@@ -1704,15 +1704,6 @@ fn warming_or_trying_a_model_without_llama_cpp_offers_to_install_it_first() {
         ..testing::machine(64)
     };
 
-    // A Linux older than llama.cpp's own builds need says so instead of
-    // offering a card for a build that would not start.
-    if let Err(reason) = runtime::engines::published_builds_run_here() {
-        assert!(press(&mut app, Key::Char('w')).is_empty());
-        assert!(app.modal.is_none());
-        assert_eq!(app.notice(), Some(reason.as_str()));
-        return;
-    }
-
     assert!(press(&mut app, Key::Char('w')).is_empty());
     assert!(matches!(app.modal, Some(Modal::Install(_))));
     assert!(

@@ -249,8 +249,10 @@ async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
     // request or named in the config wins over it, and installing is how
     // that one is repaired or replaced.
     if let Some(carried) = carried_answers(asset.variant) {
+        // Only builds that start here: on an older Linux llama.cpp's own
+        // builds do not.
         let others: Vec<&str> = PINNED
-            .variants(asset.os, asset.arch)
+            .variants_starting(asset.os, asset.arch, runtime::engines::glibc().as_deref())
             .into_iter()
             .filter(|other| *other != carried.variant)
             .map(Variant::as_str)
@@ -277,7 +279,7 @@ async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
         }));
         return Ok(());
     }
-    runs_here()?;
+    runs_here(asset)?;
     let dirs = HedosDirs::detect();
     for line in card(asset, &dirs) {
         out.err(&line);
@@ -408,7 +410,7 @@ mod tests {
         .await;
         // A build that carries the one this machine would get has nothing to
         // install; any other asks first.
-        let carried = Variant::default_for(&machine::machine())
+        let carried = runtime::engines::variant_for(&machine::machine())
             .and_then(carried_answers)
             .is_some();
         match asked {
