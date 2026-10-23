@@ -221,7 +221,7 @@ laya can run on python:laya, which needs your approval: `hedos runtimes approve 
 
 `approve` shows the runtime's files, what it runs and installs, the release it downloads and that release's sha256 when it pins one, the paths and network access it declares, the models it would serve, and its hash, then asks you to confirm (`-y` skips the question). A pinned release is downloaded and checked before the approval is recorded, so a failed download approves nothing; running `approve` again retries it. It records the id in `models.approved_host_runtimes` and the hash in `models.approved_host_runtime_hashes`. What a manifest declares is its own account and is not enforced.
 
-The hash covers the manifest and every file beside it. If any of them changes, the approval stops counting and `hedos runtimes` shows the runtime as `changed since approval` until you approve it again.
+The hash covers the manifest, every file beside it, and the lockfile and its CPU variant wherever the manifest's path to them leads. If any of them changes, the approval stops counting and `hedos runtimes` shows the runtime as `changed since approval` until you approve it again.
 
 Approvals are read when a process starts. After approving or revoking, restart a running `hedos serve` (the command reminds you when one is running).
 
@@ -329,6 +329,8 @@ lockfile = "requirements.lock"
 [serve]
 entrypoint = "main.py"
 ```
+
+A runtime that needs torch can ship a CPU variant beside its lock. `requirements.lock` takes PyPI's torch (compile it with `--universal`), the CUDA build on Linux and the Metal one on a Mac; `requirements.cpu.lock` takes PyTorch's CPU build (compile it with `--universal --torch-backend cpu`), and hedos installs it in the lock's place on Linux when NVIDIA's driver is not loaded. It installs the variant with `--torch-backend cpu`, so torch and the packages around it (torchaudio, torchvision and the like) come from PyTorch's index and every other package from uv's usual index (PyPI, or a mirror a `uv.toml` names), as they were locked; that takes uv 0.6.9 or later. Any lockfile with a `.cpu` variant beside it (`deps.cpu.lock` for `deps.lock`) is read this way, so leave none beside a lock compiled otherwise. The shipped torch runtimes are built this way.
 
 hedos starts `main.py --model <snapshot> --workdir <dir>`, plus `--companion <role>=<snapshot>` for each companion, and speaks to it in frames on stdin and stdout: a little-endian `u32` length (of what follows), a type byte (`1` for JSON, `2` for bytes), then the payload. Anything the model's libraries print belongs on stderr, so `main.py` moves stdout aside first (see a shipped runtime's opening lines).
 
