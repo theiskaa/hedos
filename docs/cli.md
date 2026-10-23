@@ -688,6 +688,7 @@ The download runs in a worker process of its own, so it outlives the terminal th
 
 - `hedos pull` follows that worker's progress. Ctrl-C detaches from it rather than cancelling.
 - When you watch a model llama.cpp serves land and no `llama-server` is here (a build of hedos that carries none, with none on the `PATH`), `hedos pull` shows what installing llama.cpp would fetch and asks once, defaulting to no. Under `--json`, outside a terminal, or on a no, it prints how to install it instead. See [`hedos engines`](#hedos-engines).
+- When you watch a model land whose runtime builds a Python environment that is not built yet, and no `uv` is here, `hedos pull` shows what installing uv would fetch and asks once the same way, defaulting to no. Under `--json`, outside a terminal, or on a no, it prints how to install it instead. The pull succeeds whatever becomes of either install.
 - `-d` starts the download and returns straight away, printing the commands that reach it:
 
   ```
@@ -825,7 +826,7 @@ Each catalog model is judged by what serving it loads, on the engine that serves
 
 A card that cannot hold a model whole is not the end of it: llama.cpp and Ollama run what does not fit on the card from memory, slower. Such a model is judged against all of memory instead whenever that reads better, so a machine with a small card is never judged worse than it would be without one, and the model reads `spills`. A card under 1 GiB (an integrated GPU's carve-out) is not counted at all.
 
-A missing engine never changes what fits. The picks stay the same, a line under the header says what to install first (once for each engine), and each pick that needs it reads `needs llama.cpp` or `needs uv`. For llama.cpp, the line names `hedos engines install llama.cpp`. A pick whose download would not fit on the free disk reads `short on disk`.
+A missing engine never changes what fits. The picks stay the same, a line under the header says what to install first (once for each engine), and each pick that needs it reads `needs llama.cpp` or `needs uv`. The line names `hedos engines install llama.cpp` or `hedos engines install uv`. A pick whose download would not fit on the free disk reads `short on disk`.
 
 With `--all`, every model is listed: the picks, `also fits` for one the larger picks passed over, `too big`, `on shelf`, and `can't run here` for one whose engine does not run on this machine.
 
@@ -864,31 +865,37 @@ Under `--json` a deletion prints `model`, `name`, `trashedPaths`, `freedBytesEst
 
 ### `hedos engines`
 
-List the engines models run on, and install or remove llama.cpp, the one hedos carries and installs. Nothing installs without you asking.
+List the engines models run on, and install or remove the ones hedos installs: llama.cpp, which it also carries, and `uv`, which builds the Python models' environments. Nothing installs without you asking.
 
 ```sh
 hedos engines [ls]
 hedos engines install llama.cpp [--variant <metal|cpu|vulkan|cuda-12|cuda-13|rocm>] [-y]
+hedos engines install uv [-y]
 hedos engines remove llama.cpp [-y]
+hedos engines remove uv [-y]
 ```
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `install --variant <variant>` | The build: Metal on Apple Silicon, the CPU build on an Intel Mac, CUDA for NVIDIA cards, Vulkan for AMD cards, the CPU build otherwise. ROCm needs ROCm installed on its own, so it is used only when asked for. | the one that suits this machine |
+| `install --variant <variant>` | llama.cpp's build (uv has one build for each machine, and refuses the flag): Metal on Apple Silicon, the CPU build on an Intel Mac, CUDA for NVIDIA cards, Vulkan for AMD cards, the CPU build otherwise. ROCm needs ROCm installed on its own, so it is used only when asked for. | the one that suits this machine |
 | `-y, --yes` | Install or remove without being asked to confirm. Required outside a terminal and under `--json`. | off |
 
 ```
 ENGINE     SERVES                    FOUND    VERSION              PATH OR NEXT STEP
 llama.cpp  GGUF models               bundled  0.7.0 (build 11669)  /Users/you/.local/share/hedos/engines/llama.cpp/b11669-metal-bundled/llama-server
 Ollama     models in Ollama's store  path     -                    /usr/local/bin/ollama
-uv         Python models             path     -                    /Users/you/.local/bin/uv
+uv         Python models             hedos    0.13.4               /Users/you/.local/share/hedos/engines/uv/0.13.4/uv
 ```
 
-- **`ls`** (the default) shows each engine, where it was found (`config` for `engines.llama_server`, `hedos` for a build hedos installed, `bundled` for the one it carries, `path` for the `PATH` or Homebrew's places, `daemon` for an Ollama that only answers, or `missing`), its version where it can be read, and the next step for one that is missing. The carried build reads "unpacks the first time a model runs" until it has. A `llama-server` older than llama.cpp 0.6.0 is flagged, since decision models need 0.6.0, and so is one on the `PATH` that hedos passes over. When this machine has a faster build than the carried one, a note names it. `--json` prints `engines`, each with `engine`, `serves`, `installed`, `found_in`, `path`, `version`, and `note`.
+- **`ls`** (the default) shows each engine, where it was found (`config` for `engines.llama_server`, `hedos` for a build hedos installed, `bundled` for the one it carries, `path` for the `PATH`, Homebrew's places, or `~/.local/bin` where uv's own installer puts it, `daemon` for an Ollama that only answers, or `missing`), its version where it can be read, and the next step for one that is missing. The carried build reads "unpacks the first time a model runs" until it has. A `llama-server` older than llama.cpp 0.6.0 is flagged, since decision models need 0.6.0, and so is one on the `PATH` that hedos passes over. When this machine has a faster build than the carried one, a note names it. `--json` prints `engines`, each with `engine`, `serves`, `installed`, `found_in`, `path`, `version`, and `note`.
 - **`install llama.cpp`** installs the llama.cpp release this hedos pins (0.7.0). When the build asked for is the one hedos carries and runs, there is nothing to fetch: it says so and names the other builds for this machine. On Linux the CPU build is hedos's own, the one release builds carry (built from llama.cpp's pinned source and published on hedos's GitHub releases), which runs on any glibc hedos runs on; the GPU builds (Vulkan, CUDA, ROCm) are llama.cpp's own and need glibc 2.38 or newer. On an older system the build that suits the machine is the CPU build, and a GPU build asked for with `--variant` is refused with the reason before anything is shown. A build that will not start for want of a library (`libgomp.so.1`, say) is reported with the library and the package that has it. It first prints what it will fetch: the release and build, each archive's URL and sha256 (a CUDA build brings NVIDIA's runtime libraries as a second archive), the size, and where it goes (`engines/llama.cpp/` under the data directory), plus the smaller Vulkan build when it is about to fetch CUDA. Then it asks, defaulting to no. Each archive is checked against its pinned sha256 and size, unpacked whole into a staging directory, and its `llama-server` is run once to see it is the pinned build before it replaces the build there. Only one install runs at a time. `--json` prints one object either way: `engine`, `version`, `build`, `variant`, `path`, and `status`, which is `installed` when a build was fetched or `carried` when the build hedos carries was the one asked for.
 - **`remove llama.cpp`** removes the builds hedos installed or unpacked and says which `llama-server` hedos runs now, if any. The one hedos carries cannot be removed: it unpacks again the first time a model runs.
+- **`install uv`** installs the `uv` release this hedos pins (0.13.4), for the Python models: MLX, diffusers, audio, embeddings, and the manifest runtimes with a Python environment. On Linux it is uv's static build, which runs on any glibc. It first prints what it will fetch (the archive's URL and sha256, the size, and where it goes, `engines/uv/` under the data directory) and that the first Python model to run then fetches Python 3.12, when the machine has none, and that model's packages. Then it asks, defaulting to no. The archive is checked against its pinned sha256 and size, unpacked into a staging directory, and its `uv` is asked its version before it is moved into place. When the pinned `uv` is already there, whole, there is nothing to fetch and it says so. `--json` prints `engine`, `version`, `path`, and `status`, which is `installed` when it was fetched or `present` when it was already there.
+- **`remove uv`** removes the `uv` hedos installed, never one you installed, and says which `uv` hedos uses now, if any. A Python model whose environment is built keeps running without `uv`; one being prepared at that moment may fail, and is prepared again the next time it runs. Environments, the Python and the package caches stay.
 
-hedos runs the first `llama-server` it finds of: the absolute path `engines.llama_server` names in [the settings](configuration.md), a build `install` put there, the build hedos carries (in release builds), one on the `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`. Every build of hedos's own comes before the `PATH`, so an older llama.cpp installed there runs only when the settings name it. Ollama and `uv` are not installed by hedos; `install` says where to get them.
+Both removals print, under `--json`, `engine`, `removed` (the paths), and `now_runs` (what hedos runs now, or `null`).
+
+hedos runs the first `llama-server` it finds of: the absolute path `engines.llama_server` names in [the settings](configuration.md), a build `install` put there, the build hedos carries (in release builds), one on the `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`. Every build of hedos's own comes before the `PATH`, so an older llama.cpp installed there runs only when the settings name it. It builds Python environments with the first `uv` it finds of: the one `install uv` put there, then `~/.local/bin/uv`, `/opt/homebrew/bin/uv`, `/usr/local/bin/uv`, and the `PATH`. Ollama is not installed by hedos; `install` says where to get it.
 
 ### `hedos runtimes`
 
