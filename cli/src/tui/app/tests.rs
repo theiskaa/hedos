@@ -319,18 +319,18 @@ fn a_refresh_keeps_the_selected_model() {
     let mut app = app(3);
     press(&mut app, Key::Char('G'));
     let kept = app.records[2].clone();
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 2,
         records: vec![kept.clone(), record(9)],
         facts: Facts::default(),
-    }));
+    })));
     assert_eq!(app.selected_record().map(|r| &r.id), Some(&kept.id));
 
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 3,
         records: Vec::new(),
         facts: Facts::default(),
-    }));
+    })));
     assert!(app.selected_record().is_none());
 }
 
@@ -612,11 +612,11 @@ fn enter_expands_the_detail_and_escape_folds_it() {
     press(&mut empty, Key::Enter);
     assert!(!empty.expanded);
     press(&mut one, Key::Enter);
-    one.reduce(Event::Refreshed(Refreshed {
+    one.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 9,
         records: Vec::new(),
         facts: Facts::default(),
-    }));
+    })));
     assert!(!one.expanded);
 }
 
@@ -820,18 +820,18 @@ fn coming_back_adds_a_finished_row_and_keeps_the_selection() {
     assert_eq!(app.tasks.rows().len(), 1);
     assert!(!app.busy());
     // A refresh that was in flight before leaving is older and must lose.
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 4,
         records: Vec::new(),
         facts: Facts::default(),
-    }));
+    })));
     assert_eq!(app.records.len(), 2);
     // A refresh spawned after coming back still applies.
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 6,
         records: vec![record(1)],
         facts: Facts::default(),
-    }));
+    })));
     assert_eq!(app.records.len(), 1);
 }
 
@@ -1046,11 +1046,11 @@ fn a_finished_pull_selects_what_it_pulled_on_the_next_refresh() {
     ));
     assert_eq!(effects, vec![Effect::Refresh]);
     // A refresh that predates the pulled record leaves the intent alone.
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 8,
         records: app.records.clone(),
         facts: Facts::default(),
-    }));
+    })));
     let mut records = app.records.clone();
     records.push(ModelRecord::new(
         "qwen2.5:14b",
@@ -1058,11 +1058,11 @@ fn a_finished_pull_selects_what_it_pulled_on_the_next_refresh() {
         vec![Capability::chat()],
         ModelSource::new(SourceKind::ollama(), "qwen2.5:14b"),
     ));
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 9,
         records,
         facts: Facts::default(),
-    }));
+    })));
     assert_eq!(
         app.selected_record().map(|r| r.name.as_str()),
         Some("qwen2.5:14b")
@@ -1438,16 +1438,16 @@ fn every_pulls_binding_does_something_and_nothing_else_does() {
 #[test]
 fn an_older_refresh_never_overwrites_a_newer_one() {
     let mut app = app(1);
-    app.reduce(Event::Refreshed(Refreshed {
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 5,
         records: vec![record(5)],
         facts: Facts::default(),
-    }));
-    app.reduce(Event::Refreshed(Refreshed {
+    })));
+    app.reduce(Event::Refreshed(Box::new(Refreshed {
         sequence: 4,
         records: vec![record(4)],
         facts: Facts::default(),
-    }));
+    })));
     assert_eq!(app.records[0].name, "model-5");
 }
 
@@ -1692,11 +1692,11 @@ fn quitting_waits_for_a_removal_but_not_a_llama_cpp_install() {
     let mut app = app(1);
     app.started(
         TaskId::next(),
-        TaskKind::InstallLlamaCpp {
-            variant: kernel::engines::llama_cpp::Variant::Cpu,
+        TaskKind::Install {
+            target: InstallTarget::LlamaCpp(kernel::engines::llama_cpp::Variant::Cpu),
         },
     );
-    assert!(app.installing_llama_cpp());
+    assert_eq!(app.installs_running(), [Installable::LlamaCpp]);
     assert!(
         !app.busy_beside_installs(),
         "an install alone is not waited for"
@@ -1773,10 +1773,10 @@ fn warming_or_trying_a_model_without_llama_cpp_offers_to_install_it_first() {
     let Some(Modal::Install(card)) = &app.modal else {
         panic!("the install card");
     };
-    let shown = card.variant;
+    let shown = card.target;
     assert_eq!(
         press(&mut app, Key::Char('y')),
-        vec![Effect::Spawn(TaskKind::InstallLlamaCpp { variant: shown })],
+        vec![Effect::Spawn(TaskKind::Install { target: shown })],
         "the build the card showed"
     );
     assert!(app.modal.is_none());
@@ -1794,4 +1794,85 @@ fn warming_or_trying_a_model_without_llama_cpp_offers_to_install_it_first() {
     app.facts.machine.engines.llama_cpp = true;
     press(&mut app, Key::Char('w'));
     assert!(!matches!(app.modal, Some(Modal::Install(_))));
+}
+
+#[test]
+fn warming_a_model_whose_environment_needs_uv_offers_uv_and_a_built_one_warms() {
+    let mut record = record(0);
+    record.runtime.id = Some(RuntimeId::mlx_lm());
+    record.capabilities = vec![Capability::chat()];
+    let mut app = app_from(vec![record]);
+    app.facts.machine = kernel::machine::Machine {
+        os: kernel::machine::Os::current(),
+        arch: std::env::consts::ARCH.to_owned(),
+        ..testing::machine(64)
+    };
+    app.facts.needs_uv = std::collections::HashSet::from([RuntimeId::mlx_lm()]);
+
+    assert!(press(&mut app, Key::Char('w')).is_empty());
+    let Some(Modal::Install(card)) = &app.modal else {
+        panic!("the install card");
+    };
+    assert_eq!(card.target, InstallTarget::Uv);
+    assert!(card.lines[0].starts_with("uv "), "{:?}", card.lines);
+    assert_eq!(
+        press(&mut app, Key::Char('y')),
+        vec![Effect::Spawn(TaskKind::Install {
+            target: InstallTarget::Uv
+        })]
+    );
+
+    // Its environment built (or a uv here): warming warms.
+    app.facts.needs_uv.clear();
+    press(&mut app, Key::Char('w'));
+    assert!(!matches!(app.modal, Some(Modal::Install(_))));
+}
+
+#[test]
+fn quitting_names_each_engine_install_it_stops() {
+    let mut app = app(1);
+    assert!(app.installs_running().is_empty());
+    for target in [
+        InstallTarget::LlamaCpp(kernel::engines::llama_cpp::Variant::Cpu),
+        InstallTarget::Uv,
+    ] {
+        app.started(TaskId::next(), TaskKind::Install { target });
+    }
+    // A second install of an engine already installing is named once.
+    app.started(
+        TaskId::next(),
+        TaskKind::Install {
+            target: InstallTarget::Uv,
+        },
+    );
+    assert_eq!(
+        app.installs_running(),
+        [Installable::LlamaCpp, Installable::Uv]
+    );
+    assert!(!app.busy_beside_installs());
+}
+
+#[test]
+fn warming_an_image_model_that_needs_uv_offers_uv_though_nothing_stays_warm() {
+    let mut record = record(0);
+    record.runtime.id = Some(RuntimeId::diffusers());
+    record.capabilities = vec![Capability::image()];
+    let mut app = app_from(vec![record]);
+    app.facts.machine = kernel::machine::Machine {
+        os: kernel::machine::Os::current(),
+        arch: std::env::consts::ARCH.to_owned(),
+        ..testing::machine(64)
+    };
+    app.facts.needs_uv = std::collections::HashSet::from([RuntimeId::diffusers()]);
+    assert!(app.actions().contains(&"w"), "{:?}", app.actions());
+    assert!(press(&mut app, Key::Char('w')).is_empty());
+    let Some(Modal::Install(card)) = &app.modal else {
+        panic!("the install card, not {:?}", app.modal.is_some());
+    };
+    assert_eq!(card.target, InstallTarget::Uv);
+
+    // Built, it has nothing to warm, and `w` is not offered.
+    app.close_modal();
+    app.facts.needs_uv.clear();
+    assert!(!app.actions().contains(&"w"), "{:?}", app.actions());
 }

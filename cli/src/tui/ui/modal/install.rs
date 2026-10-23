@@ -1,4 +1,4 @@
-//! The install card: what installing llama.cpp fetches, from where, how big
+//! The install card: what installing an engine fetches, from where, how big
 //! and where it goes, said before anything is fetched.
 
 use ratatui::layout::Rect;
@@ -19,7 +19,7 @@ pub(super) fn height(card: &InstallCard) -> u16 {
         .saturating_add(3 + BORDER_ROWS)
 }
 
-/// What installing llama.cpp does, and the keys that answer.
+/// What installing the engine does, and the keys that answer.
 pub(super) fn install(card: &InstallCard, inner: Rect) -> Vec<Line<'static>> {
     let width = usize::from(inner.width).saturating_sub(1);
     let mut lines = vec![Line::default()];
@@ -45,7 +45,9 @@ mod tests {
                 "llama.cpp 0.7.0 (b11669), the metal build".to_owned(),
                 format!("  from     https://example.com/{}", "a".repeat(200)),
             ],
-            variant: kernel::engines::llama_cpp::Variant::Metal,
+            target: crate::tui::tasks::InstallTarget::LlamaCpp(
+                kernel::engines::llama_cpp::Variant::Metal,
+            ),
         };
         let lines = install(&card, Rect::new(0, 0, INSTALL_WIDTH - 2, 10));
         assert_eq!(lines.len() as u16, height(&card) - BORDER_ROWS);
@@ -53,5 +55,28 @@ mod tests {
         assert!(shown[1].contains("metal build"));
         assert!(shown[2].contains('…'));
         assert!(shown.last().is_some_and(|keys| keys.contains("install")));
+    }
+
+    #[test]
+    fn the_uv_card_says_what_follows_it_whole() {
+        let asset = kernel::engines::uv::PINNED
+            .asset(kernel::machine::Os::Linux, "x86_64")
+            .expect("pinned");
+        let dirs = runtime::boot::HedosDirs {
+            data: std::path::PathBuf::from("/home/someone/.local/share/hedos"),
+        };
+        let card = InstallCard {
+            lines: crate::support::engines::uv_card(asset, &dirs),
+            target: crate::tui::tasks::InstallTarget::Uv,
+        };
+        let shown = texts(&install(&card, Rect::new(0, 0, INSTALL_WIDTH - 2, 10)));
+        let then = shown
+            .iter()
+            .find(|line| line.trim_start().starts_with("then"))
+            .expect("a then line");
+        assert!(
+            !then.contains('…') && then.ends_with("if missing"),
+            "{then}"
+        );
     }
 }

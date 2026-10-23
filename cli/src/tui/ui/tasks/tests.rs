@@ -86,8 +86,10 @@ fn every_task_verb_is_listed() {
             id: "m".to_owned(),
             name: "m".to_owned(),
         },
-        TaskKind::InstallLlamaCpp {
-            variant: kernel::engines::llama_cpp::Variant::Cpu,
+        TaskKind::Install {
+            target: crate::tui::tasks::InstallTarget::LlamaCpp(
+                kernel::engines::llama_cpp::Variant::Cpu,
+            ),
         },
     ];
     let hand_offs = [
@@ -109,7 +111,7 @@ fn every_task_verb_is_listed() {
             | TaskKind::WarmViaGateway { .. }
             | TaskKind::Unload { .. }
             | TaskKind::Remove { .. }
-            | TaskKind::InstallLlamaCpp { .. } => {}
+            | TaskKind::Install { .. } => {}
         }
         let verb = kind.verb();
         assert!(TaskKind::VERBS.contains(&verb), "{verb} is not listed");

@@ -62,7 +62,7 @@ enum Command {
     Rm(commands::rm::RmArgs),
     /// List the manifest runtimes, and approve or revoke one.
     Runtimes(commands::runtimes::RuntimesArgs),
-    /// List the engines models run on, and install or remove llama.cpp.
+    /// List the engines models run on, and install or remove llama.cpp or uv.
     Engines(commands::engines::EnginesArgs),
     /// Discover models on this machine and refresh the shelf.
     Scan(commands::scan::ScanArgs),

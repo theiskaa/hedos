@@ -19,11 +19,12 @@ use kernel::records::format_bytes;
 use kernel::records::{ModelRecord, ModelState, RuntimeId};
 use kernel::time::now_millis;
 use runtime::boot::{self, HedosDirs};
+use runtime::engines::uv;
 use runtime::install::{Started, WorkerError, collect_ended, restart, start_or_join};
 use runtime::settings::SettingsStore;
 
 use crate::error::CliError;
-use crate::support::engines::offer_after_pull;
+use crate::support::engines::{Installable, offer_after_pull, offer_uv_after_pull};
 use crate::support::interactive;
 use crate::support::machine;
 use crate::support::output::Out;
@@ -93,7 +94,7 @@ enum Seen {
 }
 
 /// After a pull of `reference` they watched land, ask once whether to install
-/// llama.cpp when the model is one llama.cpp serves and none is here.
+/// the engine the model needs and this machine lacks ([`engine_to_offer`]).
 async fn after(seen: Seen, reference: &str, out: &Out) -> Result<(), CliError> {
     if seen != Seen::Landed {
         return Ok(());
@@ -102,38 +103,60 @@ async fn after(seen: Seen, reference: &str, out: &Out) -> Result<(), CliError> {
         return Ok(());
     };
     let shelf = session.shelf().await;
-    if let Some(name) = served_by_llama_cpp(&shelf, reference) {
-        let offered = offer_after_pull(name, &machine::machine(), out).await;
-        install_after_landing(name, offered, out);
-    }
+    let Some((name, engine)) = engine_to_offer(&shelf, reference, uv::needed) else {
+        return Ok(());
+    };
+    let offered = match engine {
+        Installable::LlamaCpp => offer_after_pull(name, &machine::machine(), out).await,
+        Installable::Uv => offer_uv_after_pull(name, out).await,
+    };
+    install_after_landing(name, engine, offered, out);
     Ok(())
 }
 
-/// The pull landed whatever became of the llama.cpp install offered after
-/// it: one that failed is said, and the pull still succeeds.
-fn install_after_landing(name: &str, offered: Result<(), CliError>, out: &Out) {
+/// The pull landed whatever became of the install offered after it: one
+/// that failed is said, and the pull still succeeds.
+fn install_after_landing(
+    name: &str,
+    engine: Installable,
+    offered: Result<(), CliError>,
+    out: &Out,
+) {
     if let Err(error) = offered {
         out.err(&format!(
-            "{name} was pulled, but installing llama.cpp did not finish: {error}"
+            "{name} was pulled, but installing {} did not finish: {error}",
+            engine.name()
         ));
     }
 }
 
 /// The name of the model the pull of `reference` registered on `shelf`, the
-/// one whose repo it is, when llama.cpp is what serves it.
-fn served_by_llama_cpp<'a>(shelf: &'a [ModelRecord], reference: &str) -> Option<&'a str> {
-    shelf
-        .iter()
-        .find(|record| {
-            record.state != ModelState::Missing
-                && record
-                    .source
-                    .repo
-                    .as_deref()
-                    .is_some_and(|repo| repo.eq_ignore_ascii_case(reference))
-        })
-        .filter(|record| record.runtime.id == Some(RuntimeId::llama_cpp()))
-        .map(ModelRecord::display_name)
+/// one whose repo it is, and the engine to offer for it: llama.cpp when that
+/// serves it (offered only when none is here), uv when its runtime needs uv
+/// (`needs_uv`, which says whether the runtime's environment is unbuilt and
+/// no uv is here).
+fn engine_to_offer<'a>(
+    shelf: &'a [ModelRecord],
+    reference: &str,
+    needs_uv: impl Fn(&RuntimeId) -> bool,
+) -> Option<(&'a str, Installable)> {
+    let record = shelf.iter().find(|record| {
+        record.state != ModelState::Missing
+            && record
+                .source
+                .repo
+                .as_deref()
+                .is_some_and(|repo| repo.eq_ignore_ascii_case(reference))
+    })?;
+    let runtime = record.runtime.id.as_ref()?;
+    let engine = if *runtime == RuntimeId::llama_cpp() {
+        Installable::LlamaCpp
+    } else if needs_uv(runtime) {
+        Installable::Uv
+    } else {
+        return None;
+    };
+    Some((record.display_name(), engine))
 }
 
 /// Join the pull of `reference` already under way, if there is one, and how

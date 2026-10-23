@@ -1,19 +1,23 @@
 //! `hedos engines`: the engines models run on, where each is on this machine,
-//! and installing or removing llama.cpp, the one hedos installs, only when
-//! asked.
+//! and installing or removing the ones hedos installs (llama.cpp, and the uv
+//! the Python models' environments are built with), only when asked.
 
 use clap::{Args, Subcommand};
 use kernel::engines::llama_cpp::{
     DECISION_MODELS_BUILD, InstallSource, LlamaVersion, PINNED, Variant,
 };
+use kernel::engines::uv::PINNED as UV_PINNED;
 use runtime::boot::HedosDirs;
 use runtime::engines::bundled::bundled;
 use runtime::engines::llama_cpp::{LlamaServer, Source, installed, located, on_path, version};
-use runtime::engines::{ollama_binary, ollama_listening, uv_binary};
+use runtime::engines::uv::{self, Outcome, Source as UvSource};
+use runtime::engines::{ollama_binary, ollama_listening};
 
 use crate::error::CliError;
-use crate::support::engines::{build_for, card, faster_line, install_build, runs_here};
-use crate::support::interactive;
+use crate::support::engines::{
+    Installable, build_for, card, consented, faster_line, install_build, install_pinned_uv,
+    runs_here, uv_card, uv_for_here, uv_installed_line,
+};
 use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::table;
@@ -29,18 +33,18 @@ pub struct EnginesArgs {
 enum EnginesCommand {
     /// List the engines and where each is.
     Ls,
-    /// Install llama.cpp, after saying what will be fetched.
+    /// Install llama.cpp or uv, after saying what will be fetched.
     Install(InstallArgs),
-    /// Remove the llama.cpp builds hedos installed or unpacked.
+    /// Remove the llama.cpp builds or the uv hedos installed or unpacked.
     Remove(RemoveArgs),
 }
 
 #[derive(Args)]
 struct InstallArgs {
-    /// The engine: llama.cpp is the one hedos installs.
+    /// The engine: llama.cpp or uv.
     engine: String,
-    /// The build: metal, cpu, vulkan, cuda-12, cuda-13 or rocm. The one that
-    /// suits this machine when not given.
+    /// llama.cpp's build: metal, cpu, vulkan, cuda-12, cuda-13 or rocm. The
+    /// one that suits this machine when not given.
     #[arg(long)]
     variant: Option<String>,
     /// Install without being asked to confirm.
@@ -50,7 +54,7 @@ struct InstallArgs {
 
 #[derive(Args)]
 struct RemoveArgs {
-    /// The engine: llama.cpp.
+    /// The engine: llama.cpp or uv.
     engine: String,
     /// Remove without being asked to confirm.
     #[arg(short, long)]
@@ -64,8 +68,14 @@ pub async fn run(args: EnginesArgs, out: &Out) -> Result<(), CliError> {
             list(out);
             Ok(())
         }
-        EnginesCommand::Install(args) => install(args, out).await,
-        EnginesCommand::Remove(args) => remove(args, out),
+        EnginesCommand::Install(args) => match managed(&args.engine, Managing::Install)? {
+            Installable::LlamaCpp => install(args, out).await,
+            Installable::Uv => install_uv(args, out).await,
+        },
+        EnginesCommand::Remove(args) => match managed(&args.engine, Managing::Remove)? {
+            Installable::LlamaCpp => remove(args, out),
+            Installable::Uv => remove_uv(args, out),
+        },
     }
 }
 
@@ -141,7 +151,11 @@ fn rows() -> Vec<Row> {
     };
     let ollama = ollama_binary();
     let listening = ollama_listening();
-    let uv = uv_binary();
+    let uv = uv::located();
+    let uv_version = uv.as_ref().and_then(|uv| match uv.from {
+        UvSource::Hedos => uv::installed(&dirs.data).map(|(_, record)| record.version),
+        UvSource::Path => uv::version(&uv.path),
+    });
     vec![
         Row {
             name: "llama.cpp",
@@ -169,12 +183,12 @@ fn rows() -> Vec<Row> {
         Row {
             name: "uv",
             serves: "Python models",
-            found: uv.as_ref().map(|_| "path".to_owned()),
-            path: uv.as_ref().map(|path| path.display().to_string()),
-            version: None,
+            found: uv.as_ref().map(|uv| uv.from.as_str().to_owned()),
+            path: uv.as_ref().map(|uv| uv.path.display().to_string()),
+            version: uv_version,
             note: uv
                 .is_none()
-                .then(|| "only for Python models; get it from astral.sh/uv".to_owned()),
+                .then(|| "hedos engines install uv, for Python models".to_owned()),
         },
     ]
 }
@@ -224,40 +238,32 @@ enum Managing {
     Remove,
 }
 
-/// Refuse any engine but llama.cpp: for an install, saying where the others
-/// come from; for a removal, that hedos removes only its own builds.
-fn llama_cpp_only(engine: &str, managing: Managing) -> Result<(), CliError> {
-    let name = match engine.to_ascii_lowercase().as_str() {
-        "llama.cpp" | "llama-cpp" | "llamacpp" | "llama-server" => return Ok(()),
-        "ollama" => "Ollama",
-        "uv" => "uv",
+/// The engine `engine` names, when hedos installs it; otherwise refused, for
+/// an install saying where it comes from, for a removal that hedos removes
+/// only what it installed.
+fn managed(engine: &str, managing: Managing) -> Result<Installable, CliError> {
+    match engine.to_ascii_lowercase().as_str() {
+        "llama.cpp" | "llama-cpp" | "llamacpp" | "llama-server" => Ok(Installable::LlamaCpp),
+        "uv" => Ok(Installable::Uv),
+        "ollama" => Err(CliError::new(match managing {
+            Managing::Install => "hedos doesn't install Ollama; get it from ollama.com",
+            Managing::Remove => {
+                "hedos doesn't remove Ollama; it removes only the llama.cpp and uv it installed or unpacked"
+            }
+        })),
         other => {
             let verb = match managing {
                 Managing::Install => "installs",
                 Managing::Remove => "removes",
             };
-            return Err(CliError::new(format!(
-                "no engine named {other}; llama.cpp is the one hedos {verb}"
-            )));
+            Err(CliError::new(format!(
+                "no engine named {other}; llama.cpp and uv are the ones hedos {verb}"
+            )))
         }
-    };
-    Err(CliError::new(match managing {
-        Managing::Install => format!(
-            "hedos doesn't install {name}; get it from {}",
-            if name == "uv" {
-                "astral.sh/uv"
-            } else {
-                "ollama.com"
-            }
-        ),
-        Managing::Remove => format!(
-            "hedos doesn't remove {name}; it removes only the llama.cpp builds it installed or unpacked"
-        ),
-    }))
+    }
 }
 
 async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
-    llama_cpp_only(&args.engine, Managing::Install)?;
     let variant = match &args.variant {
         Some(name) => Some(Variant::parse(name).ok_or_else(|| {
             CliError::new(format!(
@@ -304,16 +310,9 @@ async fn install(args: InstallArgs, out: &Out) -> Result<(), CliError> {
     for line in card(asset, &dirs) {
         out.err(&line);
     }
-    if !args.yes {
-        if !interactive::is_interactive(out) {
-            return Err(CliError::new(
-                "installing llama.cpp needs a yes: run this in a terminal, or pass --yes",
-            ));
-        }
-        if !interactive::confirm("Install llama.cpp?", false)? {
-            out.line("Not installed.");
-            return Ok(());
-        }
+    if !consented(args.yes, out, "installing llama.cpp", "Install llama.cpp?")? {
+        out.line("Not installed.");
+        return Ok(());
     }
     let server = install_build(asset, &dirs, out).await?;
     out.line(&format!(
@@ -359,23 +358,15 @@ fn carried_answers(variant: Variant) -> Option<runtime::engines::bundled::Bundle
 }
 
 fn remove(args: RemoveArgs, out: &Out) -> Result<(), CliError> {
-    llama_cpp_only(&args.engine, Managing::Remove)?;
     let dirs = HedosDirs::detect();
-    if !args.yes {
-        if !interactive::is_interactive(out) {
-            return Err(CliError::new(
-                "removing llama.cpp needs a yes: run this in a terminal, or pass --yes",
-            ));
-        }
-        let asked = if bundled().is_some() {
-            "Remove the llama.cpp builds hedos installed or unpacked? The one it carries unpacks again when needed."
-        } else {
-            "Remove the llama.cpp hedos installed?"
-        };
-        if !interactive::confirm(asked, false)? {
-            out.line("Kept.");
-            return Ok(());
-        }
+    let asked = if bundled().is_some() {
+        "Remove the llama.cpp builds hedos installed or unpacked? The one it carries unpacks again when needed."
+    } else {
+        "Remove the llama.cpp hedos installed?"
+    };
+    if !consented(args.yes, out, "removing llama.cpp", asked)? {
+        out.line("Kept.");
+        return Ok(());
     }
     let removed = runtime::engines::install::remove(&dirs.data)
         .map_err(|error| CliError::new(error.to_string()))?;
@@ -403,19 +394,103 @@ fn remove(args: RemoveArgs, out: &Out) -> Result<(), CliError> {
     Ok(())
 }
 
+async fn install_uv(args: InstallArgs, out: &Out) -> Result<(), CliError> {
+    install_uv_in(args, &HedosDirs::detect(), out).await
+}
+
+/// [`install_uv`] under `dirs`.
+async fn install_uv_in(args: InstallArgs, dirs: &HedosDirs, out: &Out) -> Result<(), CliError> {
+    if args.variant.is_some() {
+        return Err(CliError::new(
+            "--variant is llama.cpp's; uv has one build for each machine",
+        ));
+    }
+    let asset = uv_for_here()?;
+    if let Some(present) = uv::present(&dirs.data) {
+        out.line(&uv_installed_line(&present, Outcome::Present));
+        out.json(&uv_json(Outcome::Present, &present.path));
+        return Ok(());
+    }
+    for line in uv_card(asset, dirs) {
+        out.err(&line);
+    }
+    if !consented(args.yes, out, "installing uv", "Install uv?")? {
+        out.line("Not installed.");
+        return Ok(());
+    }
+    let (installed, outcome) = install_pinned_uv(dirs, out).await?;
+    out.line(&uv_installed_line(&installed, outcome));
+    out.json(&uv_json(outcome, &installed.path));
+    Ok(())
+}
+
+/// What `engines install uv --json` prints: `status` is `installed` when it
+/// was fetched now, `present` when the pinned uv was already there.
+fn uv_json(outcome: Outcome, path: &std::path::Path) -> serde_json::Value {
+    let status = match outcome {
+        Outcome::Installed => "installed",
+        Outcome::Present => "present",
+    };
+    serde_json::json!({
+        "engine": "uv",
+        "version": UV_PINNED.version,
+        "path": path,
+        "status": status,
+    })
+}
+
+fn remove_uv(args: RemoveArgs, out: &Out) -> Result<(), CliError> {
+    let dirs = HedosDirs::detect();
+    let asked = "Remove the uv hedos installed? Models whose environments are built keep running; one being prepared now may fail.";
+    if !consented(args.yes, out, "removing uv", asked)? {
+        out.line("Kept.");
+        return Ok(());
+    }
+    let removed = uv::remove(&dirs.data).map_err(|error| CliError::new(error.to_string()))?;
+    if removed.is_empty() {
+        out.line("hedos has no uv installed to remove.");
+    } else {
+        out.line("removed the uv hedos installed");
+    }
+    let now = uv::located();
+    match &now {
+        Some(uv) => out.err(&format!(
+            "hedos now builds Python environments with the uv at {}",
+            uv.path.display()
+        )),
+        None => out.err(
+            "no uv is left; Python models whose environments are built still run, others need `hedos engines install uv`",
+        ),
+    }
+    out.json(&serde_json::json!({
+        "engine": "uv",
+        "removed": removed,
+        "now_runs": now.map(|uv| uv.path),
+    }));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn only_llama_cpp_is_installed_and_the_others_say_where_to_get_them() {
+    fn llama_cpp_and_uv_are_installed_and_ollama_says_where_to_get_it() {
         for name in ["llama.cpp", "LLAMA-CPP", "llama-server"] {
-            assert!(llama_cpp_only(name, Managing::Install).is_ok(), "{name}");
-            assert!(llama_cpp_only(name, Managing::Remove).is_ok(), "{name}");
+            assert_eq!(
+                managed(name, Managing::Install).ok(),
+                Some(Installable::LlamaCpp)
+            );
+            assert_eq!(
+                managed(name, Managing::Remove).ok(),
+                Some(Installable::LlamaCpp)
+            );
         }
-        let said = |engine, managing| llama_cpp_only(engine, managing).unwrap_err().to_string();
+        for managing in [Managing::Install, Managing::Remove] {
+            assert_eq!(managed("UV", managing).ok(), Some(Installable::Uv));
+        }
+        let said = |engine, managing| managed(engine, managing).unwrap_err().to_string();
         assert!(said("ollama", Managing::Install).contains("ollama.com"));
-        assert!(said("uv", Managing::Install).contains("astral.sh/uv"));
         assert!(said("vllm", Managing::Install).ends_with("hedos installs"));
         // A removal says what hedos removes, not where to get the engine.
         let removing = said("ollama", Managing::Remove);
@@ -465,6 +540,81 @@ mod tests {
             unknown.to_string().contains("no build named opencl"),
             "{unknown}"
         );
+    }
+
+    #[tokio::test]
+    async fn uv_takes_no_variant_and_installs_only_on_a_yes() {
+        let json = Out::new(true);
+        let refused = install_uv(
+            InstallArgs {
+                engine: "uv".to_owned(),
+                variant: Some("cpu".to_owned()),
+                yes: true,
+            },
+            &json,
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.to_string().contains("--variant"), "{refused}");
+
+        // A data dir with no uv of hedos's asks first, and off a terminal
+        // fetches nothing.
+        let scratch = std::env::temp_dir().join(format!(
+            "hedos-cli-uv-{}-{}",
+            std::process::id(),
+            kernel::time::now_millis()
+        ));
+        let dirs = HedosDirs {
+            data: scratch.clone(),
+        };
+        let ask = || InstallArgs {
+            engine: "uv".to_owned(),
+            variant: None,
+            yes: false,
+        };
+        let refused = install_uv_in(ask(), &dirs, &json).await.unwrap_err();
+        assert!(refused.to_string().contains("needs a yes"), "{refused}");
+        assert!(uv::installed(&dirs.data).is_none());
+
+        // With the pinned uv there, whole, there is nothing to ask.
+        let asset = uv_for_here().expect("a build for this machine");
+        let dir = uv::hedos_root(&dirs.data).join(UV_PINNED.version);
+        std::fs::create_dir_all(&dir).unwrap();
+        // It answers with the version pinned, as `present` asks it to.
+        let program = format!("#!/bin/sh\necho 'uv {} (test)'\n", UV_PINNED.version);
+        std::fs::write(dir.join("uv"), &program).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.join("uv"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let record = kernel::engines::uv::Installed {
+            version: UV_PINNED.version.to_owned(),
+            os: asset.os.as_str().to_owned(),
+            arch: asset.arch.to_owned(),
+            sha256: asset.sha256.to_owned(),
+            installed_at: 1,
+            files: vec![kernel::engines::InstalledFile {
+                name: "uv".to_owned(),
+                bytes: Some(program.len() as u64),
+            }],
+        };
+        std::fs::write(
+            dir.join(kernel::engines::INSTALLED_FILE),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        install_uv_in(ask(), &dirs, &json)
+            .await
+            .expect("nothing to install");
+        let _ = std::fs::remove_dir_all(&scratch);
+
+        let refused = remove_uv(
+            RemoveArgs {
+                engine: "uv".to_owned(),
+                yes: false,
+            },
+            &json,
+        )
+        .unwrap_err();
+        assert!(refused.to_string().contains("needs a yes"), "{refused}");
     }
 
     #[test]

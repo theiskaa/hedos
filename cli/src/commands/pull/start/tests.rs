@@ -42,7 +42,7 @@ async fn rejoining_a_pull_still_going_leaves_it_to_its_worker() {
 }
 
 #[test]
-fn only_a_model_llama_cpp_serves_is_offered_llama_cpp_after_a_pull() {
+fn a_pulled_model_is_offered_the_engine_it_needs() {
     use kernel::records::{Modality, ModelSource, RuntimeId, SourceKind};
     let record = |repo: &str, runtime: RuntimeId| {
         let name = repo.rsplit('/').next().unwrap();
@@ -57,17 +57,23 @@ fn only_a_model_llama_cpp_serves_is_offered_llama_cpp_after_a_pull() {
         record("someone/gemma-4-E4B-it-GGUF", RuntimeId::ollama()),
         record("ggml-org/gemma-4-E4B-it-GGUF", RuntimeId::llama_cpp()),
         record("stabilityai/sdxl-turbo", RuntimeId::diffusers()),
+        record("mlx-community/Qwen3-0.6B-4bit", RuntimeId::mlx_lm()),
         record("ggerganov/whisper.cpp", RuntimeId::whisper_cpp()),
     ];
+    // Only diffusers' environment is unbuilt here, with no uv.
+    let needs_uv = |runtime: &RuntimeId| *runtime == RuntimeId::diffusers();
+    let offer = |reference| engine_to_offer(&shelf, reference, needs_uv);
     assert_eq!(
-        served_by_llama_cpp(&shelf, "ggml-org/gemma-4-E4B-it-GGUF"),
-        Some("gemma-4-E4B-it-GGUF")
+        offer("ggml-org/gemma-4-E4B-it-GGUF"),
+        Some(("gemma-4-E4B-it-GGUF", Installable::LlamaCpp))
     );
+    assert_eq!(offer("someone/gemma-4-E4B-it-GGUF"), None);
     assert_eq!(
-        served_by_llama_cpp(&shelf, "someone/gemma-4-E4B-it-GGUF"),
-        None
+        offer("stabilityai/sdxl-turbo"),
+        Some(("sdxl-turbo", Installable::Uv))
     );
-    assert_eq!(served_by_llama_cpp(&shelf, "stabilityai/sdxl-turbo"), None);
-    assert_eq!(served_by_llama_cpp(&shelf, "ggerganov/whisper.cpp"), None);
-    assert_eq!(served_by_llama_cpp(&shelf, "org/not-pulled"), None);
+    // Built already, or uv is here: nothing to offer.
+    assert_eq!(offer("mlx-community/Qwen3-0.6B-4bit"), None);
+    assert_eq!(offer("ggerganov/whisper.cpp"), None);
+    assert_eq!(offer("org/not-pulled"), None);
 }

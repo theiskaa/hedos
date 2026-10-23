@@ -4,7 +4,6 @@
 use std::time::Duration;
 
 use kernel::bench::Status as BenchStatus;
-use kernel::engines::llama_cpp::Variant;
 use kernel::install::pulls::PullState;
 use kernel::profiles::FitVerdict;
 use kernel::records::{Capability, ModelRecord, ModelState};
@@ -33,9 +32,11 @@ use super::pulls::PullsScreen;
 use super::state::UiState;
 use super::stop::{StopCard, StopChoice};
 use super::strip::{HintTargets, TaskStrip};
-use super::tasks::{PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
+use super::tasks::{InstallTarget, PullAction, TaskEvent, TaskId, TaskKind, TaskLabel, TaskState};
 use crate::support::bench_run::{machine_line, row_for as bench_row, rows as bench_rows};
-use crate::support::engines::{EngineNeed, build_for, card, needs_engine, runs_here};
+use crate::support::engines::{
+    EngineNeed, Installable, build_for, card, needs_engine, runs_here, uv_card, uv_for_here,
+};
 use crate::support::extract;
 use crate::support::judge;
 use crate::support::removal::deletion_preview;
@@ -99,21 +100,22 @@ pub enum Modal {
     Help,
     /// Choosing a harness to launch on the selected model.
     Launch(Box<LaunchModal>),
-    /// Confirming llama.cpp's install, with what it would fetch.
+    /// Confirming an engine's install, with what it would fetch.
     Install(InstallCard),
     /// A conversation with the selected model, in place of the shelf.
     Chat(Box<ChatPane>),
 }
 
-/// What installing llama.cpp would fetch, shown before it is: the build that
-/// suits this machine, as the install task fetches it.
+/// What installing an engine would fetch, shown before it is: for llama.cpp
+/// the build that suits this machine, for uv the pinned one, as the install
+/// task fetches it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallCard {
     /// What the card says: the release, each archive and its sha256, the
     /// size, and where it goes.
     pub lines: Vec<String>,
-    /// The build it says, which a yes installs.
-    pub variant: Variant,
+    /// What it says, which a yes installs.
+    pub target: InstallTarget,
 }
 
 /// Why a verb is refused for the selected model: quietly, when the model
@@ -337,7 +339,7 @@ impl App {
             return Vec::new();
         };
         let mut actions = Vec::new();
-        if self.warmable(record).is_ok() {
+        if self.warmable(record).is_ok() || self.installs_instead_of_warming(record) {
             actions.push("w");
         }
         if self.unloadable(record).is_ok() {
@@ -355,6 +357,20 @@ impl App {
             actions.push("y");
         }
         actions
+    }
+
+    /// Whether `w` on `record` opens the install card for the engine it needs
+    /// though warming it would be refused: `w` is the key the detail names
+    /// for that install, so a model with nothing to keep warm (an image
+    /// model, which still needs uv to run) is offered it. Any other refusal
+    /// (busy, too large) still comes first.
+    fn installs_instead_of_warming(&self, record: &ModelRecord) -> bool {
+        let nothing_to_keep_warm = extract::is_extractor(record) || warm_request(record).is_none();
+        nothing_to_keep_warm
+            && !self.tasks.running_on(&record.id)
+            && verdict(record, &self.facts.machine) != Some(FitVerdict::TooLarge)
+            && needs_engine(record, &self.facts.machine, &self.facts.needs_uv)
+                .is_some_and(|need| matches!(need, EngineNeed::Install(_)))
     }
 
     /// Why `record` can't be warmed right now, if it can't.
@@ -450,11 +466,11 @@ impl App {
         self.tasks.busy()
     }
 
-    /// Whether a task quitting waits for is running: anything but a llama.cpp
+    /// Whether a task quitting waits for is running: anything but an engine
     /// install, which quitting stops.
     pub fn busy_beside_installs(&self) -> bool {
         self.tasks
-            .any_running(|kind| !matches!(kind, TaskKind::InstallLlamaCpp { .. }))
+            .any_running(|kind| !matches!(kind, TaskKind::Install { .. }))
     }
 
     /// Whether something changed since the last draw; reading it clears it.
@@ -493,7 +509,7 @@ impl App {
             Event::PullRefused(reason) => self.notify(reason),
             Event::Task(event) => self.task(event),
             Event::Refreshed(refreshed) => {
-                self.refreshed(refreshed);
+                self.refreshed(*refreshed);
                 Vec::new()
             }
             Event::Searched(searched) => {
@@ -935,7 +951,7 @@ impl App {
     /// Open the harness picker for the selected model, or say why not.
     fn launch(&mut self) -> Vec<Effect> {
         match self.chatting_record() {
-            Ok(_) if self.needs_llama_cpp() => self.install_engine(),
+            Ok(_) if self.needs_an_install() => self.install_engine(),
             Ok(record) => {
                 self.open(Modal::Launch(Box::new(LaunchModal::open(&record))));
                 Vec::new()
@@ -994,7 +1010,7 @@ impl App {
     /// Hand off to `hedos chat` on the selected model.
     fn hand_off_chat(&mut self) -> Vec<Effect> {
         match self.chatting_record() {
-            Ok(_) if self.needs_llama_cpp() => self.install_engine(),
+            Ok(_) if self.needs_an_install() => self.install_engine(),
             Ok(record) => vec![Effect::HandOff(Box::new(HandOff::Chat {
                 record: Box::new(record),
             }))],
@@ -1013,7 +1029,7 @@ impl App {
             _ => self.chatting_record(),
         };
         match trying {
-            Ok(_) if self.needs_llama_cpp() => self.install_engine(),
+            Ok(_) if self.needs_an_install() => self.install_engine(),
             Ok(record) => {
                 self.expanded = false;
                 let pane = match self.kept_chat.take() {
@@ -1185,41 +1201,77 @@ impl App {
         Vec::new()
     }
 
-    /// Whether the selected model runs on llama.cpp and none is here, so
-    /// warming, trying, launching, chatting with or benching it offers to
-    /// install it first.
-    fn needs_llama_cpp(&self) -> bool {
-        self.selected_record().is_some_and(|record| {
-            needs_engine(record, &self.facts.machine) == Some(EngineNeed::LlamaCpp)
-        })
+    /// The engine hedos can install that the selected model needs: llama.cpp
+    /// when it runs on that and none is here, uv when its runtime's Python
+    /// environment is not built and no uv is here.
+    fn installable_need(&self) -> Option<Installable> {
+        let record = self.selected_record()?;
+        match needs_engine(record, &self.facts.machine, &self.facts.needs_uv)? {
+            EngineNeed::Install(engine) => Some(engine),
+            EngineNeed::Ollama => None,
+        }
     }
 
-    /// Open the card that says what installing llama.cpp fetches, for the
-    /// selected model that needs it (asked by warming or trying it), or say
-    /// why not.
+    /// Whether warming, trying, launching, chatting with or benching the
+    /// selected model offers to install an engine first.
+    fn needs_an_install(&self) -> bool {
+        self.installable_need().is_some()
+    }
+
+    /// Open the card that says what installing the engine the selected model
+    /// needs fetches (asked by warming or trying it), or say why not.
     fn install_engine(&mut self) -> Vec<Effect> {
-        if self.installing_llama_cpp() {
+        let Some(engine) = self.installable_need() else {
+            return Vec::new();
+        };
+        if self.installing(engine) {
             return self.refuse(Refusal::Busy);
         }
-        let asset = match build_for(None, &self.facts.machine).and_then(|asset| {
-            runs_here(asset)?;
-            Ok(asset)
-        }) {
-            Ok(asset) => asset,
-            Err(error) => return self.notify(error.to_string()),
+        let card = match engine {
+            Installable::Uv => match uv_for_here() {
+                Ok(asset) => InstallCard {
+                    lines: uv_card(asset, &HedosDirs::detect()),
+                    target: InstallTarget::Uv,
+                },
+                Err(error) => return self.notify(error.to_string()),
+            },
+            Installable::LlamaCpp => {
+                let asset = match build_for(None, &self.facts.machine).and_then(|asset| {
+                    runs_here(asset)?;
+                    Ok(asset)
+                }) {
+                    Ok(asset) => asset,
+                    Err(error) => return self.notify(error.to_string()),
+                };
+                InstallCard {
+                    lines: card(asset, &HedosDirs::detect()),
+                    target: InstallTarget::LlamaCpp(asset.variant),
+                }
+            }
         };
-        let lines = card(asset, &HedosDirs::detect());
-        self.open(Modal::Install(InstallCard {
-            lines,
-            variant: asset.variant,
-        }));
+        self.open(Modal::Install(card));
         Vec::new()
     }
 
-    /// Whether a llama.cpp install this shelf started is still running.
-    pub fn installing_llama_cpp(&self) -> bool {
-        self.tasks
-            .any_running(|kind| matches!(kind, TaskKind::InstallLlamaCpp { .. }))
+    /// Whether an install of `engine` this shelf started is still running.
+    fn installing(&self, engine: Installable) -> bool {
+        self.tasks.any_running(
+            |kind| matches!(kind, TaskKind::Install { target } if target.engine() == engine),
+        )
+    }
+
+    /// The engines an install this shelf started is still putting in place,
+    /// which quitting stops, each once.
+    pub fn installs_running(&self) -> Vec<Installable> {
+        let mut engines = Vec::new();
+        for row in self.tasks.rows().iter().filter(|row| row.running()) {
+            if let Some(TaskKind::Install { target }) = row.kind()
+                && !engines.contains(&target.engine())
+            {
+                engines.push(target.engine());
+            }
+        }
+        engines
     }
 
     /// `y` installs what the card showed; anything that closes it installs
@@ -1237,8 +1289,8 @@ impl App {
         if !confirmed {
             return Vec::new();
         }
-        vec![Effect::Spawn(TaskKind::InstallLlamaCpp {
-            variant: card.variant,
+        vec![Effect::Spawn(TaskKind::Install {
+            target: card.target,
         })]
     }
 
@@ -1413,7 +1465,7 @@ impl App {
         let benchable = !self.bench.running()
             && record.capabilities.contains(&Capability::chat())
             && bench_row(record, &self.facts.machine, true).status == BenchStatus::Waiting;
-        if benchable && self.needs_llama_cpp() {
+        if benchable && self.needs_an_install() {
             return self.install_engine();
         }
         let id = record.id.clone();
@@ -1674,10 +1726,13 @@ impl App {
         let Some(record) = self.selected_record() else {
             return Vec::new();
         };
+        if self.installs_instead_of_warming(record) {
+            return self.install_engine();
+        }
         if let Err(refusal) = self.warmable(record) {
             return self.refuse(refusal);
         }
-        if self.needs_llama_cpp() {
+        if self.needs_an_install() {
             return self.install_engine();
         }
         let id = record.id.clone();

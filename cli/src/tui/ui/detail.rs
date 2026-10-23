@@ -247,10 +247,20 @@ fn full_lines(
             )
         })
         .collect();
-    missing.extend(needs_engine(record, &facts.machine).map(|need| match need {
-        EngineNeed::LlamaCpp => row("needs", "llama.cpp · w or t installs it".to_owned()),
-        EngineNeed::Ollama => row("needs", "Ollama · only it runs this format".to_owned()),
-    }));
+    // `w` reaches the install for any model; `t` only for one it can open.
+    let keys = if record.capabilities.contains(&Capability::chat()) {
+        "w or t"
+    } else {
+        "w"
+    };
+    missing.extend(
+        needs_engine(record, &facts.machine, &facts.needs_uv).map(|need| match need {
+            EngineNeed::Install(engine) => {
+                row("needs", format!("{} · {keys} installs it", engine.name()))
+            }
+            EngineNeed::Ollama => row("needs", "Ollama · only it runs this format".to_owned()),
+        }),
+    );
     if !missing.is_empty() {
         lines.extend(missing);
         lines.push(Line::default());

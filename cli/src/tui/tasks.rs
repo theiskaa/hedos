@@ -13,6 +13,7 @@ use gateway::audit::{GatewayAuditEntry, GatewayAuditLog};
 use kernel::capabilities::CapabilityChunk;
 use kernel::discovery::service::DiscoverySummary;
 use kernel::engines::llama_cpp::{PINNED, Variant};
+use kernel::engines::uv::PINNED as UV_PINNED;
 use kernel::install::event::InstallProgress;
 use kernel::install::plan::InstallPlan;
 use kernel::install::provider::InstallProviderId;
@@ -21,7 +22,8 @@ use kernel::records::{Capability, JsonValue, ModelRecord};
 use kernel::time::now_millis;
 use runtime::bench::{BenchPlan, Cancel};
 use runtime::boot::HedosDirs;
-use runtime::engines::install::InstallProgress as EngineProgress;
+use runtime::engines::install::{InstallProgress as EngineProgress, Landing};
+use runtime::engines::uv::Outcome;
 use runtime::install::service::InstallService;
 use runtime::install::{
     STOP_ANSWER_WINDOW, Started, Stopped, WorkerError, await_answer, restart, start_or_join, stop,
@@ -35,6 +37,7 @@ use super::jobs;
 use super::pull::{SEARCH_LIMIT, already_downloading};
 use super::text;
 use crate::support::bench_run::ShelfPrepare;
+use crate::support::engines::Installable;
 use crate::support::pulls::{event_line, too_late};
 use crate::support::removal::remove_and_forget;
 use crate::support::residency::{self, is_resident, unload_anywhere, warm_request};
@@ -68,6 +71,10 @@ pub struct TaskContext {
     /// Tasks that change the shelf or the disk; the loop waits for them on
     /// quit, so a removal is never cut between deleting and forgetting.
     mutating: Mutex<Vec<JoinHandle<()>>>,
+    /// Engine installs; quitting stops them at once rather than letting one
+    /// finish while a removal is waited for: what a stopped one leaves, the
+    /// next install puts right, and none is put in place after it stops.
+    installs: Mutex<Vec<JoinHandle<()>>>,
     /// The reply streaming into the chat pane; aborting it is how a reply
     /// stops, and one is enough since the pane sends one ask at a time.
     ask: Mutex<Option<JoinHandle<()>>>,
@@ -90,6 +97,7 @@ impl TaskContext {
             install,
             audit,
             mutating: Mutex::new(Vec::new()),
+            installs: Mutex::new(Vec::new()),
             ask: Mutex::new(None),
             bench: Mutex::new(None),
             disk: DiskCount::default(),
@@ -123,12 +131,22 @@ impl TaskContext {
     /// asked to stop rather than waited for: neither writes to the shelf, so
     /// quitting need not sit through the model either of them is on.
     pub async fn settle(&self) {
+        self.stop_installs();
         self.stop_ask();
         self.stop_bench();
         let handles: Vec<JoinHandle<()>> =
             std::mem::take(&mut *self.mutating.lock().unwrap_or_else(PoisonError::into_inner));
         for handle in handles {
             let _ = handle.await;
+        }
+    }
+
+    /// Stop every engine install still running.
+    pub fn stop_installs(&self) {
+        let handles =
+            std::mem::take(&mut *self.installs.lock().unwrap_or_else(PoisonError::into_inner));
+        for handle in handles {
+            handle.abort();
         }
     }
 
@@ -191,8 +209,27 @@ pub enum TaskKind {
     Unload { id: String, name: String },
     /// Delete a model's weights and forget its record.
     Remove { id: String, name: String },
-    /// Install the llama.cpp build its card showed.
-    InstallLlamaCpp { variant: Variant },
+    /// Install the engine its card showed.
+    Install { target: InstallTarget },
+}
+
+/// What an install card offers and its task installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallTarget {
+    /// A llama.cpp build.
+    LlamaCpp(Variant),
+    /// The uv the Python models' environments are built with.
+    Uv,
+}
+
+impl InstallTarget {
+    /// The engine it installs.
+    pub fn engine(self) -> Installable {
+        match self {
+            InstallTarget::LlamaCpp(_) => Installable::LlamaCpp,
+            InstallTarget::Uv => Installable::Uv,
+        }
+    }
 }
 
 /// What the strip calls a task: a verb and its subject.
@@ -224,7 +261,7 @@ impl TaskKind {
             TaskKind::Warm { .. } | TaskKind::WarmViaGateway { .. } => "warm",
             TaskKind::Unload { .. } => "unload",
             TaskKind::Remove { .. } => "remove",
-            TaskKind::InstallLlamaCpp { .. } => "install",
+            TaskKind::Install { .. } => "install",
         }
     }
 
@@ -232,7 +269,7 @@ impl TaskKind {
     pub fn subject(&self) -> &str {
         match self {
             TaskKind::Scan => "this machine",
-            TaskKind::InstallLlamaCpp { .. } => "llama.cpp",
+            TaskKind::Install { target } => target.engine().name(),
             TaskKind::Warm { name, .. }
             | TaskKind::WarmViaGateway { name, .. }
             | TaskKind::Unload { name, .. }
@@ -243,7 +280,7 @@ impl TaskKind {
     /// The model this task concerns, if it concerns one.
     pub fn model_id(&self) -> Option<&str> {
         match self {
-            TaskKind::Scan | TaskKind::InstallLlamaCpp { .. } => None,
+            TaskKind::Scan | TaskKind::Install { .. } => None,
             TaskKind::Warm { id, .. }
             | TaskKind::WarmViaGateway { id, .. }
             | TaskKind::Unload { id, .. }
@@ -259,7 +296,7 @@ impl TaskKind {
             TaskKind::WarmViaGateway { .. } => "loading on the gateway",
             TaskKind::Unload { .. } => "evicting",
             TaskKind::Remove { .. } => "deleting",
-            TaskKind::InstallLlamaCpp { .. } => "downloading",
+            TaskKind::Install { .. } => "downloading",
         }
     }
 }
@@ -308,9 +345,11 @@ pub fn spawn(
     let id = TaskId::next();
     let tx = tx.clone();
     // Work quitting waits on: a removal, so it is never cut between deleting
-    // and forgetting. An install is not: dropped midway it leaves nothing the
-    // next install does not put right, and its download can take minutes.
+    // and forgetting. An install is stopped instead: dropped midway it leaves
+    // nothing the next install does not put right, and its download can take
+    // minutes.
     let mutating = matches!(kind, TaskKind::Remove { .. });
+    let installing = matches!(kind, TaskKind::Install { .. });
     let runner = Arc::clone(context);
     let kind = kind.clone();
     let handle = tokio::spawn(async move {
@@ -325,18 +364,27 @@ pub fn spawn(
             TaskKind::WarmViaGateway { id, port, .. } => warm_on_gateway(session, &id, port).await,
             TaskKind::Unload { id, .. } => unload(session, &id).await,
             TaskKind::Remove { id, .. } => remove(session, &id).await,
-            TaskKind::InstallLlamaCpp { variant } => install_llama_cpp(variant, &report).await,
+            TaskKind::Install {
+                target: InstallTarget::LlamaCpp(variant),
+            } => install_llama_cpp(variant, &report).await,
+            TaskKind::Install {
+                target: InstallTarget::Uv,
+            } => install_uv(&report).await,
         };
         report(match outcome {
             Ok(summary) => TaskState::Done(summary),
             Err(reason) => TaskState::Failed(reason),
         });
     });
-    if mutating {
-        let mut handles = context
-            .mutating
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let kept = if mutating {
+        Some(&context.mutating)
+    } else if installing {
+        Some(&context.installs)
+    } else {
+        None
+    };
+    if let Some(kept) = kept {
+        let mut handles = kept.lock().unwrap_or_else(PoisonError::into_inner);
         handles.retain(|handle| !handle.is_finished());
         handles.push(handle);
     }
@@ -350,32 +398,62 @@ async fn install_llama_cpp(
     report: &impl Fn(TaskState),
 ) -> Result<String, String> {
     let shown = Mutex::new(None::<u64>);
-    let server =
-        runtime::engines::install::install(variant, &HedosDirs::detect().data, |progress| {
-            let line = match progress {
-                EngineProgress::Downloading {
-                    received, total, ..
-                } => {
-                    let percent = received.saturating_mul(100) / total.max(1);
-                    let mut shown = shown.lock().unwrap_or_else(PoisonError::into_inner);
-                    if *shown == Some(percent) {
-                        return;
-                    }
-                    *shown = Some(percent);
-                    format!("downloading {percent}%")
-                }
-                EngineProgress::Unpacking => "unpacking".to_owned(),
-                EngineProgress::Checking => "checking it runs".to_owned(),
-            };
-            report(TaskState::Status(line));
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+    let server = runtime::engines::install::install(
+        variant,
+        &HedosDirs::detect().data,
+        &Landing::default(),
+        |progress| {
+            report_install(&shown, progress, report);
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(format!(
         "installed llama.cpp {} at {}",
         PINNED.version,
         text::at_home(&server.path.to_string_lossy())
     ))
+}
+
+/// Install the pinned uv the card showed, reporting how far it has got. Only
+/// the install card's yes starts this.
+async fn install_uv(report: &impl Fn(TaskState)) -> Result<String, String> {
+    let shown = Mutex::new(None::<u64>);
+    let (uv, outcome) =
+        runtime::engines::uv::install(&HedosDirs::detect().data, &Landing::default(), |progress| {
+            report_install(&shown, progress, report);
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let at = text::at_home(&uv.path.to_string_lossy());
+    Ok(match outcome {
+        Outcome::Installed => format!("installed uv {} at {at}", UV_PINNED.version),
+        Outcome::Present => format!("uv {} is installed at {at}", UV_PINNED.version),
+    })
+}
+
+/// Say how far an engine install has got, once per percent downloaded.
+fn report_install(
+    shown: &Mutex<Option<u64>>,
+    progress: EngineProgress,
+    report: &impl Fn(TaskState),
+) {
+    let line = match progress {
+        EngineProgress::Downloading {
+            received, total, ..
+        } => {
+            let percent = received.saturating_mul(100) / total.max(1);
+            let mut shown = shown.lock().unwrap_or_else(PoisonError::into_inner);
+            if *shown == Some(percent) {
+                return;
+            }
+            *shown = Some(percent);
+            format!("downloading {percent}%")
+        }
+        EngineProgress::Unpacking => "unpacking".to_owned(),
+        EngineProgress::Checking => "checking it runs".to_owned(),
+    };
+    report(TaskState::Status(line));
 }
 
 /// Read the pull jobs and hand the rows to the loop.
@@ -689,7 +767,7 @@ pub fn spawn_refresh(context: &Arc<TaskContext>, tx: &mpsc::UnboundedSender<Even
         // machine, so a shelf read only from memory goes stale without ever
         // saying so.
         let _ = context.session.kernel.reload_registry().await;
-        Event::Refreshed(context.snapshot().await.stamped(sequence))
+        Event::Refreshed(Box::new(context.snapshot().await.stamped(sequence)))
     });
 }
 

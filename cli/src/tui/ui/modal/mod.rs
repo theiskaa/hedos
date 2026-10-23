@@ -48,7 +48,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) -> bool {
         Modal::Install(card) => (
             install::INSTALL_WIDTH,
             install::height(card),
-            " install llama.cpp ".to_owned(),
+            format!(" install {} ", card.target.engine().name()),
             Box::new(move |inner| install::install(card, inner)),
         ),
         Modal::Stop(card) => (
@@ -332,7 +332,7 @@ mod tests {
         };
         let card = crate::tui::app::InstallCard {
             lines: crate::support::engines::card(cuda, &dirs),
-            variant: cuda.variant,
+            target: crate::tui::tasks::InstallTarget::LlamaCpp(cuda.variant),
         };
         let install_inner = Rect::new(
             0,
