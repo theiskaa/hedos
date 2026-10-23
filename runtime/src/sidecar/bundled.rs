@@ -5,6 +5,8 @@
 //! embedded here, and extracted into the data directory on first use, where
 //! [`RuntimeBundle`](super::RuntimeBundle) then locates it.
 
+use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
@@ -39,7 +41,10 @@ pub fn provision(bundles_root: &Path) -> std::io::Result<()> {
         return Ok(());
     }
 
-    write_entries(&decode_archive(), &bundles_root.join("Runtimes"))?;
+    let entries = decode_archive();
+    let runtimes = bundles_root.join("Runtimes");
+    write_entries(&entries, &runtimes)?;
+    drop_stale_variants(&entries, &runtimes)?;
 
     // Best-effort: a failed stamp write just means the next boot re-runs the
     // (correct, if slower) per-file compare instead of trusting a stale marker.
@@ -125,6 +130,47 @@ fn write_entries(entries: &[(PathBuf, Vec<u8>)], dest: &Path) -> std::io::Result
     Ok(())
 }
 
+/// Remove each CPU variant lockfile (`*.cpu.lock`) in a bundle under `dest`
+/// that the archive no longer carries: one left from an older binary would
+/// still be installed on Linux without NVIDIA's driver in place of the
+/// bundle's own lock. Nothing else an older binary wrote is acted on.
+fn drop_stale_variants(entries: &[(PathBuf, Vec<u8>)], dest: &Path) -> std::io::Result<()> {
+    let Ok(bundles) = std::fs::read_dir(dest) else {
+        return Ok(());
+    };
+    // Only a bundle this binary ships, and never through a symlink: a folder
+    // someone else put here, or one linked to another tree, is theirs.
+    let shipped_bundles: HashSet<&OsStr> = entries
+        .iter()
+        .filter_map(|(entry, _)| entry.components().next())
+        .map(|first| first.as_os_str())
+        .collect();
+    for bundle in bundles.flatten() {
+        if !bundle.file_type().is_ok_and(|kind| kind.is_dir())
+            || !shipped_bundles.contains(bundle.file_name().as_os_str())
+        {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(bundle.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            let variant = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".cpu.lock"));
+            let shipped = path
+                .strip_prefix(dest)
+                .is_ok_and(|relative| entries.iter().any(|(entry, _)| entry == relative));
+            if variant && !shipped && file.file_type().is_ok_and(|kind| kind.is_file()) {
+                std::fs::remove_file(&path)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether `target` already holds exactly `contents`.
 fn is_current(target: &Path, contents: &[u8]) -> bool {
     std::fs::read(target).is_ok_and(|existing| existing == contents)
@@ -138,6 +184,42 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hedos-bundled-{name}"));
         std::fs::remove_dir_all(&dir).ok();
         dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provisioning_drops_a_cpu_variant_the_binary_no_longer_ships() {
+        let root = temp_root("stale");
+        provision(&root).unwrap();
+        let runtimes = root.join("Runtimes");
+        let stale = runtimes.join("python-mlx-lm").join("requirements.cpu.lock");
+        let kept = runtimes.join("python-mlx-lm").join("notes.txt");
+        std::fs::write(&stale, "torch==1+cpu").unwrap();
+        std::fs::write(&kept, "mine").unwrap();
+        let theirs = runtimes.join("local").join("requirements.cpu.lock");
+        std::fs::create_dir_all(runtimes.join("local")).unwrap();
+        std::fs::write(&theirs, "torch==1+cpu").unwrap();
+        let elsewhere = temp_root("stale-elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let linked = elsewhere.join("requirements.cpu.lock");
+        std::fs::write(&linked, "torch==1+cpu").unwrap();
+        std::fs::remove_dir_all(runtimes.join("python-embeddings")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runtimes.join("python-embeddings")).unwrap();
+        std::fs::remove_file(root.join(STAMP_FILE)).unwrap();
+
+        provision(&root).unwrap();
+        assert!(!stale.exists());
+        assert!(kept.exists());
+        assert!(theirs.exists());
+        assert!(linked.exists());
+        assert!(
+            runtimes
+                .join("python-audio")
+                .join("requirements.cpu.lock")
+                .exists()
+        );
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&elsewhere).ok();
     }
 
     #[test]

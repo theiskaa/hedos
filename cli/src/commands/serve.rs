@@ -1,4 +1,4 @@
-//! `hedos serve` — run the OpenAI/Ollama-compatible gateway on loopback until
+//! `hedos serve`: run the OpenAI/Ollama-compatible gateway on loopback until
 //! interrupted.
 
 use std::future::Future;
@@ -56,6 +56,7 @@ enum Stopped {
 /// Ctrl-C cuts them. A termination waits for them only [`DRAIN_GRACE`].
 pub(crate) async fn serve(session: &Session, port: Option<u16>, out: &Out) -> Result<(), CliError> {
     let port = port.unwrap_or(session.settings.gateway.port);
+    runtime::machine::warm_hardware();
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;
     let audit_dir = session.dirs.sub("gateway");
 
@@ -65,7 +66,7 @@ pub(crate) async fn serve(session: &Session, port: Option<u16>, out: &Out) -> Re
     let base_url = format!("http://{address}/v1");
     let mut interrupts = Interrupts::new();
     out.line(&format!("gateway listening on {base_url}"));
-    out.err("auth: open (loopback) — any local client is allowed. Ctrl-C to stop.");
+    out.err("auth: open (loopback), so any local client is allowed. Ctrl-C to stop.");
     out.json(&serde_json::json!({
         "running": true,
         "port": address.port(),

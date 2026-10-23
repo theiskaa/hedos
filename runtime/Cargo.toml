@@ -26,12 +26,18 @@ sha2.workspace = true
 tar.workspace = true
 base64.workspace = true
 hex.workspace = true
+libc.workspace = true
+liblzma.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 
 [build-dependencies]
 flate2.workspace = true
+hex.workspace = true
+kernel.workspace = true
+liblzma.workspace = true
+sha2.workspace = true
 
 # The Apple Intelligence bridge loads its Swift shim at runtime; like the
 # framework it wraps, it exists only on macOS.

@@ -6,6 +6,7 @@ pub mod artifacts;
 pub mod bench;
 pub mod capabilities;
 pub mod discovery;
+pub mod engines;
 pub mod fs;
 pub mod install;
 pub mod jobs;

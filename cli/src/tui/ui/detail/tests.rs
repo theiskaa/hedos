@@ -323,3 +323,27 @@ fn a_missing_companion_is_named_with_its_pull() {
     );
     assert!(!texts(&lines).iter().any(|line| line.contains("needs")));
 }
+
+#[test]
+fn a_model_needing_uv_names_only_the_keys_that_install_it() {
+    let facts = Facts {
+        needs_uv: std::collections::HashSet::from([kernel::records::RuntimeId::diffusers()]),
+        ..facts_with_memory(64)
+    };
+    let motion = settled();
+    let needs = |capabilities: Vec<Capability>| {
+        let mut record = record_with("m", capabilities);
+        record.runtime.id = Some(kernel::records::RuntimeId::diffusers());
+        full_lines(&record, &facts, false, 80, &Look::settled(&motion))
+            .iter()
+            .map(text)
+            .find(|line| line.trim_start().starts_with("needs"))
+            .expect("a needs row")
+    };
+    assert!(
+        needs(vec![Capability::image()]).ends_with("uv · w installs it"),
+        "{}",
+        needs(vec![Capability::image()])
+    );
+    assert!(needs(vec![Capability::chat()]).ends_with("uv · w or t installs it"));
+}

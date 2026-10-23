@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use runtime::environment::{
-    Builder, EnvironmentManager, Progress, run_process, scrubbed_environment,
+    Build, Builder, EnvironmentManager, Progress, run_process, scrubbed_environment,
 };
 use runtime::governor::BoxFuture;
 use support::TempDir;
@@ -21,14 +21,13 @@ fn noop_progress() -> Progress {
 }
 
 fn making_builder() -> Builder {
-    Arc::new(
-        |env_dir: PathBuf, _lock: PathBuf, _cache: PathBuf, _p: Progress| -> BoxFuture<_> {
-            Box::pin(async move {
-                std::fs::create_dir_all(&env_dir)?;
-                Ok(())
-            })
-        },
-    )
+    Arc::new(|build: Build| -> BoxFuture<_> {
+        let env_dir = build.env_dir;
+        Box::pin(async move {
+            std::fs::create_dir_all(&env_dir)?;
+            Ok(())
+        })
+    })
 }
 
 fn write_lock(dir: &TempDir, contents: &str) -> PathBuf {
@@ -66,7 +65,8 @@ async fn prepare_builds_once_then_relinks_on_repeat() {
     let lock = write_lock(&dir, "deps");
     let builds = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&builds);
-    let builder: Builder = Arc::new(move |env_dir: PathBuf, _l, _c, _p| {
+    let builder: Builder = Arc::new(move |build: Build| {
+        let env_dir = build.env_dir;
         let counter = Arc::clone(&counter);
         Box::pin(async move {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -131,7 +131,8 @@ async fn a_failed_build_leaves_no_marker_and_retries() {
     let lock = write_lock(&dir, "deps");
     let attempts = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&attempts);
-    let builder: Builder = Arc::new(move |env_dir: PathBuf, _l, _c, _p| {
+    let builder: Builder = Arc::new(move |build: Build| {
+        let env_dir = build.env_dir;
         let counter = Arc::clone(&counter);
         Box::pin(async move {
             if counter.fetch_add(1, Ordering::Relaxed) == 0 {
@@ -234,7 +235,8 @@ async fn run_process_reports_a_nonzero_exit() {
 }
 
 fn counting_slow_builder(counter: Arc<AtomicU32>) -> Builder {
-    Arc::new(move |env_dir: PathBuf, _l, _c, _p| {
+    Arc::new(move |build: Build| {
+        let env_dir = build.env_dir;
         let counter = Arc::clone(&counter);
         Box::pin(async move {
             counter.fetch_add(1, Ordering::Relaxed);
@@ -297,7 +299,8 @@ async fn rolling_back_to_a_prior_lockfile_relinks_without_rebuilding() {
     let lock = write_lock(&dir, "deps-a");
     let builds = Arc::new(AtomicU32::new(0));
     let counter = Arc::clone(&builds);
-    let builder: Builder = Arc::new(move |env_dir: PathBuf, _l, _c, _p| {
+    let builder: Builder = Arc::new(move |build: Build| {
+        let env_dir = build.env_dir;
         let counter = Arc::clone(&counter);
         Box::pin(async move {
             counter.fetch_add(1, Ordering::Relaxed);

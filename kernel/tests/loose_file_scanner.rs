@@ -415,3 +415,53 @@ fn lists_a_bundle_a_shard_set_and_a_whisper_file_the_way_the_shelf_lists_them() 
     assert_eq!(scanned, vec![path("ggml-base.bin")]);
     assert_eq!(again, scanned);
 }
+
+#[test]
+fn a_folder_reached_twice_gives_its_models_once() {
+    let dir = TempDir::new();
+    write(dir.path(), "Models/model.gguf", &[0u8; 42]);
+    write(dir.path(), "Models/bundle/config.json", CONFIG);
+    write(dir.path(), "Models/bundle/model.safetensors", &[0u8; 100]);
+    std::os::unix::fs::symlink(dir.path().join("Models"), dir.path().join("linked")).unwrap();
+    let mut watched = vec![dir.path().join("linked")];
+    // On a disk that ignores case, `models` is the same folder as `Models`.
+    if dir.path().join("models").exists() {
+        watched.push(dir.path().join("models"));
+    }
+    let result = LooseFileScanner::with_user_directories(
+        vec![dir.path().join("Models"), dir.path().to_path_buf()],
+        watched,
+    )
+    .scan();
+    let names: Vec<&str> = result
+        .discovered
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect();
+    assert_eq!(
+        names.iter().filter(|name| **name == "model").count(),
+        1,
+        "{names:?}"
+    );
+    assert_eq!(
+        names.iter().filter(|name| **name == "bundle").count(),
+        1,
+        "{names:?}"
+    );
+}
+
+#[test]
+fn two_links_to_one_file_stay_two_models() {
+    let dir = TempDir::new();
+    write(dir.path(), "blobs/blob", &[0u8; 42]);
+    std::fs::create_dir_all(dir.path().join("models")).unwrap();
+    for name in ["first.gguf", "second.gguf"] {
+        std::os::unix::fs::symlink(
+            dir.path().join("blobs/blob"),
+            dir.path().join("models").join(name),
+        )
+        .unwrap();
+    }
+    let result = LooseFileScanner::single(dir.path().join("models")).scan();
+    assert_eq!(result.discovered.len(), 2, "{:?}", result.discovered);
+}

@@ -479,8 +479,10 @@ impl Kernel {
     pub async fn shelf(&self) -> Arc<[ModelRecord]> {
         let mut registry = self.registry.lock().await;
         // Once per process, bring an older shelf up to date without a rescan:
-        // refold `tools` for records that predate it (or a fold-rule change)
-        // and take back the cross-encoders it registered as embedders. Once
+        // refold `tools` for records that predate it (or a fold-rule change),
+        // take back the cross-encoders it registered as embedders, and hand
+        // the models in Ollama's store to whoever serves them now that Ollama
+        // is or is not installed. Once
         // per shelf, resolve the GGUF embedders it left unresolved or served
         // as chat models, then the decision GGUFs it did the same to, then the
         // audio generators and voices it misread. The first two re-read the
@@ -495,6 +497,7 @@ impl Kernel {
             let engine = self.engine();
             let _ = engine.refold_tool_capability(&mut registry);
             let _ = engine.reclassify_cross_encoders(&mut registry);
+            let _ = engine.resolve_ollama_store(&mut registry);
             migrate(
                 &engine,
                 &mut registry,
@@ -709,6 +712,15 @@ fn clamp_to_window(
                 && let JsonValue::Object(fields) = &mut configured
             {
                 fields.insert("max_tokens".to_owned(), JsonValue::Int(clamped));
+            }
+            // Picked from the memory free now, so asked for as it is: picking
+            // again at launch could give a smaller one than the prompt and
+            // `max_tokens` were checked against.
+            if requested_context.is_none()
+                && adapter.window_follows_memory()
+                && let JsonValue::Object(fields) = &mut configured
+            {
+                fields.insert("context_length".to_owned(), JsonValue::Int(window));
             }
             Ok(configured)
         }

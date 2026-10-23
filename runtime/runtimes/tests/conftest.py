@@ -136,3 +136,10 @@ def yue2():
     """python-yue2/main.py: how a job request becomes YuE2's song request,
     and how its four stages are reported and cancelled."""
     return load_sidecar_module("python-yue2", "sidecar_yue2")
+
+
+@pytest.fixture(scope="session")
+def diffusers_sidecar():
+    """python-diffusers/main.py: which device a pipeline runs on and the
+    precision it loads in there."""
+    return load_sidecar_module("python-diffusers", "sidecar_diffusers")

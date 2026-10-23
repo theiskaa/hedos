@@ -12,7 +12,7 @@ use kernel::install::plan::{InstallPlan, InstallSearchHit};
 use kernel::install::provider::InstallProviderId;
 use kernel::install::recommend::{Ask, Recommendation, Status, recommend};
 use kernel::install::reference::{hugging_face_repo, ollama_direct_tag};
-use kernel::machine::{Engine, Fit, Machine};
+use kernel::machine::{Engine, Fit, Machine, Readiness};
 use kernel::profiles::FitVerdict;
 use kernel::records::{ModelRecord, ModelState};
 
@@ -88,6 +88,12 @@ pub enum OnShelf {
 pub struct Offer {
     pub provider: InstallProviderId,
     pub reference: String,
+    /// The catalog's short name, shown in place of the reference; anything
+    /// else is shown by its reference.
+    pub name: Option<String>,
+    /// Whether it is the reference as typed, planned only once typing
+    /// settles.
+    pub typed: bool,
     /// What serving it loads, in bytes, when the catalog knows it; search
     /// hits don't.
     pub bytes: Option<i64>,
@@ -111,6 +117,8 @@ impl Offer {
         Self {
             provider,
             reference,
+            name: None,
+            typed: false,
             bytes: None,
             engine: Engine::Other,
             note,
@@ -130,6 +138,7 @@ impl Offer {
             format!("{} · {notes}", entry.blurb)
         };
         Self {
+            name: Some(entry.name.clone()),
             bytes: Some(entry.serving_size()),
             engine: entry.engine,
             category: Some(entry.category),
@@ -152,8 +161,9 @@ impl Offer {
     }
 
     /// A row for a reference typed in full: `owner/repo` or `name:tag`. A bare
-    /// word is a search, not a tag.
-    fn direct(query: &str) -> Option<Self> {
+    /// word is a search, not a tag. A tag says so when Ollama, which pulls
+    /// and serves it, is not on `machine`.
+    fn direct(query: &str, machine: &Machine) -> Option<Self> {
         let (provider, reference, engine) = match hugging_face_repo(query) {
             Some(repo) => (InstallProviderId::huggingface(), repo, Engine::Other),
             None => (
@@ -162,9 +172,16 @@ impl Offer {
                 Engine::Ollama,
             ),
         };
+        let note = match machine.readiness(engine) {
+            Readiness::Install(_) if engine == Engine::Ollama => {
+                format!("{DIRECT_NOTE} · needs Ollama")
+            }
+            _ => DIRECT_NOTE.to_owned(),
+        };
         Some(Self {
             engine,
-            ..Self::new(provider, reference, DIRECT_NOTE.to_owned())
+            typed: true,
+            ..Self::new(provider, reference, note)
         })
     }
 
@@ -521,7 +538,7 @@ impl PullModal {
         // A reference still being typed is planned once its search has
         // settled, not at every pause on the way to the whole name.
         let typing = matches!(self.search, Search::Due(_) | Search::Asked);
-        if (typing && offer.note == DIRECT_NOTE)
+        if (typing && offer.typed)
             || offer.shelf == Some(OnShelf::Present)
             || offer.pulling
             || self.fit(offer) == Some(FitVerdict::TooLarge)
@@ -629,7 +646,7 @@ impl PullModal {
         let query = typed.to_lowercase();
         let catalog_room = MAX_MATCHES.saturating_sub(self.hits.len());
         let mut matches: Vec<Offer> = Vec::new();
-        let direct = Offer::direct(typed);
+        let direct = Offer::direct(typed, &self.machine);
         self.direct_installed = direct
             .as_ref()
             .filter(|row| is_installed(&row.reference, &self.installed))

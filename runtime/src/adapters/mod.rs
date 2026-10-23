@@ -35,6 +35,14 @@ mod sidecar_stream;
 mod tool_scanner;
 mod whisper;
 
+pub(crate) use audio_gen::AUDIO_BUNDLE;
+pub(crate) use diffusers::DIFFUSERS_BUNDLE;
+pub(crate) use embeddings::EMBEDDINGS_BUNDLE;
+pub(crate) use mflux::MFLUX_BUNDLE;
+pub(crate) use mlx_audio::MLX_AUDIO_BUNDLE;
+pub(crate) use mlx_lm::MLX_LM_BUNDLE;
+pub(crate) use mlx_vlm::MLX_VLM_BUNDLE;
+
 pub use a1111::A1111Adapter;
 #[cfg(target_os = "macos")]
 pub use apple_foundation::loaded_apple_backend;
@@ -185,6 +193,14 @@ pub trait RuntimeAdapter: Send + Sync {
         _requested: Option<i64>,
     ) -> Option<i64> {
         None
+    }
+
+    /// Whether the window [`Self::effective_context_window`] picks with none
+    /// asked for follows the memory free at the moment, so two calls can
+    /// differ. The window a request was checked against is then passed on to
+    /// `invoke` as its `context_length`, so the server starts with that one.
+    fn window_follows_memory(&self) -> bool {
+        false
     }
 
     /// Whether this runtime forwards a `tools` array to its backend and parses

@@ -19,8 +19,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use kernel::records::{BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId};
-use kernel::resolution::{GgufPooling, IdentifiedModel, ModelFormat, RuntimeBid, gguf_facts};
+use kernel::records::{
+    BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId, SourceKind,
+};
+use kernel::resolution::{
+    GgufPooling, IdentifiedModel, ModelFormat, RuntimeBid, gguf_facts, launch_gguf_path,
+    projector_for,
+};
 
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
 use tokio::sync::mpsc;
@@ -36,6 +41,14 @@ use super::{ChunkStream, RuntimeAdapter, RuntimeError};
 const DEFAULT_CONTEXT: i64 = 4096;
 const MAX_DEFAULT_CONTEXT: i64 = 32768;
 const MIN_CONTEXT: i64 = 512;
+
+/// The window a chat server starts at when the memory there seems too small
+/// for any: worth a try, and a server that cannot take it says it ran out of
+/// memory.
+const SMALL_WINDOW: i64 = 2048;
+
+/// Reads the memory a llama-server can take as it starts, right now.
+pub type LaunchMemory = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 
 /// The widest window an embedding server is launched with. An encoder reads a
 /// whole input in one physical batch, so the batch is the window, and both
@@ -220,6 +233,12 @@ pub trait LlamaBackend: Send + Sync {
         context_tokens: i64,
         mode: ServerMode,
     ) -> BackendFuture;
+
+    /// The window of the chat server running for `record`, when one is and
+    /// is not being replaced.
+    fn resident_window(&self, _record: &ModelRecord) -> Option<i64> {
+        None
+    }
 }
 
 /// Serves local GGUF models by proxying to a `llama-server` instance.
@@ -231,6 +250,14 @@ pub struct LlamaServerAdapter {
     /// size it was read at, so `/v1/models` does not read every embedder's
     /// header on each call.
     kinds: Mutex<HashMap<String, (FileSignature, EmbedderKind)>>,
+    /// The window each Ollama model's GGUF declares, by path, read the same
+    /// way: the record carries Ollama's `num_ctx` instead.
+    declared: Mutex<HashMap<String, (FileSignature, Option<i64>)>>,
+    /// The KV cache a token takes in each GGUF, by path, read the same way.
+    kv_per_token: Mutex<HashMap<String, (FileSignature, Option<u64>)>>,
+    /// The memory a server can take as it starts, which the default window
+    /// of a chat server is kept within; unknown when unset.
+    memory: Option<LaunchMemory>,
 }
 
 impl LlamaServerAdapter {
@@ -241,29 +268,37 @@ impl LlamaServerAdapter {
             backend,
             client: reqwest::Client::new(),
             kinds: Mutex::new(HashMap::new()),
+            declared: Mutex::new(HashMap::new()),
+            kv_per_token: Mutex::new(HashMap::new()),
+            memory: None,
         }
+    }
+
+    /// Keep the window a chat server starts at by default within what
+    /// `memory` says a server can take as it starts.
+    pub fn with_memory(mut self, memory: LaunchMemory) -> Self {
+        self.memory = Some(memory);
+        self
     }
 
     /// The kind of the embedder GGUF at `path`, read again only when the file
     /// changed since it was last read.
     fn embedder_kind(&self, path: &str) -> EmbedderKind {
-        let Some(signature) = std::fs::metadata(path)
-            .ok()
-            .and_then(|meta| Some((meta.modified().ok()?, meta.len())))
-        else {
-            return EmbedderKind::of(path);
-        };
-        if let Ok(kinds) = self.kinds.lock()
-            && let Some((seen, kind)) = kinds.get(path)
-            && *seen == signature
-        {
-            return *kind;
+        read_cached(&self.kinds, path, EmbedderKind::of)
+    }
+
+    /// The largest window `record` takes here, and the one a request that
+    /// names none starts at, if the model sets one. A model in Ollama's store
+    /// declares its window in its GGUF, and its record carries Ollama's
+    /// `num_ctx`, the window Ollama would open it with.
+    fn window_bounds(&self, record: &ModelRecord) -> (Option<i64>, Option<i64>) {
+        if record.source.kind != SourceKind::ollama() {
+            return (record.context_length, None);
         }
-        let kind = EmbedderKind::of(path);
-        if let Ok(mut kinds) = self.kinds.lock() {
-            kinds.insert(path.to_owned(), (signature, kind));
-        }
-        kind
+        let declared = read_cached(&self.declared, model_gguf_path(record), |path| {
+            gguf_facts(Path::new(path)).and_then(|facts| facts.context_length)
+        });
+        (declared.or(record.context_length), record.context_length)
     }
 
     /// Embed the payload's `input` through an embedding-mode server sized to
@@ -277,7 +312,7 @@ impl LlamaServerAdapter {
     /// takes as a cancel, and nothing more is sent.
     fn invoke_embed(&self, record: &ModelRecord, payload: JsonValue) -> ChunkStream {
         let (tx, stream) = ChunkStream::channel();
-        let window = Self::embedding_context_tokens(record);
+        let window = self.embedding_context_tokens(record);
         let model = wire_model_name(record);
         let backend = Arc::clone(&self.backend);
         let client = self.client.clone();
@@ -367,8 +402,62 @@ impl LlamaServerAdapter {
 
     /// The window an embedding server for `record` is launched with: its
     /// declared window, capped at [`MAX_EMBEDDING_CONTEXT`].
-    fn embedding_context_tokens(record: &ModelRecord) -> i64 {
-        Self::effective_context_tokens(record, None).min(MAX_EMBEDDING_CONTEXT)
+    fn embedding_context_tokens(&self, record: &ModelRecord) -> i64 {
+        let (limit, _) = self.window_bounds(record);
+        clamped_window(limit, None).min(MAX_EMBEDDING_CONTEXT)
+    }
+
+    /// The window a chat server for `record` is launched with for a request
+    /// asking for `requested`. One asked for is used as asked; the default is
+    /// kept to what fits in memory beside the weights, so a model that
+    /// declares a long window still starts on a small machine.
+    fn chat_context_tokens(&self, record: &ModelRecord, requested: Option<i64>) -> i64 {
+        let (limit, default) = self.window_bounds(record);
+        if requested.is_some() {
+            return clamped_window(limit, requested);
+        }
+        let window = clamped_window(limit, default);
+        // A server already running took its memory when it started; judging
+        // again now would count its weights twice.
+        if let Some(resident) = self.backend.resident_window(record) {
+            return window.min(resident);
+        }
+        match self.window_that_fits(record) {
+            Some(0) => window.min(SMALL_WINDOW),
+            Some(fits) => window.min(fits),
+            None => window,
+        }
+    }
+
+    /// The widest window whose KV cache fits in the memory a server can take
+    /// now, beside what serving `record` loads (every shard of a split model
+    /// and the projector it is given), when both are known.
+    fn window_that_fits(&self, record: &ModelRecord) -> Option<i64> {
+        let memory = self.memory.as_ref()?();
+        let gguf = model_gguf_path(record);
+        let kv = read_cached(&self.kv_per_token, gguf, |path| {
+            gguf_facts(Path::new(path)).and_then(|facts| facts.kv_bytes_per_token)
+        })?;
+        let size = |path: &Path| std::fs::metadata(path).map(|meta| meta.len()).ok();
+        // Measured now, as the server will load it: every shard of a split
+        // model and the projector it is given, which it is only when the
+        // model sees. Never less than what the shelf measured serving it
+        // takes: a hub repo's split model is named by a blob's hash, so its
+        // other shards are not found beside it.
+        let projector = if ServerMode::Chat.reads_images(record) {
+            projector_for(record)
+                .and_then(|projector| size(&projector))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let measured = gguf_set_bytes(&launch_gguf_path(record))? + projector;
+        let serving = record
+            .serving_bytes
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .unwrap_or(0);
+        let loaded = measured.max(serving);
+        kernel::machine::window_that_fits(memory?, loaded, kv)
     }
 
     /// Put the typed question `payload` carries to a decision server and send
@@ -384,7 +473,7 @@ impl LlamaServerAdapter {
                 return stream;
             }
         };
-        let window = Self::decision_context_tokens(record);
+        let window = self.decision_context_tokens(record);
         let backend = Arc::clone(&self.backend);
         let client = self.client.clone();
         let record = record.clone();
@@ -444,22 +533,87 @@ impl LlamaServerAdapter {
     /// The window a decision server for `record` is launched with: its
     /// declared window, capped at [`MAX_DECISION_CONTEXT`]. A judge takes no
     /// options, so nothing a request says changes it.
-    pub(crate) fn decision_context_tokens(record: &ModelRecord) -> i64 {
-        Self::effective_context_tokens(record, None).min(MAX_DECISION_CONTEXT)
+    pub(crate) fn decision_context_tokens(&self, record: &ModelRecord) -> i64 {
+        let (limit, _) = self.window_bounds(record);
+        clamped_window(limit, None).min(MAX_DECISION_CONTEXT)
     }
+}
 
-    /// The effective context window: the requested size (or a capped default)
-    /// clamped into `[min(512, base), base]`, where `base` is the model's declared
-    /// context length or 4096.
-    pub fn effective_context_tokens(record: &ModelRecord, requested: Option<i64>) -> i64 {
-        let base = record
-            .context_length
-            .filter(|length| *length > 0)
-            .unwrap_or(DEFAULT_CONTEXT);
-        let capped_default = base.min(MAX_DEFAULT_CONTEXT);
-        let lower = base.min(MIN_CONTEXT);
-        requested.unwrap_or(capped_default).max(lower).min(base)
+/// The bytes of the GGUF at `path` and, when it is one shard of a split model
+/// (`<base>-00001-of-00003.gguf`), of every shard of it beside it.
+fn gguf_set_bytes(path: &Path) -> Option<u64> {
+    let size = |path: &Path| std::fs::metadata(path).map(|meta| meta.len()).ok();
+    let Some(shard) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(kernel::discovery::parse)
+    else {
+        return size(path);
+    };
+    let entries = std::fs::read_dir(path.parent()?).ok()?;
+    Some(
+        entries
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .and_then(kernel::discovery::parse)
+                    .is_some_and(|other| other.base == shard.base && other.total == shard.total)
+            })
+            .filter_map(|entry| size(&entry.path()))
+            .sum(),
+    )
+}
+
+/// `payload` carrying the stop sequences saved with `record` (an Ollama
+/// model's params, which Ollama applies itself) when it names none of its own.
+fn with_saved_stops(record: &ModelRecord, mut payload: JsonValue) -> JsonValue {
+    if let (Some(stops), JsonValue::Object(fields)) = (&record.stop_tokens, &mut payload)
+        && !stops.is_empty()
+        && !fields.contains_key("stop")
+    {
+        let stops = stops.iter().cloned().map(JsonValue::String).collect();
+        fields.insert("stop".to_owned(), JsonValue::Array(stops));
     }
+    payload
+}
+
+/// `requested` (or a capped default) clamped into `[min(512, base), base]`,
+/// where `base` is `limit` or 4096.
+fn clamped_window(limit: Option<i64>, requested: Option<i64>) -> i64 {
+    let base = limit
+        .filter(|length| *length > 0)
+        .unwrap_or(DEFAULT_CONTEXT);
+    let capped_default = base.min(MAX_DEFAULT_CONTEXT);
+    let lower = base.min(MIN_CONTEXT);
+    requested.unwrap_or(capped_default).max(lower).min(base)
+}
+
+/// What `read` makes of the file at `path`, from `cache` while the file's
+/// modification time and size are those it was read at.
+fn read_cached<T: Copy>(
+    cache: &Mutex<HashMap<String, (FileSignature, T)>>,
+    path: &str,
+    read: impl Fn(&str) -> T,
+) -> T {
+    let Some(signature) = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| Some((meta.modified().ok()?, meta.len())))
+    else {
+        return read(path);
+    };
+    if let Ok(cached) = cache.lock()
+        && let Some((seen, value)) = cached.get(path)
+        && *seen == signature
+    {
+        return *value;
+    }
+    let value = read(path);
+    if let Ok(mut cached) = cache.lock() {
+        cached.insert(path.to_owned(), (signature, value));
+    }
+    value
 }
 
 impl RuntimeAdapter for LlamaServerAdapter {
@@ -473,7 +627,9 @@ impl RuntimeAdapter for LlamaServerAdapter {
 
     /// The capabilities of the one mode `record` is served in, and sight for a
     /// record that claims it, since its chat or decision server is launched
-    /// with its projector.
+    /// with its projector. A model in Ollama's store claims sight by what
+    /// Ollama reads, so it sees here only when its projector layer is one
+    /// llama.cpp loads.
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
         if record.runtime.id.as_ref() != Some(&self.id) {
             return false;
@@ -481,21 +637,39 @@ impl RuntimeAdapter for LlamaServerAdapter {
         let Some(mode) = ServerMode::of(record) else {
             return false;
         };
-        mode.serves(capability) || (*capability == Capability::see() && mode.reads_images(record))
+        if *capability == Capability::see() {
+            return mode.reads_images(record)
+                && (record.source.kind != SourceKind::ollama() || projector_for(record).is_some());
+        }
+        mode.serves(capability)
     }
 
     /// A GGUF that chats, one that embeds, or a decision model that judges. A
     /// GGUF that claims none of those (a projector, a vocoder, a model whose
     /// header pools nothing or ranks) draws no bid, since no server mode would
-    /// answer for it.
+    /// answer for it. A model in Ollama's store is a GGUF too, bid on behind
+    /// Ollama when llama.cpp can load it: no encoder packed into the weights,
+    /// and, to chat, a template of the GGUF's own.
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
-        let servable = [Capability::chat(), Capability::embed(), Capability::judge()]
-            .iter()
-            .any(|capability| identified.capabilities.contains(capability));
+        let claims = |capability: Capability| identified.capabilities.contains(&capability);
+        if identified.format == ModelFormat::OllamaStore {
+            let loadable = identified.bundled_encoders == Some(false)
+                && (!claims(Capability::chat()) || identified.gguf_chat_template == Some(true));
+            let servable = claims(Capability::chat()) || claims(Capability::embed());
+            return (loadable && servable)
+                .then(|| RuntimeBid::new(RunTier::Native, BidPreference::LLAMA_CPP_OLLAMA_STORE));
+        }
+        let servable = claims(Capability::chat())
+            || claims(Capability::embed())
+            || claims(Capability::judge());
         if identified.format != ModelFormat::Gguf || !servable {
             return None;
         }
         Some(RuntimeBid::new(RunTier::Native, BidPreference::LLAMA_CPP))
+    }
+
+    fn window_follows_memory(&self) -> bool {
+        true
     }
 
     fn effective_context_window(
@@ -506,9 +680,9 @@ impl RuntimeAdapter for LlamaServerAdapter {
         Some(match ServerMode::of(record) {
             Some(ServerMode::Embedding) => self
                 .embedder_kind(model_gguf_path(record))
-                .most_tokens(Self::embedding_context_tokens(record)),
-            Some(ServerMode::Decision) => Self::decision_context_tokens(record),
-            _ => Self::effective_context_tokens(record, requested),
+                .most_tokens(self.embedding_context_tokens(record)),
+            Some(ServerMode::Decision) => self.decision_context_tokens(record),
+            _ => self.chat_context_tokens(record, requested),
         })
     }
 
@@ -525,11 +699,12 @@ impl RuntimeAdapter for LlamaServerAdapter {
             return self.invoke_decision(record, &payload);
         }
         let (tx, stream) = ChunkStream::channel();
+        let payload = with_saved_stops(record, payload);
         let requested = payload
             .as_object()
             .and_then(|fields| fields.get("context_length"))
             .and_then(JsonValue::as_i64);
-        let context_tokens = Self::effective_context_tokens(record, requested);
+        let context_tokens = self.chat_context_tokens(record, requested);
         let model = wire_model_name(record);
         let backend = Arc::clone(&self.backend);
         let client = self.client.clone();
@@ -792,6 +967,19 @@ mod tests {
         )
     }
 
+    /// A backend no unit test here asks for a server.
+    struct NoServer;
+
+    impl LlamaBackend for NoServer {
+        fn base_url(&self, _: &ModelRecord, _: i64, _: ServerMode) -> BackendFuture {
+            Box::pin(async { Err(RuntimeError::Unavailable("no server".to_owned())) })
+        }
+    }
+
+    fn adapter() -> LlamaServerAdapter {
+        LlamaServerAdapter::new(Arc::new(NoServer))
+    }
+
     #[test]
     fn wire_model_name_prefers_the_repo() {
         let mut rec = record();
@@ -957,7 +1145,7 @@ mod tests {
             let mut rec = record();
             rec.capabilities = vec![Capability::judge()];
             rec.context_length = declared;
-            LlamaServerAdapter::decision_context_tokens(&rec)
+            adapter().decision_context_tokens(&rec)
         };
         assert_eq!(window(Some(262_144)), 16384);
         assert_eq!(window(Some(8192)), 8192);
@@ -996,27 +1184,143 @@ mod tests {
     }
 
     #[test]
+    fn saved_stop_sequences_go_with_a_request_that_names_none() {
+        let mut rec = record();
+        rec.stop_tokens = Some(vec!["<|end|>".to_owned()]);
+        let payload = |stop: Option<&str>| {
+            let mut fields = std::collections::BTreeMap::new();
+            if let Some(stop) = stop {
+                fields.insert("stop".to_owned(), JsonValue::String(stop.to_owned()));
+            }
+            JsonValue::Object(fields.into_iter().collect())
+        };
+        let stops = |payload: &JsonValue| payload.as_object().and_then(|f| f.get("stop")).cloned();
+
+        let seeded = with_saved_stops(&rec, payload(None));
+        assert_eq!(
+            stops(&seeded),
+            Some(JsonValue::Array(vec![JsonValue::String(
+                "<|end|>".to_owned()
+            )]))
+        );
+        let own = with_saved_stops(&rec, payload(Some("###")));
+        assert_eq!(stops(&own), Some(JsonValue::String("###".to_owned())));
+        rec.stop_tokens = None;
+        assert_eq!(stops(&with_saved_stops(&rec, payload(None))), None);
+    }
+
+    #[test]
     fn an_embedding_window_is_capped() {
         let mut rec = record();
         rec.capabilities = vec![Capability::embed()];
         rec.context_length = Some(32768);
-        assert_eq!(LlamaServerAdapter::embedding_context_tokens(&rec), 8192);
+        assert_eq!(adapter().embedding_context_tokens(&rec), 8192);
         rec.context_length = Some(2048);
-        assert_eq!(LlamaServerAdapter::embedding_context_tokens(&rec), 2048);
+        assert_eq!(adapter().embedding_context_tokens(&rec), 2048);
     }
 
     #[test]
     fn effective_context_treats_nonpositive_declared_length_as_the_default() {
+        assert_eq!(clamped_window(Some(0), None), 4096);
+        assert_eq!(clamped_window(Some(-5), None), 4096);
+    }
+
+    /// A GGUF header with `kvs`, each a key and a `u32`, and no tensors.
+    fn header(kvs: &[(&str, u32)]) -> Vec<u8> {
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&(kvs.len() as u64 + 1).to_le_bytes());
+        let string = |bytes: &mut Vec<u8>, text: &str| {
+            bytes.extend_from_slice(&(text.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(text.as_bytes());
+        };
+        string(&mut bytes, "general.architecture");
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        string(&mut bytes, "llama");
+        for (key, value) in kvs {
+            string(&mut bytes, key);
+            bytes.extend_from_slice(&4u32.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    #[test]
+    fn the_default_window_is_kept_to_what_fits_in_memory() {
+        let dir = std::env::temp_dir().join(format!("hedos-window-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mistral.gguf");
+        // Mistral 7B's shape: 128 KiB of KV cache a token.
+        std::fs::write(
+            &path,
+            header(&[
+                ("llama.block_count", 32),
+                ("llama.embedding_length", 4096),
+                ("llama.attention.head_count", 32),
+                ("llama.attention.head_count_kv", 8),
+            ]),
+        )
+        .unwrap();
         let mut rec = record();
-        rec.context_length = Some(0);
+        rec.source.path = path.display().to_string();
+        rec.context_length = Some(32768);
+        let gib = 1u64 << 30;
+        let with = |memory: Option<u64>| adapter().with_memory(Arc::new(move || memory));
+
+        // 2 GiB (and a MiB for the header itself) leaves 1 GiB beside the
+        // headroom: 8192 tokens.
+        let two = 2 * gib + (1 << 20);
+        assert_eq!(with(Some(two)).chat_context_tokens(&rec, None), 8192);
+        assert_eq!(with(Some(64 * gib)).chat_context_tokens(&rec, None), 32768);
+        assert_eq!(with(None).chat_context_tokens(&rec, None), 32768);
+        assert_eq!(adapter().chat_context_tokens(&rec, None), 32768);
+        // Too little for any window: the small one is still tried. A small
+        // window that fits is kept, not raised to it.
         assert_eq!(
-            LlamaServerAdapter::effective_context_tokens(&rec, None),
-            4096
+            with(Some(gib)).chat_context_tokens(&rec, None),
+            SMALL_WINDOW
         );
-        rec.context_length = Some(-5);
+        let tight = gib + (129 << 20);
+        assert_eq!(with(Some(tight)).chat_context_tokens(&rec, None), 1024);
+        // A server already running keeps its window.
+        struct Resident;
+        impl LlamaBackend for Resident {
+            fn base_url(&self, _: &ModelRecord, _: i64, _: ServerMode) -> BackendFuture {
+                Box::pin(async { Err(RuntimeError::Unavailable("no server".to_owned())) })
+            }
+            fn resident_window(&self, _: &ModelRecord) -> Option<i64> {
+                Some(16384)
+            }
+        }
+        // A split model counts every shard beside the one the record names.
+        let shards = dir.join("shards");
+        std::fs::create_dir_all(&shards).unwrap();
+        let first = shards.join("m-00001-of-00002.gguf");
+        std::fs::write(&first, std::fs::read(&path).unwrap()).unwrap();
+        let second = std::fs::File::create(shards.join("m-00002-of-00002.gguf")).unwrap();
+        second.set_len(512 << 20).unwrap();
+        let mut split = rec.clone();
+        split.source.path = first.display().to_string();
+        let roomy = 2 * gib + (513 << 20);
+        assert_eq!(with(Some(roomy)).chat_context_tokens(&split, None), 8192);
+        // A repo's other quantizations (its footprint) count for nothing;
+        // what the shelf measured serving takes is a floor, for a split model
+        // whose other shards cannot be found by name.
+        let mut repo = rec.clone();
+        repo.footprint_bytes = Some(40 << 30);
+        assert_eq!(with(Some(two)).chat_context_tokens(&repo, None), 8192);
+        repo.serving_bytes = Some(512 << 20);
+        assert_eq!(with(Some(roomy)).chat_context_tokens(&repo, None), 8192);
+        assert_eq!(with(Some(two)).chat_context_tokens(&repo, None), 4096);
+        let resident =
+            LlamaServerAdapter::new(Arc::new(Resident)).with_memory(Arc::new(move || Some(gib)));
+        assert_eq!(resident.chat_context_tokens(&rec, None), 16384);
+        // A window asked for is used as asked.
         assert_eq!(
-            LlamaServerAdapter::effective_context_tokens(&rec, None),
-            4096
+            with(Some(2 * gib)).chat_context_tokens(&rec, Some(16384)),
+            16384
         );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -22,12 +22,15 @@ const MIN_DEVICE_BYTES: u64 = 1 << 30;
 /// What `hedos pull` tells someone who has no Ollama, the engine behind every
 /// Ollama tag: both the pull and the serving go through its daemon.
 pub const OLLAMA_INSTALL_HINT: &str = "Ollama isn't installed. Get it from ollama.com.";
+/// What a model in Ollama's store needs when llama.cpp cannot load it: its
+/// encoders are packed into its weights, or its only chat template is
+/// Ollama's own.
+pub const OLLAMA_ONLY_HINT: &str = "only Ollama runs these, since they are kept in Ollama's own format. Get it from ollama.com, or pull a Hugging Face version.";
 /// What a model llama.cpp serves needs.
-pub const LLAMA_CPP_INSTALL_HINT: &str =
-    "llama.cpp isn't installed. Install it so `llama-server` is on PATH.";
+pub const LLAMA_CPP_INSTALL_HINT: &str = "llama.cpp isn't installed. Run `hedos engines install llama.cpp`, or put `llama-server` on PATH.";
 /// What a model a Python sidecar serves needs.
 pub const UV_INSTALL_HINT: &str =
-    "uv is required to prepare Python runtimes. Install it from astral.sh/uv.";
+    "uv isn't installed. Run `hedos engines install uv`, or put `uv` on PATH.";
 
 /// The operating system, as far as the engines care.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -150,7 +153,8 @@ impl DevicesFrom {
 pub struct Engines {
     /// Ollama: its binary is installed, or its daemon answers.
     pub ollama: bool,
-    /// `llama-server` is on PATH.
+    /// A `llama-server` is there to run: the configured one, the one hedos
+    /// installed, or one on PATH.
     pub llama_cpp: bool,
     /// `uv`, which provisions the Python sidecars.
     pub uv: bool,
@@ -262,6 +266,215 @@ impl Placement {
             Placement::Cpu => "cpu",
         }
     }
+}
+
+/// The memory Linux says is available for a new process to take without
+/// swapping, from `/proc/meminfo`'s `MemAvailable` (in KiB).
+pub fn parse_mem_available(meminfo: &str) -> Option<u64> {
+    let line = meminfo
+        .lines()
+        .find(|line| line.starts_with("MemAvailable:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    kib.checked_mul(1024)
+}
+
+/// The room left under a cgroup's memory limit, from its limit (`memory.max`,
+/// `max` when unlimited; cgroup v1's `memory.limit_in_bytes`, a number past
+/// any real memory when unlimited) and its usage, in bytes.
+pub fn cgroup_room(limit: &str, usage: &str) -> Option<u64> {
+    let limit: u64 = limit.trim().parse().ok()?;
+    if limit >= UNLIMITED_CGROUP {
+        return None;
+    }
+    let usage: u64 = usage.trim().parse().ok()?;
+    Some(limit.saturating_sub(usage))
+}
+
+/// A cgroup v1 limit this large means none: the kernel writes the largest page
+/// multiple of `i64::MAX` there.
+const UNLIMITED_CGROUP: u64 = 1 << 60;
+
+/// Where this process's memory cgroups are, from `/proc/self/cgroup`: the
+/// unified (v2) one, and the v1 `memory` controller's, as paths below their
+/// mounts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CgroupPaths {
+    /// The cgroup v2 path (`0::/user.slice/...`).
+    pub unified: Option<String>,
+    /// The cgroup v1 memory controller's path.
+    pub memory: Option<String>,
+}
+
+/// Read `/proc/self/cgroup`.
+pub fn parse_proc_cgroup(text: &str) -> CgroupPaths {
+    let mut paths = CgroupPaths::default();
+    for line in text.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(id), Some(controllers), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if id == "0" && controllers.is_empty() {
+            paths.unified = Some(path.to_owned());
+        } else if controllers
+            .split(',')
+            .any(|controller| controller == "memory")
+        {
+            paths.memory = Some(path.to_owned());
+        }
+    }
+    paths
+}
+
+/// Where a cgroup hierarchy is mounted: the directory of the hierarchy shown
+/// there (`root`) and the mount point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CgroupMount {
+    /// The cgroup the mount shows, as a path in its hierarchy.
+    pub root: String,
+    /// Where it is mounted.
+    pub mount_point: String,
+}
+
+impl CgroupMount {
+    /// The directory of the cgroup at `path` in this mount's hierarchy, when
+    /// the mount shows it.
+    pub fn dir_of(&self, path: &str) -> Option<String> {
+        let below = if self.root == "/" {
+            path
+        } else {
+            path.strip_prefix(self.root.as_str())
+                .filter(|rest| rest.is_empty() || rest.starts_with('/'))?
+        };
+        let below = below.trim_start_matches('/');
+        Some(if below.is_empty() {
+            self.mount_point.clone()
+        } else {
+            format!("{}/{below}", self.mount_point.trim_end_matches('/'))
+        })
+    }
+}
+
+/// The cgroup mounts that hold memory limits, from `/proc/self/mountinfo`:
+/// the unified (v2) hierarchy and v1's `memory` controller.
+pub fn parse_cgroup_mounts(mountinfo: &str) -> (Option<CgroupMount>, Option<CgroupMount>) {
+    let mut unified = None;
+    let mut memory = None;
+    for line in mountinfo.lines() {
+        let Some((mount, filesystem)) = line.split_once(" - ") else {
+            continue;
+        };
+        let fields: Vec<&str> = mount.split(' ').collect();
+        let filesystem: Vec<&str> = filesystem.split(' ').collect();
+        let (Some(root), Some(mount_point), Some(kind)) =
+            (fields.get(3), fields.get(4), filesystem.first())
+        else {
+            continue;
+        };
+        let found = CgroupMount {
+            root: unescape_mount_path(root),
+            mount_point: unescape_mount_path(mount_point),
+        };
+        let options = filesystem.get(2).copied().unwrap_or_default();
+        if *kind == "cgroup2" && unified.is_none() {
+            unified = Some(found);
+        } else if *kind == "cgroup"
+            && memory.is_none()
+            && options.split(',').any(|option| option == "memory")
+        {
+            memory = Some(found);
+        }
+    }
+    (unified, memory)
+}
+
+/// A path as mountinfo writes it, with the octal escapes the kernel uses for a
+/// space, tab, newline and backslash (`\040`) turned back into them.
+fn unescape_mount_path(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let escaped = bytes
+            .get(at + 1..at + 4)
+            .filter(|digits| bytes[at] == b'\\' && digits.iter().all(|d| (b'0'..=b'7').contains(d)))
+            .and_then(|digits| std::str::from_utf8(digits).ok())
+            .and_then(|digits| u8::from_str_radix(digits, 8).ok());
+        match escaped {
+            Some(byte) => {
+                out.push(byte);
+                at += 4;
+            }
+            None => {
+                out.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `path` and each cgroup above it, up to the root (`/a/b`, `/a`, `/`).
+pub fn cgroup_ancestors(path: &str) -> Vec<String> {
+    let mut ancestors = vec![path.to_owned()];
+    let mut current = path.trim_end_matches('/');
+    while let Some(cut) = current.rfind('/') {
+        current = &current[..cut];
+        ancestors.push(if current.is_empty() {
+            "/".to_owned()
+        } else {
+            current.to_owned()
+        });
+    }
+    ancestors.dedup();
+    ancestors
+}
+
+/// The memory a llama-server can take as it starts on `machine`, given what
+/// the system says is `available` right now and whether the build is
+/// `accelerated` (a CPU build uses no GPU, whatever the machine has): on a GPU
+/// sharing system memory, the working set the GPU may take, within what is
+/// available (other models and programs hold the rest); with cards, their
+/// memory and what is available beside them (llama.cpp runs the layers, and
+/// their cache, that the cards cannot hold from memory); otherwise what is
+/// available, else all of memory.
+pub fn launch_memory(machine: &Machine, available: Option<u64>, accelerated: bool) -> Option<u64> {
+    if !accelerated {
+        return Some(
+            available
+                .unwrap_or(machine.memory_bytes)
+                .min(machine.memory_bytes),
+        );
+    }
+    let budget = machine.budget(Engine::LlamaCpp)?;
+    Some(match (budget.scale, budget.spills) {
+        (Scale::Accelerator, true) => budget
+            .bytes
+            .saturating_add(available.unwrap_or(machine.memory_bytes)),
+        (Scale::Accelerator, false) => available.unwrap_or(budget.bytes).min(budget.bytes),
+        _ => available.unwrap_or(budget.bytes).min(budget.bytes),
+    })
+}
+
+/// What a llama-server needs beyond its weights and KV cache before it can
+/// answer: compute buffers, the server itself, and room for the rest of the
+/// machine.
+const LAUNCH_HEADROOM: u64 = 1 << 30;
+
+/// The largest window, in steps of 1024 tokens, whose KV cache fits in
+/// `memory` beside `loaded` bytes (the weights and any projector) and
+/// [`LAUNCH_HEADROOM`]: `0` when not even that fits, `None` when a token's KV
+/// cache is not known.
+pub fn window_that_fits(memory: u64, loaded: u64, kv_bytes_per_token: u64) -> Option<i64> {
+    if kv_bytes_per_token == 0 {
+        return None;
+    }
+    let spare = memory
+        .saturating_sub(loaded)
+        .saturating_sub(LAUNCH_HEADROOM);
+    let tokens = spare / kv_bytes_per_token / 1024 * 1024;
+    Some(i64::try_from(tokens).unwrap_or(i64::MAX))
 }
 
 /// The memory an engine may give a model here.

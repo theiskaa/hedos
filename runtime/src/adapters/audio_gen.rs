@@ -22,6 +22,9 @@ use crate::sidecar::SidecarSupervisor;
 /// How long a loaded audio model stays warm after its last use.
 const WARM_WINDOW: Duration = Duration::from_secs(60);
 
+/// The bundle this sidecar ships as.
+pub(crate) const AUDIO_BUNDLE: &str = "python-audio";
+
 /// The audio-generation Python-sidecar adapter.
 pub struct AudioGenAdapter {
     base: SidecarJobAdapter,
@@ -42,7 +45,7 @@ impl AudioGenAdapter {
             base: SidecarJobAdapter::new(
                 SidecarJobSpec {
                     id: RuntimeId::audio(),
-                    bundle_name: "python-audio",
+                    bundle_name: AUDIO_BUNDLE,
                     preparing_status: "Preparing audio runtime…",
                     starting_status: "Starting audio runtime…",
                     warm_window: Some(WARM_WINDOW),

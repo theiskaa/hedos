@@ -81,8 +81,11 @@ impl Home {
         std::fs::write(home.root.join("gguf/tiny-chat.gguf"), chat_gguf()).unwrap();
         std::fs::write(
             home.root.join(".config/hedos.toml"),
+            // Named in the config, not only found on PATH: a build of hedos
+            // that carries llama.cpp runs its own ahead of the PATH.
             format!(
-                "[models]\nwatched_folders = [\"{}\"]\n{settings}",
+                "[engines]\nllama_server = \"{}\"\n[models]\nwatched_folders = [\"{}\"]\n{settings}",
+                home.root.join("bin/llama-server").display(),
                 home.root.join("gguf").display()
             ),
         )

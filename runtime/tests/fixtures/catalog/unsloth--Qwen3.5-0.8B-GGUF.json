@@ -1,0 +1,130 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   3104
+  ],
+  [
+   "Qwen3.5-0.8B-BF16.gguf",
+   1516744736
+  ],
+  [
+   "Qwen3.5-0.8B-IQ4_NL.gguf",
+   506859776
+  ],
+  [
+   "Qwen3.5-0.8B-IQ4_XS.gguf",
+   492605696
+  ],
+  [
+   "Qwen3.5-0.8B-Q3_K_M.gguf",
+   470167808
+  ],
+  [
+   "Qwen3.5-0.8B-Q3_K_S.gguf",
+   440750336
+  ],
+  [
+   "Qwen3.5-0.8B-Q4_0.gguf",
+   507154688
+  ],
+  [
+   "Qwen3.5-0.8B-Q4_1.gguf",
+   535171328
+  ],
+  [
+   "Qwen3.5-0.8B-Q4_K_M.gguf",
+   532517120
+  ],
+  [
+   "Qwen3.5-0.8B-Q4_K_S.gguf",
+   508104960
+  ],
+  [
+   "Qwen3.5-0.8B-Q5_K_M.gguf",
+   590057728
+  ],
+  [
+   "Qwen3.5-0.8B-Q5_K_S.gguf",
+   568889600
+  ],
+  [
+   "Qwen3.5-0.8B-Q6_K.gguf",
+   639029504
+  ],
+  [
+   "Qwen3.5-0.8B-Q8_0.gguf",
+   811843840
+  ],
+  [
+   "Qwen3.5-0.8B-UD-IQ2_M.gguf",
+   371933440
+  ],
+  [
+   "Qwen3.5-0.8B-UD-IQ2_XXS.gguf",
+   338227456
+  ],
+  [
+   "Qwen3.5-0.8B-UD-IQ3_XXS.gguf",
+   398237952
+  ],
+  [
+   "Qwen3.5-0.8B-UD-Q2_K_XL.gguf",
+   417718528
+  ],
+  [
+   "Qwen3.5-0.8B-UD-Q3_K_XL.gguf",
+   492216576
+  ],
+  [
+   "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+   558772480
+  ],
+  [
+   "Qwen3.5-0.8B-UD-Q5_K_XL.gguf",
+   606585088
+  ],
+  [
+   "Qwen3.5-0.8B-UD-Q6_K_XL.gguf",
+   771092736
+  ],
+  [
+   "Qwen3.5-0.8B-UD-Q8_K_XL.gguf",
+   1186443520
+  ],
+  [
+   "README.md",
+   62950
+  ],
+  [
+   "imatrix_unsloth.gguf_file",
+   1134720
+  ],
+  [
+   "mmproj-BF16.gguf",
+   207346528
+  ],
+  [
+   "mmproj-F16.gguf",
+   204987232
+  ],
+  [
+   "mmproj-F32.gguf",
+   402381664
+  ]
+ ],
+ "gguf": {
+  "Qwen3.5-0.8B-Q4_K_M.gguf": {
+   "architecture": "qwen35",
+   "chat_template": true,
+   "context_length": 262144,
+   "embedding_length": 1024
+  },
+  "mmproj-F16.gguf": {
+   "projector_width": 1024
+  }
+ },
+ "repo": "unsloth/Qwen3.5-0.8B-GGUF",
+ "sha": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
+ "texts": {}
+}

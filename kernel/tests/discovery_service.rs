@@ -1887,3 +1887,420 @@ fn a_repo_whose_removal_deletes_a_watched_folder_is_never_offered() {
         "removing Inside or Chained would delete a watched folder"
     );
 }
+
+#[test]
+fn a_record_for_another_way_to_the_same_file_is_retired_with_its_config_kept() {
+    let dir = TempDir::new();
+    let models = dir.path().join("Models");
+    std::fs::create_dir_all(&models).unwrap();
+    let weight = models.join("m.gguf");
+    std::fs::write(&weight, b"data").unwrap();
+    let linked = dir.path().join("linked");
+    std::os::unix::fs::symlink(&models, &linked).unwrap();
+    let path = |root: &std::path::Path| root.join("m.gguf").to_string_lossy().into_owned();
+
+    // An earlier scan registered the file both ways; the alias has an alias set.
+    let mut registry = registry(&dir);
+    let mut direct = record("m", SourceKind::file(), &path(&models));
+    direct.primary_weight_path = Some(path(&models));
+    let mut aliased = record("m", SourceKind::file(), &path(&linked));
+    aliased.primary_weight_path = Some(path(&linked));
+    aliased.alias = Some("mine".to_owned());
+    let (direct_id, aliased_id) = (direct.id.clone(), aliased.id.clone());
+    registry.register(direct).unwrap();
+    registry.register(aliased).unwrap();
+
+    // The scan now gives it once, by the direct path.
+    let mut found = discovered("m", SourceKind::file(), &path(&models));
+    found.primary_weight_path = Some(path(&models));
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult {
+            discovered: vec![found],
+            ..ScanResult::default()
+        },
+    )]);
+    service.discover(&mut registry).expect("discover");
+    assert!(registry.get(&aliased_id).is_none(), "the alias is retired");
+    assert_eq!(
+        registry.get(&direct_id).unwrap().alias.as_deref(),
+        Some("mine")
+    );
+}
+
+#[test]
+fn a_retired_alias_gives_its_config_once_and_only_where_none_is_set() {
+    let dir = TempDir::new();
+    let models = dir.path().join("Models");
+    std::fs::create_dir_all(&models).unwrap();
+    let weight = models.join("m.gguf");
+    std::fs::write(&weight, b"same-content").unwrap();
+    let copy_dir = dir.path().join("copy");
+    std::fs::create_dir_all(&copy_dir).unwrap();
+    let copy = copy_dir.join("m.gguf");
+    std::fs::write(&copy, b"same-content").unwrap();
+    let linked = dir.path().join("linked");
+    std::os::unix::fs::symlink(&models, &linked).unwrap();
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let print = content_fingerprint(&weight).expect("fingerprint");
+
+    let mut registry = registry(&dir);
+    let mut direct = record("m", SourceKind::file(), &text(&weight));
+    direct.primary_weight_path = Some(text(&weight));
+    direct.alias = Some("own".to_owned());
+    let mut aliased = record("m", SourceKind::file(), &text(&linked.join("m.gguf")));
+    aliased.primary_weight_path = Some(text(&linked.join("m.gguf")));
+    aliased.content_fingerprint = Some(print);
+    aliased.footprint_bytes = Some(5);
+    aliased.system_prompt = Some("be terse".to_owned());
+    let direct_id = direct.id.clone();
+    registry.register(direct).unwrap();
+    registry.register(aliased).unwrap();
+
+    // This scan finds the file once, and an identical copy that is new.
+    let found = |path: &std::path::Path| {
+        let mut model = discovered("m", SourceKind::file(), &text(path));
+        model.primary_weight_path = Some(text(path));
+        model
+    };
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult {
+            discovered: vec![found(&weight), found(&copy)],
+            ..ScanResult::default()
+        },
+    )]);
+    service.discover(&mut registry).expect("discover");
+
+    let kept = registry.get(&direct_id).unwrap();
+    assert_eq!(kept.alias.as_deref(), Some("own"), "its own alias stays");
+    assert_eq!(kept.system_prompt.as_deref(), Some("be terse"));
+    let others: Vec<_> = registry
+        .list()
+        .into_iter()
+        .filter(|record| record.id != direct_id)
+        .collect();
+    assert_eq!(others.len(), 1, "{others:?}");
+    assert_eq!(others[0].source.path, text(&copy));
+    assert_eq!(others[0].alias, None, "the copy claims nothing");
+    assert_eq!(others[0].system_prompt, None);
+}
+
+#[test]
+fn a_moved_model_never_overwrites_config_an_alias_just_gave() {
+    let dir = TempDir::new();
+    let models = dir.path().join("Models");
+    std::fs::create_dir_all(&models).unwrap();
+    let weight = models.join("m.gguf");
+    std::fs::write(&weight, b"moved-content").unwrap();
+    let linked = dir.path().join("linked");
+    std::os::unix::fs::symlink(&models, &linked).unwrap();
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let print = content_fingerprint(&weight).expect("fingerprint");
+
+    let mut registry = registry(&dir);
+    // An alias with a prompt, and a missing record of the same content with
+    // none.
+    let mut aliased = record("m", SourceKind::file(), &text(&linked.join("m.gguf")));
+    aliased.primary_weight_path = Some(text(&linked.join("m.gguf")));
+    aliased.system_prompt = Some("be terse".to_owned());
+    registry.register(aliased).unwrap();
+    let mut moved = record("m", SourceKind::file(), "/gone/m.gguf");
+    moved.state = ModelState::Missing;
+    moved.content_fingerprint = Some(print);
+    moved.footprint_bytes = Some(5);
+    registry.register(moved).unwrap();
+
+    // The scan finds the file by a path no record has yet.
+    let mut found = discovered("m", SourceKind::file(), &text(&weight));
+    found.primary_weight_path = Some(text(&weight));
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult {
+            discovered: vec![found],
+            ..ScanResult::default()
+        },
+    )]);
+    service.discover(&mut registry).expect("discover");
+    let records = registry.list();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].system_prompt.as_deref(), Some("be terse"));
+}
+
+/// Two records of one file, the second reached through a link, as an earlier
+/// scan registered them, and a service whose scan now finds the file once.
+fn one_file_two_records(
+    dir: &TempDir,
+    direct_config: impl FnOnce(&mut ModelRecord),
+    alias_config: impl FnOnce(&mut ModelRecord),
+) -> (Registry, DiscoveryService, String, String) {
+    let models = dir.path().join("Models");
+    std::fs::create_dir_all(&models).unwrap();
+    let weight = models.join("m.gguf");
+    std::fs::write(&weight, b"data").unwrap();
+    let linked = dir.path().join("linked");
+    std::os::unix::fs::symlink(&models, &linked).unwrap();
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let mut registry = registry(dir);
+    let mut direct = record("m", SourceKind::file(), &text(&weight));
+    direct.primary_weight_path = Some(text(&weight));
+    direct_config(&mut direct);
+    let mut aliased = record("m", SourceKind::file(), &text(&linked.join("m.gguf")));
+    aliased.primary_weight_path = Some(text(&linked.join("m.gguf")));
+    alias_config(&mut aliased);
+    let ids = (direct.id.clone(), aliased.id.clone());
+    registry.register(direct).unwrap();
+    registry.register(aliased).unwrap();
+    let mut found = discovered("m", SourceKind::file(), &text(&weight));
+    found.primary_weight_path = Some(text(&weight));
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult {
+            discovered: vec![found],
+            ..ScanResult::default()
+        },
+    )]);
+    (registry, service, ids.0, ids.1)
+}
+
+#[test]
+fn parameters_merge_key_by_key_when_an_alias_is_retired() {
+    use kernel::records::JsonValue;
+    let dir = TempDir::new();
+    let (mut registry, service, direct, aliased) = one_file_two_records(
+        &dir,
+        |direct| {
+            direct
+                .param_values
+                .insert("temperature".to_owned(), JsonValue::from(0.7));
+        },
+        |alias| {
+            alias
+                .param_values
+                .insert("temperature".to_owned(), JsonValue::from(0.7));
+            alias
+                .param_values
+                .insert("top_p".to_owned(), JsonValue::from(0.9));
+        },
+    );
+    service.discover(&mut registry).expect("discover");
+    assert!(registry.get(&aliased).is_none());
+    let kept = registry.get(&direct).unwrap();
+    assert_eq!(kept.param_values.get("top_p"), Some(&JsonValue::from(0.9)));
+    assert_eq!(
+        kept.param_values.get("temperature"),
+        Some(&JsonValue::from(0.7))
+    );
+}
+
+#[test]
+fn an_alias_whose_settings_conflict_is_kept_so_neither_is_lost() {
+    use kernel::records::JsonValue;
+    type Settings = (
+        &'static str,
+        JsonValue,
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+    fn set((key, value, prompt, alias): Settings) -> impl FnOnce(&mut ModelRecord) {
+        move |record: &mut ModelRecord| {
+            record.param_values.insert(key.to_owned(), value);
+            // A key only one side holds, beside the conflict, moves nowhere.
+            record
+                .param_values
+                .insert(format!("only-{}", record.source.path), JsonValue::from(1));
+            record.system_prompt = prompt.map(str::to_owned);
+            record.alias = alias.map(str::to_owned);
+        }
+    }
+    for (direct_config, alias_config) in [
+        (
+            ("temperature", JsonValue::from(0.7), None, None),
+            ("temperature", JsonValue::from(0.2), None, None),
+        ),
+        (
+            ("seed", JsonValue::from(1), Some("short"), None),
+            ("seed", JsonValue::from(1), Some("long"), None),
+        ),
+        (
+            ("seed", JsonValue::from(1), None, Some("own")),
+            ("seed", JsonValue::from(1), None, Some("mine")),
+        ),
+    ] {
+        let dir = TempDir::new();
+        let (mut registry, service, direct, aliased) =
+            one_file_two_records(&dir, set(direct_config), set(alias_config));
+        let alias_before = registry.get(&aliased).unwrap().clone();
+        let direct_before = registry.get(&direct).unwrap().clone();
+        service.discover(&mut registry).expect("discover");
+        for (id, before) in [(&aliased, &alias_before), (&direct, &direct_before)] {
+            let after = registry.get(id).expect("both stay");
+            assert_eq!(after.param_values, before.param_values);
+            assert_eq!(after.system_prompt, before.system_prompt);
+            assert_eq!(after.alias, before.alias);
+        }
+    }
+}
+
+#[test]
+fn an_alias_kept_for_a_conflict_is_no_orphan_for_a_new_copy_to_claim() {
+    use kernel::records::JsonValue;
+    let dir = TempDir::new();
+    let models = dir.path().join("Models");
+    std::fs::create_dir_all(&models).unwrap();
+    let weight = models.join("m.gguf");
+    std::fs::write(&weight, b"same-content").unwrap();
+    let copy = dir.path().join("copy.gguf");
+    std::fs::write(&copy, b"same-content").unwrap();
+    let linked = dir.path().join("linked");
+    std::os::unix::fs::symlink(&models, &linked).unwrap();
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let print = content_fingerprint(&weight).expect("fingerprint");
+
+    let mut registry = registry(&dir);
+    let mut direct = record("m", SourceKind::file(), &text(&weight));
+    direct.primary_weight_path = Some(text(&weight));
+    direct
+        .param_values
+        .insert("temperature".to_owned(), JsonValue::from(0.7));
+    let mut aliased = record("m", SourceKind::file(), &text(&linked.join("m.gguf")));
+    aliased.primary_weight_path = Some(text(&linked.join("m.gguf")));
+    aliased.content_fingerprint = Some(print);
+    aliased.footprint_bytes = Some(5);
+    aliased
+        .param_values
+        .insert("temperature".to_owned(), JsonValue::from(0.2));
+    let aliased_id = aliased.id.clone();
+    registry.register(direct).unwrap();
+    registry.register(aliased).unwrap();
+
+    let found = |path: &std::path::Path| {
+        let mut model = discovered("m", SourceKind::file(), &text(path));
+        model.primary_weight_path = Some(text(path));
+        model
+    };
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult {
+            discovered: vec![found(&weight), found(&copy)],
+            ..ScanResult::default()
+        },
+    )]);
+    service.discover(&mut registry).expect("discover");
+    let kept = registry.get(&aliased_id).expect("the alias stays");
+    assert_eq!(
+        kept.param_values.get("temperature"),
+        Some(&JsonValue::from(0.2))
+    );
+    let copy_record = registry
+        .list()
+        .into_iter()
+        .find(|record| record.source.path == text(&copy))
+        .expect("the copy");
+    assert!(copy_record.param_values.is_empty(), "{copy_record:?}");
+}
+
+#[test]
+fn a_runtime_the_user_pinned_on_a_retired_alias_is_kept() {
+    use kernel::records::{Resolution, RuntimeId};
+    let pin = |record: &mut ModelRecord, runtime: RuntimeId| {
+        record.runtime.id = Some(runtime);
+        record.runtime.resolved = Resolution::User;
+    };
+    // Onto a record resolution made ready, the pin moves.
+    let dir = TempDir::new();
+    let (mut registry, service, direct, aliased) = one_file_two_records(
+        &dir,
+        |direct| {
+            direct.runtime.id = Some(RuntimeId::ollama());
+            direct.runtime.resolved = Resolution::Auto;
+            direct.state = ModelState::Ready;
+        },
+        |alias| pin(alias, RuntimeId::llama_cpp()),
+    );
+    service.discover(&mut registry).expect("discover");
+    assert!(registry.get(&aliased).is_none());
+    let kept = registry.get(&direct).unwrap();
+    assert_eq!(kept.runtime.resolved, Resolution::User);
+    assert_eq!(kept.runtime.id, Some(RuntimeId::llama_cpp()));
+
+    // Onto one not ready (new this scan, or nothing bids on it), it waits: the
+    // alias stays pinned, and a scan after resolution has made the record
+    // ready moves it.
+    let dir = TempDir::new();
+    let (mut registry, service, direct, aliased) =
+        one_file_two_records(&dir, |_| {}, |alias| pin(alias, RuntimeId::llama_cpp()));
+    registry.unregister(&direct).unwrap();
+    service.discover(&mut registry).expect("first scan");
+    assert_eq!(
+        registry.get(&aliased).expect("waits").runtime.resolved,
+        Resolution::User
+    );
+    service
+        .discover(&mut registry)
+        .expect("a scan with nothing resolved");
+    assert!(registry.get(&aliased).is_some(), "still waits");
+    let mut resolved = registry.get(&direct).expect("found").clone();
+    resolved.runtime.id = Some(RuntimeId::ollama());
+    resolved.runtime.resolved = Resolution::Auto;
+    resolved.state = ModelState::Ready;
+    registry.register(resolved).unwrap();
+    service
+        .discover(&mut registry)
+        .expect("a scan after resolution");
+    assert!(registry.get(&aliased).is_none(), "moved once ready");
+    assert_eq!(
+        registry.get(&direct).unwrap().runtime.id,
+        Some(RuntimeId::llama_cpp())
+    );
+
+    // Two different pins conflict: both records stay.
+    let dir = TempDir::new();
+    let (mut registry, service, direct, aliased) = one_file_two_records(
+        &dir,
+        |direct| pin(direct, RuntimeId::llama_cpp()),
+        |alias| pin(alias, RuntimeId::ollama()),
+    );
+    service.discover(&mut registry).expect("discover");
+    assert_eq!(
+        registry.get(&aliased).expect("kept").runtime.id,
+        Some(RuntimeId::ollama())
+    );
+    assert_eq!(
+        registry.get(&direct).unwrap().runtime.id,
+        Some(RuntimeId::llama_cpp())
+    );
+}
+
+#[test]
+fn a_moved_pinned_model_gives_its_settings_but_not_its_pin() {
+    use kernel::records::{Resolution, RuntimeId};
+    let dir = TempDir::new();
+    let weight = dir.path().join("moved.gguf");
+    std::fs::write(&weight, b"identical-weights").unwrap();
+    let print = content_fingerprint(&weight).expect("fingerprint");
+    let mut registry = registry(&dir);
+    let mut old = record("pinned", SourceKind::file(), "/old/pinned.gguf");
+    old.state = ModelState::Missing;
+    old.content_fingerprint = Some(print);
+    old.footprint_bytes = Some(5);
+    old.system_prompt = Some("be terse".to_owned());
+    old.runtime.id = Some(RuntimeId::llama_cpp());
+    old.runtime.resolved = Resolution::User;
+    registry.register(old).unwrap();
+
+    let mut model = discovered("pinned", SourceKind::file(), "/new/pinned.gguf");
+    model.primary_weight_path = Some(weight.to_string_lossy().into_owned());
+    let service = DiscoveryService::new(vec![scanner(
+        vec![SourceKind::file()],
+        ScanResult {
+            discovered: vec![model],
+            ..Default::default()
+        },
+    )]);
+    service.discover(&mut registry).expect("discover");
+    let records = registry.list();
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].system_prompt.as_deref(), Some("be terse"));
+    assert_eq!(records[0].runtime.resolved, Resolution::Unresolved);
+}

@@ -19,7 +19,8 @@ use kernel::discovery::{HFCacheScanner, OllamaStoreScanner, StoreScanner};
 use kernel::install::catalog::{InstallCatalogEntry, entries};
 use kernel::install::{HFSibling, InstallProviderId, select};
 use kernel::machine::Engine;
-use kernel::records::ModelRecord;
+use kernel::records::{Capability, ModelRecord};
+use kernel::resolution::projector_for;
 use runtime::boot::{HedosDirs, build_kernel};
 use runtime::settings::Settings;
 use serde::Deserialize;
@@ -32,6 +33,45 @@ struct Fixture {
     sha: String,
     files: Vec<(String, i64)>,
     texts: BTreeMap<String, String>,
+    /// What the header of each GGUF file says, read off the real file: the
+    /// test writes it ahead of the file's sparse rest.
+    #[serde(default)]
+    gguf: BTreeMap<String, GgufHeader>,
+}
+
+/// What a GGUF's header says, read off the real file: a model's architecture,
+/// window, width and template, or a projector's output width.
+#[derive(Deserialize)]
+struct GgufHeader {
+    architecture: Option<String>,
+    context_length: Option<u32>,
+    embedding_length: Option<u32>,
+    #[serde(default)]
+    chat_template: bool,
+    projector_width: Option<u64>,
+}
+
+impl GgufHeader {
+    fn bytes(&self) -> Vec<u8> {
+        if let Some(width) = self.projector_width {
+            return support::projector_gguf(width, 0);
+        }
+        let arch = self.architecture.as_deref().unwrap_or_default();
+        let mut pairs = vec![support::kv_string("general.architecture", arch)];
+        if let Some(context) = self.context_length {
+            pairs.push(support::kv_u32(&format!("{arch}.context_length"), context));
+        }
+        if let Some(width) = self.embedding_length {
+            pairs.push(support::kv_u32(&format!("{arch}.embedding_length"), width));
+        }
+        if self.chat_template {
+            pairs.push(support::kv_string(
+                "tokenizer.chat_template",
+                "{{ messages }}",
+            ));
+        }
+        support::gguf(&pairs)
+    }
 }
 
 fn fixture(repo: &str) -> Fixture {
@@ -68,12 +108,20 @@ fn lay_out_repo(root: &Path, repo: &str) {
     std::fs::write(dir.join("refs/main"), &fixture.sha).unwrap();
     for (index, sibling) in select(&siblings).iter().enumerate() {
         let blob = dir.join("blobs").join(format!("{index:064x}"));
-        match fixture.texts.get(&sibling.rfilename) {
-            Some(text) => {
+        match (
+            fixture.texts.get(&sibling.rfilename),
+            fixture.gguf.get(&sibling.rfilename),
+        ) {
+            (Some(text), _) => {
                 std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
                 std::fs::write(&blob, text).unwrap();
             }
-            None => sparse(&blob, sibling.bytes.unwrap_or(0)),
+            (None, Some(header)) => {
+                sparse(&blob, sibling.bytes.unwrap_or(0));
+                let mut file = std::fs::OpenOptions::new().write(true).open(&blob).unwrap();
+                std::io::Write::write_all(&mut file, &header.bytes()).unwrap();
+            }
+            (None, None) => sparse(&blob, sibling.bytes.unwrap_or(0)),
         }
         let link = snapshot.join(&sibling.rfilename);
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
@@ -197,6 +245,38 @@ async fn every_catalog_size_is_what_the_shelf_measures() {
                 "{}: the shelf measures {serving:?} to serve, the catalog says {}",
                 entry.reference, entry.serving_bytes
             ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test]
+async fn every_catalog_model_that_sees_is_served_with_the_projector_it_pulled() {
+    let dir = TempDir::new();
+    let shelf = shelf_of_the_catalog(&dir).await;
+    let mut failures = Vec::new();
+    for entry in entries() {
+        let pulled = fixture(&entry.reference)
+            .gguf
+            .into_iter()
+            .find(|(_, header)| header.projector_width.is_some())
+            .map(|(name, _)| name);
+        let Some(pulled) = pulled else {
+            continue;
+        };
+        let record = record_of(&shelf, &entry);
+        let served = projector_for(record).and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        if served.as_deref() != Some(pulled.as_str()) {
+            failures.push(format!(
+                "{}: served with {served:?}, pulled {pulled}",
+                entry.reference
+            ));
+        }
+        if !record.capabilities.contains(&Capability::see()) {
+            failures.push(format!("{} does not see", entry.reference));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

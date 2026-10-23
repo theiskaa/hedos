@@ -12,12 +12,15 @@ mod host;
 
 use std::sync::OnceLock;
 
+use std::path::Path;
+
 use kernel::machine::{
-    Device, DeviceKind, DevicesFrom, Engines, Machine, Os, amd_device, is_apple_silicon,
-    parse_list_devices, parse_nvidia_smi,
+    CgroupMount, CgroupPaths, Device, DeviceKind, DevicesFrom, Engines, Machine, Os, amd_device,
+    cgroup_ancestors, cgroup_room, is_apple_silicon, launch_memory, parse_cgroup_mounts,
+    parse_list_devices, parse_mem_available, parse_nvidia_smi, parse_proc_cgroup,
 };
 
-pub(crate) use host::{Host, SystemHost};
+pub(crate) use host::{Host, Stream, SystemHost, run_bounded_reading};
 
 const NVIDIA_SMI_ARGS: [&str; 2] = [
     "--query-gpu=name,memory.total",
@@ -29,13 +32,146 @@ const NVIDIA_SMI_ARGS: [&str; 2] = [
 /// free disk are read again on every call, since either can change while the
 /// shelf stays open.
 pub fn probe() -> Machine {
-    static HARDWARE: OnceLock<Machine> = OnceLock::new();
     let host = SystemHost;
-    let hardware = HARDWARE.get_or_init(|| probe_with(&host));
     Machine {
         engines: engines(&host),
         free_disk: host.free_disk(),
-        ..hardware.clone()
+        ..hardware().clone()
+    }
+}
+
+/// This machine's hardware, read once per process.
+fn hardware() -> &'static Machine {
+    static HARDWARE: OnceLock<Machine> = OnceLock::new();
+    HARDWARE.get_or_init(|| probe_with(&SystemHost))
+}
+
+/// Whether torch runs on the CPU here: on Linux without NVIDIA's driver,
+/// which a CUDA build needs. Read from files the driver makes, so no program
+/// runs and nothing waits on one.
+pub(crate) fn torch_on_the_cpu() -> bool {
+    torch_on_the_cpu_under(Os::current(), Path::new("/"))
+}
+
+/// [`torch_on_the_cpu`] on `os`, with `root` standing for `/`.
+fn torch_on_the_cpu_under(os: Os, root: &Path) -> bool {
+    os == Os::Linux && !nvidia_driver_under(root)
+}
+
+/// Whether NVIDIA's driver is loaded, `root` standing for `/`: the kernel
+/// module lists itself under `/proc/driver/nvidia` (in a container given the
+/// cards too), and WSL puts NVIDIA's CUDA library under `/usr/lib/wsl/lib`.
+fn nvidia_driver_under(root: &Path) -> bool {
+    root.join("proc/driver/nvidia/version").is_file()
+        || root.join("usr/lib/wsl/lib/libcuda.so.1").is_file()
+}
+
+/// Read this machine's hardware now, off the calling thread, so the first
+/// request a server takes does not wait on it (finding cards can run
+/// `nvidia-smi` or `llama-server --list-devices`).
+pub fn warm_hardware() {
+    std::thread::spawn(|| {
+        hardware();
+    });
+}
+
+/// The memory the llama-server hedos would run can take as it starts, read
+/// now: see [`launch_memory`].
+pub fn llama_launch_memory() -> Option<u64> {
+    launch_memory(
+        hardware(),
+        available_memory(&SystemHost),
+        llama_accelerated(),
+    )
+}
+
+/// Whether the llama-server hedos would run uses a GPU: not a CPU build hedos
+/// carries or installed. One named in the settings or found on the PATH is
+/// taken to use what the machine has.
+fn llama_accelerated() -> bool {
+    use crate::engines::llama_cpp::{Source, installed, located};
+    use kernel::engines::llama_cpp::{InstallSource, Variant};
+    let Some(server) = located() else {
+        return true;
+    };
+    let recorded = |source| {
+        installed(&crate::boot::HedosDirs::detect().data, source)
+            .filter(|(dir, _)| server.path.parent() == Some(dir.as_path()))
+            .map(|(_, record)| record.variant)
+    };
+    let variant = match server.from {
+        // A build an earlier hedos carried and unpacked says what it is in
+        // its record.
+        Source::Bundled => crate::engines::bundled::bundled()
+            .map(|carried| carried.variant)
+            .or_else(|| recorded(InstallSource::Bundled)),
+        Source::Hedos => recorded(InstallSource::Requested),
+        Source::Config | Source::Path => None,
+    };
+    variant != Some(Variant::Cpu)
+}
+
+/// The least room under any memory limit on this process's cgroup or those
+/// above it: cgroup v2's `memory.max`, else v1's `memory.limit_in_bytes`.
+fn cgroup_limit(host: &dyn Host, paths: &CgroupPaths) -> Option<u64> {
+    // Where the hierarchies are mounted, else where systemd and Docker put
+    // them.
+    let (unified_mount, memory_mount) = host
+        .read(Path::new("/proc/self/mountinfo"))
+        .map(|text| parse_cgroup_mounts(&text))
+        .unwrap_or_default();
+    let mounted = |at: &str| CgroupMount {
+        root: "/".to_owned(),
+        mount_point: at.to_owned(),
+    };
+    let unified_mount = unified_mount.unwrap_or_else(|| mounted("/sys/fs/cgroup"));
+    let memory_mount = memory_mount.unwrap_or_else(|| mounted("/sys/fs/cgroup/memory"));
+    let tightest = |mount: &CgroupMount, path: &str, limit: &str, usage: &str| {
+        cgroup_ancestors(path)
+            .iter()
+            .filter_map(|cgroup| {
+                let dir = mount.dir_of(cgroup)?;
+                let dir = Path::new(&dir);
+                cgroup_room(&host.read(&dir.join(limit))?, &host.read(&dir.join(usage))?)
+            })
+            .min()
+    };
+    let unified = paths
+        .unified
+        .as_deref()
+        .and_then(|path| tightest(&unified_mount, path, "memory.max", "memory.current"));
+    let v1 = paths.memory.as_deref().and_then(|path| {
+        tightest(
+            &memory_mount,
+            path,
+            "memory.limit_in_bytes",
+            "memory.usage_in_bytes",
+        )
+    });
+    unified.into_iter().chain(v1).min()
+}
+
+/// The memory a new process can take right now without swapping: Linux's
+/// `MemAvailable`, within the room left under this process's cgroup limit;
+/// macOS's free and inactive pages. `None` elsewhere.
+pub(crate) fn available_memory(host: &dyn Host) -> Option<u64> {
+    if host.os() == Os::Macos {
+        return host.reclaimable_memory();
+    }
+    if host.os() != Os::Linux {
+        return None;
+    }
+    let available = host
+        .read(Path::new("/proc/meminfo"))
+        .as_deref()
+        .and_then(parse_mem_available);
+    let room = host
+        .read(Path::new("/proc/self/cgroup"))
+        .map(|text| parse_proc_cgroup(&text))
+        .and_then(|paths| cgroup_limit(host, &paths));
+    match (available, room) {
+        (Some(available), Some(room)) => Some(available.min(room)),
+        (available, room) => available.or(room),
     }
 }
 
@@ -62,7 +198,7 @@ pub(crate) fn probe_with(host: &dyn Host) -> Machine {
 fn engines(host: &dyn Host) -> Engines {
     Engines {
         ollama: host.ollama(),
-        llama_cpp: host.find("llama-server").is_some(),
+        llama_cpp: host.llama_server().is_some(),
         uv: host.uv(),
     }
 }
@@ -103,7 +239,7 @@ fn devices(host: &dyn Host, os: Os, arch: &str, chip: Option<&str>) -> (Vec<Devi
         }
     }
     let listed = host
-        .find("llama-server")
+        .llama_server()
         .and_then(|server| host.run(&server, &["--list-devices"]))
         .map(|text| usable(parse_list_devices(&text)))
         .unwrap_or_default();

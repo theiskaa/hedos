@@ -1,7 +1,7 @@
 //! Persistent settings, stored as one human-editable TOML file at
 //! `<config-dir>/hedos.toml` (config dir = `XDG_CONFIG_HOME`, else `~/.config`,
 //! else `%APPDATA%`). A single file with `[models]`/`[chat]`/`[voice]`/
-//! `[gateway]`/`[pull]`/`[advanced]` tables, not a per-domain store.
+//! `[gateway]`/`[pull]`/`[advanced]`/`[engines]` tables, not a per-domain store.
 //!
 //! Loading is tolerant: a missing file, a malformed file, or a malformed table
 //! falls back to defaults for just that scope, so a hand-edit typo never wipes
@@ -276,6 +276,15 @@ impl Default for AdvancedSettings {
     }
 }
 
+/// Where the engines hedos runs are.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct EngineSettings {
+    /// An absolute path to the `llama-server` to run, ahead of the one hedos
+    /// installed and the one on PATH. Empty means unset.
+    pub llama_server: String,
+}
+
 /// The whole settings document — one per `hedos.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -292,6 +301,8 @@ pub struct Settings {
     pub pull: PullSettings,
     /// Advanced.
     pub advanced: AdvancedSettings,
+    /// Engines.
+    pub engines: EngineSettings,
 }
 
 /// Reads and writes the settings file.
@@ -338,6 +349,7 @@ impl SettingsStore {
             gateway: decode_table(&table, "gateway"),
             pull: decode_table(&table, "pull"),
             advanced: decode_table(&table, "advanced"),
+            engines: decode_table(&table, "engines"),
         }
     }
 

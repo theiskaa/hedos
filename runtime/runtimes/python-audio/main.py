@@ -154,10 +154,24 @@ class Steps:
             raise CancelJob
 
 
+def cuda_runs(torch):
+    # A CUDA build calls a card it has no kernels for available, then fails
+    # every job on it; such a card is left to the CPU.
+    if not torch.cuda.is_available():
+        return False
+    major, minor = torch.cuda.get_device_capability()
+    built = [
+        int("".join(c for c in arch[3:] if c.isdigit()))
+        for arch in torch.cuda.get_arch_list()
+        if arch.startswith("sm_")
+    ]
+    return bool(built) and major * 10 + minor >= min(built)
+
+
 def device_of(torch):
     if torch.backends.mps.is_available():
         return "mps"
-    if torch.cuda.is_available():
+    if cuda_runs(torch):
         return "cuda"
     return "cpu"
 

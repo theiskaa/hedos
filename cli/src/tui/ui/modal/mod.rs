@@ -1,10 +1,11 @@
-//! The cards (pull, remove, stop, help, launch), drawn over a dimmed screen; the
+//! The cards (pull, remove, install, stop, help, launch), drawn over a dimmed screen; the
 //! chat pane, though it sits in the same slot, is drawn by `chat` instead.
 //! This module owns the frame around a card: the backdrop, the margin that
 //! clamps a card to a narrow terminal, the border, and the title. Each card
 //! owns its width, its height, and its body, in a module of its own.
 
 mod help;
+mod install;
 mod launch;
 mod remove;
 mod stop;
@@ -43,6 +44,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, app: &App) -> bool {
             remove::REMOVE_HEIGHT,
             format!(" remove {} ", preview.name),
             Box::new(move |inner| remove::remove(preview, &app.facts, inner)),
+        ),
+        Modal::Install(card) => (
+            install::INSTALL_WIDTH,
+            install::height(card),
+            format!(" install {} ", card.target.engine().name()),
+            Box::new(move |inner| install::install(card, inner)),
         ),
         Modal::Stop(card) => (
             stop::STOP_WIDTH,
@@ -309,5 +316,32 @@ mod tests {
         let remove = remove::remove(&preview, &Facts::default(), remove_inner);
         fits(&remove, inner(remove::REMOVE_WIDTH), "remove");
         assert!(texts(&remove).iter().any(|line| line.contains('…')));
+    }
+
+    #[test]
+    fn the_install_card_fits_its_width_with_a_cuda_card() {
+        let cuda = kernel::engines::llama_cpp::PINNED
+            .asset(
+                kernel::machine::Os::Linux,
+                "x86_64",
+                kernel::engines::llama_cpp::Variant::Cuda12,
+            )
+            .expect("a CUDA build");
+        let dirs = runtime::boot::HedosDirs {
+            data: std::path::PathBuf::from("/home/someone/.local/share/hedos"),
+        };
+        let card = crate::tui::app::InstallCard {
+            lines: crate::support::engines::card(cuda, &dirs),
+            target: crate::tui::tasks::InstallTarget::LlamaCpp(cuda.variant),
+        };
+        let install_inner = Rect::new(
+            0,
+            0,
+            inner(install::INSTALL_WIDTH) as u16,
+            install::height(&card),
+        );
+        let lines = install::install(&card, install_inner);
+        fits(&lines, inner(install::INSTALL_WIDTH), "install");
+        assert!(texts(&lines).iter().any(|line| line.contains("vulkan")));
     }
 }

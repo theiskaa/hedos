@@ -391,3 +391,140 @@ fn a_whole_model_in_another_framework_is_not_a_support_file() {
     ]));
     assert_eq!(names(&picked), set(&["model.safetensors", "config.json"]));
 }
+
+const GB: i64 = 1_000_000_000;
+
+/// `(name, gigabytes)` as a repo listing reports them.
+fn listing(files: &[(&str, f64)]) -> Vec<HFSibling> {
+    files
+        .iter()
+        .map(|(name, gb)| HFSibling::new(*name, Some((gb * GB as f64) as i64)))
+        .collect()
+}
+
+#[test]
+fn a_speculative_draft_is_never_pulled_for_the_model() {
+    // ggml-org/gpt-oss-20b-GGUF: the model matches no preferred quantization,
+    // and its EAGLE3 draft is Q8_0.
+    let picked = select(&listing(&[
+        ("eagle3-gpt-oss-20b-BF16.gguf", 1.72),
+        ("eagle3-gpt-oss-20b-Q8_0.gguf", 0.92),
+        ("gpt-oss-20b-MXFP4.gguf", 12.11),
+    ]));
+    assert_eq!(names(&picked), set(&["gpt-oss-20b-MXFP4.gguf"]));
+}
+
+#[test]
+fn ggml_orgs_repos_pull_the_model_and_one_projector() {
+    // ggml-org/gemma-4-12B-it-GGUF.
+    let picked = select(&listing(&[
+        ("gemma-4-12B-it-BF16.gguf", 23.83),
+        ("gemma-4-12B-it-Q4_0.gguf", 7.22),
+        ("gemma-4-12B-it-Q8_0.gguf", 12.67),
+        ("mmproj-gemma-4-12B-it-BF16.gguf", 0.18),
+        ("mmproj-gemma-4-12B-it-Q8_0.gguf", 0.16),
+        ("mtp-gemma-4-12B-it-BF16.gguf", 0.86),
+        ("mtp-gemma-4-12B-it-Q4_0.gguf", 0.25),
+        ("mtp-gemma-4-12B-it-Q8_0.gguf", 0.47),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&[
+            "gemma-4-12B-it-Q4_0.gguf",
+            "mmproj-gemma-4-12B-it-Q8_0.gguf"
+        ])
+    );
+
+    // ggml-org/Qwen3.8-27B-GGUF.
+    let picked = select(&listing(&[
+        ("Qwen3.8-27B-BF16.gguf", 53.81),
+        ("Qwen3.8-27B-Q4_K_M.gguf", 18.97),
+        ("Qwen3.8-27B-Q8_0.gguf", 28.60),
+        ("dflash-Qwen3.8-27B-BF16.gguf", 3.86),
+        ("dflash-Qwen3.8-27B-Q4_0.gguf", 1.09),
+        ("dflash-Qwen3.8-27B-Q8_0.gguf", 2.06),
+        ("mmproj-Qwen3.8-27B-BF16.gguf", 0.93),
+        ("mmproj-Qwen3.8-27B-Q8_0.gguf", 0.63),
+        ("mtp-Qwen3.8-27B-BF16.gguf", 5.95),
+        ("mtp-Qwen3.8-27B-Q4_0.gguf", 1.68),
+        ("mtp-Qwen3.8-27B-Q8_0.gguf", 3.16),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["Qwen3.8-27B-Q4_K_M.gguf", "mmproj-Qwen3.8-27B-Q8_0.gguf"])
+    );
+}
+
+#[test]
+fn of_several_projector_precisions_the_one_named_for_the_weights_else_the_smallest() {
+    // unsloth/Qwen3.5-4B-GGUF: no projector is Q4_K_M, so the smallest.
+    let picked = select(&listing(&[
+        ("Qwen3.5-4B-Q4_K_M.gguf", 2.74),
+        ("Qwen3.5-4B-Q8_0.gguf", 4.48),
+        ("Qwen3.5-4B-UD-Q4_K_XL.gguf", 2.91),
+        ("mmproj-BF16.gguf", 0.68),
+        ("mmproj-F16.gguf", 0.67),
+        ("mmproj-F32.gguf", 1.33),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["Qwen3.5-4B-Q4_K_M.gguf", "mmproj-F16.gguf"])
+    );
+
+    // A projector at the weights' own quantization wins over a smaller one.
+    let picked = select(&listing(&[
+        ("model-Q8_0.gguf", 4.0),
+        ("mmproj-model-Q8_0.gguf", 0.6),
+        ("mmproj-model-Q4_0.gguf", 0.3),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["model-Q8_0.gguf", "mmproj-model-Q8_0.gguf"])
+    );
+}
+
+#[test]
+fn qwens_own_repo_pulls_the_single_file_rather_than_its_shards() {
+    // Qwen/Qwen2.5-Coder-7B-Instruct-GGUF (the q4_k_m files).
+    let picked = select(&listing(&[
+        ("qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf", 3.99),
+        ("qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf", 0.69),
+        ("qwen2.5-coder-7b-instruct-q4_k_m.gguf", 4.68),
+        ("qwen2.5-coder-7b-instruct-q8_0.gguf", 8.10),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["qwen2.5-coder-7b-instruct-q4_k_m.gguf"])
+    );
+}
+
+#[test]
+fn weights_outside_the_preference_list_keep_the_projector_of_their_own_precision() {
+    // BF16 weights keep the BF16 projector, as serving one already on disk
+    // would choose it.
+    let picked = select(&listing(&[
+        ("model-BF16.gguf", 8.4),
+        ("mmproj-model-BF16.gguf", 0.9),
+        ("mmproj-model-Q8_0.gguf", 0.6),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["model-BF16.gguf", "mmproj-model-BF16.gguf"])
+    );
+}
+
+#[test]
+fn a_projector_beside_the_weights_or_at_the_root_wins_over_one_elsewhere() {
+    // The shelf counts a projector into serving only beside the weights or at
+    // the root, so one in another quantization's folder is the last resort.
+    let picked = select(&listing(&[
+        ("Q4_K_M/model-Q4_K_M.gguf", 4.0),
+        ("Q8_0/model-Q8_0.gguf", 7.0),
+        ("mmproj-model-F16.gguf", 0.9),
+        ("Q8_0/mmproj-model-Q8_0.gguf", 0.6),
+    ]));
+    assert_eq!(
+        names(&picked),
+        set(&["Q4_K_M/model-Q4_K_M.gguf", "mmproj-model-F16.gguf"])
+    );
+}

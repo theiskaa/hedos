@@ -33,6 +33,8 @@ The script installs `hedos` into `~/.local/bin` (set `HEDOS_BIN_DIR` to change i
 cargo install hedos
 ```
 
+A `cargo install` build carries no llama.cpp (the other installs do); `hedos engines install llama.cpp` adds it, or hedos runs a `llama-server` on your `PATH`.
+
 ### Homebrew
 ```sh
 brew install theiskaa/tap/hedos
@@ -55,23 +57,23 @@ hedos upgrade
 
 It upgrades the way hedos was installed: through Homebrew or cargo when one of them installed it, by replacing the binary with the newest release's (checked against its SHA-256) when the install script or a release archive did, and not at all for a source build, which you pull and rebuild. `hedos upgrade --check` only says whether a newer release is out. Every command also ends with a one-line notice when one is; see [`hedos upgrade`](docs/cli.md#hedos-upgrade) to turn it off.
 
-### Optional backends
-hedos serves whatever your machine can already run, so nothing else is required to start. Add these when you want the runtimes that need them:
+### Engines
+hedos runs models on engines, and installs one only when you ask. `hedos engines` shows which are here.
 
-- [`uv`](https://astral.sh/uv) for the Python sidecar runtimes (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, whisper). It builds their environments the first time they run; the runtime code ships inside the binary.
-- A `llama-server` binary on the `PATH` for local GGUF files.
-- Ollama for the models it manages. hedos starts the daemon if it is installed but not running.
+- **llama.cpp comes with hedos.** It runs GGUF models, the chat and coding models `hedos recommend` offers among them. The install script, Homebrew, and the release archives carry the llama.cpp build hedos pins (0.7.0, Metal on Apple Silicon, the CPU build on Intel Macs and Linux), which unpacks the first time a model runs. hedos runs its own build ahead of any `llama-server` on your `PATH`, so an older one there never gets in the way; `[engines] llama_server` picks another. A faster build for your machine (CUDA for an NVIDIA card, Vulkan for AMD) is one `hedos engines install llama.cpp` away: it says what it will fetch, from where, how big, and where it goes, then asks. A `cargo install` or source build carries none, and uses that command, or a `llama-server` on the `PATH`; `hedos pull` offers it once a GGUF model lands and none is here. On Linux, hedos and the llama.cpp it carries (built by hedos from llama.cpp's pinned source) run on glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36); `hedos engines install` fetches that same build there, from hedos's own releases, so a `cargo install` gets it too. llama.cpp's own GPU builds (CUDA, Vulkan, ROCm) need glibc 2.38 (Ubuntu 24.04, Debian 13, Fedora 39): on an older system the CPU build is the one offered, and asking for a GPU build says why it would not start before fetching anything.
+- **`uv`** builds the Python sidecar runtimes' environments (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, audio) the first time they run, fetching Python 3.12 when the machine has none; the runtime code ships inside the binary. `hedos engines install uv` installs the `uv` hedos pins after saying what it fetches and asking, and `hedos pull` offers it once a Python model lands and none is here. A [`uv`](https://astral.sh/uv) you installed yourself works too.
+- **Ollama** is optional. The models already in its store are on the shelf: Ollama serves them while it is installed, and llama.cpp serves the ones it can load when it is not. hedos starts the daemon if it is installed but not running.
 
 ## Quick start
 ```sh
 hedos scan                             # discover every model on this machine
 hedos ls                               # list them with runtime, store, fit, and capabilities
 hedos recommend                        # what this machine can run, and what to pull for it
-hedos pull qwen2.5:3b                  # install a model through Ollama
-hedos run qwen2.5:3b "explain this"    # stream a completion to your terminal
+hedos pull ggml-org/gemma-4-E4B-it-GGUF   # a GGUF model from Hugging Face
+hedos run gemma-4-E4B-it-GGUF "explain this"   # stream a completion to your terminal
 hedos shelf                            # the shelf as a terminal screen
 hedos serve                            # start the local gateway
-hedos launch opencode -m qwen2.5:3b    # run a coding harness on a local model
+hedos launch opencode -m gemma-4-E4B-it-GGUF   # run a coding harness on a local model
 ```
 
 With the right kind of model on your shelf:
@@ -79,7 +81,7 @@ With the right kind of model on your shelf:
 ```sh
 hedos run llava "describe" --image photo.png        # ask a vision model about an image
 hedos transcribe whisper-large-v3 voice.wav         # transcribe a WAV file to text
-hedos rm qwen2.5:3b --yes                           # delete a model
+hedos rm gemma-4-E4B-it-GGUF --yes                  # delete a model
 hedos stats                                         # per-model usage from the gateway audit log
 hedos bench                                         # what every model does on this machine
 ```
@@ -126,7 +128,7 @@ Your own harness config is never touched, so running the harness directly afterw
 
 ```sh
 curl http://127.0.0.1:43367/v1/chat/completions \
-  -d '{"model":"qwen2.5:3b","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"gemma-4-E4B-it-GGUF","messages":[{"role":"user","content":"hi"}]}'
 ```
 
 The gateway takes the model's name as `hedos ls` shows it (or its id), not a fragment. Decision models also answer typed questions on `/v1/systemone`. See [docs/gateway.md](docs/gateway.md) for every endpoint.
@@ -138,7 +140,7 @@ The shelf is not read-only. The install service resolves a reference (a `hugging
 
 Installs write into each platform's native habitat:
 
-- Ollama models pull through the daemon's own API.
+- Ollama tags (`name:tag`) pull through Ollama's daemon, so they need Ollama installed.
 - Hugging Face models download into the standard hub cache layout (blobs, snapshots, refs), with `Range` resume and incremental SHA-256 checked against the hashes the LFS listing names.
 
 hedos owns no weights directory, so every other tool still sees the model. Installs never touch the registry either: the scanners discover the result. Gated repositories authenticate with `HF_TOKEN` from the environment, or the token `huggingface-cli login` writes.
@@ -147,15 +149,15 @@ A pull outlives the terminal that started it. `hedos pull <ref>` hands the downl
 
 `hedos pull ls` lists every pull, and `attach`, `pause`, `resume`, `cancel`, and `logs` act on one by id. A transfer that breaks retries with a growing pause before it is left for you to resume. A worker that died while the machine slept is picked back up the next time the shelf opens, and pulling the model again carries any stopped pull on.
 
-Removal is symmetric. `hedos rm <model>` shows a deletion preview (the files, the estimated bytes) and asks before it deletes anything; `-y` skips the question, and is required when there is no terminal to ask in. File-backed models are deleted from disk; Ollama models delete through the daemon. See [docs/models.md](docs/models.md).
+Removal is symmetric. `hedos rm <model>` shows a deletion preview (the files, the estimated bytes) and asks before it deletes anything; `-y` skips the question, and is required when there is no terminal to ask in. File-backed models are deleted from disk. Ollama models delete through the daemon, or, with Ollama not installed, by the files that model alone uses (a blob another tag shares stays). See [docs/models.md](docs/models.md).
 
 ## Runtimes
 Each runtime is present whether or not its backend is installed. A capability only actually serves when its backend is available on the machine:
 
-- **Local GGUF** needs a `llama-server` binary on the `PATH`.
-- **Ollama** needs Ollama installed. hedos starts the daemon if it is not running.
+- **Local GGUF** runs on llama.cpp: the `llama-server` that `[engines] llama_server` names, else a build `hedos engines install llama.cpp` installed, else the one hedos carries, else one on the `PATH`.
+- **Ollama** serves the models in its store while it is installed, and hedos starts the daemon if it is not running. Without it, llama.cpp serves the ones it can load; the few kept in Ollama's own format say they need Ollama.
 - **OpenAI-compatible endpoints** serve endpoint records in the registry. The base URL comes from the record; the API key, when the server needs one, comes from `HEDOS_OPENAI_API_KEY`.
-- **The Python sidecars** (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux) and **whisper** need [`uv`](https://astral.sh/uv), which builds their environment on first use. Their runtime code ships inside the binary.
+- **The Python sidecars** (mlx-lm, mlx-vlm, speech, embeddings, diffusers, mflux, audio) need `uv` to build their environment on first use: yours, or the one `hedos engines install uv` installs. Their runtime code ships inside the binary.
 - **Manifest runtimes**, such as the decision runtimes for laya and zerank, run code on your machine, so they wait for your approval: `hedos runtimes approve <id>`. See [docs/configuration.md](docs/configuration.md#manifest-runtimes-and-consent).
 - **Image daemons** (ComfyUI, AUTOMATIC1111) need the daemon running.
 - **Apple Intelligence** needs a Mac where Apple's on-device model is enabled and ready, plus the bridge library beside the `hedos` binary. See the note below.
@@ -186,4 +188,4 @@ See [docs/configuration.md](docs/configuration.md) for every setting and environ
 ## Contributing
 Deeper guides live in [docs/](docs/README.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test, and open a pull request; logic lives in the kernel and the CLI stays a thin shell over it. Participation is governed by our [Code of Conduct](CODE_OF_CONDUCT.md), and security issues have a private channel in [SECURITY.md](SECURITY.md).
 
-hedos is MIT-licensed. See [LICENSE](LICENSE).
+hedos is MIT-licensed. See [LICENSE](LICENSE). Release builds also carry [llama.cpp](https://github.com/ggml-org/llama.cpp), MIT-licensed, copyright The ggml authors; its `LICENSE` travels inside the binary and is unpacked beside the build in `engines/llama.cpp/` under the data directory.

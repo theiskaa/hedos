@@ -1,6 +1,7 @@
 //! The one binding to `sysctlbyname`, and the two shapes the runtime reads
 //! through it. Two callers wanted the same libc symbol; declaring it twice in
-//! one crate is how the two would drift.
+//! one crate is how the two would drift. Beside it, the binding to the Mach
+//! host statistics the free memory is read from.
 
 #![cfg(target_os = "macos")]
 
@@ -19,6 +20,56 @@ unsafe extern "C" {
         newp: *const c_void,
         newlen: usize,
     ) -> c_int;
+    fn mach_host_self() -> libc::mach_port_t;
+    fn host_page_size(host: libc::mach_port_t, size: *mut libc::vm_size_t) -> libc::kern_return_t;
+    fn host_statistics64(
+        host: libc::mach_port_t,
+        flavor: c_int,
+        info: *mut libc::integer_t,
+        count: *mut libc::mach_msg_type_number_t,
+    ) -> libc::kern_return_t;
+}
+
+/// This task's send right to the host port, taken once: each
+/// `mach_host_self` call adds a reference that nothing here would release.
+fn host_port() -> libc::mach_port_t {
+    static PORT: std::sync::OnceLock<libc::mach_port_t> = std::sync::OnceLock::new();
+    // SAFETY: `mach_host_self` takes no arguments and only returns a port
+    // name for this task.
+    *PORT.get_or_init(|| unsafe { mach_host_self() })
+}
+
+/// The bytes of memory free or reclaimable without swapping right now: the
+/// free and inactive pages, as `psutil` reads macOS's available memory.
+/// `None` where the kernel would not say.
+pub(crate) fn reclaimable_memory() -> Option<u64> {
+    // SAFETY: `vm_statistics64` is plain integers, for which all zeroes is a
+    // valid value.
+    let mut stats: libc::vm_statistics64 = unsafe { std::mem::zeroed() };
+    let mut count = libc::HOST_VM_INFO64_COUNT;
+    // SAFETY: `stats` is a `vm_statistics64` and `count` says how many
+    // `integer_t` it holds, which bounds what the call writes into it.
+    let result = unsafe {
+        host_statistics64(
+            host_port(),
+            libc::HOST_VM_INFO64,
+            std::ptr::from_mut(&mut stats).cast(),
+            std::ptr::from_mut(&mut count),
+        )
+    };
+    if result != libc::KERN_SUCCESS {
+        return None;
+    }
+    // The kernel's page, which the counts are in: a process under Rosetta
+    // sees 4 KiB pages where the kernel's are 16 KiB.
+    let mut page: libc::vm_size_t = 0;
+    // SAFETY: `page` is a valid out-parameter of the size the call writes.
+    if unsafe { host_page_size(host_port(), std::ptr::from_mut(&mut page)) } != libc::KERN_SUCCESS {
+        return None;
+    }
+    let page = u64::try_from(page).ok()?;
+    let pages = u64::from(stats.free_count) + u64::from(stats.inactive_count);
+    pages.checked_mul(page)
 }
 
 /// The `u64` value of `name`, or `None` where the call failed.

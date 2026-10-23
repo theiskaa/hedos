@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_shards;
+use crate::discovery::ollama_scanner::exclusive_files;
 use crate::records::{ModelRecord, ModelState, SourceKind};
 
 /// Why a model could not be deleted.
@@ -73,6 +74,10 @@ pub struct ModelDeletionPreview {
     pub via_daemon: bool,
     /// Whether the model's weights are already missing from disk.
     pub missing: bool,
+    /// Why hedos will not delete it, when it will not: an Ollama model whose
+    /// store it cannot vouch for, with Ollama not here to delete it, said in
+    /// full for a person.
+    pub blocked: Option<String>,
 }
 
 /// The outcome of a deletion.
@@ -98,24 +103,48 @@ pub fn is_deletable(record: &ModelRecord) -> bool {
     kind != &SourceKind::builtin() && kind != &SourceKind::endpoint()
 }
 
-/// Preview what deleting `record` would do.
-pub fn preview(record: &ModelRecord) -> ModelDeletionPreview {
+/// How a model in Ollama's store is deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OllamaRoute {
+    /// Through the daemon, which deletes the tag and every blob no other tag
+    /// uses.
+    Daemon,
+    /// With Ollama not here: hedos deletes those same files itself.
+    Files,
+}
+
+/// Preview what deleting `record` would do, a model in Ollama's store going
+/// by `ollama`.
+pub fn preview(record: &ModelRecord, ollama: OllamaRoute) -> ModelDeletionPreview {
     let missing = record.state == ModelState::Missing;
     let is_ollama = record.source.kind == SourceKind::ollama();
-    let via_daemon = !missing && is_ollama;
-    let paths: Vec<String> = if is_ollama {
+    let via_daemon = !missing && is_ollama && ollama == OllamaRoute::Daemon;
+    let mut blocked = None;
+    let paths: Vec<PathBuf> = if is_ollama && ollama == OllamaRoute::Files {
+        exclusive_files(Path::new(&record.source.path)).unwrap_or_else(|why| {
+            blocked = Some(format!(
+                "Ollama isn't installed to delete {}, and {why}, so hedos deletes nothing",
+                record.display_name()
+            ));
+            Vec::new()
+        })
+    } else if is_ollama {
+        // The daemon's store, while it is here: hedos deletes none of it.
         Vec::new()
     } else {
         removable_paths(record)
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect()
     };
-    let bytes_estimate = if missing {
+    let bytes_estimate = if is_ollama && ollama == OllamaRoute::Files {
+        freed_bytes(&paths)
+    } else if missing {
         on_disk_bytes(&paths)
     } else {
         record.size_on_disk().unwrap_or(0)
     };
+    let paths: Vec<String> = paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
     ModelDeletionPreview {
         model_id: record.id.clone(),
         name: record.display_name().to_owned(),
@@ -124,6 +153,7 @@ pub fn preview(record: &ModelRecord) -> ModelDeletionPreview {
         bytes_estimate,
         via_daemon,
         missing,
+        blocked,
     }
 }
 
@@ -177,7 +207,20 @@ fn shard_group(path: &Path) -> Vec<PathBuf> {
     group
 }
 
-fn on_disk_bytes(paths: &[String]) -> i64 {
+/// What unlinking `paths` gives back: each file's size, less any file another
+/// hard link keeps.
+fn freed_bytes(paths: &[PathBuf]) -> i64 {
+    use std::os::unix::fs::MetadataExt;
+    paths.iter().fold(0i64, |total, path| {
+        let size = fs::symlink_metadata(path)
+            .ok()
+            .filter(|meta| meta.nlink() <= 1)
+            .map_or(0, |meta| i64::try_from(meta.len()).unwrap_or(i64::MAX));
+        total.saturating_add(size)
+    })
+}
+
+fn on_disk_bytes(paths: &[PathBuf]) -> i64 {
     paths.iter().fold(0i64, |total, path| {
         let size = fs::metadata(path)
             .map(|meta| meta.len() as i64)
@@ -219,7 +262,7 @@ mod tests {
     fn an_ollama_model_previews_a_daemon_delete_with_no_paths() {
         let mut rec = record(SourceKind::ollama(), "");
         rec.footprint_bytes = Some(2048 * (1 << 20));
-        let preview = preview(&rec);
+        let preview = preview(&rec, OllamaRoute::Daemon);
         assert!(preview.via_daemon);
         assert!(preview.paths.is_empty());
         assert_eq!(preview.bytes_estimate, 2048i64 << 20);
@@ -229,7 +272,7 @@ mod tests {
     fn a_missing_folder_model_previews_no_paths_and_zero_bytes() {
         let mut rec = record(SourceKind::folder(), "/no/such/model/dir");
         rec.state = ModelState::Missing;
-        let preview = preview(&rec);
+        let preview = preview(&rec, OllamaRoute::Daemon);
         assert!(!preview.via_daemon);
         assert!(preview.paths.is_empty()); // the dir doesn't exist
         assert_eq!(preview.bytes_estimate, 0);
@@ -242,7 +285,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut rec = record(SourceKind::folder(), dir.to_str().unwrap());
         rec.footprint_bytes = Some(10 * (1 << 20));
-        let preview = preview(&rec);
+        let preview = preview(&rec, OllamaRoute::Daemon);
         assert_eq!(preview.paths, vec![dir.to_string_lossy().into_owned()]);
         assert_eq!(preview.bytes_estimate, 10i64 << 20);
         std::fs::remove_dir_all(&dir).ok();
@@ -258,7 +301,7 @@ mod tests {
         let file = dir.join("model.gguf");
         std::fs::write(&file, b"x").unwrap();
         let rec = record(SourceKind::file(), file.to_str().unwrap());
-        let preview = preview(&rec);
+        let preview = preview(&rec, OllamaRoute::Daemon);
         assert_eq!(preview.paths, vec![file.to_string_lossy().into_owned()]);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -280,7 +323,7 @@ mod tests {
         }
         let first = dir.join("model-00001-of-00003.gguf");
         let rec = record(SourceKind::file(), first.to_str().unwrap());
-        let preview = preview(&rec);
+        let preview = preview(&rec, OllamaRoute::Daemon);
         assert_eq!(preview.paths.len(), 3, "{:?}", preview.paths);
         assert!(preview.paths.iter().all(|p| p.contains("of-00003")));
         std::fs::remove_dir_all(&dir).ok();

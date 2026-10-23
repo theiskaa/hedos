@@ -67,6 +67,21 @@ pub struct GgufFacts {
     /// Whether a multimodal projector's header marks it as encoding images
     /// (`clip.has_vision_encoder`), which llama.cpp builds its vision path on.
     pub has_vision_encoder: bool,
+    /// Whether the model's own vision or audio encoder is inside this file
+    /// (`{arch}.vision.block_count`, `{arch}.audio.block_count`) rather than in
+    /// a projector beside it. Ollama writes some models this way; llama.cpp
+    /// loads neither the extra tensors nor the file.
+    pub bundled_encoders: bool,
+    /// How many files the model is split into (`split.count`), when it says.
+    pub split_count: Option<i64>,
+    /// The bytes llama-server's KV cache takes for each token of the window,
+    /// in its default f16 cache: every layer keeps a key and a value for each
+    /// of its KV heads. `None` when the header does not say its shape.
+    pub kv_bytes_per_token: Option<u64>,
+    /// Whether every key-value pair the header declares was read, so a key it
+    /// lacks (a chat template, an encoder) is known to be absent rather than
+    /// past where reading stopped.
+    pub metadata_complete: bool,
     /// Every dimension of every tensor the header lists, or `None` when its
     /// tensor infos could not be read.
     pub tensor_dimensions: Option<BTreeSet<u64>>,

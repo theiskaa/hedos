@@ -6,6 +6,7 @@ pub mod audio;
 pub mod bench;
 pub mod boot;
 pub mod chip;
+pub mod engines;
 pub mod environment;
 pub mod facade;
 pub mod frame_codec;

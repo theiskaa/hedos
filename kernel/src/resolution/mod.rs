@@ -13,9 +13,11 @@ pub use format::{
     GgufArchitectureProfile, GgufFacts, GgufPooling, ModelFormat, gguf_architecture_profile,
     ollama_chat_profile, ollama_profile, ollama_vision_profile,
 };
+pub(crate) use gguf::is_quantization_name;
 pub use gguf::{gguf_facts, gguf_general_architecture, has_ggml_magic, has_gguf_magic};
 pub use identification_cache::IdentificationCache;
-pub use identity::{IdentifiedModel, RuntimeBid, identify, projector_for};
+pub(crate) use identity::pick_projector;
+pub use identity::{IdentifiedModel, RuntimeBid, identify, launch_gguf_path, projector_for};
 pub use pipelines::{
     DiffusersPipelineProfile, PipelineFamily, PipelineFamilyRegistry, PipelineRefinement,
     SchedulerFacts,

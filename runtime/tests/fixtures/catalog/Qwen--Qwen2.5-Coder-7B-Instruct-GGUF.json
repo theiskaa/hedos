@@ -1,0 +1,131 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   1561
+  ],
+  [
+   ".msc",
+   638
+  ],
+  [
+   "LICENSE",
+   11343
+  ],
+  [
+   "README.md",
+   5670
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-fp16-00001-of-00004.gguf",
+   3951521376
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-fp16-00002-of-00004.gguf",
+   3864909312
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-fp16-00003-of-00004.gguf",
+   3864894976
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-fp16-00004-of-00004.gguf",
+   3556527872
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-fp16.gguf",
+   15237853184
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q2_k.gguf",
+   3015940032
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q3_k_m.gguf",
+   3808391104
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q4_0-00001-of-00002.gguf",
+   3983228352
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q4_0-00002-of-00002.gguf",
+   448162496
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q4_0.gguf",
+   4431390720
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q4_k_m-00001-of-00002.gguf",
+   3993201376
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q4_k_m-00002-of-00002.gguf",
+   689872288
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
+   4683073536
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q5_0-00001-of-00002.gguf",
+   4001112160
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q5_0-00002-of-00002.gguf",
+   1314064416
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q5_k_m-00001-of-00002.gguf",
+   3989841792
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q5_k_m-00002-of-00002.gguf",
+   1454989568
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q5_k_m.gguf",
+   5444831232
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q6_k-00001-of-00002.gguf",
+   3950642496
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q6_k-00002-of-00002.gguf",
+   2303556416
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q6_k.gguf",
+   6254198784
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q8_0-00001-of-00003.gguf",
+   3980069280
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q8_0-00002-of-00003.gguf",
+   3942935680
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q8_0-00003-of-00003.gguf",
+   175520480
+  ],
+  [
+   "qwen2.5-coder-7b-instruct-q8_0.gguf",
+   8098525184
+  ]
+ ],
+ "gguf": {
+  "qwen2.5-coder-7b-instruct-q4_k_m.gguf": {
+   "architecture": "qwen2",
+   "chat_template": true,
+   "context_length": 131072,
+   "embedding_length": 3584
+  }
+ },
+ "repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+ "sha": "13fb94bfda8c8cf22497dc57b78f391a9acb426a",
+ "texts": {}
+}

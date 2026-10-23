@@ -18,6 +18,7 @@ mod store;
 pub use community::{CommunityLibrary, ManifestInstaller, Recipe, RuntimeInstallPreview};
 pub use consent::{HostConsent, host_consent, servable_models};
 pub use install::{InstallError, host_build, host_target, install, installed, unpack};
+pub(crate) use store::Hashing;
 pub use store::{RuntimeCatalog, StoreLoad, UserRuntimeStore};
 
 use std::collections::BTreeMap;

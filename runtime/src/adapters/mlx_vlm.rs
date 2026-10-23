@@ -14,6 +14,9 @@ use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
 use crate::sidecar::SidecarSupervisor;
 
+/// The bundle this sidecar ships as.
+pub(crate) const MLX_VLM_BUNDLE: &str = "python-mlx-vlm";
+
 /// The mlx-vlm vision Python-sidecar adapter.
 pub struct MlxVlmAdapter {
     base: SidecarAdapter,
@@ -34,7 +37,7 @@ impl MlxVlmAdapter {
             base: SidecarAdapter::new(
                 SidecarSpec {
                     id: RuntimeId::mlx_vlm(),
-                    bundle_name: "python-mlx-vlm",
+                    bundle_name: MLX_VLM_BUNDLE,
                     preparing_status: "Preparing vision runtime…",
                     starting_status: "Starting vision runtime…",
                     warm_window: None,

@@ -356,6 +356,40 @@ fn a_catalog_offer_carries_its_engine_and_what_to_install_first() {
         .iter()
         .find(|offer| offer.category == Some(InstallCategory::Chat))
         .unwrap();
-    assert_eq!(chat.engine, Engine::Ollama);
-    assert!(chat.note.ends_with(" · needs Ollama"), "{}", chat.note);
+    assert_eq!(chat.engine, Engine::LlamaCpp);
+    assert!(chat.note.ends_with(" · needs llama.cpp"), "{}", chat.note);
+}
+
+#[test]
+fn a_typed_tag_says_it_needs_ollama_where_ollama_is_not_and_still_waits_for_typing() {
+    let mut bare = machine();
+    bare.engines.ollama = false;
+    let mut modal = PullModal::open(&[], &bare, &[]);
+    type_in(&mut modal, "gemma4:e4b");
+    let typed = &modal.matches[0];
+    assert_eq!(typed.reference, "gemma4:e4b");
+    assert!(typed.typed);
+    assert_eq!(typed.note, "as typed · needs Ollama");
+    assert_eq!(modal.plan_due(PLAN_SETTLE_TICKS), None, "still being typed");
+
+    let mut modal = PullModal::open(&[], &machine(), &[]);
+    type_in(&mut modal, "gemma4:e4b");
+    assert_eq!(modal.matches[0].note, "as typed");
+}
+
+#[test]
+fn a_catalog_row_shows_its_short_name_and_keeps_its_reference() {
+    let modal = PullModal::open(&[], &machine(), &[]);
+    let chat = modal
+        .matches
+        .iter()
+        .find(|offer| offer.category == Some(InstallCategory::Chat))
+        .unwrap();
+    let entry = kernel::install::catalog::entries()
+        .into_iter()
+        .find(|entry| entry.reference == chat.reference)
+        .unwrap();
+    assert_eq!(chat.name.as_deref(), Some(entry.name.as_str()));
+    assert_ne!(chat.name.as_deref(), Some(chat.reference.as_str()));
+    assert!(!chat.typed);
 }
