@@ -12,153 +12,43 @@
 //! is the build pinned, and only then moved into place.
 
 use std::fs::File;
-use std::io::{Read, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
-use fs2::FileExt;
 use kernel::engines::llama_cpp::{
-    Asset, INSTALLED_FILE, InstallSource, Installed, InstalledFile, LlamaVersion, PINNED, Release,
-    Variant, install_dir_name, loader_failure, parse_build_tag, parse_llama_version,
+    Asset, INSTALLED_FILE, InstallSource, Installed, LlamaVersion, PINNED, Release, Variant,
+    install_dir_name, loader_failure, parse_build_tag, parse_llama_version,
 };
 use kernel::machine::Os;
 use sha2::{Digest, Sha256};
 
-use tokio::io::AsyncWriteExt;
-
 use super::bundled::{Bundled, bundled};
+use super::fetch::{
+    Commit, Dropped, Site, ask_version, create_dir_all, download, fresh_staging, installs,
+    inventory, io_error, lock, lock_within, put_in_place, recover, remove_entry, remove_installs,
+    try_lock, unpack,
+};
 use super::llama_cpp::{LlamaServer, Source, hedos_root};
 
-/// How long connecting to the release host may take.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// How long the download may go without a byte before it is given up on.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
-/// The lock file, in hedos's llama.cpp root, held while one install or
-/// removal runs.
-const LOCK_FILE: &str = ".lock";
-/// How long taking the install lock is retried before an install is taken to
-/// be running.
-const LOCK_PATIENCE: Duration = Duration::from_secs(1);
-/// How often it is retried meanwhile.
-const LOCK_RETRY: Duration = Duration::from_millis(20);
+pub use super::fetch::{EngineInstallError, InstallProgress, Landing};
+
+/// The engine this module installs, as its errors name it.
+const ENGINE: &str = "llama.cpp";
+/// The program a build is checked with.
+const PROGRAM: &str = "llama-server";
 /// How long unpacking the carried build waits for another process holding
 /// the lock before saying llama.cpp is being installed.
 const UNPACK_WAIT: Duration = Duration::from_secs(60);
-/// The prefix of a staging directory an install unpacks into.
-const STAGING_PREFIX: &str = ".staging-";
-/// How long the unpacked `llama-server` may take to say its version.
-const SMOKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// How much of what a failing `llama-server` wrote an error carries.
-const SMOKE_SAID: usize = 600;
-/// The most of what `llama-server --version` writes that is read.
-const SMOKE_READ: u64 = 64 * 1024;
-
-/// Why llama.cpp could not be installed or removed.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum EngineInstallError {
-    /// The pinned release has no build of this variant for this machine.
-    #[error("llama.cpp {version} has no {variant} build for {os} {arch}")]
-    NoBuild {
-        /// The release's version.
-        version: String,
-        /// The variant asked for.
-        variant: String,
-        /// The operating system.
-        os: String,
-        /// The CPU architecture.
-        arch: String,
-    },
-    /// Another install or removal holds the lock.
-    #[error("another llama.cpp install is running; try again when it finishes")]
-    Busy,
-    /// The build would not start on this system, so nothing is fetched.
-    #[error("{reason}")]
-    WontRun {
-        /// Why, and what runs instead.
-        reason: String,
-    },
-    /// An archive could not be fetched.
-    #[error("downloading {url}: {reason}")]
-    Download {
-        /// What was fetched.
-        url: String,
-        /// Why it failed.
-        reason: String,
-    },
-    /// An archive is not the one the release pins.
-    #[error("{url} is not the archive hedos pins (sha256 {found}, expected {expected})")]
-    Checksum {
-        /// What was fetched.
-        url: String,
-        /// The pinned digest.
-        expected: String,
-        /// The digest of what arrived.
-        found: String,
-    },
-    /// An archive holds something hedos will not unpack.
-    #[error("{archive} holds {entry}, which hedos does not unpack: {reason}")]
-    Archive {
-        /// The archive's file name.
-        archive: String,
-        /// The entry.
-        entry: String,
-        /// Why it was refused.
-        reason: String,
-    },
-    /// The unpacked `llama-server` is not the build pinned.
-    #[error("the unpacked llama-server is not llama.cpp {expected}: {found}")]
-    Smoke {
-        /// The build expected.
-        expected: String,
-        /// What it reported, or that it reported nothing.
-        found: String,
-    },
-    /// The new build could not be put in place, and the one it replaced
-    /// could not be put back either.
-    #[error(
-        "{reason}; the build hedos had is kept at {kept}, and the next install or removal puts it back"
-    )]
-    Stranded {
-        /// Where the build it replaced is kept.
-        kept: String,
-        /// Why the new one could not be put in place.
-        reason: String,
-    },
-    /// Reading or writing a file failed.
-    #[error("{path}: {reason}")]
-    Io {
-        /// The file.
-        path: String,
-        /// Why it failed.
-        reason: String,
-    },
-}
-
-/// How far an install has got.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InstallProgress {
-    /// Bytes of `file` have arrived, out of `total` across every archive.
-    Downloading {
-        /// The archive being fetched.
-        file: String,
-        /// Bytes received so far, across every archive.
-        received: u64,
-        /// Bytes to receive in all.
-        total: u64,
-    },
-    /// The archives arrived and are being unpacked.
-    Unpacking,
-    /// The unpacked `llama-server` is being asked its version.
-    Checking,
-}
 
 /// Install the pinned llama.cpp build of `variant` for this machine under
-/// `data`, reporting through `progress`.
+/// `data`, reporting through `progress`; `landing` says where it put the
+/// build, for a caller that drops it (Ctrl-C) as it was finishing.
 pub async fn install(
     variant: Variant,
     data: &Path,
+    landing: &Landing,
     progress: impl Fn(InstallProgress),
 ) -> Result<LlamaServer, EngineInstallError> {
     let arch = std::env::consts::ARCH;
@@ -179,6 +69,7 @@ pub async fn install(
         asset,
         &PINNED.url(asset.publisher, ""),
         data,
+        landing,
         progress,
     )
     .await
@@ -191,6 +82,7 @@ pub(crate) async fn install_from(
     asset: &Asset,
     base: &str,
     data: &Path,
+    landing: &Landing,
     progress: impl Fn(InstallProgress),
 ) -> Result<LlamaServer, EngineInstallError> {
     let root = hedos_root(data);
@@ -200,7 +92,7 @@ pub(crate) async fn install_from(
     // stall this runtime's other tasks.
     let preparing = root.clone();
     let (lock, staging) = tokio::task::spawn_blocking(move || {
-        let lock = lock(&preparing)?;
+        let lock = lock(&preparing, ENGINE)?;
         recover(&preparing)?;
         let staging = fresh_staging(&preparing)?;
         Ok::<_, EngineInstallError>((lock, staging))
@@ -208,7 +100,13 @@ pub(crate) async fn install_from(
     .await
     .map_err(|error| io_error(&root, error))??;
     let lock = Arc::new(lock);
-    let result = install_into(release, asset, base, &root, &staging, &lock, &progress).await;
+    let site = Site {
+        root: &root,
+        staging: &staging,
+        lock: &lock,
+        landing,
+    };
+    let result = install_into(release, asset, base, &site, &progress).await;
     if !matches!(result, Err(EngineInstallError::Stranded { .. })) {
         let leftover = staging.clone();
         let held = Arc::clone(&lock);
@@ -225,11 +123,15 @@ async fn install_into(
     release: &Release,
     asset: &Asset,
     base: &str,
-    root: &Path,
-    staging: &Path,
-    lock: &Arc<File>,
+    site: &Site<'_>,
     progress: &impl Fn(InstallProgress),
 ) -> Result<LlamaServer, EngineInstallError> {
+    let Site {
+        root,
+        staging,
+        lock,
+        landing,
+    } = *site;
     let archives: Vec<(&str, &str, u64)> = std::iter::once((asset.file, asset.sha256, asset.bytes))
         .chain(
             asset
@@ -286,9 +188,11 @@ async fn install_into(
     let held = Arc::clone(lock);
     let (root, staging) = (root.to_path_buf(), staging.to_path_buf());
     let checked = unpacked.clone();
+    let dropped = Dropped::watching(landing);
+    let commit = dropped.commit();
     tokio::task::spawn_blocking(move || {
         let _held = held;
-        finish(&built, &root, &staging, &checked)
+        finish(&built, &root, &staging, &checked, &commit)
     })
     .await
     .map_err(|error| io_error(&unpacked, error))?
@@ -305,28 +209,32 @@ struct Built {
 }
 
 /// Put the build unpacked at `unpacked` in place under `root`, once its
-/// `llama-server` says it is the build expected: write its record, move a
-/// build of the same name aside (put back if the new one cannot take its
-/// place), and then remove the other builds of the same source. A build from
-/// the other source is never touched: the one hedos carries and one installed
-/// on request live side by side.
+/// `llama-server` says it is the build expected, unless the install was
+/// dropped first (`commit`):
+/// write its record, move a build of the same name aside (put back if the new
+/// one cannot take its place), and then remove the other builds of the same
+/// source. A build from the other source is never touched: the one hedos
+/// carries and one installed on request live side by side.
 fn finish(
     built: &Built,
     root: &Path,
     staging: &Path,
     unpacked: &Path,
+    commit: &Commit,
 ) -> Result<LlamaServer, EngineInstallError> {
-    match smoke(&unpacked.join("llama-server"), &staging.join("smoke.log")) {
+    match smoke(&unpacked.join(PROGRAM), staging) {
         Ok(version) if Some(version.build) == built.build_number => {}
         Ok(version) => {
             return Err(EngineInstallError::Smoke {
-                expected: built.build.clone(),
+                program: PROGRAM.to_owned(),
+                expected: format!("llama.cpp {}", built.build),
                 found: format!("it is {}", version.label()),
             });
         }
         Err(found) => {
             return Err(EngineInstallError::Smoke {
-                expected: built.build.clone(),
+                program: PROGRAM.to_owned(),
+                expected: format!("llama.cpp {}", built.build),
                 found,
             });
         }
@@ -341,28 +249,8 @@ fn finish(
         source: built.source,
         files: inventory(unpacked)?,
     };
-    let encoded = serde_json::to_vec_pretty(&record).map_err(|error| io_error(unpacked, error))?;
-    let record_path = unpacked.join(INSTALLED_FILE);
-    std::fs::write(&record_path, encoded).map_err(|error| io_error(&record_path, error))?;
-
     let name = install_dir_name(&built.build, built.variant, built.source);
-    let destination = root.join(&name);
-    let aside = staging.join("replaced");
-    let set_aside = aside.join(&name);
-    let replacing = std::fs::symlink_metadata(&destination).is_ok();
-    if replacing {
-        create_dir_all(&aside)?;
-        std::fs::rename(&destination, &set_aside).map_err(|error| io_error(&destination, error))?;
-    }
-    if let Err(error) = std::fs::rename(unpacked, &destination) {
-        if replacing && std::fs::rename(&set_aside, &destination).is_err() {
-            return Err(EngineInstallError::Stranded {
-                kept: set_aside.to_string_lossy().into_owned(),
-                reason: format!("{}: {error}", destination.display()),
-            });
-        }
-        return Err(io_error(&destination, error));
-    }
+    let destination = put_in_place(&record, ENGINE, unpacked, root, staging, &name, commit)?;
     for other in installs(root)? {
         let Some((source, build)) = origin_of(&other) else {
             continue;
@@ -383,29 +271,6 @@ fn finish(
             InstallSource::Bundled => Source::Bundled,
         },
     })
-}
-
-/// Every file directly in `dir`, with its size, or none for a link.
-fn inventory(dir: &Path) -> Result<Vec<InstalledFile>, EngineInstallError> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|error| io_error(dir, error))? {
-        let entry = entry.map_err(|error| io_error(dir, error))?;
-        let path = entry.path();
-        let meta = std::fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
-        let bytes = if meta.file_type().is_symlink() {
-            None
-        } else if meta.is_file() {
-            Some(meta.len())
-        } else {
-            continue;
-        };
-        files.push(InstalledFile {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            bytes,
-        });
-    }
-    files.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(files)
 }
 
 /// Where the build in `dir` came from and its build number: by its record,
@@ -471,7 +336,7 @@ fn unpack_bundle_within(
     let lock = match try_lock(&root)? {
         Some(lock) => lock,
         None if unpacked_whole(&root.join(&name), bundle) => return Ok(unpacked()),
-        None => lock_within(&root, wait)?,
+        None => lock_within(&root, ENGINE, wait)?,
     };
     // What an interrupted install left is put right first, whatever is found
     // unpacked: a build it set aside must not stay hidden behind this one.
@@ -516,7 +381,7 @@ fn unpack_bundle_into(
         sha256: bundle.sha256.to_owned(),
         source: InstallSource::Bundled,
     };
-    finish(&built, root, staging, &unpacked)
+    finish(&built, root, staging, &unpacked, &Commit::undroppable())
 }
 
 /// Whether `dir` holds `bundle` unpacked and whole: a directory of its own
@@ -558,395 +423,33 @@ pub fn remove(data: &Path) -> Result<Vec<PathBuf>, EngineInstallError> {
     if !root.is_dir() {
         return Ok(Vec::new());
     }
-    let _lock = lock(&root)?;
+    let _lock = lock(&root, ENGINE)?;
     recover(&root)?;
     remove_installs(&root)
-}
-
-/// Finish what an install that did not end left in `root`, run under the
-/// lock, so no install is running. A build one set aside goes back when
-/// nothing of its name took its place, and is dropped when something did;
-/// then the staging directory goes. One holding a build that cannot be put
-/// back is kept and reported, so nothing goes on as if it were finished.
-fn recover(root: &Path) -> Result<(), EngineInstallError> {
-    let entries = std::fs::read_dir(root).map_err(|error| io_error(root, error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| io_error(root, error))?;
-        let is_staging = entry
-            .file_name()
-            .to_string_lossy()
-            .starts_with(STAGING_PREFIX)
-            && entry.file_type().is_ok_and(|kind| kind.is_dir());
-        if !is_staging {
-            continue;
-        }
-        let staging = entry.path();
-        let aside = staging.join("replaced");
-        let mut kept = false;
-        if aside.is_dir() {
-            for build in std::fs::read_dir(&aside).map_err(|error| io_error(&aside, error))? {
-                let build = build.map_err(|error| io_error(&aside, error))?;
-                let home = root.join(build.file_name());
-                if std::fs::symlink_metadata(&home).is_err() {
-                    kept |= std::fs::rename(build.path(), &home).is_err();
-                }
-            }
-        }
-        if kept {
-            return Err(EngineInstallError::Stranded {
-                kept: aside.to_string_lossy().into_owned(),
-                reason: "a build an earlier install set aside could not be put back".to_owned(),
-            });
-        }
-        std::fs::remove_dir_all(&staging).map_err(|error| io_error(&staging, error))?;
-    }
-    Ok(())
-}
-
-/// Remove the installs under `root`: every entry but the lock and staging
-/// directories, a link removed as a link rather than followed.
-fn remove_installs(root: &Path) -> Result<Vec<PathBuf>, EngineInstallError> {
-    let mut removed = Vec::new();
-    for path in installs(root)? {
-        remove_entry(&path)?;
-        removed.push(path);
-    }
-    Ok(removed)
-}
-
-/// Remove `path`: a directory with what is in it, anything else (a link
-/// included) as itself.
-fn remove_entry(path: &Path) -> Result<(), EngineInstallError> {
-    let is_dir = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
-    if is_dir {
-        std::fs::remove_dir_all(path).map_err(|error| io_error(path, error))
-    } else {
-        std::fs::remove_file(path).map_err(|error| io_error(path, error))
-    }
-}
-
-/// What is installed under `root`: every entry but hidden ones (the lock and
-/// staging directories).
-fn installs(root: &Path) -> Result<Vec<PathBuf>, EngineInstallError> {
-    let entries = std::fs::read_dir(root).map_err(|error| io_error(root, error))?;
-    let mut found = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| io_error(root, error))?;
-        if !entry.file_name().to_string_lossy().starts_with('.') {
-            found.push(entry.path());
-        }
-    }
-    Ok(found)
-}
-
-/// Fetch `url` into `path`, refusing more than `bytes` and anything whose
-/// sha256 is not `sha256`. Returns `received` plus what arrived.
-async fn download(
-    url: &str,
-    path: &Path,
-    sha256: &str,
-    bytes: u64,
-    mut received: u64,
-    total: u64,
-    progress: &impl Fn(InstallProgress),
-) -> Result<u64, EngineInstallError> {
-    let failed = |reason: String| EngineInstallError::Download {
-        url: url.to_owned(),
-        reason,
-    };
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(IDLE_TIMEOUT)
-        .build()
-        .map_err(|error| failed(error.to_string()))?;
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| failed(error.to_string()))?;
-    let mut file = tokio::fs::File::create(path)
-        .await
-        .map_err(|error| io_error(path, error))?;
-    let mut hasher = Sha256::new();
-    let mut written = 0u64;
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| failed(error.to_string()))?
-    {
-        written += chunk.len() as u64;
-        if written > bytes {
-            return Err(failed(format!(
-                "it is larger than the {bytes} bytes pinned"
-            )));
-        }
-        hasher.update(&chunk);
-        file.write_all(&chunk)
-            .await
-            .map_err(|error| io_error(path, error))?;
-        received += chunk.len() as u64;
-        progress(InstallProgress::Downloading {
-            file: file_name.clone(),
-            received,
-            total,
-        });
-    }
-    file.flush().await.map_err(|error| io_error(path, error))?;
-    let found = hex::encode(hasher.finalize());
-    if found != sha256 {
-        return Err(EngineInstallError::Checksum {
-            url: url.to_owned(),
-            expected: sha256.to_owned(),
-            found,
-        });
-    }
-    Ok(received)
-}
-
-/// Unpack the tar `archive` (already decompressed) into `target`, dropping
-/// its top-level directory (`llama-b11669/llama-server` lands as
-/// `target/llama-server`).
-/// Only plain files, directories and symlinks within `target` are written:
-/// an absolute path, a `..`, a link that leads out, or any other kind of entry
-/// refuses the whole archive.
-fn unpack(archive: impl Read, name: &str, target: &Path) -> Result<(), EngineInstallError> {
-    let refused = |entry: &str, reason: &str| EngineInstallError::Archive {
-        archive: name.to_owned(),
-        entry: entry.to_owned(),
-        reason: reason.to_owned(),
-    };
-    create_dir_all(target)?;
-    let mut entries = tar::Archive::new(archive);
-    for entry in entries
-        .entries()
-        .map_err(|error| refused("the archive", &error.to_string()))?
-    {
-        let mut entry = entry.map_err(|error| refused("an entry", &error.to_string()))?;
-        let inside = entry
-            .path()
-            .map_err(|error| refused("an entry", &error.to_string()))?
-            .into_owned();
-        let shown = inside.to_string_lossy().into_owned();
-        let Some(relative) = within(&inside) else {
-            return Err(refused(&shown, "its path leaves the archive"));
-        };
-        let Some(relative) = relative else {
-            continue;
-        };
-        let destination = target.join(&relative);
-        let kind = entry.header().entry_type();
-        if kind.is_dir() {
-            create_dir_all(&destination)?;
-        } else if kind.is_file() {
-            if let Some(parent) = destination.parent() {
-                create_dir_all(parent)?;
-            }
-            let mode = entry.header().mode().unwrap_or(0o644) & 0o755;
-            let mut out =
-                File::create(&destination).map_err(|error| io_error(&destination, error))?;
-            let mut buffer = [0u8; 1 << 16];
-            loop {
-                let read = entry
-                    .read(&mut buffer)
-                    .map_err(|error| refused(&shown, &error.to_string()))?;
-                if read == 0 {
-                    break;
-                }
-                out.write_all(&buffer[..read])
-                    .map_err(|error| io_error(&destination, error))?;
-            }
-            set_mode(&destination, mode)?;
-        } else if kind.is_symlink() {
-            let link = entry
-                .link_name()
-                .map_err(|error| refused(&shown, &error.to_string()))?
-                .ok_or_else(|| refused(&shown, "the link names nothing"))?
-                .into_owned();
-            // llama.cpp links a library to its versioned file beside it; a
-            // link anywhere else could lead out of the build.
-            let beside = link.components().count() == 1
-                && matches!(link.components().next(), Some(Component::Normal(_)));
-            if !beside {
-                return Err(refused(&shown, "the link leads out of its directory"));
-            }
-            if let Some(parent) = destination.parent() {
-                create_dir_all(parent)?;
-            }
-            std::os::unix::fs::symlink(&link, &destination)
-                .map_err(|error| io_error(&destination, error))?;
-        } else {
-            return Err(refused(&shown, "it is not a file, a directory or a link"));
-        }
-    }
-    Ok(())
-}
-
-/// `inside`, an archive entry's path, with its top-level directory dropped:
-/// `None` when it is absolute or climbs with `..`, `Some(None)` for the
-/// top-level directory itself.
-fn within(inside: &Path) -> Option<Option<PathBuf>> {
-    let mut parts = Vec::new();
-    for part in inside.components() {
-        match part {
-            Component::Normal(part) => parts.push(part),
-            Component::CurDir => {}
-            _ => return None,
-        }
-    }
-    let kept: PathBuf = if parts.len() > 1 {
-        parts[1..].iter().collect()
-    } else {
-        // A file at the archive's root has no directory to drop.
-        match parts.first() {
-            Some(only) if !inside.to_string_lossy().ends_with('/') => PathBuf::from(only),
-            _ => return Some(None),
-        }
-    };
-    Some(Some(kept))
-}
-
-fn set_mode(path: &Path, mode: u32) -> Result<(), EngineInstallError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-        .map_err(|error| io_error(path, error))
-}
-
-fn create_dir_all(path: &Path) -> Result<(), EngineInstallError> {
-    std::fs::create_dir_all(path).map_err(|error| io_error(path, error))
-}
-
-/// The install lock on `root`, taken without waiting on an install: a second
-/// install while one runs is refused rather than queued behind a long
-/// download. It is tried for up to `LOCK_PATIENCE`, since a process this one
-/// is starting holds a copy of every open file, the lock among them, until it
-/// execs, and that must not read as an install running.
-fn lock(root: &Path) -> Result<File, EngineInstallError> {
-    lock_within(root, LOCK_PATIENCE)
-}
-
-/// The lock file at `path`, opened as it is, never truncated, never through a
-/// link and never waiting on a pipe, and kept only when what opened is a plain
-/// file.
-fn open_lock(path: &Path) -> Result<File, EngineInstallError> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|error| io_error(path, error))?;
-    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
-        return Err(io_error(path, "not a plain file"));
-    }
-    Ok(file)
-}
-
-/// The install lock on `root` if nothing holds it, without waiting at all.
-fn try_lock(root: &Path) -> Result<Option<File>, EngineInstallError> {
-    let file = open_lock(&root.join(LOCK_FILE))?;
-    Ok(file.try_lock_exclusive().is_ok().then_some(file))
-}
-
-/// The install lock on `root`, waited for up to `wait`: an unpack of the build
-/// hedos carries that another process is doing takes seconds, and is waited
-/// out; an install on request downloading can take minutes, and is refused
-/// as [`EngineInstallError::Busy`] once `wait` runs out.
-fn lock_within(root: &Path, wait: Duration) -> Result<File, EngineInstallError> {
-    let file = open_lock(&root.join(LOCK_FILE))?;
-    let started = Instant::now();
-    while file.try_lock_exclusive().is_err() {
-        if started.elapsed() >= wait {
-            return Err(EngineInstallError::Busy);
-        }
-        std::thread::sleep(LOCK_RETRY);
-    }
-    Ok(file)
 }
 
 /// The version the `llama-server` at `server` reports, or what went wrong
 /// asking: it could not start, it did not answer in time, or its exit status
 /// and the end of what it wrote (a library it could not load, say). What it
-/// writes goes to `log`, a file, not a pipe, so nothing is left waiting on a
-/// pipe some process it started still holds.
-fn smoke(server: &Path, log: &Path) -> Result<LlamaVersion, String> {
-    let written = File::create(log).map_err(|error| format!("{}: {error}", log.display()))?;
-    let mut child = crate::process::spawn_written(
-        std::process::Command::new(server)
-            .arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::from(written)),
-    )
-    .map_err(|error| format!("it could not start: {error}"))?;
-    let deadline = Instant::now() + SMOKE_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "it did not answer within {} s",
-                    SMOKE_TIMEOUT.as_secs()
-                ));
-            }
-        }
-    };
-    let mut said = Vec::new();
-    if let Ok(file) = File::open(log) {
-        let _ = file.take(SMOKE_READ).read_to_end(&mut said);
-    }
-    let said = String::from_utf8_lossy(&said);
-    match parse_llama_version(&said) {
-        Some(version) if status.success() => Ok(version),
-        _ => {
-            if let Some(reason) = loader_failure(&said) {
-                return Err(reason);
-            }
-            let tail: String = said.trim().chars().rev().take(SMOKE_SAID).collect();
-            let tail: String = tail.chars().rev().collect();
-            Err(format!("it exited with {status} and said: {tail}"))
-        }
-    }
-}
-
-/// A new, empty staging directory under `root`, named for this process and
-/// moment so no earlier one is reused.
-fn fresh_staging(root: &Path) -> Result<PathBuf, EngineInstallError> {
-    let staging = root.join(format!(
-        "{STAGING_PREFIX}{}-{}",
-        std::process::id(),
-        kernel::time::now_millis()
-    ));
-    std::fs::create_dir(&staging).map_err(|error| io_error(&staging, error))?;
-    Ok(staging)
-}
-
-fn io_error(path: &Path, error: impl std::fmt::Display) -> EngineInstallError {
-    EngineInstallError::Io {
-        path: path.to_string_lossy().into_owned(),
-        reason: error.to_string(),
+/// writes goes to files in `staging`.
+fn smoke(server: &Path, staging: &Path) -> Result<LlamaVersion, String> {
+    let said = ask_version(server, staging)?;
+    match parse_llama_version(&said.stderr) {
+        Some(version) if said.status.success() => Ok(version),
+        _ => Err(loader_failure(&said.stderr).unwrap_or_else(|| said.failure())),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engines::fetch::LOCK_FILE;
+    use crate::engines::testing::{Item, Scratch, archive, serve};
     use kernel::engines::llama_cpp::Publisher;
     use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
+    use std::io::Write;
+    use std::sync::Mutex;
+    use std::time::Instant;
 
     use crate::engines::llama_cpp::{installed, locate};
 
@@ -956,57 +459,6 @@ mod tests {
         source: PINNED.source,
         assets: &[],
     };
-
-    struct Scratch(PathBuf);
-
-    impl Scratch {
-        fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "hedos-engine-install-{name}-{}-{}",
-                std::process::id(),
-                kernel::time::now_millis()
-            ));
-            std::fs::create_dir_all(&dir).unwrap();
-            Self(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// One tar entry: a path written as is (so `..` and absolute paths can be
-    /// tested), and a file's bytes, a directory, or a link's target.
-    enum Item<'a> {
-        File(&'a str, &'a [u8], u32),
-        Dir(&'a str),
-        Link(&'a str, &'a str),
-    }
-
-    fn archive(items: &[Item]) -> Vec<u8> {
-        let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
-        for item in items {
-            let mut header = tar::Header::new_old();
-            let (path, data, kind, mode): (&str, &[u8], tar::EntryType, u32) = match item {
-                Item::File(path, data, mode) => (path, data, tar::EntryType::Regular, *mode),
-                Item::Dir(path) => (path, &[], tar::EntryType::Directory, 0o755),
-                Item::Link(path, target) => {
-                    header.set_link_name(target).unwrap();
-                    (path, &[], tar::EntryType::Symlink, 0o777)
-                }
-            };
-            let name = &mut header.as_old_mut().name;
-            name[..path.len()].copy_from_slice(path.as_bytes());
-            header.set_entry_type(kind);
-            header.set_mode(mode);
-            header.set_size(data.len() as u64);
-            header.set_cksum();
-            builder.append(&header, data).unwrap();
-        }
-        builder.into_inner().unwrap().finish().unwrap()
-    }
 
     fn server_script(build: u64) -> Vec<u8> {
         format!("#!/bin/sh\necho 'version: 0.7.0 (build {build}, commit x)' >&2\n").into_bytes()
@@ -1037,51 +489,6 @@ mod tests {
         }
     }
 
-    /// Serve `files` by name over HTTP until dropped; returns the base URL.
-    async fn serve(files: HashMap<&'static str, Vec<u8>>) -> (String, tokio::task::AbortHandle) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/", listener.local_addr().unwrap());
-        let files = Arc::new(files);
-        let accept = tokio::spawn(async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let files = Arc::clone(&files);
-                tokio::spawn(async move {
-                    let mut request = Vec::new();
-                    let mut buffer = [0u8; 1024];
-                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        let Ok(read) = stream.read(&mut buffer).await else {
-                            return;
-                        };
-                        if read == 0 {
-                            return;
-                        }
-                        request.extend_from_slice(&buffer[..read]);
-                    }
-                    let head = String::from_utf8_lossy(&request);
-                    let path = head.split_whitespace().nth(1).unwrap_or("/");
-                    let response = match files.get(path.trim_start_matches('/')) {
-                        Some(body) => {
-                            let mut response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                                body.len()
-                            )
-                            .into_bytes();
-                            response.extend_from_slice(body);
-                            response
-                        }
-                        None => b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
-                    };
-                    let _ = stream.write_all(&response).await;
-                });
-            }
-        })
-        .abort_handle();
-        (base, accept)
-    }
-
     async fn run(
         scratch: &Scratch,
         published: Vec<u8>,
@@ -1089,9 +496,16 @@ mod tests {
     ) -> Result<LlamaServer, EngineInstallError> {
         let (base, accept) = serve(HashMap::from([("build.tar.gz", published)])).await;
         let seen = Mutex::new(Vec::new());
-        let result = install_from(&RELEASE, pinned, &base, &scratch.0, |event| {
-            seen.lock().unwrap().push(event);
-        })
+        let result = install_from(
+            &RELEASE,
+            pinned,
+            &base,
+            &scratch.0,
+            &Landing::default(),
+            |event| {
+                seen.lock().unwrap().push(event);
+            },
+        )
         .await;
         accept.abort();
         result
@@ -1216,12 +630,14 @@ mod tests {
     async fn a_second_install_while_one_runs_is_refused() {
         let scratch = Scratch::new("busy");
         std::fs::create_dir_all(hedos_root(&scratch.0)).unwrap();
-        let held = lock(&hedos_root(&scratch.0)).unwrap();
+        let held = lock(&hedos_root(&scratch.0), ENGINE).unwrap();
         let published = good_build();
         let pinned = asset_of(&published, Variant::Metal);
         assert_eq!(
             run(&scratch, published, &pinned).await,
-            Err(EngineInstallError::Busy)
+            Err(EngineInstallError::Busy {
+                engine: "llama.cpp".to_owned()
+            })
         );
         drop(held);
     }
@@ -1260,7 +676,7 @@ mod tests {
 
         std::fs::create_dir_all(&aside).unwrap();
         std::fs::write(aside.join("llama-server"), b"old").unwrap();
-        let _lock = lock(&root).unwrap();
+        let _lock = lock(&root, ENGINE).unwrap();
         recover(&root).unwrap();
         assert!(root.join("b11669-metal/llama-server").exists());
         assert!(!root.join(".staging-1-1").exists());
@@ -1274,7 +690,10 @@ mod tests {
         let root = hedos_root(&scratch.0);
         std::fs::create_dir_all(&root).unwrap();
         std::os::unix::fs::symlink(&outside, root.join(LOCK_FILE)).unwrap();
-        assert!(matches!(lock(&root), Err(EngineInstallError::Io { .. })));
+        assert!(matches!(
+            lock(&root, ENGINE),
+            Err(EngineInstallError::Io { .. })
+        ));
         assert!(remove(&scratch.0).is_err());
         assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
     }
@@ -1308,7 +727,7 @@ mod tests {
         // was not, so only it goes back, and the new cpu build is untouched.
         std::fs::create_dir_all(root.join("b11669-cpu")).unwrap();
         std::fs::write(root.join("b11669-cpu/llama-server"), b"new").unwrap();
-        let _lock = lock(&root).unwrap();
+        let _lock = lock(&root, ENGINE).unwrap();
         recover(&root).unwrap();
         assert_eq!(
             std::fs::read(root.join("b11669-metal/llama-server")).unwrap(),
@@ -1406,7 +825,7 @@ mod tests {
         let bundle = bundle_of(&good_build(), Variant::Metal);
         unpack_bundle(&bundle, &RELEASE, &scratch.0).expect("unpacked");
         // An install on request downloading, holding the lock.
-        let held = lock(&root).unwrap();
+        let held = lock(&root, ENGINE).unwrap();
         let data = scratch.0.clone();
         let using = std::thread::spawn(move || unpack_bundle(&bundle, &RELEASE, &data));
         std::thread::sleep(Duration::from_millis(300));
@@ -1423,7 +842,7 @@ mod tests {
         let root = hedos_root(&scratch.0);
         std::fs::create_dir_all(&root).unwrap();
         // An install on request downloading, holding the lock throughout.
-        let held = lock(&root).unwrap();
+        let held = lock(&root, ENGINE).unwrap();
         let started = Instant::now();
         let refused = unpack_bundle_within(
             &bundle_of(&good_build(), Variant::Metal),
@@ -1432,7 +851,7 @@ mod tests {
             Duration::from_millis(200),
         );
         assert!(
-            matches!(refused, Err(EngineInstallError::Busy)),
+            matches!(refused, Err(EngineInstallError::Busy { .. })),
             "{refused:?}"
         );
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -1444,7 +863,7 @@ mod tests {
         let scratch = Scratch::new("bundle-wait");
         let root = hedos_root(&scratch.0);
         std::fs::create_dir_all(&root).unwrap();
-        let held = lock(&root).unwrap();
+        let held = lock(&root, ENGINE).unwrap();
         let data = scratch.0.clone();
         let waiting = std::thread::spawn(move || {
             unpack_bundle(&bundle_of(&good_build(), Variant::Metal), &RELEASE, &data)
@@ -1599,9 +1018,16 @@ mod tests {
             .expect("an archive the pin has for this machine, without a runtime archive beside it");
         let scratch = Scratch::new("pinned-real");
         let (base, accept) = serve(HashMap::from([(asset.file, published)])).await;
-        let server = install_from(&PINNED, asset, &base, &scratch.0, |_| {})
-            .await
-            .expect("installed");
+        let server = install_from(
+            &PINNED,
+            asset,
+            &base,
+            &scratch.0,
+            &Landing::default(),
+            |_| {},
+        )
+        .await
+        .expect("installed");
         accept.abort();
         let version = crate::engines::llama_cpp::version(&server.path).expect("a version");
         assert_eq!(Some(version.build), PINNED.build_number());

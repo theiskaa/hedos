@@ -195,7 +195,7 @@ impl Host for SystemHost {
     }
 
     fn uv(&self) -> bool {
-        crate::environment::uv_binary().is_some()
+        crate::engines::uv::located().is_some()
     }
 }
 

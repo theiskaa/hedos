@@ -123,14 +123,12 @@ pub(crate) fn locate_carrying(
 
 /// The `llama-server` on the PATH, or in Homebrew's places.
 pub fn on_path() -> Option<PathBuf> {
-    kernel::fs::find_on_path(PROGRAM)
-        .filter(|path| path.is_absolute())
-        .or_else(|| {
-            ["/opt/homebrew/bin", "/usr/local/bin"]
-                .into_iter()
-                .map(|dir| Path::new(dir).join(PROGRAM))
-                .find(|candidate| kernel::fs::is_executable(candidate))
-        })
+    kernel::fs::find_absolute_on_path(PROGRAM).or_else(|| {
+        ["/opt/homebrew/bin", "/usr/local/bin"]
+            .into_iter()
+            .map(|dir| Path::new(dir).join(PROGRAM))
+            .find(|candidate| kernel::fs::is_executable(candidate))
+    })
 }
 
 /// [`locate`] with this process's settings and data dir.

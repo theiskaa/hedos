@@ -2,8 +2,12 @@
 //! and what version.
 
 pub mod bundled;
+mod fetch;
 pub mod install;
 pub mod llama_cpp;
+#[cfg(test)]
+mod testing;
+pub mod uv;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -22,11 +26,6 @@ pub fn ollama_binary() -> Option<PathBuf> {
 /// Whether something answers where Ollama's daemon listens.
 pub fn ollama_listening() -> bool {
     crate::install::ollama::daemon_listening_at(crate::install::ollama::DEFAULT_BASE_URL)
-}
-
-/// The `uv` that prepares the Python runtimes, if there is one.
-pub fn uv_binary() -> Option<PathBuf> {
-    crate::environment::uv_binary()
 }
 
 /// The version of the GNU C library this process runs on (`2.35`).

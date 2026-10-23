@@ -10,6 +10,15 @@ use std::path::{Path, PathBuf};
 use kernel::manifests::{RuntimeManifest, RuntimeProvenance};
 use sha2::{Digest, Sha256};
 
+/// Whether a load hashes each runtime's directory for consent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hashing {
+    /// Hash it, for approving a runtime to run.
+    Hash,
+    /// Leave it, for asking only what a runtime declares.
+    Skip,
+}
+
 /// The manifests a load produced and the human-readable issues it skipped or
 /// warned on.
 #[derive(Debug, Default)]
@@ -36,7 +45,7 @@ impl UserRuntimeStore {
     /// and loose `[serve]`/`[env]` manifests; a manifest with no detect rule loads
     /// but is flagged.
     pub fn load(&self, reserved_ids: &HashSet<String>) -> StoreLoad {
-        self.load_entries(reserved_ids, Origin::User)
+        self.load_entries(reserved_ids, Origin::User, Hashing::Hash)
     }
 
     /// Load the manifest-driven runtimes out of a directory of shipped bundles.
@@ -45,10 +54,32 @@ impl UserRuntimeStore {
     /// rule, and are passed over without an issue. What is left goes through the
     /// same gates as a user manifest.
     pub fn load_shipped(&self, reserved_ids: &HashSet<String>) -> StoreLoad {
-        self.load_entries(reserved_ids, Origin::Shipped)
+        self.load_entries(reserved_ids, Origin::Shipped, Hashing::Hash)
     }
 
-    fn load_entries(&self, reserved_ids: &HashSet<String>, origin: Origin) -> StoreLoad {
+    /// [`load`](Self::load) (`shipped` false) or
+    /// [`load_shipped`](Self::load_shipped) through the same gates, hashing
+    /// each runtime's directory for consent only as `hashing` says.
+    pub(crate) fn load_hashing(
+        &self,
+        reserved_ids: &HashSet<String>,
+        shipped: bool,
+        hashing: Hashing,
+    ) -> StoreLoad {
+        let origin = if shipped {
+            Origin::Shipped
+        } else {
+            Origin::User
+        };
+        self.load_entries(reserved_ids, origin, hashing)
+    }
+
+    fn load_entries(
+        &self,
+        reserved_ids: &HashSet<String>,
+        origin: Origin,
+        hashing: Hashing,
+    ) -> StoreLoad {
         let mut entries: Vec<PathBuf> = match std::fs::read_dir(&self.directory) {
             Ok(read_dir) => read_dir
                 .flatten()
@@ -131,7 +162,10 @@ impl UserRuntimeStore {
             }
             // Hash only the manifests that survive the gates — a rejected one is
             // discarded, so hashing its whole directory would be wasted I/O.
-            manifest.content_hash = Some(consent_hash(&text, manifest_dir.as_deref(), &manifest));
+            if hashing == Hashing::Hash {
+                manifest.content_hash =
+                    Some(consent_hash(&text, manifest_dir.as_deref(), &manifest));
+            }
             seen.insert(manifest.id.clone());
             load.manifests.push(manifest);
         }
@@ -334,6 +368,31 @@ mod tests {
         assert_eq!(load.manifests.len(), 1);
         assert!(load.issues.is_empty());
         assert!(load.manifests[0].content_hash.is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_listing_passes_the_same_gates_without_hashing_for_consent() {
+        let dir = temp_dir("listing");
+        std::fs::write(dir.join("one.toml"), INVOKE_MANIFEST).unwrap();
+        std::fs::write(
+            dir.join("taken.toml"),
+            INVOKE_MANIFEST.replace("\"one\"", "\"taken\""),
+        )
+        .unwrap();
+        let reserved = HashSet::from(["taken".to_owned()]);
+        let store = UserRuntimeStore::new(dir.clone());
+        let listed = store.load_hashing(&reserved, false, Hashing::Skip);
+        let ids: Vec<&str> = listed
+            .manifests
+            .iter()
+            .map(|manifest| manifest.id.as_str())
+            .collect();
+        assert_eq!(ids, ["one"]);
+        assert_eq!(listed.manifests[0].content_hash, None);
+        let loaded = store.load(&reserved);
+        assert_eq!(loaded.manifests.len(), 1);
+        assert!(loaded.manifests[0].content_hash.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 

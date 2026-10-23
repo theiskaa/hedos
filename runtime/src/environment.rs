@@ -1,7 +1,8 @@
 //! Python environment provisioning: one virtual environment per runtime, keyed
 //! by the SHA-256 of its lockfile so a changed lock rebuilds and an unchanged
 //! one short-circuits to a relink. The build itself is injectable (the default
-//! shells out to `uv`), and honest-failure process running lives here too.
+//! shells out to the `uv` [`crate::engines::uv::located`] finds), and
+//! honest-failure process running lives here too.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,11 +31,23 @@ pub enum EnvError {
 /// A progress reporter passed through a build.
 pub type Progress = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// Builds the environment at `env_dir` from `lockfile`, using `cache_dir` as a
-/// shared package cache and reporting steps through `progress`.
-pub type Builder = Arc<
-    dyn Fn(PathBuf, PathBuf, PathBuf, Progress) -> BoxFuture<Result<(), EnvError>> + Send + Sync,
->;
+/// What one environment build is given.
+pub struct Build {
+    /// Where the environment goes.
+    pub env_dir: PathBuf,
+    /// The lockfile it installs exactly.
+    pub lockfile: PathBuf,
+    /// The package cache the manager's environments share.
+    pub cache_dir: PathBuf,
+    /// Where a Python the build has to download is kept, shared by every
+    /// manager under one environments directory.
+    pub python_dir: PathBuf,
+    /// Where each step is reported.
+    pub progress: Progress,
+}
+
+/// Builds the environment [`Build`] describes.
+pub type Builder = Arc<dyn Fn(Build) -> BoxFuture<Result<(), EnvError>> + Send + Sync>;
 
 const ENV_MARKER: &str = ".hedos-env-ok";
 const STDERR_TAIL_BYTES: usize = 400;
@@ -69,6 +82,31 @@ impl EnvironmentManager {
                 builder,
                 key_locks: Mutex::new(BTreeMap::new()),
             }),
+        }
+    }
+
+    /// Whether the environment for `runtime_id` at the current `lockfile` is
+    /// built: [`prepare`](Self::prepare) would return it without building.
+    pub(crate) fn is_built(&self, runtime_id: &str, lockfile: &Path) -> bool {
+        Self::lock_hash(lockfile).is_ok_and(|hash| {
+            self.inner
+                .root
+                .join("runtimes")
+                .join(sanitized_runtime_id(runtime_id))
+                .join("envs")
+                .join(hash)
+                .join(ENV_MARKER)
+                .exists()
+        })
+    }
+
+    /// Where a Python uv downloads is kept: `python` beside this manager's
+    /// root, so the managers under one environments directory (`env/mlx-lm`,
+    /// `env/manifests`, ...) share it (`env/python`).
+    pub(crate) fn python_dir(&self) -> PathBuf {
+        match self.inner.root.parent() {
+            Some(parent) => parent.join("python"),
+            None => self.inner.root.join("python"),
         }
     }
 
@@ -133,12 +171,13 @@ impl EnvironmentManager {
         let cache_dir = self.inner.root.join("uv-cache");
         std::fs::create_dir_all(&cache_dir)?;
 
-        (self.inner.builder)(
-            env_dir.clone(),
-            lockfile.to_owned(),
+        (self.inner.builder)(Build {
+            env_dir: env_dir.clone(),
+            lockfile: lockfile.to_owned(),
             cache_dir,
-            Arc::clone(&progress),
-        )
+            python_dir: self.python_dir(),
+            progress: Arc::clone(&progress),
+        })
         .await?;
 
         std::fs::write(&marker, [])?;
@@ -218,7 +257,8 @@ where
     env
 }
 
-fn sanitized_runtime_id(id: &str) -> String {
+/// The directory name a runtime's environments are kept under.
+pub(crate) fn sanitized_runtime_id(id: &str) -> String {
     id.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
@@ -330,71 +370,287 @@ fn tail_string(bytes: &[u8], max: usize) -> String {
     String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
-pub(crate) fn uv_binary() -> Option<PathBuf> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    // The fixed candidates cover the common installs even when the caller's
-    // PATH doesn't; the PATH walk picks up everything else.
-    [
-        format!("{home}/.local/bin/uv"),
-        "/opt/homebrew/bin/uv".to_owned(),
-        "/usr/local/bin/uv".to_owned(),
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|candidate| kernel::fs::is_executable(candidate))
-    .or_else(|| kernel::fs::find_on_path("uv"))
-}
-
-fn uv_builder(
-    env_dir: PathBuf,
-    lockfile: PathBuf,
-    cache_dir: PathBuf,
-    progress: Progress,
-) -> BoxFuture<Result<(), EnvError>> {
+fn uv_builder(build: Build) -> BoxFuture<Result<(), EnvError>> {
     Box::pin(async move {
-        let Some(uv) = uv_binary() else {
+        let Some(uv) = crate::engines::uv::located() else {
             return Err(EnvError::RuntimeUnavailable(
                 kernel::machine::UV_INSTALL_HINT.to_owned(),
             ));
         };
-        let cache = BTreeMap::from([("UV_CACHE_DIR".to_owned(), cache_dir.display().to_string())]);
-
-        progress("Creating Python environment…");
-        run_process(
-            &uv,
-            &["venv", &env_dir.display().to_string(), "--python", "3.12"],
-            &cache,
-            DEFAULT_PROCESS_TIMEOUT,
-        )
-        .await?;
-
-        let python = env_dir.join("bin/python").display().to_string();
-        let lock = lockfile.display().to_string();
-        progress("Installing packages…");
-        let offline = run_process(
-            &uv,
-            &["pip", "sync", &lock, "--python", &python, "--offline"],
-            &cache,
-            DEFAULT_PROCESS_TIMEOUT,
-        )
-        .await;
-        if offline.is_err() {
-            progress("Downloading packages…");
-            run_process(
-                &uv,
-                &["pip", "sync", &lock, "--python", &python],
-                &cache,
-                DEFAULT_PROCESS_TIMEOUT,
-            )
-            .await?;
-        }
-        Ok(())
+        uv_build(&uv.path, build).await
     })
+}
+
+/// What uv runs with beyond the environment every sidecar gets: the package
+/// cache, where a Python it downloads goes, and `config_home`, the person's
+/// `XDG_CONFIG_HOME` when it is an absolute path, so a mirror set in the
+/// `uv.toml` there is found as it is under `HOME`.
+fn uv_variables(
+    cache_dir: &Path,
+    python_dir: &Path,
+    config_home: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut variables = BTreeMap::from([
+        ("UV_CACHE_DIR".to_owned(), cache_dir.display().to_string()),
+        (
+            "UV_PYTHON_INSTALL_DIR".to_owned(),
+            python_dir.display().to_string(),
+        ),
+    ]);
+    if let Some(config_home) = config_home.filter(|path| Path::new(path).is_absolute()) {
+        variables.insert("XDG_CONFIG_HOME".to_owned(), config_home.to_owned());
+    }
+    variables
+}
+
+/// Build the environment `build` describes with the `uv` at `uv`: create it
+/// with Python 3.12, then install the lockfile exactly, from the cache alone
+/// first and from the network when that is not enough. Every requirement must
+/// match a hash in the lockfile, whatever a `uv.toml` says about hashes.
+pub(crate) async fn uv_build(uv: &Path, build: Build) -> Result<(), EnvError> {
+    let Build {
+        env_dir,
+        lockfile,
+        cache_dir,
+        python_dir,
+        progress,
+    } = build;
+    let uv_env = uv_variables(
+        &cache_dir,
+        &python_dir,
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+    );
+
+    progress("Creating Python environment…");
+    run_process(
+        uv,
+        &["venv", &env_dir.display().to_string(), "--python", "3.12"],
+        &uv_env,
+        DEFAULT_PROCESS_TIMEOUT,
+    )
+    .await?;
+
+    let python = env_dir.join("bin/python").display().to_string();
+    let lock = lockfile.display().to_string();
+    let sync = |online: bool| {
+        let mut args = vec![
+            "pip",
+            "sync",
+            lock.as_str(),
+            "--python",
+            python.as_str(),
+            "--require-hashes",
+        ];
+        if !online {
+            args.push("--offline");
+        }
+        args
+    };
+    progress("Installing packages…");
+    let offline = run_process(uv, &sync(false), &uv_env, DEFAULT_PROCESS_TIMEOUT).await;
+    if offline.is_err() {
+        progress("Downloading packages…");
+        run_process(uv, &sync(true), &uv_env, DEFAULT_PROCESS_TIMEOUT).await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `uv` at `dir/uv` that writes each call's arguments and the two
+    /// directories it was given to `dir/calls`, makes the environment on
+    /// `venv`, fails any `--offline` sync when `offline_fails`, and deletes
+    /// itself after `venv` when `vanishes`.
+    fn recording_uv(dir: &Path, offline_fails: bool, vanishes: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let calls = dir.join("calls");
+        let uv = dir.join("uv");
+        let script = format!(
+            "#!/bin/sh\n\
+             echo \"$* | cache=$UV_CACHE_DIR | python=$UV_PYTHON_INSTALL_DIR\" >> '{calls}'\n\
+             case \"$1\" in venv) mkdir -p \"$2/bin\"; {vanish} exit 0;; esac\n\
+             case \"$*\" in *--offline*) [ {offline} = 1 ] && exit 1;; esac\n\
+             exit 0\n",
+            calls = calls.display(),
+            vanish = if vanishes { "rm -f \"$0\";" } else { "" },
+            offline = u8::from(offline_fails),
+        );
+        std::fs::write(&uv, script).unwrap();
+        std::fs::set_permissions(&uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+        uv
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "hedos-uv-build-{name}-{}-{}",
+            std::process::id(),
+            kernel::time::now_millis()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn manager_with(root: PathBuf, uv: PathBuf) -> EnvironmentManager {
+        EnvironmentManager::with_builder(
+            root,
+            Arc::new(move |build| {
+                let uv = uv.clone();
+                Box::pin(async move { uv_build(&uv, build).await })
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_build_insists_on_the_lock_s_hashes_and_keeps_python_in_hedos_s_data() {
+        let dir = scratch("args");
+        let uv = recording_uv(&dir, true, false);
+        let lock = dir.join("requirements.lock");
+        std::fs::write(&lock, "x==1 --hash=sha256:00").unwrap();
+        let root = dir.join("env").join("mlx-lm");
+        let env = manager_with(root.clone(), uv)
+            .prepare("python:test", &lock, Arc::new(|_: &str| {}))
+            .await
+            .expect("built");
+        assert!(env.join(ENV_MARKER).exists());
+
+        let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
+        let calls: Vec<&str> = calls.lines().collect();
+        assert_eq!(calls.len(), 3, "{calls:?}");
+        let cache = root.join("uv-cache").display().to_string();
+        let python = dir.join("env").join("python").display().to_string();
+        for call in &calls {
+            assert!(
+                call.ends_with(&format!("| cache={cache} | python={python}")),
+                "{call}"
+            );
+        }
+        assert!(calls[0].starts_with("venv "), "{}", calls[0]);
+        assert!(calls[0].contains("--python 3.12"), "{}", calls[0]);
+        for sync in &calls[1..] {
+            assert!(sync.starts_with("pip sync "), "{sync}");
+            assert!(sync.contains(" --require-hashes"), "{sync}");
+        }
+        assert!(calls[1].contains("--offline"), "{}", calls[1]);
+        assert!(!calls[2].contains("--offline"), "{}", calls[2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_uv_gone_before_the_sync_fails_the_build_and_leaves_it_to_be_built_again() {
+        let dir = scratch("vanish");
+        let uv = recording_uv(&dir, false, true);
+        let lock = dir.join("requirements.lock");
+        std::fs::write(&lock, "x==1").unwrap();
+        let manager = manager_with(dir.join("env").join("mlx-lm"), uv.clone());
+        let failed = manager
+            .prepare("python:test", &lock, Arc::new(|_: &str| {}))
+            .await;
+        assert!(failed.is_err(), "{failed:?}");
+        assert!(!uv.exists());
+        let envs = dir.join("env/mlx-lm/runtimes/python-test/envs");
+        let marked = std::fs::read_dir(&envs)
+            .unwrap()
+            .flatten()
+            .any(|env| env.path().join(ENV_MARKER).exists());
+        assert!(!marked);
+
+        // With uv back, the next run builds it.
+        let uv = recording_uv(&dir, false, false);
+        let env = manager_with(dir.join("env").join("mlx-lm"), uv)
+            .prepare("python:test", &lock, Arc::new(|_: &str| {}))
+            .await
+            .expect("built");
+        assert!(env.join(ENV_MARKER).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Builds sync with `--require-hashes`, so a shipped lock with a
+    /// requirement carrying no hash would fail every build of its runtime.
+    #[test]
+    fn every_requirement_in_a_shipped_lock_carries_a_hash() {
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtimes");
+        let mut locks = 0;
+        for bundle in std::fs::read_dir(&shipped).unwrap().flatten() {
+            let lockfile = bundle.path().join("requirements.lock");
+            let Ok(text) = std::fs::read_to_string(&lockfile) else {
+                continue;
+            };
+            locks += 1;
+            let joined = text.replace("\\\n", " ");
+            for line in joined.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
+                    continue;
+                }
+                assert!(
+                    line.contains("--hash=sha256:"),
+                    "{}: {line}",
+                    lockfile.display()
+                );
+            }
+        }
+        assert!(locks >= 7, "{locks} locks under {}", shipped.display());
+    }
+
+    /// How a shipped lockfile is checked against the pinned uv, on a machine
+    /// with no Python 3.12 of its own: the environment builds from it with
+    /// every hash required, and the Python uv fetches lands under the
+    /// environments directory, not uv's own.
+    #[tokio::test]
+    #[ignore = "needs HEDOS_REAL_UV, a uv to build with, and the network"]
+    async fn a_shipped_lock_builds_with_a_real_uv() {
+        let uv = PathBuf::from(std::env::var("HEDOS_REAL_UV").expect("HEDOS_REAL_UV"));
+        let lockfile = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("runtimes/python-whisper-cpp/requirements.lock");
+        let dir = scratch("real");
+        let root = dir.join("env").join("whisper-cpp");
+        let env = manager_with(root, uv)
+            .prepare("python:whisper-cpp", &lockfile, Arc::new(|_: &str| {}))
+            .await
+            .expect("built");
+        assert!(env.join(ENV_MARKER).exists());
+        let config = std::fs::read_to_string(env.join("pyvenv.cfg")).unwrap();
+        let home = config
+            .lines()
+            .find_map(|line| line.strip_prefix("home = "))
+            .expect("the Python it was made with");
+        assert!(
+            Path::new(home).starts_with(dir.join("env").join("python")),
+            "{home}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn uv_finds_a_config_under_xdg_config_home_only_when_that_is_absolute() {
+        let (cache, python) = (Path::new("/env/x/uv-cache"), Path::new("/env/python"));
+        let with = uv_variables(cache, python, Some("/home/you/.cfg"));
+        assert_eq!(
+            with.get("XDG_CONFIG_HOME").map(String::as_str),
+            Some("/home/you/.cfg")
+        );
+        assert_eq!(
+            with.get("UV_CACHE_DIR").map(String::as_str),
+            Some("/env/x/uv-cache")
+        );
+        assert_eq!(
+            with.get("UV_PYTHON_INSTALL_DIR").map(String::as_str),
+            Some("/env/python")
+        );
+        assert!(!uv_variables(cache, python, None).contains_key("XDG_CONFIG_HOME"));
+        assert!(!uv_variables(cache, python, Some("cfg")).contains_key("XDG_CONFIG_HOME"));
+    }
+
+    #[test]
+    fn every_manager_under_one_environments_directory_shares_one_python() {
+        let env = Path::new("/data/env");
+        let built_in = EnvironmentManager::new(env.join("mlx-lm"));
+        let manifests = EnvironmentManager::new(env.join("manifests"));
+        assert_eq!(built_in.python_dir(), env.join("python"));
+        assert_eq!(manifests.python_dir(), env.join("python"));
+    }
 
     #[test]
     fn a_tail_never_opens_inside_a_character() {

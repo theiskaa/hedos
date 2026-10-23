@@ -35,6 +35,14 @@ mod sidecar_stream;
 mod tool_scanner;
 mod whisper;
 
+pub(crate) use audio_gen::AUDIO_BUNDLE;
+pub(crate) use diffusers::DIFFUSERS_BUNDLE;
+pub(crate) use embeddings::EMBEDDINGS_BUNDLE;
+pub(crate) use mflux::MFLUX_BUNDLE;
+pub(crate) use mlx_audio::MLX_AUDIO_BUNDLE;
+pub(crate) use mlx_lm::MLX_LM_BUNDLE;
+pub(crate) use mlx_vlm::MLX_VLM_BUNDLE;
+
 pub use a1111::A1111Adapter;
 #[cfg(target_os = "macos")]
 pub use apple_foundation::loaded_apple_backend;
