@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use kernel::install::InstallProviderId;
 use kernel::machine::{Cores, DeviceKind, DevicesFrom, Engine, FreeDisk, Os, Placement};
 
-use super::{Host, available_memory, probe_with};
+use super::{Host, available_memory, nvidia_driver_under, probe_with, torch_on_the_cpu_under};
 
 const GIB: u64 = 1 << 30;
 
@@ -379,4 +379,40 @@ fn this_mac_says_how_much_memory_is_free_or_reclaimable() {
         (low..=high).contains(&reclaimable),
         "{reclaimable} against vm_stat's {expected}"
     );
+}
+
+#[test]
+fn nvidia_s_driver_is_seen_from_its_kernel_module_or_wsl_s_cuda_library() {
+    let root = std::env::temp_dir().join(format!("hedos-nvidia-driver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(!nvidia_driver_under(&root));
+
+    let module = root.join("proc/driver/nvidia");
+    std::fs::create_dir_all(&module).unwrap();
+    assert!(!nvidia_driver_under(&root));
+    std::fs::write(module.join("version"), "NVRM version: 580.65.06").unwrap();
+    assert!(nvidia_driver_under(&root));
+    std::fs::remove_dir_all(root.join("proc")).unwrap();
+
+    let wsl = root.join("usr/lib/wsl/lib");
+    std::fs::create_dir_all(&wsl).unwrap();
+    assert!(!nvidia_driver_under(&root));
+    std::fs::write(wsl.join("libcuda.so.1"), "").unwrap();
+    assert!(nvidia_driver_under(&root));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn torch_runs_on_the_cpu_only_on_linux_without_nvidia_s_driver() {
+    let root = std::env::temp_dir().join(format!("hedos-torch-cpu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(torch_on_the_cpu_under(Os::Linux, &root));
+    assert!(!torch_on_the_cpu_under(Os::Macos, &root));
+    let module = root.join("proc/driver/nvidia");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("version"), "NVRM version: 580.65.06").unwrap();
+    assert!(!torch_on_the_cpu_under(Os::Linux, &root));
+    let _ = std::fs::remove_dir_all(&root);
 }

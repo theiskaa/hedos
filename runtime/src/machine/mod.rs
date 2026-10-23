@@ -46,6 +46,26 @@ fn hardware() -> &'static Machine {
     HARDWARE.get_or_init(|| probe_with(&SystemHost))
 }
 
+/// Whether torch runs on the CPU here: on Linux without NVIDIA's driver,
+/// which a CUDA build needs. Read from files the driver makes, so no program
+/// runs and nothing waits on one.
+pub(crate) fn torch_on_the_cpu() -> bool {
+    torch_on_the_cpu_under(Os::current(), Path::new("/"))
+}
+
+/// [`torch_on_the_cpu`] on `os`, with `root` standing for `/`.
+fn torch_on_the_cpu_under(os: Os, root: &Path) -> bool {
+    os == Os::Linux && !nvidia_driver_under(root)
+}
+
+/// Whether NVIDIA's driver is loaded, `root` standing for `/`: the kernel
+/// module lists itself under `/proc/driver/nvidia` (in a container given the
+/// cards too), and WSL puts NVIDIA's CUDA library under `/usr/lib/wsl/lib`.
+fn nvidia_driver_under(root: &Path) -> bool {
+    root.join("proc/driver/nvidia/version").is_file()
+        || root.join("usr/lib/wsl/lib/libcuda.so.1").is_file()
+}
+
 /// Read this machine's hardware now, off the calling thread, so the first
 /// request a server takes does not wait on it (finding cards can run
 /// `nvidia-smi` or `llama-server --list-devices`).

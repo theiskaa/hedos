@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use kernel::engines::uv::{TORCH_BACKEND_SINCE, takes_torch_backend};
 use sha2::{Digest, Sha256};
 
 use crate::governor::{BoxFuture, lock};
@@ -42,6 +43,10 @@ pub struct Build {
     /// Where a Python the build has to download is kept, shared by every
     /// manager under one environments directory.
     pub python_dir: PathBuf,
+    /// Whether the lockfile is a CPU variant (see
+    /// [`EnvironmentManager::new`]), whose torch comes from PyTorch's CPU
+    /// builds.
+    pub cpu_torch: bool,
     /// Where each step is reported.
     pub progress: Progress,
 }
@@ -52,10 +57,15 @@ pub type Builder = Arc<dyn Fn(Build) -> BoxFuture<Result<(), EnvError>> + Send +
 const ENV_MARKER: &str = ".hedos-env-ok";
 const STDERR_TAIL_BYTES: usize = 400;
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(900);
+/// Fetching a lock's packages can take long: PyTorch's CUDA build and its
+/// libraries are several GB. uv gives up on a stalled connection itself, so
+/// this only bounds a fetch that never ends.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 struct Inner {
     root: PathBuf,
     builder: Builder,
+    cpu_only: fn() -> bool,
     key_locks: Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -69,6 +79,11 @@ pub struct EnvironmentManager {
 impl EnvironmentManager {
     /// A manager rooted at `root`, building environments with the default `uv`
     /// builder.
+    ///
+    /// A lockfile with a CPU variant beside it (`requirements.cpu.lock` for
+    /// `requirements.lock`) is one whose torch is PyPI's: CUDA on Linux, Metal
+    /// on a Mac. On Linux without NVIDIA's driver the variant, with PyTorch's
+    /// CPU build, is installed in its place.
     pub fn new(root: PathBuf) -> Self {
         Self::with_builder(root, Arc::new(uv_builder))
     }
@@ -76,19 +91,43 @@ impl EnvironmentManager {
     /// A manager rooted at `root` that builds environments with `builder`
     /// (injected for tests).
     pub fn with_builder(root: PathBuf, builder: Builder) -> Self {
+        Self::seeing(root, builder, crate::machine::torch_on_the_cpu)
+    }
+
+    /// A manager that asks `cpu_only` whether torch runs on the CPU here, in
+    /// place of reading the machine.
+    pub(crate) fn seeing(root: PathBuf, builder: Builder, cpu_only: fn() -> bool) -> Self {
         Self {
             inner: Arc::new(Inner {
                 root,
                 builder,
+                cpu_only,
                 key_locks: Mutex::new(BTreeMap::new()),
             }),
         }
     }
 
-    /// Whether the environment for `runtime_id` at the current `lockfile` is
-    /// built: [`prepare`](Self::prepare) would return it without building.
+    /// The lockfile an environment for `lockfile` installs on this machine:
+    /// its CPU variant where torch runs on the CPU and one is shipped, else
+    /// `lockfile`.
+    fn lock_here(&self, lockfile: &Path) -> Lock {
+        match cpu_variant(lockfile).filter(|variant| variant.is_file()) {
+            Some(variant) if (self.inner.cpu_only)() => Lock {
+                path: variant,
+                cpu_torch: true,
+            },
+            _ => Lock {
+                path: lockfile.to_owned(),
+                cpu_torch: false,
+            },
+        }
+    }
+
+    /// Whether the environment for `runtime_id` at the current `lockfile` (or
+    /// its CPU variant, as [`prepare`](Self::prepare) chooses) is built:
+    /// `prepare` would return it without building.
     pub(crate) fn is_built(&self, runtime_id: &str, lockfile: &Path) -> bool {
-        Self::lock_hash(lockfile).is_ok_and(|hash| {
+        Self::lock_hash(&self.lock_here(lockfile).path).is_ok_and(|hash| {
             self.inner
                 .root
                 .join("runtimes")
@@ -121,10 +160,11 @@ impl EnvironmentManager {
             .collect())
     }
 
-    /// Ensure the environment for `runtime_id` at the current `lockfile` exists,
-    /// building it if missing, and return its directory. Concurrent prepares for
-    /// the same runtime+lock serialize; a build runs at most once (a later caller
-    /// sees the marker and only relinks). A failed build leaves no marker, so it
+    /// Ensure the environment for `runtime_id` at the current `lockfile` (or
+    /// its CPU variant, [`lock_here`](Self::lock_here)) exists, building it if
+    /// missing, and return its directory. Concurrent prepares for the same
+    /// runtime+lock serialize; a build runs at most once (a later caller sees
+    /// the marker and only relinks). A failed build leaves no marker, so it
     /// can be retried.
     pub async fn prepare(
         &self,
@@ -132,14 +172,15 @@ impl EnvironmentManager {
         lockfile: &Path,
         progress: Progress,
     ) -> Result<PathBuf, EnvError> {
-        let hash = Self::lock_hash(lockfile)?;
+        let lock_here = self.lock_here(lockfile);
+        let hash = Self::lock_hash(&lock_here.path)?;
         let key = format!("{runtime_id}#{hash}");
         let key_lock = {
             let mut locks = lock(&self.inner.key_locks);
             Arc::clone(locks.entry(key).or_default())
         };
         let _guard = key_lock.lock().await;
-        self.perform_prepare(runtime_id, &hash, lockfile, progress)
+        self.perform_prepare(runtime_id, &hash, lock_here, progress)
             .await
     }
 
@@ -147,7 +188,7 @@ impl EnvironmentManager {
         &self,
         runtime_id: &str,
         hash: &str,
-        lockfile: &Path,
+        lock_here: Lock,
         progress: Progress,
     ) -> Result<PathBuf, EnvError> {
         let safe_id = sanitized_runtime_id(runtime_id);
@@ -173,9 +214,10 @@ impl EnvironmentManager {
 
         (self.inner.builder)(Build {
             env_dir: env_dir.clone(),
-            lockfile: lockfile.to_owned(),
+            lockfile: lock_here.path,
             cache_dir,
             python_dir: self.python_dir(),
+            cpu_torch: lock_here.cpu_torch,
             progress: Arc::clone(&progress),
         })
         .await?;
@@ -184,6 +226,21 @@ impl EnvironmentManager {
         relink(&current, &env_dir)?;
         Ok(env_dir)
     }
+}
+
+/// The lockfile an environment installs on this machine.
+#[derive(Debug, PartialEq, Eq)]
+struct Lock {
+    path: PathBuf,
+    cpu_torch: bool,
+}
+
+/// The CPU variant of `lockfile`: `requirements.cpu.lock` for
+/// `requirements.lock`.
+pub(crate) fn cpu_variant(lockfile: &Path) -> Option<PathBuf> {
+    let stem = lockfile.file_stem()?.to_str()?;
+    let extension = lockfile.extension()?.to_str()?;
+    Some(lockfile.with_file_name(format!("{stem}.cpu.{extension}")))
 }
 
 /// Environment keys always forwarded to a spawned runtime: process essentials and
@@ -413,8 +470,23 @@ pub(crate) async fn uv_build(uv: &Path, build: Build) -> Result<(), EnvError> {
         lockfile,
         cache_dir,
         python_dir,
+        cpu_torch,
         progress,
     } = build;
+    if cpu_torch {
+        let path = uv.to_owned();
+        let version = tokio::task::spawn_blocking(move || crate::engines::uv::version(&path))
+            .await
+            .ok()
+            .flatten();
+        if let Some(version) = version.filter(|version| !takes_torch_backend(version)) {
+            let [major, minor, patch] = TORCH_BACKEND_SINCE;
+            return Err(EnvError::RuntimeUnavailable(format!(
+                "the uv at {} ({version}) cannot install PyTorch's CPU build, which needs uv {major}.{minor}.{patch} or later; run `hedos engines install uv`",
+                uv.display()
+            )));
+        }
+    }
     let uv_env = uv_variables(
         &cache_dir,
         &python_dir,
@@ -441,6 +513,13 @@ pub(crate) async fn uv_build(uv: &Path, build: Build) -> Result<(), EnvError> {
             python.as_str(),
             "--require-hashes",
         ];
+        // PyTorch's CPU builds are served by its own index only; this sends
+        // torch and the packages around it (torchaudio, torchvision, ...)
+        // there and every other package to uv's usual index, as the lock was
+        // compiled.
+        if cpu_torch {
+            args.extend(["--torch-backend", "cpu"]);
+        }
         if !online {
             args.push("--offline");
         }
@@ -450,7 +529,7 @@ pub(crate) async fn uv_build(uv: &Path, build: Build) -> Result<(), EnvError> {
     let offline = run_process(uv, &sync(false), &uv_env, DEFAULT_PROCESS_TIMEOUT).await;
     if offline.is_err() {
         progress("Downloading packages…");
-        run_process(uv, &sync(true), &uv_env, DEFAULT_PROCESS_TIMEOUT).await?;
+        run_process(uv, &sync(true), &uv_env, DOWNLOAD_TIMEOUT).await?;
     }
     Ok(())
 }
@@ -459,16 +538,23 @@ pub(crate) async fn uv_build(uv: &Path, build: Build) -> Result<(), EnvError> {
 mod tests {
     use super::*;
 
-    /// A `uv` at `dir/uv` that writes each call's arguments and the two
-    /// directories it was given to `dir/calls`, makes the environment on
-    /// `venv`, fails any `--offline` sync when `offline_fails`, and deletes
-    /// itself after `venv` when `vanishes`.
+    /// A `uv` at `dir/uv` that answers `--version` with `uv 0.13.4`, writes
+    /// each other call's arguments and the two directories it was given to
+    /// `dir/calls`, makes the environment on `venv`, fails any `--offline`
+    /// sync when `offline_fails`, and deletes itself after `venv` when
+    /// `vanishes`.
     fn recording_uv(dir: &Path, offline_fails: bool, vanishes: bool) -> PathBuf {
+        uv_reporting(dir, "0.13.4", offline_fails, vanishes)
+    }
+
+    /// [`recording_uv`], reporting `version`.
+    fn uv_reporting(dir: &Path, version: &str, offline_fails: bool, vanishes: bool) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let calls = dir.join("calls");
         let uv = dir.join("uv");
         let script = format!(
             "#!/bin/sh\n\
+             case \"$1\" in --version) echo \"uv {version} (aarch64-apple-darwin)\"; exit 0;; esac\n\
              echo \"$* | cache=$UV_CACHE_DIR | python=$UV_PYTHON_INSTALL_DIR\" >> '{calls}'\n\
              case \"$1\" in venv) mkdir -p \"$2/bin\"; {vanish} exit 0;; esac\n\
              case \"$*\" in *--offline*) [ {offline} = 1 ] && exit 1;; esac\n\
@@ -492,13 +578,14 @@ mod tests {
         dir
     }
 
-    fn manager_with(root: PathBuf, uv: PathBuf) -> EnvironmentManager {
-        EnvironmentManager::with_builder(
+    fn manager_with(root: PathBuf, uv: PathBuf, cpu_only: fn() -> bool) -> EnvironmentManager {
+        EnvironmentManager::seeing(
             root,
             Arc::new(move |build| {
                 let uv = uv.clone();
                 Box::pin(async move { uv_build(&uv, build).await })
             }),
+            cpu_only,
         )
     }
 
@@ -509,7 +596,7 @@ mod tests {
         let lock = dir.join("requirements.lock");
         std::fs::write(&lock, "x==1 --hash=sha256:00").unwrap();
         let root = dir.join("env").join("mlx-lm");
-        let env = manager_with(root.clone(), uv)
+        let env = manager_with(root.clone(), uv, || false)
             .prepare("python:test", &lock, Arc::new(|_: &str| {}))
             .await
             .expect("built");
@@ -531,6 +618,7 @@ mod tests {
         for sync in &calls[1..] {
             assert!(sync.starts_with("pip sync "), "{sync}");
             assert!(sync.contains(" --require-hashes"), "{sync}");
+            assert!(!sync.contains("--torch-backend"), "{sync}");
         }
         assert!(calls[1].contains("--offline"), "{}", calls[1]);
         assert!(!calls[2].contains("--offline"), "{}", calls[2]);
@@ -543,7 +631,7 @@ mod tests {
         let uv = recording_uv(&dir, false, true);
         let lock = dir.join("requirements.lock");
         std::fs::write(&lock, "x==1").unwrap();
-        let manager = manager_with(dir.join("env").join("mlx-lm"), uv.clone());
+        let manager = manager_with(dir.join("env").join("mlx-lm"), uv.clone(), || false);
         let failed = manager
             .prepare("python:test", &lock, Arc::new(|_: &str| {}))
             .await;
@@ -558,7 +646,7 @@ mod tests {
 
         // With uv back, the next run builds it.
         let uv = recording_uv(&dir, false, false);
-        let env = manager_with(dir.join("env").join("mlx-lm"), uv)
+        let env = manager_with(dir.join("env").join("mlx-lm"), uv, || false)
             .prepare("python:test", &lock, Arc::new(|_: &str| {}))
             .await
             .expect("built");
@@ -566,14 +654,239 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The `pip sync` calls `recording_uv` has seen, forgetting them.
+    fn syncs(dir: &Path) -> Vec<String> {
+        let calls = dir.join("calls");
+        let seen = std::fs::read_to_string(&calls).unwrap_or_default();
+        let _ = std::fs::remove_file(&calls);
+        seen.lines()
+            .filter(|call| call.starts_with("pip sync "))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cpu_variant_is_installed_only_where_torch_runs_on_the_cpu() {
+        let dir = scratch("variant");
+        let uv = recording_uv(&dir, false, false);
+        let lock = dir.join("requirements.lock");
+        let variant = dir.join("requirements.cpu.lock");
+        std::fs::write(&lock, "torch==1").unwrap();
+        std::fs::write(&variant, "torch==1+cpu").unwrap();
+        let root = dir.join("env").join("audio");
+        let quiet: Progress = Arc::new(|_: &str| {});
+
+        let cpu = manager_with(root.clone(), uv.clone(), || true);
+        assert!(!cpu.is_built("python:audio", &lock));
+        let on_cpu = cpu
+            .prepare("python:audio", &lock, Arc::clone(&quiet))
+            .await
+            .unwrap();
+        let synced = syncs(&dir);
+        assert_eq!(synced.len(), 1, "{synced:?}");
+        assert!(
+            synced[0].starts_with(&format!("pip sync {} ", variant.display())),
+            "{}",
+            synced[0]
+        );
+        assert!(synced[0].contains(" --torch-backend cpu"), "{}", synced[0]);
+        assert!(cpu.is_built("python:audio", &lock));
+
+        let gpu = manager_with(root.clone(), uv, || false);
+        assert!(!gpu.is_built("python:audio", &lock));
+        let on_gpu = gpu
+            .prepare("python:audio", &lock, Arc::clone(&quiet))
+            .await
+            .unwrap();
+        let synced = syncs(&dir);
+        assert_eq!(synced.len(), 1, "{synced:?}");
+        assert!(
+            synced[0].starts_with(&format!("pip sync {} ", lock.display())),
+            "{}",
+            synced[0]
+        );
+        assert!(!synced[0].contains("--torch-backend"), "{}", synced[0]);
+        assert!(gpu.is_built("python:audio", &lock));
+        assert_ne!(on_cpu, on_gpu);
+
+        // Back on the CPU, the environment built first is still there and is
+        // the one in use again, with nothing installed.
+        let again = cpu
+            .prepare("python:audio", &lock, Arc::clone(&quiet))
+            .await
+            .unwrap();
+        assert_eq!(again, on_cpu);
+        assert!(syncs(&dir).is_empty());
+        assert!(on_gpu.join(ENV_MARKER).exists());
+        let current = root.join("runtimes/python-audio/current");
+        assert_eq!(std::fs::read_link(&current).unwrap(), on_cpu);
+
+        let lone = dir.join("lone").join("requirements.lock");
+        std::fs::create_dir_all(lone.parent().unwrap()).unwrap();
+        std::fs::write(&lone, "x==1").unwrap();
+        for manager in [&cpu, &gpu] {
+            assert_eq!(
+                manager.lock_here(&lone),
+                Lock {
+                    path: lone.clone(),
+                    cpu_torch: false
+                }
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_uv_too_old_for_the_cpu_build_is_named_with_the_way_to_a_newer_one() {
+        let dir = scratch("old");
+        let uv = uv_reporting(&dir, "0.6.8", false, false);
+        let lock = dir.join("requirements.lock");
+        std::fs::write(&lock, "torch==1").unwrap();
+        std::fs::write(dir.join("requirements.cpu.lock"), "torch==1+cpu").unwrap();
+        let quiet: Progress = Arc::new(|_: &str| {});
+
+        let failed = manager_with(dir.join("env").join("audio"), uv.clone(), || true)
+            .prepare("python:audio", &lock, Arc::clone(&quiet))
+            .await;
+        match failed {
+            Err(EnvError::RuntimeUnavailable(message)) => {
+                assert!(message.contains("(0.6.8)"), "{message}");
+                assert!(message.contains("hedos engines install uv"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!dir.join("calls").exists());
+
+        // The same uv still builds where nothing asks it for the CPU build.
+        manager_with(dir.join("env").join("audio"), uv, || false)
+            .prepare("python:audio", &lock, quiet)
+            .await
+            .unwrap();
+        assert_eq!(syncs(&dir).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_manager_asks_this_machine_whether_torch_runs_on_the_cpu() {
+        let made = EnvironmentManager::new(std::env::temp_dir().join("hedos-env-machine"));
+        assert!(std::ptr::fn_addr_eq(
+            made.inner.cpu_only,
+            crate::machine::torch_on_the_cpu as fn() -> bool
+        ));
+    }
+
+    fn shipped_locks() -> Vec<PathBuf> {
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtimes");
+        let mut locks: Vec<PathBuf> = std::fs::read_dir(&shipped)
+            .unwrap()
+            .flatten()
+            .flat_map(|bundle| std::fs::read_dir(bundle.path()).into_iter().flatten())
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "lock")
+            })
+            .collect();
+        locks.sort();
+        locks
+    }
+
+    /// The requirement lines of a lock, each with its continuation lines.
+    fn requirements(text: &str) -> Vec<String> {
+        text.replace("\\\n", " ")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with('-'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// A runtime whose lock pins torch for Linux (not an MLX one) installs
+    /// PyPI's torch from `requirements.lock`, the CUDA build with NVIDIA's
+    /// libraries on Linux, and ships `requirements.cpu.lock` with PyTorch's
+    /// CPU build for a Linux machine without NVIDIA's driver.
+    #[test]
+    fn a_shipped_torch_lock_has_a_cpu_variant_and_cuda_on_linux() {
+        let mut checked = 0;
+        for lockfile in shipped_locks() {
+            if lockfile.file_name().and_then(|name| name.to_str()) != Some("requirements.lock") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&lockfile).unwrap();
+            let pins = requirements(&text);
+            let pinned = |pins: &[String], prefix: &str| -> Vec<String> {
+                pins.iter()
+                    .filter(|line| line.starts_with(prefix))
+                    .cloned()
+                    .collect()
+            };
+            if pinned(&pins, "torch==").is_empty() || !pinned(&pins, "mlx==").is_empty() {
+                continue;
+            }
+            checked += 1;
+            let shown = lockfile.display();
+            assert!(
+                !text.lines().any(|line| line.starts_with("--")),
+                "{shown}: hedos chooses the index, not the lock"
+            );
+            let torch = pinned(&pins, "torch==");
+            assert!(
+                torch.len() == 1 && !torch[0].contains("+cpu") && !torch[0].contains(" ; "),
+                "{shown}: {torch:?}"
+            );
+            let cuda_on = |machine: &str| {
+                pins.iter().any(|line| {
+                    line.starts_with("nvidia-cublas")
+                        && line.contains("sys_platform == 'linux'")
+                        && (!line.contains("platform_machine") || line.contains(machine))
+                })
+            };
+            assert!(cuda_on("x86_64"), "{shown}");
+            // PyPI's aarch64 torch carries CUDA from 2.11 on (YuE2 pins 2.10,
+            // so it runs on the CPU on an ARM machine with NVIDIA cards).
+            let version: Vec<u32> = torch[0]
+                .trim_start_matches("torch==")
+                .split(|c: char| !c.is_ascii_digit())
+                .take(2)
+                .filter_map(|part| part.parse().ok())
+                .collect();
+            if version >= vec![2, 11] {
+                assert!(cuda_on("aarch64"), "{shown}");
+            }
+
+            let variant = lockfile.with_file_name("requirements.cpu.lock");
+            let shown = variant.display();
+            let text = std::fs::read_to_string(&variant)
+                .unwrap_or_else(|error| panic!("{shown}: {error}"));
+            let pins = requirements(&text);
+            assert!(
+                text.lines().any(|line| line.starts_with('#')
+                    && line.contains(" --torch-backend cpu ")
+                    && line.ends_with(" -o requirements.cpu.lock")),
+                "{shown}"
+            );
+            assert!(
+                !text.lines().any(|line| line.starts_with("--")),
+                "{shown}: hedos chooses the index, not the lock"
+            );
+            let cpu = pinned(&pins, "torch==");
+            assert!(
+                cpu.iter()
+                    .any(|line| line.contains("+cpu ; sys_platform != 'darwin'")),
+                "{shown}: {cpu:?}"
+            );
+            assert!(pinned(&pins, "nvidia-").is_empty(), "{shown}");
+        }
+        assert!(checked >= 5, "{checked} torch locks");
+    }
+
     /// Builds sync with `--require-hashes`, so a shipped lock with a
     /// requirement carrying no hash would fail every build of its runtime.
     #[test]
     fn every_requirement_in_a_shipped_lock_carries_a_hash() {
-        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtimes");
         let mut locks = 0;
-        for bundle in std::fs::read_dir(&shipped).unwrap().flatten() {
-            let lockfile = bundle.path().join("requirements.lock");
+        for lockfile in shipped_locks() {
             let Ok(text) = std::fs::read_to_string(&lockfile) else {
                 continue;
             };
@@ -591,7 +904,7 @@ mod tests {
                 );
             }
         }
-        assert!(locks >= 7, "{locks} locks under {}", shipped.display());
+        assert!(locks >= 12, "{locks} locks");
     }
 
     /// How a shipped lockfile is checked against the pinned uv, on a machine
@@ -606,7 +919,7 @@ mod tests {
             .join("runtimes/python-whisper-cpp/requirements.lock");
         let dir = scratch("real");
         let root = dir.join("env").join("whisper-cpp");
-        let env = manager_with(root, uv)
+        let env = manager_with(root, uv, || false)
             .prepare("python:whisper-cpp", &lockfile, Arc::new(|_: &str| {}))
             .await
             .expect("built");
