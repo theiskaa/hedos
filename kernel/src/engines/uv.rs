@@ -119,6 +119,27 @@ pub fn parse_version(stdout: &str) -> Option<&str> {
     well_formed(version).then_some(version)
 }
 
+/// The first uv whose `pip sync` takes `--torch-backend`, which installing
+/// PyTorch's CPU builds needs.
+pub const TORCH_BACKEND_SINCE: [u64; 3] = [0, 6, 9];
+
+/// Whether the uv that reported `version` (as [`parse_version`] reads it)
+/// can install PyTorch's CPU builds: [`TORCH_BACKEND_SINCE`] or later. A
+/// pre-release counts as its release.
+pub fn takes_torch_backend(version: &str) -> bool {
+    let release = version.split(['-', '+']).next().unwrap_or(version);
+    let mut parts = release.split('.').map(|part| part.parse::<u64>().ok());
+    let mut found = [0; 3];
+    for slot in &mut found {
+        match parts.next() {
+            Some(Some(number)) => *slot = number,
+            Some(None) => return false,
+            None => break,
+        }
+    }
+    found >= TORCH_BACKEND_SINCE
+}
+
 /// Whether `version` is numbers joined by dots (at least two), optionally
 /// followed by a `-` or `+` and dot-joined letters and digits: `0.13.4`,
 /// `0.14.0-rc.1`, not `1garbage`, `0..13.4` or `0.13.4+`.
@@ -186,6 +207,16 @@ mod tests {
             let asset = PINNED.asset(os, arch).expect("pinned");
             assert_eq!(asset.file, file, "{os:?} {arch}");
             assert_eq!(PINNED.url(asset.file), format!("{base}/{file}"));
+        }
+    }
+
+    #[test]
+    fn a_uv_takes_torch_backend_from_0_6_9_on() {
+        for version in ["0.6.9", "0.6.10", "0.7.0", "0.13.4", "1.0", "0.14.0-rc.1"] {
+            assert!(takes_torch_backend(version), "{version}");
+        }
+        for version in ["0.6.8", "0.6", "0.5.31", "0.6.9x"] {
+            assert!(!takes_torch_backend(version), "{version}");
         }
     }
 
