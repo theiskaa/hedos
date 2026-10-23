@@ -30,7 +30,7 @@ pub const OLLAMA_ONLY_HINT: &str = "only Ollama runs these, since they are kept 
 pub const LLAMA_CPP_INSTALL_HINT: &str = "llama.cpp isn't installed. Run `hedos engines install llama.cpp`, or put `llama-server` on PATH.";
 /// What a model a Python sidecar serves needs.
 pub const UV_INSTALL_HINT: &str =
-    "uv is required to prepare Python runtimes. Install it from astral.sh/uv.";
+    "uv isn't installed. Run `hedos engines install uv`, or put `uv` on PATH.";
 
 /// The operating system, as far as the engines care.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

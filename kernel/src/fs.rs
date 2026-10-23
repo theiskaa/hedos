@@ -73,6 +73,20 @@ pub fn find_on_path(binary: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
+/// Find `binary` in the absolute directories of the process `PATH`: a
+/// relative entry names a different directory for every working directory,
+/// so it is passed over rather than allowed to hide a later match.
+pub fn find_absolute_on_path(binary: &str) -> Option<PathBuf> {
+    first_absolute(&std::env::var_os("PATH")?, binary)
+}
+
+fn first_absolute(path: &std::ffi::OsStr, binary: &str) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(binary))
+        .find(|candidate| is_executable(candidate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,6 +107,31 @@ mod tests {
             expand_tilde("~/x", Path::new("/home/koala/")),
             PathBuf::from("/home/koala/x")
         );
+    }
+
+    #[test]
+    fn a_relative_path_entry_does_not_hide_a_later_absolute_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("hedos-fs-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (relative, absolute) = (root.join("relative"), root.join("absolute"));
+        for dir in [&relative, &absolute] {
+            std::fs::create_dir_all(dir).unwrap();
+            let tool = dir.join("tool");
+            std::fs::write(&tool, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // The first entry reaches `relative` from the working directory, so a
+        // lookup that took the first match would stop there.
+        let cwd = std::env::current_dir().unwrap();
+        let up = "../".repeat(cwd.components().count());
+        let reached = format!("{up}{}", relative.to_string_lossy().trim_start_matches('/'));
+        assert!(is_executable(&Path::new(&reached).join("tool")));
+        let path = std::env::join_paths([PathBuf::from(&reached), absolute.clone()]).unwrap();
+        assert_eq!(first_absolute(&path, "tool"), Some(absolute.join("tool")));
+        let only = std::env::join_paths([PathBuf::from(&reached)]).unwrap();
+        assert_eq!(first_absolute(&only, "tool"), None);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

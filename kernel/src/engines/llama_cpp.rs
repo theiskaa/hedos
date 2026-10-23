@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub use super::{INSTALLED_FILE, InstalledFile};
 use crate::machine::{DevicesFrom, Machine, Os};
 
 /// The llama.cpp release this hedos installs: its version, the build tag its
@@ -142,9 +143,6 @@ const HEDOS_RELEASES: &str = "https://github.com/theiskaa/hedos/releases/downloa
 
 /// Where a tag's source tarball is published.
 const SOURCES: &str = "https://github.com/ggml-org/llama.cpp/archive/refs/tags";
-
-/// The file beside an installed `llama-server` that says what was installed.
-pub const INSTALLED_FILE: &str = "installed.json";
 
 /// A llama.cpp release as hedos pins it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,15 +442,6 @@ pub struct Installed {
     /// one of them since is not taken for whole.
     #[serde(default)]
     pub files: Vec<InstalledFile>,
-}
-
-/// One file of a build hedos keeps, as it was put in place.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstalledFile {
-    /// Its name in the build's directory.
-    pub name: String,
-    /// Its size in bytes; `None` for a link to another file of the build.
-    pub bytes: Option<u64>,
 }
 
 /// The directory, under hedos's llama.cpp root, a build of `build` for
