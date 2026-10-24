@@ -70,7 +70,7 @@ Values outside a range are clamped to it.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `llama_server` | string | `""` | An absolute path to the `llama-server` hedos runs GGUF models with, ahead of a build `hedos engines install llama.cpp` installed, the build hedos carries, and the one on the `PATH`. Empty means unset; a path that is not absolute or not executable is passed over. Read again each time a model server starts. See [`hedos engines`](cli.md#hedos-engines). |
+| `llama_server` | string | `""` | An absolute path to the `llama-server` hedos runs GGUF models with, ahead of a build `hedos engines install llama.cpp` installed, the build hedos carries, and the one on the `PATH`. Empty means unset; a path that is not absolute or not executable is passed over. Read again each time a model server starts. See [`hedos engines`](cli.md#hedos-engines) and [engines.md](engines.md). |
 
 #### Keys hedos writes but does not read
 
