@@ -32,7 +32,7 @@ use crate::manifests::{
     MAX_OUTPUT_FILE_BYTES, bounded_output_data, detect_matches, error_summary, host_build,
     installed, slug, substituted,
 };
-use crate::process::{drain_bounded, terminate_tree};
+use crate::process::{drain_bounded, spawn_written_async, terminate_tree};
 use crate::sidecar::SidecarWorkdir;
 
 /// How long a manifest command may run before it is stopped.
@@ -369,8 +369,16 @@ impl Execution {
             .process_group(0)
             .kill_on_drop(true);
 
-        let mut child = command
-            .spawn()
+        // The command may be a binary its runtime has just installed, retried
+        // while it is busy; a request dropped meanwhile starts nothing, even
+        // when a retry is ready in the same poll.
+        tokio::pin!(cancel);
+        let spawned = tokio::select! {
+            biased;
+            _ = &mut cancel => return Err(RuntimeError::Cancelled),
+            spawned = spawn_written_async(&mut command) => spawned,
+        };
+        let mut child = spawned
             .map_err(|error| RuntimeError::Failed(format!("{}: {error}", self.id.as_str())))?;
         let stdout = child
             .stdout
@@ -391,7 +399,6 @@ impl Execution {
 
         let drain = drain_bounded(stdout, stderr, OUTPUT_CAP, || {});
         tokio::pin!(drain);
-        tokio::pin!(cancel);
         let outcome = tokio::select! {
             drained = &mut drain => drained,
             _ = tokio::time::sleep(self.execution_timeout) => {
@@ -616,6 +623,68 @@ mod tests {
             }
         }
         assert!(matches!(error, Some(RuntimeError::Unavailable(_))));
+    }
+
+    #[tokio::test]
+    async fn a_request_dropped_before_it_starts_starts_nothing() {
+        let scratch = Scratch::new();
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let adapter = adapter(&scratch, manifest("sync", "true"), true);
+        // A missing program shows which went first: starting it fails at once,
+        // so any try to start it would answer with that failure instead.
+        for _ in 0..32 {
+            let result = adapter
+                .execution
+                .execute(
+                    &[scratch.0.join("missing").display().to_string()],
+                    &scratch.0,
+                    None,
+                    std::future::ready(()),
+                )
+                .await;
+            assert!(matches!(result, Err(RuntimeError::Cancelled)), "{result:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_request_dropped_while_its_program_is_busy_starts_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        std::fs::create_dir_all(&scratch.0).unwrap();
+        let program = scratch.0.join("program");
+        let ran = scratch.0.join("ran");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\ntouch {}\n", ran.display()).as_bytes(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Busy for longer than starting it is retried.
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&program)
+            .unwrap();
+        let adapter = adapter(&scratch, manifest("sync", "true"), true);
+        let started = std::time::Instant::now();
+        let result = adapter
+            .execution
+            .execute(
+                &[program.display().to_string()],
+                &scratch.0,
+                None,
+                tokio::time::sleep(Duration::from_millis(100)),
+            )
+            .await;
+        let took = started.elapsed();
+        drop(writer);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(matches!(result, Err(RuntimeError::Cancelled)), "{result:?}");
+        assert!(took < Duration::from_millis(900), "{took:?}");
+        assert!(
+            !ran.exists(),
+            "nothing started once the request was dropped"
+        );
     }
 
     #[cfg(unix)]

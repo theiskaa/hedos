@@ -16,6 +16,9 @@ use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
 use crate::sidecar::SidecarSupervisor;
 
+/// The bundle this sidecar ships as.
+pub(crate) const MLX_LM_BUNDLE: &str = "python-mlx-lm";
+
 /// The mlx-lm Python-sidecar adapter.
 pub struct MlxLmAdapter {
     base: SidecarAdapter,
@@ -36,7 +39,7 @@ impl MlxLmAdapter {
             base: SidecarAdapter::new(
                 SidecarSpec {
                     id: RuntimeId::mlx_lm(),
-                    bundle_name: "python-mlx-lm",
+                    bundle_name: MLX_LM_BUNDLE,
                     preparing_status: "Preparing text runtime…",
                     starting_status: "Starting text runtime…",
                     warm_window: None,

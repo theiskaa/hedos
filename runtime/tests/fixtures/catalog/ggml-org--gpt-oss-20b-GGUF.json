@@ -1,0 +1,43 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   1767
+  ],
+  [
+   ".src_sha",
+   97
+  ],
+  [
+   "README.md",
+   501
+  ],
+  [
+   "convert.log",
+   155914
+  ],
+  [
+   "eagle3-gpt-oss-20b-BF16.gguf",
+   1722588800
+  ],
+  [
+   "eagle3-gpt-oss-20b-Q8_0.gguf",
+   921488000
+  ],
+  [
+   "gpt-oss-20b-MXFP4.gguf",
+   12109566624
+  ]
+ ],
+ "gguf": {
+  "gpt-oss-20b-MXFP4.gguf": {
+   "architecture": "gpt-oss",
+   "chat_template": true,
+   "context_length": 131072,
+   "embedding_length": 2880
+  }
+ },
+ "repo": "ggml-org/gpt-oss-20b-GGUF",
+ "sha": "15dcfc7e7c608c6161507211ed43c5b590801b4b",
+ "texts": {}
+}

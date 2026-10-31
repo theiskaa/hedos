@@ -1,0 +1,130 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   3060
+  ],
+  [
+   "Qwen3.5-4B-BF16.gguf",
+   8424393632
+  ],
+  [
+   "Qwen3.5-4B-IQ4_NL.gguf",
+   2579944608
+  ],
+  [
+   "Qwen3.5-4B-IQ4_XS.gguf",
+   2477053088
+  ],
+  [
+   "Qwen3.5-4B-Q3_K_M.gguf",
+   2293388448
+  ],
+  [
+   "Qwen3.5-4B-Q3_K_S.gguf",
+   2105791648
+  ],
+  [
+   "Qwen3.5-4B-Q4_0.gguf",
+   2583221408
+  ],
+  [
+   "Qwen3.5-4B-Q4_1.gguf",
+   2784416928
+  ],
+  [
+   "Qwen3.5-4B-Q4_K_M.gguf",
+   2740937888
+  ],
+  [
+   "Qwen3.5-4B-Q4_K_S.gguf",
+   2590430368
+  ],
+  [
+   "Qwen3.5-4B-Q5_K_M.gguf",
+   3143656608
+  ],
+  [
+   "Qwen3.5-4B-Q5_K_S.gguf",
+   3024934048
+  ],
+  [
+   "Qwen3.5-4B-Q6_K.gguf",
+   3525956768
+  ],
+  [
+   "Qwen3.5-4B-Q8_0.gguf",
+   4482403488
+  ],
+  [
+   "Qwen3.5-4B-UD-IQ2_M.gguf",
+   1759997088
+  ],
+  [
+   "Qwen3.5-4B-UD-IQ2_XXS.gguf",
+   1520217248
+  ],
+  [
+   "Qwen3.5-4B-UD-IQ3_XXS.gguf",
+   1949047968
+  ],
+  [
+   "Qwen3.5-4B-UD-Q2_K_XL.gguf",
+   1940825248
+  ],
+  [
+   "Qwen3.5-4B-UD-Q3_K_XL.gguf",
+   2436420768
+  ],
+  [
+   "Qwen3.5-4B-UD-Q4_K_XL.gguf",
+   2912109728
+  ],
+  [
+   "Qwen3.5-4B-UD-Q5_K_XL.gguf",
+   3250869408
+  ],
+  [
+   "Qwen3.5-4B-UD-Q6_K_XL.gguf",
+   4145548448
+  ],
+  [
+   "Qwen3.5-4B-UD-Q8_K_XL.gguf",
+   5952048288
+  ],
+  [
+   "README.md",
+   78906
+  ],
+  [
+   "imatrix_unsloth.gguf_file",
+   3626496
+  ],
+  [
+   "mmproj-BF16.gguf",
+   675569344
+  ],
+  [
+   "mmproj-F16.gguf",
+   672423616
+  ],
+  [
+   "mmproj-F32.gguf",
+   1334075072
+  ]
+ ],
+ "gguf": {
+  "Qwen3.5-4B-Q4_K_M.gguf": {
+   "architecture": "qwen35",
+   "chat_template": true,
+   "context_length": 262144,
+   "embedding_length": 2560
+  },
+  "mmproj-F16.gguf": {
+   "projector_width": 2560
+  }
+ },
+ "repo": "unsloth/Qwen3.5-4B-GGUF",
+ "sha": "e87f176479d0855a907a41277aca2f8ee7a09523",
+ "texts": {}
+}

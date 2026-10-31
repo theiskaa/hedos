@@ -22,6 +22,9 @@ use crate::sidecar::SidecarSupervisor;
 /// How long a loaded speech model stays warm after its last use.
 const WARM_WINDOW: Duration = Duration::from_secs(120);
 
+/// The bundle this sidecar ships as.
+pub(crate) const MLX_AUDIO_BUNDLE: &str = "python-mlx-audio";
+
 /// The mlx-audio speech Python-sidecar adapter.
 pub struct MlxAudioAdapter {
     base: SidecarAdapter,
@@ -42,7 +45,7 @@ impl MlxAudioAdapter {
             base: SidecarAdapter::new(
                 SidecarSpec {
                     id: RuntimeId::mlx_audio(),
-                    bundle_name: "python-mlx-audio",
+                    bundle_name: MLX_AUDIO_BUNDLE,
                     preparing_status: "Preparing speech runtime…",
                     starting_status: "Starting speech runtime…",
                     warm_window: Some(WARM_WINDOW),

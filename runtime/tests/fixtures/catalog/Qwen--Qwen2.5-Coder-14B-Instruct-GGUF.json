@@ -1,0 +1,123 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   1561
+  ],
+  [
+   ".msc",
+   644
+  ],
+  [
+   "LICENSE",
+   11343
+  ],
+  [
+   "README.md",
+   5690
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-fp16-00001-of-00004.gguf",
+   7886805984
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-fp16-00002-of-00004.gguf",
+   7991174912
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-fp16-00003-of-00004.gguf",
+   7975434208
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-fp16-00004-of-00004.gguf",
+   5694301280
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-fp16.gguf",
+   29547716032
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q2_k.gguf",
+   5770497408
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q3_k_m.gguf",
+   7339203968
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q4_0.gguf",
+   8517725568
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q4_k_m-00001-of-00002.gguf",
+   8000444480
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q4_k_m-00002-of-00002.gguf",
+   987665920
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+   8988110272
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q5_0-00001-of-00002.gguf",
+   7972795808
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q5_0-00002-of-00002.gguf",
+   2293758112
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q5_0.gguf",
+   10266553792
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q5_k_m-00001-of-00002.gguf",
+   8003097408
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q5_k_m-00002-of-00002.gguf",
+   2505775872
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q5_k_m.gguf",
+   10508873152
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q6_k-00001-of-00002.gguf",
+   7988339488
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q6_k-00002-of-00002.gguf",
+   4136344352
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q6_k.gguf",
+   12124683712
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q8_0-00001-of-00002.gguf",
+   8004181408
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q8_0-00002-of-00002.gguf",
+   7697416352
+  ],
+  [
+   "qwen2.5-coder-14b-instruct-q8_0.gguf",
+   15701597632
+  ]
+ ],
+ "gguf": {
+  "qwen2.5-coder-14b-instruct-q4_k_m.gguf": {
+   "architecture": "qwen2",
+   "chat_template": true,
+   "context_length": 131072,
+   "embedding_length": 5120
+  }
+ },
+ "repo": "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+ "sha": "d0a692ef765eefbf2fabb130b3cb2e8917e3d225",
+ "texts": {}
+}

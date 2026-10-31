@@ -16,6 +16,7 @@ use kernel::records::byte_format::format_bytes;
 use serde_json::{Value, json};
 
 use crate::error::CliError;
+use crate::support::engines::faster_line;
 use crate::support::machine;
 use crate::support::output::Out;
 use crate::support::recommend::notes_label;
@@ -60,7 +61,11 @@ pub async fn run(args: RecommendArgs, out: &Out) -> Result<(), CliError> {
     if out.is_json() {
         out.json(&document(&machine, &judged, args.all));
     } else {
-        out.line(&report(&machine, &judged, args.all).join("\n"));
+        let mut lines = report(&machine, &judged, args.all);
+        if let Some(faster) = faster_line(&machine) {
+            lines.insert(machine_lines(&machine).len(), faster);
+        }
+        out.line(&lines.join("\n"));
     }
     Ok(())
 }

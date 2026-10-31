@@ -5,10 +5,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use kernel::records::ModelRecord;
-use kernel::removal::{ModelDeletionReport, RemovalError, preview};
+use kernel::records::{ModelRecord, SourceKind};
+use kernel::removal::{ModelDeletionPreview, ModelDeletionReport, OllamaRoute, RemovalError};
 
-use crate::install::ollama::{daemon_binary, daemon_reachable, error_message, start_daemon};
+use crate::install::ollama::{
+    daemon_binary, daemon_listening_at, daemon_reachable, error_message, start_daemon,
+};
 
 const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
 
@@ -29,7 +31,8 @@ pub fn permanent_delete_trasher() -> Trasher {
     })
 }
 
-/// Removes installed models: trashes files, or deletes Ollama tags via the daemon.
+/// Removes installed models: trashes files, or deletes Ollama tags via the
+/// daemon, or by their files when Ollama is not here.
 pub struct ModelRemover {
     trasher: Trasher,
     ollama: OllamaModelRemover,
@@ -42,10 +45,24 @@ impl ModelRemover {
         Self { trasher, ollama }
     }
 
+    /// What deleting `record` would do: an Ollama model through the daemon
+    /// while Ollama is here, by its files otherwise.
+    pub fn preview(&self, record: &ModelRecord) -> ModelDeletionPreview {
+        let route = if record.source.kind == SourceKind::ollama() {
+            self.ollama.route()
+        } else {
+            OllamaRoute::Daemon
+        };
+        kernel::removal::preview(record, route)
+    }
+
     /// Delete `record`, returning what was removed. Ollama models go through the
-    /// daemon; everything else is trashed file by file.
+    /// daemon while Ollama is here; everything else is trashed file by file.
     pub async fn remove(&self, record: &ModelRecord) -> Result<ModelDeletionReport, RemovalError> {
-        let details = preview(record);
+        let details = self.preview(record);
+        if let Some(why) = details.blocked {
+            return Err(RemovalError::DaemonUnavailable(why));
+        }
         if details.via_daemon {
             let tag = record
                 .source
@@ -115,6 +132,17 @@ impl OllamaModelRemover {
     pub fn with_binary_present(mut self, probe: impl Fn() -> bool + Send + Sync + 'static) -> Self {
         self.binary_present = Some(Box::new(probe));
         self
+    }
+
+    /// How an Ollama model is deleted here: through the daemon when Ollama
+    /// is installed or something answers where it listens, by its files
+    /// otherwise.
+    pub(crate) fn route(&self) -> OllamaRoute {
+        if self.has_binary() || daemon_listening_at(&self.base_url) {
+            OllamaRoute::Daemon
+        } else {
+            OllamaRoute::Files
+        }
     }
 
     fn has_binary(&self) -> bool {

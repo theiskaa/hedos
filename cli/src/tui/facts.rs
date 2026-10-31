@@ -1,7 +1,7 @@
 //! The machine facts the screen shows, gathered once per refresh: memory,
 //! what is loaded and by whom, disk by store, and what the gateway served.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -9,9 +9,10 @@ use gateway::audit::GatewayAuditEntry;
 use gateway::stats::{LatencyPercentiles, percentiles};
 use kernel::discovery;
 use kernel::machine::Machine;
-use kernel::records::ModelRecord;
+use kernel::records::{ModelRecord, RuntimeId};
 use kernel::time::now_millis;
 
+use crate::support::engines::runtimes_needing_uv;
 use crate::support::machine;
 use crate::support::residency::{self, Resident};
 use crate::support::session::Session;
@@ -153,6 +154,9 @@ pub struct Facts {
     /// When these facts were read, in Unix milliseconds; ages are measured
     /// from here so the screen never needs a clock.
     pub collected_at_millis: i64,
+    /// The runtimes on the shelf whose Python environment is not built while
+    /// no uv is here to build it.
+    pub needs_uv: HashSet<RuntimeId>,
 }
 
 impl Facts {
@@ -174,6 +178,7 @@ impl Facts {
             disk_by_store: disk,
             activity: Activity::from_entries(entries, now),
             collected_at_millis: now,
+            needs_uv: runtimes_needing_uv(records),
         }
     }
 
@@ -590,6 +595,7 @@ mod tests {
             disk_by_store: Some(vec![("ollama".into(), 7), ("file".into(), 3)]),
             activity: Activity::default(),
             collected_at_millis: 0,
+            needs_uv: HashSet::new(),
         };
         assert_eq!(facts.resident_bytes(), 15);
         assert_eq!(facts.disk_bytes(), Some(10));

@@ -6,7 +6,7 @@ mod support;
 use std::path::{Path, PathBuf};
 
 use kernel::records::{Capability, ExecutionMode, Modality, ModelRecord, ModelSource, SourceKind};
-use kernel::resolution::{IdentifiedModel, ModelFormat, identify, projector_for};
+use kernel::resolution::{IdentifiedModel, ModelFormat, gguf_facts, identify, projector_for};
 use support::TempDir;
 
 fn record(kind: SourceKind, path: &str) -> ModelRecord {
@@ -1079,7 +1079,7 @@ fn a_snapshots_projector_of_another_width_is_not_its_sight() {
 }
 
 #[test]
-fn a_gguf_with_no_projector_or_from_ollama_has_none_to_serve() {
+fn a_gguf_with_no_projector_or_an_ollama_model_without_a_manifest_has_none_to_serve() {
     let dir = TempDir::new();
     let rec = loose_with_projectors(&dir, "model.gguf", Some("Q8_0"), &[]);
     assert_eq!(projector_for(&rec), None);
@@ -1396,4 +1396,191 @@ fn a_shard_set_whose_first_file_is_a_directory_is_not_a_model() {
 
     let id = identify(&hf_record(&dir, "rev1"));
     assert_eq!(id.format, ModelFormat::Unknown);
+}
+
+/// An Ollama store under `dir` holding one model whose manifest names a weight
+/// blob and, when given, a projector blob, laid out as the daemon writes it.
+/// Returns the record discovery makes of it.
+fn ollama_model(dir: &TempDir, weights: &[u8], projector: Option<&[u8]>) -> ModelRecord {
+    let blobs = dir.path().join("blobs");
+    let model_digest = format!("sha256:{}", "a".repeat(64));
+    let projector_digest = format!("sha256:{}", "b".repeat(64));
+    let weight_blob = blobs.join(model_digest.replace(':', "-"));
+    write(&weight_blob, weights);
+    let mut layers = vec![format!(
+        r#"{{"mediaType":"application/vnd.ollama.image.model","digest":"{model_digest}","size":{}}}"#,
+        weights.len()
+    )];
+    if let Some(projector) = projector {
+        write(&blobs.join(projector_digest.replace(':', "-")), projector);
+        layers.push(format!(
+            r#"{{"mediaType":"application/vnd.ollama.image.projector","digest":"{projector_digest}","size":{}}}"#,
+            projector.len()
+        ));
+    }
+    let manifest = dir
+        .path()
+        .join("manifests/registry.ollama.ai/library/model/latest");
+    write(
+        &manifest,
+        format!(r#"{{"layers":[{}]}}"#, layers.join(",")).as_bytes(),
+    );
+    let mut rec = record(SourceKind::ollama(), manifest.to_str().unwrap());
+    rec.primary_weight_path = Some(weight_blob.to_string_lossy().into_owned());
+    rec
+}
+
+#[test]
+fn an_ollama_model_in_the_classic_layout_is_one_llama_cpp_can_load_with_its_projector() {
+    // llava: a projector layer beside the weights, the template in the GGUF.
+    let dir = TempDir::new();
+    let weights = gguf(&[
+        kv_string("general.architecture", "llama"),
+        kv_u32("llama.embedding_length", 4096),
+        kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ]);
+    let rec = ollama_model(&dir, &weights, Some(&projector_of_width(4096)));
+
+    let id = identify(&rec);
+    assert_eq!(id.format, ModelFormat::OllamaStore);
+    assert!(id.capabilities.contains(&Capability::see()));
+    assert_eq!(id.gguf_chat_template, Some(true));
+    assert_eq!(id.bundled_encoders, Some(false));
+    assert_eq!(
+        projector_for(&rec),
+        Some(
+            dir.path()
+                .join("blobs")
+                .join(format!("sha256-{}", "b".repeat(64)))
+        )
+    );
+}
+
+#[test]
+fn an_ollama_model_with_its_encoders_inside_the_weights_is_marked_so() {
+    // An older gemma4 pull: vision and audio packed into the weight blob, no
+    // projector layer, and no template in the GGUF.
+    let dir = TempDir::new();
+    let weights = gguf(&[
+        kv_string("general.architecture", "gemma4"),
+        kv_u32("gemma4.vision.block_count", 16),
+        kv_u32("gemma4.audio.block_count", 12),
+    ]);
+    let rec = ollama_model(&dir, &weights, None);
+
+    let id = identify(&rec);
+    assert_eq!(id.bundled_encoders, Some(true));
+    assert_eq!(id.gguf_chat_template, Some(false));
+    assert_eq!(projector_for(&rec), None);
+}
+
+#[test]
+fn an_ollama_model_whose_template_is_only_ollamas_has_none_in_its_weights() {
+    // gpt-oss: the template is a Go template layer only Ollama reads.
+    let dir = TempDir::new();
+    let weights = gguf(&[kv_string("general.architecture", "gpt-oss")]);
+    let mut rec = ollama_model(&dir, &weights, None);
+    rec.has_chat_template = Some(true);
+
+    let id = identify(&rec);
+    assert_eq!(id.gguf_chat_template, Some(false));
+    assert_eq!(id.bundled_encoders, Some(false));
+    // The record's own answer counts Ollama's template, so identification
+    // leaves it to the scanner.
+    assert_eq!(id.has_chat_template, None);
+}
+
+#[test]
+fn an_ollama_projector_layer_of_another_width_is_not_served() {
+    let dir = TempDir::new();
+    let weights = weights_of_width("llama", 4096);
+    let rec = ollama_model(&dir, &weights, Some(&projector_of_width(2048)));
+    assert_eq!(projector_for(&rec), None);
+}
+
+#[test]
+fn a_vision_key_named_for_another_architecture_or_a_projector_is_not_a_bundled_encoder() {
+    let dir = TempDir::new();
+    let foreign = dir.path().join("foreign.gguf");
+    write(
+        &foreign,
+        &gguf(&[
+            kv_string("general.architecture", "llama"),
+            kv_u32("gemma4.vision.block_count", 16),
+        ]),
+    );
+    assert!(!gguf_facts(&foreign).unwrap().bundled_encoders);
+
+    let clip = dir.path().join("mmproj.gguf");
+    write(
+        &clip,
+        &gguf(&[
+            kv_string("general.architecture", "clip"),
+            kv_u32("clip.vision.block_count", 27),
+        ]),
+    );
+    assert!(!gguf_facts(&clip).unwrap().bundled_encoders);
+}
+
+#[test]
+fn an_ollama_header_read_only_in_part_leaves_what_it_lacks_unknown() {
+    // The template comes early; the encoder key sits past the 512 pairs the
+    // reader takes, so its absence is not known.
+    let dir = TempDir::new();
+    let mut pairs = vec![
+        kv_string("general.architecture", "gemma4"),
+        kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ];
+    pairs.extend((0..520).map(|index| kv_u32(&format!("filler.{index}"), 0)));
+    pairs.push(kv_u32("gemma4.vision.block_count", 16));
+    let rec = ollama_model(&dir, &gguf(&pairs), None);
+    let id = identify(&rec);
+    assert_eq!(id.gguf_chat_template, Some(true));
+    assert_eq!(id.bundled_encoders, None);
+
+    // A blob cut short inside its pairs says nothing it did not reach.
+    let dir = TempDir::new();
+    let mut truncated = gguf(&[
+        kv_string("general.architecture", "llama"),
+        kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ]);
+    // Declare one more pair than the file holds.
+    truncated[16..24].copy_from_slice(&3u64.to_le_bytes());
+    let rec = ollama_model(&dir, &truncated, None);
+    let id = identify(&rec);
+    assert_eq!(id.gguf_chat_template, Some(true));
+    assert_eq!(id.bundled_encoders, None);
+
+    let dir = TempDir::new();
+    let mut silent = gguf(&[kv_string("general.architecture", "llama")]);
+    silent[16..24].copy_from_slice(&2u64.to_le_bytes());
+    let id = identify(&ollama_model(&dir, &silent, None));
+    assert_eq!(id.gguf_chat_template, None);
+}
+
+#[test]
+fn an_ollama_embedder_on_a_chat_architecture_embeds() {
+    // Qwen3-Embedding: a decoder's name and chat template, pooling by its last
+    // token.
+    let dir = TempDir::new();
+    let weights = gguf(&[
+        kv_string("general.architecture", "qwen3"),
+        kv_u32("qwen3.pooling_type", 3),
+        kv_string("tokenizer.chat_template", "{{ messages }}"),
+    ]);
+    let id = identify(&ollama_model(&dir, &weights, None));
+    assert_eq!(id.capabilities, vec![Capability::embed()]);
+    assert_eq!(id.modality, Some(Modality::embedding()));
+}
+
+#[test]
+fn an_ollama_model_with_its_encoders_inside_still_sees_through_ollama() {
+    let dir = TempDir::new();
+    let weights = gguf(&[
+        kv_string("general.architecture", "gemma4"),
+        kv_u32("gemma4.vision.block_count", 16),
+    ]);
+    let id = identify(&ollama_model(&dir, &weights, None));
+    assert!(id.capabilities.contains(&Capability::chat()));
+    assert!(id.capabilities.contains(&Capability::see()));
 }

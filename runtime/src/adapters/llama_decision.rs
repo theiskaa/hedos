@@ -79,11 +79,13 @@ pub(crate) async fn ask(
     })
 }
 
-/// What it takes to serve a decision model, said when the server on `PATH`
-/// cannot.
+/// What it takes to serve a decision model, said when the `llama-server`
+/// hedos runs cannot.
 pub(crate) fn upgrade_hint(name: &str) -> String {
     format!(
-        "{name} is a decision model, which needs llama.cpp 0.6.0 or newer (brew upgrade llama.cpp)"
+        "{name} is a decision model, which needs llama.cpp 0.6.0 or newer \
+         (`hedos engines` shows the one hedos runs). Run `hedos engines install llama.cpp`, \
+         or upgrade the llama-server on your PATH"
     )
 }
 
@@ -272,7 +274,10 @@ mod tests {
         match refusal(404, ErrorBody::default(), QUESTION, 16384, "clef") {
             RuntimeError::Unavailable(message) => {
                 assert!(message.contains("llama.cpp 0.6.0 or newer"), "{message}");
-                assert!(message.contains("brew upgrade llama.cpp"), "{message}");
+                assert!(
+                    message.contains("hedos engines install llama.cpp"),
+                    "{message}"
+                );
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }

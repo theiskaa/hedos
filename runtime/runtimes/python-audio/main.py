@@ -154,10 +154,22 @@ class Steps:
             raise CancelJob
 
 
+def cuda_runs(torch):
+    # Availability does not mean this build has kernels for the card.
+    # Run a kernel and read it back so asynchronous failures surface here.
+    if not torch.cuda.is_available():
+        return False
+    try:
+        torch.ones(1, device="cuda").sum().item()
+    except RuntimeError:
+        return False
+    return True
+
+
 def device_of(torch):
     if torch.backends.mps.is_available():
         return "mps"
-    if torch.cuda.is_available():
+    if cuda_runs(torch):
         return "cuda"
     return "cpu"
 

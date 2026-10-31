@@ -247,10 +247,22 @@ def position_limit(model_dir):
         return 0
 
 
+def cuda_runs(torch):
+    # Availability does not mean this build has kernels for the card.
+    # Run a kernel and read it back so asynchronous failures surface here.
+    if not torch.cuda.is_available():
+        return False
+    try:
+        torch.ones(1, device="cuda").sum().item()
+    except RuntimeError:
+        return False
+    return True
+
+
 def pick_device():
     import torch
 
-    if torch.cuda.is_available():
+    if cuda_runs(torch):
         return "cuda"
     if torch.backends.mps.is_available():
         return "mps"

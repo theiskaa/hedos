@@ -20,6 +20,9 @@ use crate::sidecar::SidecarSupervisor;
 /// How long a loaded diffusers model stays warm after its last use.
 const WARM_WINDOW: Duration = Duration::from_secs(60);
 
+/// The bundle this sidecar ships as.
+pub(crate) const DIFFUSERS_BUNDLE: &str = "python-diffusers";
+
 /// The diffusers image Python-sidecar adapter.
 pub struct DiffusersAdapter {
     base: SidecarJobAdapter,
@@ -40,7 +43,7 @@ impl DiffusersAdapter {
             base: SidecarJobAdapter::new(
                 SidecarJobSpec {
                     id: RuntimeId::diffusers(),
-                    bundle_name: "python-diffusers",
+                    bundle_name: DIFFUSERS_BUNDLE,
                     preparing_status: "Preparing image runtime…",
                     starting_status: "Starting image runtime…",
                     warm_window: Some(WARM_WINDOW),

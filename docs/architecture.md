@@ -114,7 +114,7 @@ Discovery and resolution happen under one registry lock, so the shelf is never s
 
 ## Runtimes and sidecars
 
-Every built-in adapter is registered whether or not its backend is installed. A capability only actually serves when its backend is there: a `llama-server` binary, the Ollama daemon, `uv` for the Python runtimes, a running image daemon.
+Every built-in adapter is registered whether or not its backend is installed. A capability only actually serves when its backend is there: a `llama-server` binary (release builds carry one, unpacked on first use), the Ollama daemon, `uv` for a Python runtime whose environment is not built yet (one you installed, or the one `hedos engines install uv` installs; a built one runs without it), a running image daemon.
 
 - **`llama-server`** runs one server per model, reused across requests. A cold server is polled on `/health` until it is ready.
 - **The Python sidecars** are long-running child processes speaking a framed protocol over stdin and stdout. Their code ships inside the binary and is unpacked into the data directory on start. Each runtime gets its own Python environment, built by `uv` from a lockfile and rebuilt only when the lockfile changes. A sidecar inherits only an allowlisted environment, so the credentials in your shell are not passed to it.

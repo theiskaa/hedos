@@ -15,22 +15,27 @@ use kernel::jobs::JobHistoryStore;
 use kernel::registry::{Registry, RegistryError};
 
 use crate::adapters::{
-    A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
+    self, A1111Adapter, AppleFoundationAdapter, AppleFoundationBackend, AppleFoundationScanner,
     AudioGenAdapter, ComfyUiAdapter, DaemonLiveness, DiffusersAdapter, EmbeddingsAdapter,
     LlamaServerAdapter, LlamaServerPool, LlamaServerSpawner, ManifestCommandAdapter,
     ManifestSidecarAdapter, MfluxAdapter, MissingWhisperBackend, MlxAudioAdapter, MlxLmAdapter,
-    MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, WhisperCppAdapter, WhisperEngine,
+    MlxVlmAdapter, OllamaAdapter, OpenAiEndpointAdapter, RuntimeError, WhisperCppAdapter,
+    WhisperEngine,
 };
+use crate::engines::llama_cpp;
 use crate::environment::EnvironmentManager;
 use crate::facade::{Kernel, RegisteredAdapter};
 use crate::governor::{GovernorConfig, MemoryGovernor, ResidencyPolicy};
+use crate::install::ollama::ollama_present;
 use crate::install::{
     HFHubAPI, HuggingFaceInstallProvider, InstallProvider, InstallService, InstallTransport,
     OllamaInstallProvider, ReqwestTransport,
 };
-use crate::manifests::{StoreLoad, UserRuntimeStore, host_consent};
-use crate::settings::Settings;
+use crate::manifests::{Hashing, StoreLoad, UserRuntimeStore, host_consent};
+use crate::settings::{Settings, SettingsStore};
 use crate::sidecar::SidecarSupervisor;
+use kernel::machine::LLAMA_CPP_INSTALL_HINT;
+use kernel::records::RuntimeId;
 
 /// The per-user directories Hedos reads and writes.
 pub struct HedosDirs {
@@ -180,7 +185,8 @@ pub fn apple_foundation_scanner() -> Box<dyn StoreScanner> {
 /// The built-in adapter set — the port of the Swift `defaultAdapters`. Each
 /// adapter is present regardless of whether its backend (a `llama-server`
 /// binary, a Python sidecar, the Ollama daemon, an API key) is installed; a
-/// capability only actually serves when its backend is available. The one
+/// capability only actually serves when its backend is available. Ollama alone
+/// bids only when it is here, so its models go to llama.cpp without it. The one
 /// framework-bound adapter still out is MLX-Swift (covered by the mlx
 /// sidecars); Apple Foundation serves through the Swift bridge wherever it
 /// could be built and loaded, else registers a missing backend.
@@ -189,43 +195,69 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
     let workdirs = dirs.sub("workdirs");
     let env_root = dirs.sub("env");
     // The five arguments every Python-sidecar adapter's `new` takes.
-    let args = |name: &str| {
+    let args = |runtime: RuntimeId| {
         (
             governor.clone(),
             SidecarSupervisor::new(),
-            EnvironmentManager::new(env_root.join(name)),
+            EnvironmentManager::new(env_root.join(sidecar_name(&runtime))),
             bundles.clone(),
             workdirs.clone(),
         )
     };
 
+    // The config is read again at each launch, as the machine probe reads it,
+    // so both name the same llama-server after `[engines]` changes. The build
+    // hedos carries is unpacked, or checked whole, before a launch that would
+    // run it.
+    let data = dirs.data.clone();
+    let preparing = Arc::new(move || {
+        let configured = SettingsStore::discover().load().engines.llama_server;
+        let server = llama_cpp::locate(&configured, &data)
+            .ok_or_else(|| RuntimeError::Unavailable(LLAMA_CPP_INSTALL_HINT.to_owned()))?;
+        if server.from == llama_cpp::Source::Bundled
+            && let Some(unpacked) =
+                crate::engines::install::unpack_bundled(&data).map_err(|error| {
+                    RuntimeError::Unavailable(format!(
+                        "unpacking the llama.cpp hedos carries: {error}"
+                    ))
+                })?
+        {
+            return Ok(unpacked.path);
+        }
+        Ok(server.path)
+    });
+    let llama_server = LlamaServerSpawner::locating(preparing);
+
     // Streaming adapters.
     let mut adapters: Vec<RegisteredAdapter> = vec![
-        RegisteredAdapter::streaming(Arc::new(LlamaServerAdapter::new(Arc::new(
-            LlamaServerPool::new(Arc::new(LlamaServerSpawner::new("llama-server"))),
-        )))),
+        RegisteredAdapter::streaming(Arc::new(
+            LlamaServerAdapter::new(Arc::new(LlamaServerPool::new(Arc::new(llama_server))))
+                .with_memory(Arc::new(crate::machine::llama_launch_memory)),
+        )),
         RegisteredAdapter::streaming(Arc::new(WhisperCppAdapter::new(
             governor.clone(),
             WhisperEngine::new(Arc::new(MissingWhisperBackend)),
         ))),
-        RegisteredAdapter::streaming(Arc::new(OllamaAdapter::new())),
+        RegisteredAdapter::streaming(Arc::new(
+            OllamaAdapter::new().with_presence(ollama_present(&readable_env())),
+        )),
         RegisteredAdapter::streaming(Arc::new(AppleFoundationAdapter::new(
             apple_foundation_backend(),
         ))),
     ];
-    let (g, s, e, b, w) = args("mlx-audio");
+    let (g, s, e, b, w) = args(RuntimeId::mlx_audio());
     adapters.push(RegisteredAdapter::streaming(Arc::new(
         MlxAudioAdapter::new(g, s, e, b, w),
     )));
-    let (g, s, e, b, w) = args("mlx-lm");
+    let (g, s, e, b, w) = args(RuntimeId::mlx_lm());
     adapters.push(RegisteredAdapter::streaming(Arc::new(MlxLmAdapter::new(
         g, s, e, b, w,
     ))));
-    let (g, s, e, b, w) = args("mlx-vlm");
+    let (g, s, e, b, w) = args(RuntimeId::mlx_vlm());
     adapters.push(RegisteredAdapter::streaming(Arc::new(MlxVlmAdapter::new(
         g, s, e, b, w,
     ))));
-    let (g, s, e, b, w) = args("embeddings");
+    let (g, s, e, b, w) = args(RuntimeId::embeddings());
     adapters.push(RegisteredAdapter::streaming(Arc::new(
         EmbeddingsAdapter::new(g, s, e, b, w),
     )));
@@ -234,14 +266,14 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
     )));
 
     // Image generation runs through the job path.
-    let (g, s, e, b, w) = args("mflux");
+    let (g, s, e, b, w) = args(RuntimeId::mflux());
     let mflux = Arc::new(MfluxAdapter::new(g, s, e, b, w));
     adapters.push(RegisteredAdapter::with_jobs(mflux.clone(), mflux));
-    let (g, s, e, b, w) = args("diffusers");
+    let (g, s, e, b, w) = args(RuntimeId::diffusers());
     let diffusers = Arc::new(DiffusersAdapter::new(g, s, e, b, w));
     adapters.push(RegisteredAdapter::with_jobs(diffusers.clone(), diffusers));
     // So does audio generation.
-    let (g, s, e, b, w) = args("audio");
+    let (g, s, e, b, w) = args(RuntimeId::audio());
     let audio = Arc::new(AudioGenAdapter::new(g, s, e, b, w));
     adapters.push(RegisteredAdapter::with_jobs(audio.clone(), audio));
     let comfy = Arc::new(ComfyUiAdapter::new(DaemonLiveness::with_defaults()));
@@ -250,6 +282,47 @@ fn default_adapters(governor: &MemoryGovernor, dirs: &HedosDirs) -> Vec<Register
     adapters.push(RegisteredAdapter::with_jobs(a1111.clone(), a1111));
 
     adapters
+}
+
+/// The Python sidecars wired in code, as [`default_adapters`] registers them,
+/// each with the bundle its adapter finds its lockfile in. Each keeps its
+/// environments in `env/<name>`, `<name>` being its id without `python:`
+/// ([`sidecar_name`]).
+pub(crate) fn python_sidecars() -> [(RuntimeId, &'static str); 7] {
+    [
+        (RuntimeId::mlx_audio(), adapters::MLX_AUDIO_BUNDLE),
+        (RuntimeId::mlx_lm(), adapters::MLX_LM_BUNDLE),
+        (RuntimeId::mlx_vlm(), adapters::MLX_VLM_BUNDLE),
+        (RuntimeId::embeddings(), adapters::EMBEDDINGS_BUNDLE),
+        (RuntimeId::mflux(), adapters::MFLUX_BUNDLE),
+        (RuntimeId::diffusers(), adapters::DIFFUSERS_BUNDLE),
+        (RuntimeId::audio(), adapters::AUDIO_BUNDLE),
+    ]
+}
+
+/// The name a Python sidecar's environments directory and bundle are made
+/// from: its id without `python:` (`mlx-lm` for `python:mlx-lm`).
+pub(crate) fn sidecar_name(runtime: &RuntimeId) -> &str {
+    let id = runtime.as_str();
+    id.strip_prefix("python:").unwrap_or(id)
+}
+
+/// The ids of every adapter [`default_adapters`] registers, which no manifest
+/// may take.
+pub(crate) fn built_in_ids() -> HashSet<String> {
+    [
+        RuntimeId::llama_cpp(),
+        RuntimeId::whisper_cpp(),
+        RuntimeId::ollama(),
+        RuntimeId::apple_foundation(),
+        RuntimeId::openai_endpoint(),
+        RuntimeId::comfy_ui(),
+        RuntimeId::a1111(),
+    ]
+    .into_iter()
+    .chain(python_sidecars().map(|(runtime, _)| runtime))
+    .map(|runtime| runtime.as_str().to_owned())
+    .collect()
 }
 
 /// Where the user's own runtime manifests live under `dirs`.
@@ -262,11 +335,21 @@ pub fn runtimes_directory(dirs: &HedosDirs) -> PathBuf {
 /// reserved against the user directory, so a manifest dropped there cannot
 /// shadow a bundle the binary carries.
 fn manifest_runtimes(dirs: &HedosDirs, reserved: &HashSet<String>) -> StoreLoad {
-    let mut load =
-        UserRuntimeStore::new(dirs.sub("bundles").join("Runtimes")).load_shipped(reserved);
+    manifests_hashing(dirs, reserved, Hashing::Hash)
+}
+
+/// [`manifest_runtimes`] without hashing each runtime's directory for
+/// consent: what each declares, for asking whether one builds an environment.
+pub(crate) fn manifest_listing(dirs: &HedosDirs, reserved: &HashSet<String>) -> StoreLoad {
+    manifests_hashing(dirs, reserved, Hashing::Skip)
+}
+
+fn manifests_hashing(dirs: &HedosDirs, reserved: &HashSet<String>, hashing: Hashing) -> StoreLoad {
+    let mut load = UserRuntimeStore::new(dirs.sub("bundles").join("Runtimes"))
+        .load_hashing(reserved, true, hashing);
     let mut taken = reserved.clone();
     taken.extend(load.manifests.iter().map(|manifest| manifest.id.clone()));
-    let user = UserRuntimeStore::new(runtimes_directory(dirs)).load(&taken);
+    let user = UserRuntimeStore::new(runtimes_directory(dirs)).load_hashing(&taken, false, hashing);
     load.manifests.extend(user.manifests);
     load.issues.extend(user.issues);
     load
@@ -401,6 +484,54 @@ mod tests {
         // An unknown model resolves to not-found (proof the facade is live).
         assert!(kernel.voices("nope").await.is_err());
         let _ = std::fs::remove_dir_all(&dirs.data);
+    }
+
+    #[test]
+    fn the_built_in_ids_are_the_adapters_boot_registers() {
+        let dirs = temp_dirs();
+        let governor = MemoryGovernor::new(GovernorConfig::detect());
+        let registered: HashSet<String> = default_adapters(&governor, &dirs)
+            .iter()
+            .map(RegisteredAdapter::id)
+            .collect();
+        assert_eq!(registered, built_in_ids());
+        let python: HashSet<String> = registered
+            .into_iter()
+            .filter(|id| id.starts_with("python:"))
+            .collect();
+        let listed: HashSet<String> = python_sidecars()
+            .iter()
+            .map(|(runtime, _)| runtime.as_str().to_owned())
+            .collect();
+        assert_eq!(python, listed);
+        let _ = std::fs::remove_dir_all(&dirs.data);
+    }
+
+    #[test]
+    fn each_python_sidecar_ships_as_the_bundle_its_adapter_finds() {
+        let shipped = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("runtimes");
+        for (runtime, name) in python_sidecars() {
+            let bundle = shipped.join(name);
+            let manifest = std::fs::read_to_string(bundle.join("manifest.toml"))
+                .unwrap_or_else(|error| panic!("{}: {error}", bundle.display()));
+            let id = manifest
+                .parse::<toml::Table>()
+                .unwrap_or_else(|error| panic!("{}: {error}", bundle.display()))
+                .get("id")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned);
+            assert_eq!(
+                id.as_deref(),
+                Some(runtime.as_str()),
+                "{}",
+                bundle.display()
+            );
+            assert!(
+                bundle.join("requirements.lock").is_file(),
+                "{}",
+                bundle.display()
+            );
+        }
     }
 
     #[test]

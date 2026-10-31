@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::discovery::gguf_shards;
 use crate::install::bytes::saturating_sum;
+use crate::resolution::{is_quantization_name, pick_projector};
 
 const WEIGHT_EXTENSIONS: [&str; 6] = ["safetensors", "gguf", "bin", "ckpt", "pt", "pth"];
 /// Never downloaded: documentation, pictures, and whole models in a form nothing
@@ -17,6 +18,10 @@ const EXCLUDED_EXTENSIONS: [&str; 12] = [
     "md", "png", "jpg", "jpeg", "gif", "webp", "svg", "msgpack", "h5", "ot", "onnx", "tflite",
 ];
 const EXCLUDED_DIRECTORIES: [&str; 3] = ["onnx", "openvino", "coreml"];
+/// The prefixes llama.cpp's own repos give the speculative-decoding drafts they
+/// ship beside a model (`mtp-`, `dflash-`, `eagle3-`): helpers a server can
+/// run alongside the model, never the model a pull is for.
+const DRAFT_PREFIXES: [&str; 3] = ["mtp-", "dflash-", "eagle3-"];
 /// Quantizations in descending preference; the first one present is chosen.
 const QUANT_PREFERENCE: [&str; 6] = ["q4_k_m", "q4_0", "q5_k_m", "q6_k", "q8_0", "f16"];
 /// Companion files kept alongside GGUF weights must be at most this big (10 MiB).
@@ -78,7 +83,7 @@ pub fn file_extension(path: &str) -> String {
 pub fn select(siblings: &[HFSibling]) -> Vec<HFSibling> {
     let kept: Vec<HFSibling> = siblings
         .iter()
-        .filter(|s| is_eligible(s))
+        .filter(|s| is_eligible(s) && !is_draft(s))
         .cloned()
         .collect();
     let ggufs: Vec<HFSibling> = kept
@@ -98,6 +103,17 @@ pub fn select(siblings: &[HFSibling]) -> Vec<HFSibling> {
         return diffusers_selection(&kept);
     }
     transformers_selection(&kept)
+}
+
+/// Whether `sibling` is a speculative-decoding draft (see [`DRAFT_PREFIXES`]).
+fn is_draft(sibling: &HFSibling) -> bool {
+    let name = sibling
+        .rfilename
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    name.ends_with(".gguf") && DRAFT_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
 }
 
 /// The path split into non-empty `/`-segments (empty segments are dropped).
@@ -216,6 +232,47 @@ fn gguf_selection(ggufs: &[HFSibling], others: &[HFSibling]) -> Vec<HFSibling> {
     if chosen.is_empty() {
         return Vec::new();
     }
+    // One projector, the one the weights are served with: a repo shipping it
+    // at several precisions (BF16, F16, F32) needs only one of them pulled.
+    // Its width is not known until it is on disk, so a repo's projectors are
+    // taken to be its model's.
+    let weights_name = chosen
+        .first()
+        .and_then(|s| s.rfilename.rsplit('/').next())
+        .unwrap_or_default();
+    let quantization = weights_name
+        .split(['-', '.'])
+        .find(|part| is_quantization_name(part));
+    let weights_dir = chosen
+        .first()
+        .and_then(|s| s.rfilename.rsplit_once('/'))
+        .map(|(dir, _)| dir);
+    let in_dir = |dir: Option<&str>| -> Vec<HFSibling> {
+        mmproj
+            .iter()
+            .filter(|s| s.rfilename.rsplit_once('/').map(|(parent, _)| parent) == dir)
+            .cloned()
+            .collect()
+    };
+    // Beside the weights, else at the root, which is where a shelf counts a
+    // projector into what serving loads; else anywhere.
+    let candidates = [in_dir(weights_dir), in_dir(None), mmproj.clone()]
+        .into_iter()
+        .find(|candidates| !candidates.is_empty())
+        .unwrap_or_default();
+    let mmproj: Vec<HFSibling> = pick_projector(
+        &candidates,
+        |s| s.rfilename.clone(),
+        |s| {
+            s.bytes
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .unwrap_or(u64::MAX)
+        },
+        quantization,
+    )
+    .into_iter()
+    .cloned()
+    .collect();
     let companions: Vec<HFSibling> = others
         .iter()
         .filter(|s| s.bytes.unwrap_or(0) <= COMPANION_CAP)

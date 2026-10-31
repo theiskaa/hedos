@@ -213,6 +213,14 @@ A paste arrives whole. In a one-line field its line breaks read as spaces, so a 
 
 `u` unloads the selected model from this process, or through the Ollama daemon when the daemon holds it. A model the gateway holds cannot be unloaded from here; it unloads there after its warm window.
 
+### A model whose engine is missing
+
+A model that runs on llama.cpp, on a machine with no `llama-server` (only with a build of hedos that carries none), has a `needs  llama.cpp · w or t installs it` row in its card. Warming, trying, launching, chatting with or benching it (`w`, `t`, `l`, `T`, `b`) opens a card instead that says what installing llama.cpp fetches: the release and build, each archive's URL and sha256, the size, where it goes, and the smaller Vulkan build when the one for this machine is CUDA. `y` installs it as a strip task (`install llama.cpp`, `downloading 34%`, then `unpacking` and `checking it runs`), and the shelf refreshes when it is done; `n` or `esc` installs nothing. Quitting while it runs stops it, and says so; `hedos engines install llama.cpp` starts it again and puts right what the stopped one left. This is the same install as [`hedos engines install llama.cpp`](cli.md#hedos-engines); nothing is installed without that `y`.
+
+A Python model (MLX, diffusers, audio, embeddings, or a manifest runtime with a Python environment) whose environment is not built yet, on a machine with no `uv`, has a `needs  uv · w or t installs it` row instead (`needs  uv · w installs it` for one that does not chat, an image, audio or embedding model, where `w` opens the card though it has nothing to keep warm), and the same keys open the same card for `uv`: the release, the archive's URL and sha256, the size, where it goes, and that the model's first run then fetches Python 3.12 (when the machine has none) and its packages. `y` installs it as a strip task (`install uv`). A model whose environment is built runs without `uv`, so it is never asked for. This is the same install as [`hedos engines install uv`](cli.md#hedos-engines).
+
+A model kept in Ollama's own format, which only Ollama runs, has a `needs  Ollama · only it runs this format` row when Ollama is not installed. hedos does not install Ollama.
+
 ### Removing
 
 `x` opens a card that shows exactly what leaves the disk: the store, the bytes on disk, the path, what happens (`deletes 3 paths permanently, not to the trash`, `removes the tag through the Ollama daemon · ollama rm`, or, for a record whose weights are already gone, `nothing is left on disk; this forgets the record`), and how much will be on disk after. `y` removes, `n` or `esc` keeps.
@@ -386,7 +394,7 @@ The field at the top takes a name, an `owner/repo`, or a `name:tag`. Beside it, 
 The results combine:
 
 - a row for exactly what you typed, when it is a full `owner/repo` or `name:tag` (noted `as typed`),
-- the catalog's recommendations for this machine, the picks of [`hedos recommend`](cli.md#hedos-recommend) and the ones already on the shelf, narrowed by the query; with nothing typed, on the `all` kind, they are grouped under CHAT, CODE, SPEECH and IMAGE. A pick whose engine is not installed says what it needs after its note (`needs Ollama`),
+- the catalog's recommendations for this machine, the picks of [`hedos recommend`](cli.md#hedos-recommend) and the ones already on the shelf, narrowed by the query; with nothing typed, on the `all` kind, they are grouped under CHAT, CODE, SPEECH, IMAGE and AUDIO. Catalog rows show the model's short name (`gemma-4-e4b`); the preview names the repo in full. A pick whose engine is not installed says what it needs after its note (`needs llama.cpp`), and so does a typed Ollama tag on a machine without Ollama (`as typed · needs Ollama`),
 - Hugging Face hits, with their download and like counts.
 
 The list holds up to twelve matches, besides the catalog's models already on the shelf, and Hugging Face hits always keep their places.

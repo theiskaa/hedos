@@ -56,6 +56,14 @@ impl HFCacheLayout {
         self.repo_directory().join("blobs")
     }
 
+    /// Where the hub's own downloader keeps the lock it holds on each blob of
+    /// this repo while it writes it: `.locks/models--<org>--<name>/`.
+    fn locks_directory(&self) -> PathBuf {
+        self.root
+            .join(".locks")
+            .join(format!("models--{}", self.repo.replace('/', "--")))
+    }
+
     fn refs_directory(&self) -> PathBuf {
         self.repo_directory().join("refs")
     }
@@ -397,6 +405,28 @@ impl HFCacheWriter {
         self.reap_incompletes(keeping, cutoff)
     }
 
+    /// Remove the partial blobs named in `superseded`, files the repo lists
+    /// that the current selection does not take (one a pull paused under an
+    /// older rule left, say), once each has gone unwritten for
+    /// [`SUPERSEDED_QUIET`] and no download holds the hub's lock on it. A
+    /// scanner reads any partial in a repo as a download still under way, and
+    /// nothing will resume these; a download in progress, this tool's or
+    /// another's, writes far more often than that and holds its lock.
+    pub(crate) fn remove_superseded_incompletes(&self, superseded: &HashSet<String>) {
+        let cutoff = SystemTime::now()
+            .checked_sub(SUPERSEDED_QUIET)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let one_component = |name: &&String| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        };
+        for name in superseded.iter().filter(one_component) {
+            self.remove_if_abandoned(name, cutoff);
+        }
+    }
+
     /// The reaping core with an explicit cutoff (the seam tests drive). A missing
     /// blobs dir is fine (nothing to reap); other read errors surface.
     fn reap_incompletes(
@@ -419,14 +449,35 @@ impl HFCacheWriter {
             if keeping.contains(base) {
                 continue;
             }
-            if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified())
-                && modified > cutoff
-            {
-                continue;
-            }
-            let _ = fs::remove_file(entry.path());
+            self.remove_if_abandoned(base, cutoff);
         }
         Ok(())
+    }
+
+    /// Remove the partial of blob `base` when it has gone unwritten since
+    /// `cutoff` and the hub's lock on it can be taken. The lock is held
+    /// through the delete and the age checked again under it, so a download
+    /// that takes the lock to resume the partial meanwhile finds it gone
+    /// before it writes, not after.
+    fn remove_if_abandoned(&self, base: &str, cutoff: SystemTime) {
+        let partial = self
+            .layout
+            .blobs_directory()
+            .join(format!("{base}.incomplete"));
+        let quiet = || {
+            fs::metadata(&partial)
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified <= cutoff)
+        };
+        if !quiet() {
+            return;
+        }
+        let Some(_held) = take_lock(&self.layout.locks_directory(), &format!("{base}.lock")) else {
+            return;
+        };
+        if quiet() {
+            let _ = fs::remove_file(&partial);
+        }
     }
 
     /// Delete the whole repo directory.
@@ -543,6 +594,27 @@ fn symlink(target: &str, link: &Path) -> Result<(), InstallError> {
     fs::copy(&source, link).map(|_| ()).map_err(io_err(link))
 }
 
+/// How long a partial of a file the selection no longer takes must have gone
+/// unwritten before it is taken for abandoned.
+const SUPERSEDED_QUIET: Duration = Duration::from_secs(10 * 60);
+
+/// The lock file `name` in `locks` (the hub's downloader takes it with
+/// `flock` while it writes a blob), taken without waiting, made if it is not
+/// there so a download starting now waits for it. `None` when something holds
+/// it or it cannot be opened.
+fn take_lock(locks: &Path, name: &str) -> Option<fs::File> {
+    use fs2::FileExt;
+    fs::create_dir_all(locks).ok()?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(locks.join(name))
+        .ok()?;
+    file.try_lock_exclusive().ok()?;
+    Some(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +671,87 @@ mod tests {
         assert!(blobs.join("keepme.incomplete").exists(), "kept name spared");
         assert!(!blobs.join("stale.incomplete").exists(), "stale reaped");
         assert!(blobs.join("realblob").exists(), "non-incomplete untouched");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_stale_partial_a_download_has_locked_to_resume_is_kept() {
+        use fs2::FileExt;
+        let (root, writer) = temp_writer();
+        writer.prepare_skeleton("rev", None).expect("skeleton");
+        let blobs = writer.layout.blobs_directory();
+        let locks = writer.layout.locks_directory();
+        fs::create_dir_all(&locks).unwrap();
+        let two_days_ago = SystemTime::now() - Duration::from_secs(2 * 24 * 3600);
+        let stale = |name: &str| {
+            let path = blobs.join(format!("{name}.incomplete"));
+            fs::write(&path, b"x").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(two_days_ago)
+                .unwrap();
+            path
+        };
+        let resuming = stale("resuming");
+        let left = stale("left");
+        let held = fs::File::create(locks.join("resuming.lock")).unwrap();
+        held.try_lock_exclusive().unwrap();
+
+        writer
+            .remove_stray_incompletes(&HashSet::new())
+            .expect("reap");
+
+        assert!(
+            resuming.exists(),
+            "its lock is held: a download resuming it"
+        );
+        assert!(!left.exists(), "stale and unlocked: gone");
+        drop(held);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_dropped_file_s_partial_goes_once_quiet_and_unlocked_and_nothing_else() {
+        use fs2::FileExt;
+        let (root, writer) = temp_writer();
+        writer.prepare_skeleton("rev", None).expect("skeleton");
+        let blobs = writer.layout.blobs_directory();
+        let locks = writer.layout.locks_directory();
+        fs::create_dir_all(&locks).unwrap();
+        let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+        let partial = |name: &str, modified: SystemTime| {
+            let path = blobs.join(format!("{name}.incomplete"));
+            fs::write(&path, b"x").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+            path
+        };
+        let abandoned = partial("abandoned", hour_ago);
+        let writing = partial("writing", SystemTime::now());
+        let locked = partial("locked", hour_ago);
+        let wanted = partial("wanted", hour_ago);
+        let held = fs::File::create(locks.join("locked.lock")).unwrap();
+        held.try_lock_exclusive().unwrap();
+        fs::write(root.join("outside.incomplete"), b"w").unwrap();
+
+        let superseded: HashSet<String> = ["abandoned", "writing", "locked", "../outside", ""]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        writer.remove_superseded_incompletes(&superseded);
+
+        assert!(!abandoned.exists(), "quiet and unlocked: gone");
+        assert!(writing.exists(), "written a moment ago: a download");
+        assert!(locked.exists(), "its lock is held: a download");
+        assert!(wanted.exists(), "the selection takes it");
+        assert!(root.join("outside.incomplete").exists());
+        drop(held);
         fs::remove_dir_all(&root).ok();
     }
 

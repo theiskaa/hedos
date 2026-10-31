@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use kernel::install::InstallProviderId;
 use kernel::machine::{Cores, DeviceKind, DevicesFrom, Engine, FreeDisk, Os, Placement};
 
-use super::{Host, probe_with};
+use super::{Host, available_memory, nvidia_driver_under, probe_with, torch_on_the_cpu_under};
 
 const GIB: u64 = 1 << 30;
 
@@ -15,6 +15,7 @@ struct FakeHost {
     os: Os,
     arch: &'static str,
     metal: Option<u64>,
+    reclaimable: Option<u64>,
     programs: Vec<&'static str>,
     outputs: HashMap<&'static str, &'static str>,
     files: HashMap<PathBuf, &'static str>,
@@ -30,6 +31,7 @@ impl FakeHost {
             os,
             arch,
             metal: None,
+            reclaimable: None,
             programs: Vec::new(),
             outputs: HashMap::new(),
             files: HashMap::new(),
@@ -81,6 +83,10 @@ impl Host for FakeHost {
     }
     fn metal_working_set(&self) -> Option<u64> {
         self.metal
+    }
+
+    fn reclaimable_memory(&self) -> Option<u64> {
+        self.reclaimable
     }
     fn find(&self, program: &str) -> Option<PathBuf> {
         self.programs
@@ -252,4 +258,161 @@ fn this_mac_is_read_as_metal_reports_it() {
         }
         None => assert_ne!(machine.devices_from, DevicesFrom::Metal),
     }
+}
+
+#[test]
+fn available_memory_is_linuxs_own_figure_within_the_tightest_cgroup_limit() {
+    let mut host = FakeHost::new(Os::Linux, "x86_64");
+    host.files.insert(
+        PathBuf::from("/proc/meminfo"),
+        "MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\n",
+    );
+    assert_eq!(available_memory(&host), Some(6 * GIB));
+
+    // A service's own cgroup, limited above it.
+    host.files.insert(
+        PathBuf::from("/proc/self/cgroup"),
+        "0::/system.slice/hedos.service\n",
+    );
+    for (dir, max, current) in [
+        (
+            "/sys/fs/cgroup/system.slice/hedos.service",
+            "max\n",
+            "1073741824\n",
+        ),
+        (
+            "/sys/fs/cgroup/system.slice",
+            "4294967296\n",
+            "1073741824\n",
+        ),
+        ("/sys/fs/cgroup", "max\n", "0\n"),
+    ] {
+        host.files
+            .insert(PathBuf::from(dir).join("memory.max"), max);
+        host.files
+            .insert(PathBuf::from(dir).join("memory.current"), current);
+    }
+    assert_eq!(available_memory(&host), Some(3 * GIB));
+
+    // cgroup v1's memory controller.
+    let mut v1 = FakeHost::new(Os::Linux, "x86_64");
+    v1.files
+        .insert(PathBuf::from("/proc/meminfo"), "MemAvailable: 6291456 kB\n");
+    v1.files
+        .insert(PathBuf::from("/proc/self/cgroup"), "9:memory:/docker/abc\n");
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes"),
+        "2147483648\n",
+    );
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/memory/docker/abc/memory.usage_in_bytes"),
+        "0\n",
+    );
+    assert_eq!(available_memory(&v1), Some(2 * GIB));
+
+    // A memory hierarchy mounted elsewhere, showing a cgroup of its own.
+    v1.files.insert(
+        PathBuf::from("/proc/self/mountinfo"),
+        "40 24 0:35 /docker /sys/fs/cgroup/cpu,memory rw - cgroup cgroup rw,cpu,memory\n",
+    );
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/cpu,memory/abc/memory.limit_in_bytes"),
+        "1073741824\n",
+    );
+    v1.files.insert(
+        PathBuf::from("/sys/fs/cgroup/cpu,memory/abc/memory.usage_in_bytes"),
+        "0\n",
+    );
+    assert_eq!(available_memory(&v1), Some(GIB));
+    assert_eq!(available_memory(&FakeHost::new(Os::Macos, "aarch64")), None);
+    let mac = FakeHost {
+        reclaimable: Some(25 * GIB),
+        ..FakeHost::new(Os::Macos, "aarch64")
+    };
+    assert_eq!(available_memory(&mac), Some(25 * GIB));
+    let linux = FakeHost {
+        reclaimable: Some(25 * GIB),
+        ..FakeHost::new(Os::Linux, "x86_64")
+    };
+    assert_eq!(
+        available_memory(&linux),
+        None,
+        "macOS's reading, not Linux's"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn this_mac_says_how_much_memory_is_free_or_reclaimable() {
+    use super::host::SystemHost;
+    let reclaimable = crate::sys::reclaimable_memory().expect("the kernel says");
+    let total = SystemHost.memory_bytes();
+    assert!(
+        reclaimable > 0 && reclaimable <= total,
+        "{reclaimable} of {total}"
+    );
+    // In the units `vm_stat` reads, the kernel's own page size: within a
+    // quarter, as pages move between the two reads.
+    let said = std::process::Command::new("vm_stat")
+        .output()
+        .expect("vm_stat");
+    let said = String::from_utf8_lossy(&said.stdout);
+    let page: u64 = said
+        .split("page size of ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|size| size.parse().ok())
+        .expect("a page size");
+    let pages = |label: &str| -> u64 {
+        said.lines()
+            .find(|line| line.starts_with(label))
+            .and_then(|line| line.rsplit(' ').next())
+            .and_then(|count| count.trim_end_matches('.').parse().ok())
+            .expect("a count")
+    };
+    // `vm_stat` prints speculative pages apart from free ones; the kernel
+    // counts them as free.
+    let expected =
+        (pages("Pages free:") + pages("Pages speculative:") + pages("Pages inactive:")) * page;
+    let (low, high) = (expected - expected / 4, expected + expected / 4);
+    assert!(
+        (low..=high).contains(&reclaimable),
+        "{reclaimable} against vm_stat's {expected}"
+    );
+}
+
+#[test]
+fn nvidia_s_driver_is_seen_from_its_kernel_module_or_wsl_s_cuda_library() {
+    let root = std::env::temp_dir().join(format!("hedos-nvidia-driver-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(!nvidia_driver_under(&root));
+
+    let module = root.join("proc/driver/nvidia");
+    std::fs::create_dir_all(&module).unwrap();
+    assert!(!nvidia_driver_under(&root));
+    std::fs::write(module.join("version"), "NVRM version: 580.65.06").unwrap();
+    assert!(nvidia_driver_under(&root));
+    std::fs::remove_dir_all(root.join("proc")).unwrap();
+
+    let wsl = root.join("usr/lib/wsl/lib");
+    std::fs::create_dir_all(&wsl).unwrap();
+    assert!(!nvidia_driver_under(&root));
+    std::fs::write(wsl.join("libcuda.so.1"), "").unwrap();
+    assert!(nvidia_driver_under(&root));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn torch_runs_on_the_cpu_only_on_linux_without_nvidia_s_driver() {
+    let root = std::env::temp_dir().join(format!("hedos-torch-cpu-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    assert!(torch_on_the_cpu_under(Os::Linux, &root));
+    assert!(!torch_on_the_cpu_under(Os::Macos, &root));
+    let module = root.join("proc/driver/nvidia");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("version"), "NVRM version: 580.65.06").unwrap();
+    assert!(!torch_on_the_cpu_under(Os::Linux, &root));
+    let _ = std::fs::remove_dir_all(&root);
 }

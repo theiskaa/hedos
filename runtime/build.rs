@@ -1,6 +1,8 @@
 //! Packs `runtime/runtimes/` into one gzip-compressed archive at build time, so
 //! `bundled.rs` can embed a single small blob instead of the raw tree, which is
-//! dominated by `requirements.lock` files.
+//! dominated by `requirements.lock` files. A release build also embeds the
+//! pinned llama.cpp build its job fetched (`bundle_llama_cpp`), and a macOS
+//! build compiles the Apple Intelligence shim (`build_apple_shim`).
 //!
 //! Archive format: for each file, in deterministic sorted-by-path order,
 //! `u32 LE path_byte_len`, the relative path (forward-slash separated, relative
@@ -47,6 +49,64 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         build_apple_shim(&manifest_dir, &out_dir);
     }
+
+    bundle_llama_cpp(&out_dir);
+}
+
+/// Carry the pinned llama.cpp build when `HEDOS_LLAMA_CPP_ARCHIVE` names its
+/// archive for the target being built, which a release job fetches before
+/// building, checked against the pin: on macOS llama.cpp's own release
+/// archive, on Linux hedos's own build of the pinned source. Anything else
+/// fails the build. It is cut down to what `llama-server`
+/// needs, compressed with xz into `OUT_DIR`, and the crate is built with
+/// `hedos_bundled_llama`, the digest of what it embeds, and the variant.
+/// Without the variable (a plain `cargo build`, `cargo install`) nothing is
+/// embedded and nothing is fetched: the build never reaches the network.
+fn bundle_llama_cpp(out_dir: &str) {
+    use kernel::engines::bundle::{carried_build, server_files};
+    use kernel::engines::llama_cpp::PINNED;
+    use kernel::machine::Os;
+    use sha2::{Digest, Sha256};
+
+    println!("cargo:rustc-check-cfg=cfg(hedos_bundled_llama)");
+    println!("cargo:rerun-if-env-changed=HEDOS_LLAMA_CPP_ARCHIVE");
+    let Some(archive) = std::env::var_os("HEDOS_LLAMA_CPP_ARCHIVE").filter(|path| !path.is_empty())
+    else {
+        return;
+    };
+    let archive = PathBuf::from(archive);
+    println!("cargo:rerun-if-changed={}", archive.display());
+
+    let os = match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
+        Ok("macos") => Os::Macos,
+        Ok("linux") => Os::Linux,
+        _ => Os::Other,
+    };
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let release = std::fs::read(&archive)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", archive.display()));
+    let variant = carried_build(&PINNED, os, &arch, &hex::encode(Sha256::digest(&release)))
+        .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
+    let server = server_files(&release)
+        .unwrap_or_else(|error| panic!("cutting {} down: {error}", archive.display()));
+    let mut encoder = liblzma::write::XzEncoder::new(Vec::new(), 9);
+    encoder
+        .write_all(&server)
+        .expect("writing to an in-memory xz encoder cannot fail");
+    let compressed = encoder
+        .finish()
+        .expect("finishing an in-memory xz stream cannot fail");
+    std::fs::write(Path::new(out_dir).join("llama-server.tar.xz"), &compressed)
+        .expect("writing the llama.cpp bundle to OUT_DIR cannot fail");
+    println!("cargo:rustc-cfg=hedos_bundled_llama");
+    println!(
+        "cargo:rustc-env=HEDOS_BUNDLED_LLAMA_SHA256={}",
+        hex::encode(Sha256::digest(&compressed))
+    );
+    println!(
+        "cargo:rustc-env=HEDOS_BUNDLED_LLAMA_VARIANT={}",
+        variant.as_str()
+    );
 }
 
 /// Compile the Swift shim over Apple's `FoundationModels` framework

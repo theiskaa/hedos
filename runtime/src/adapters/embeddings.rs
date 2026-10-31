@@ -13,6 +13,9 @@ use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
 use crate::sidecar::SidecarSupervisor;
 
+/// The bundle this sidecar ships as.
+pub(crate) const EMBEDDINGS_BUNDLE: &str = "python-embeddings";
+
 /// The embeddings Python-sidecar adapter.
 pub struct EmbeddingsAdapter {
     base: SidecarAdapter,
@@ -33,7 +36,7 @@ impl EmbeddingsAdapter {
             base: SidecarAdapter::new(
                 SidecarSpec {
                     id: RuntimeId::embeddings(),
-                    bundle_name: "python-embeddings",
+                    bundle_name: EMBEDDINGS_BUNDLE,
                     preparing_status: "Preparing embedding runtime…",
                     starting_status: "Starting embedding runtime…",
                     warm_window: None,

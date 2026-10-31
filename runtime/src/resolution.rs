@@ -33,6 +33,25 @@ use kernel::resolution::{IdentificationCache, IdentifiedModel, ModelFormat, iden
 use crate::adapters::RuntimeAdapter;
 use crate::sidecar::SidecarModelPaths;
 
+/// What identifying a record reads it by: where its weights are. A plan made
+/// from one set of these says nothing about a record that has another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdentityInputs {
+    source: String,
+    primary_weight_path: Option<String>,
+    footprint_bytes: Option<i64>,
+}
+
+impl IdentityInputs {
+    fn of(record: &ModelRecord) -> Self {
+        Self {
+            source: record.source.path.clone(),
+            primary_weight_path: record.primary_weight_path.clone(),
+            footprint_bytes: record.footprint_bytes,
+        }
+    }
+}
+
 /// One adapter's bid, tagged with which adapter offered it.
 struct BidEntry {
     id: RuntimeId,
@@ -142,6 +161,26 @@ impl ResolutionEngine {
         self.resolve_where(
             registry,
             |record| kinds.is_none_or(|kinds| kinds.contains(&record.source.kind)),
+            |_, _| true,
+        )
+    }
+
+    /// Resolve the models in Ollama's store again, so whether Ollama is here
+    /// decides who serves them without a rescan: Ollama while it is installed,
+    /// llama.cpp for the ones it can load once Ollama is gone, and nothing for
+    /// the rest. One downloading or pinned by the user is left alone. Returns
+    /// the records that changed.
+    pub fn resolve_ollama_store(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<Vec<ModelRecord>, RegistryError> {
+        self.resolve_where(
+            registry,
+            |record| {
+                record.source.kind == SourceKind::ollama()
+                    && !record.downloading
+                    && record.runtime.resolved != Resolution::User
+            },
             |_, _| true,
         )
     }
@@ -275,13 +314,13 @@ impl ResolutionEngine {
         select: impl Fn(&ModelRecord) -> bool,
         keep: impl Fn(&ModelRecord, &ResolutionPlan) -> bool,
     ) -> Result<Vec<ModelRecord>, RegistryError> {
-        let plans: HashMap<String, ResolutionPlan> = registry
+        let plans: HashMap<String, (IdentityInputs, ResolutionPlan)> = registry
             .list()
             .into_iter()
             .filter(|record| select(record))
             .filter_map(|record| {
                 let plan = self.plan(record)?;
-                keep(record, &plan).then(|| (record.id.clone(), plan))
+                keep(record, &plan).then(|| (record.id.clone(), (IdentityInputs::of(record), plan)))
             })
             .collect();
         if plans.is_empty() {
@@ -291,7 +330,12 @@ impl ResolutionEngine {
         let live = self.live_adapter_ids();
         let companions = self.companions_held(registry);
         registry.update(&ids, |current| {
-            let plan = plans.get(&current.id)?;
+            let (planned_from, plan) = plans.get(&current.id)?;
+            // Another process rescanned the record since it was planned (a
+            // tag pulled again onto new weights): this plan is not about it.
+            if IdentityInputs::of(current) != *planned_from {
+                return None;
+            }
             self.applied(plan, current, &live, &companions)
         })
     }

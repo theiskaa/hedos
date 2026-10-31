@@ -1,0 +1,66 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   2604
+  ],
+  [
+   ".src_sha",
+   212
+  ],
+  [
+   "README.md",
+   660
+  ],
+  [
+   "convert.log",
+   708072
+  ],
+  [
+   "gemma-4-E4B-it-BF16.gguf",
+   15053097408
+  ],
+  [
+   "gemma-4-E4B-it-Q4_0.gguf",
+   4590807392
+  ],
+  [
+   "gemma-4-E4B-it-Q8_0.gguf",
+   8031242688
+  ],
+  [
+   "mmproj-gemma-4-E4B-it-BF16.gguf",
+   991552256
+  ],
+  [
+   "mmproj-gemma-4-E4B-it-Q8_0.gguf",
+   559874816
+  ],
+  [
+   "mtp-gemma-4-E4B-it-BF16.gguf",
+   171766880
+  ],
+  [
+   "mtp-gemma-4-E4B-it-Q4_0.gguf",
+   59678240
+  ],
+  [
+   "mtp-gemma-4-E4B-it-Q8_0.gguf",
+   98653280
+  ]
+ ],
+ "gguf": {
+  "gemma-4-E4B-it-Q4_0.gguf": {
+   "architecture": "gemma4",
+   "chat_template": true,
+   "context_length": 131072,
+   "embedding_length": 2560
+  },
+  "mmproj-gemma-4-E4B-it-Q8_0.gguf": {
+   "projector_width": 2560
+  }
+ },
+ "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+ "sha": "a69f018d7678a2b9f5e705f8903d6fb29b9b25dc",
+ "texts": {}
+}

@@ -35,6 +35,13 @@ fn kv_u32(key: &str, value: u32) -> Vec<u8> {
     bytes
 }
 
+fn kv_u16(key: &str, value: u16) -> Vec<u8> {
+    let mut bytes = gguf_string(key);
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&value.to_le_bytes());
+    bytes
+}
+
 fn kv_bool(key: &str, value: bool) -> Vec<u8> {
     let mut bytes = gguf_string(key);
     bytes.extend_from_slice(&7u32.to_le_bytes());
@@ -107,6 +114,104 @@ fn gguf_facts_reads_architecture_context_and_template() {
     assert_eq!(facts.context_length, Some(4096));
     assert!(facts.has_chat_template);
     assert_eq!(facts.quantization.as_deref(), Some("Q4_K_M"));
+}
+
+#[test]
+fn gguf_facts_read_the_kv_cache_one_token_takes() {
+    let dir = TempDir::new();
+    // Mistral 7B: 32 layers, 8 KV heads of 128 (4096 wide over 32 heads).
+    let mistral = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "llama"),
+            kv_u32("llama.block_count", 32),
+            kv_u32("llama.embedding_length", 4096),
+            kv_u32("llama.attention.head_count", 32),
+            kv_u32("llama.attention.head_count_kv", 8),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "mistral.gguf", &mistral)).unwrap();
+    assert_eq!(facts.kv_bytes_per_token, Some(32 * 8 * (128 + 128) * 2));
+
+    // Explicit key and value lengths win over the even split, and a model
+    // that names no KV heads keeps one per query head.
+    let explicit = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "qwen3"),
+            kv_u32("qwen3.block_count", 2),
+            kv_u32("qwen3.embedding_length", 1024),
+            kv_u32("qwen3.attention.head_count", 4),
+            kv_u32("qwen3.attention.key_length", 64),
+            kv_u32("qwen3.attention.value_length", 32),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "explicit.gguf", &explicit)).unwrap();
+    assert_eq!(facts.kv_bytes_per_token, Some(2 * 4 * (64 + 32) * 2));
+
+    // Heads that vary by layer, or another architecture's keys, say nothing.
+    let varying = build_gguf(
+        3,
+        &[
+            kv_string("general.architecture", "openelm"),
+            kv_u32("openelm.block_count", 2),
+            kv_u32("openelm.embedding_length", 1024),
+            kv_u32_array("openelm.attention.head_count_kv", &[2, 4]),
+            kv_u32_array("openelm.attention.head_count", &[4, 8]),
+            kv_u32("llama.attention.head_count", 8),
+        ],
+    );
+    let facts = gguf_facts(&write(&dir, "varying.gguf", &varying)).unwrap();
+    assert_eq!(facts.kv_bytes_per_token, None);
+
+    // KV heads given by layer beside one query head count, or a zero, are not
+    // read as one KV head per query head.
+    for kv_heads in [
+        kv_u32_array("llama.attention.head_count_kv", &[8, 8]),
+        kv_u32("llama.attention.head_count_kv", 0),
+    ] {
+        let unusable = build_gguf(
+            3,
+            &[
+                kv_string("general.architecture", "llama"),
+                kv_u32("llama.block_count", 2),
+                kv_u32("llama.embedding_length", 4096),
+                kv_u32("llama.attention.head_count", 32),
+                kv_heads,
+            ],
+        );
+        let facts = gguf_facts(&write(&dir, "unusable.gguf", &unusable)).unwrap();
+        assert_eq!(facts.kv_bytes_per_token, None);
+    }
+}
+
+#[test]
+fn a_header_not_read_to_its_end_leaves_the_kv_cache_unknown() {
+    let dir = TempDir::new();
+    let shape = [
+        kv_string("general.architecture", "llama"),
+        kv_u32("llama.block_count", 32),
+        kv_u32("llama.embedding_length", 4096),
+        kv_u32("llama.attention.head_count", 32),
+    ];
+    // More pairs than the reader goes through, so a KV head count past them
+    // is never read, and its absence says nothing.
+    let mut kvs: Vec<Vec<u8>> = shape.to_vec();
+    kvs.extend((0..600).map(|n| kv_u32(&format!("filler.{n}"), 0)));
+    kvs.push(kv_u32("llama.attention.head_count_kv", 8));
+    let facts = gguf_facts(&write(&dir, "long.gguf", &build_gguf(3, &kvs))).unwrap();
+    assert!(!facts.metadata_complete);
+    assert_eq!(facts.kv_bytes_per_token, None);
+    // Every key the size needs read before the limit, the key and value
+    // lengths among them: known.
+    let mut kvs: Vec<Vec<u8>> = shape.to_vec();
+    kvs.push(kv_u32("llama.attention.head_count_kv", 8));
+    kvs.push(kv_u32("llama.attention.key_length", 128));
+    kvs.push(kv_u32("llama.attention.value_length", 128));
+    kvs.extend((0..600).map(|n| kv_u32(&format!("filler.{n}"), 0)));
+    let facts = gguf_facts(&write(&dir, "early.gguf", &build_gguf(3, &kvs))).unwrap();
+    assert!(!facts.metadata_complete);
+    assert_eq!(facts.kv_bytes_per_token, Some(32 * 8 * (128 + 128) * 2));
 }
 
 #[test]
@@ -676,4 +781,154 @@ fn safetensors_non_string_format_is_none() {
         &safetensors_bytes(r#"{"__metadata__":{"format":123}}"#),
     );
     assert_eq!(safetensors_header_format(&file), None);
+}
+
+#[test]
+fn a_hub_models_split_weights_launch_by_the_snapshots_shard_link() {
+    use kernel::records::{ModelRecord, ModelSource, SourceKind};
+    use kernel::resolution::launch_gguf_path;
+    let dir = TempDir::new();
+    let repo = dir.path().join("models--org--split");
+    let blobs = repo.join("blobs");
+    let snapshot = repo.join("snapshots").join("rev");
+    std::fs::create_dir_all(&blobs).unwrap();
+    std::fs::create_dir_all(snapshot.join("Q4")).unwrap();
+    for (blob, link, split) in [
+        ("aaa", "Q4/m-00001-of-00002.gguf", true),
+        ("bbb", "Q4/m-00002-of-00002.gguf", true),
+        ("ccc", "single.gguf", false),
+    ] {
+        let mut kvs = vec![kv_string("general.architecture", "llama")];
+        if split {
+            kvs.push(kv_u16("split.count", 2));
+        }
+        std::fs::write(blobs.join(blob), build_gguf(3, &kvs)).unwrap();
+        std::os::unix::fs::symlink(blobs.join(blob), snapshot.join(link)).unwrap();
+    }
+    // A link named as a second shard but reaching the first one's blob,
+    // sorted ahead of the real one, is never taken for it.
+    std::fs::create_dir_all(snapshot.join("A")).unwrap();
+    std::os::unix::fs::symlink(blobs.join("aaa"), snapshot.join("A/m-00002-of-00002.gguf"))
+        .unwrap();
+    let record = |primary: &str| {
+        let mut source = ModelSource::new(SourceKind::huggingface_cache(), &repo.to_string_lossy());
+        source.reference = Some("rev".to_owned());
+        let mut record = ModelRecord::new("m", Modality::text(), Vec::new(), source);
+        record.primary_weight_path = Some(
+            std::fs::canonicalize(blobs.join(primary))
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        record
+    };
+    // The first shard's blob launches by its link, named so llama.cpp finds
+    // the second.
+    assert_eq!(
+        launch_gguf_path(&record("aaa")),
+        snapshot.join("Q4/m-00001-of-00002.gguf")
+    );
+    // Asked again, the same answer.
+    assert_eq!(
+        launch_gguf_path(&record("aaa")),
+        snapshot.join("Q4/m-00001-of-00002.gguf")
+    );
+    // A single file needs no name: its blob is loaded as it is.
+    let single = record("ccc");
+    assert_eq!(
+        launch_gguf_path(&single),
+        std::path::PathBuf::from(single.primary_weight_path.clone().unwrap())
+    );
+    // A split model asked about before its link is there (still downloading)
+    // finds the link once it is, even inside a folder.
+    let late = blobs.join("ddd");
+    std::fs::write(
+        &late,
+        build_gguf(
+            3,
+            &[
+                kv_string("general.architecture", "llama"),
+                kv_u16("split.count", 2),
+            ],
+        ),
+    )
+    .unwrap();
+    let early = record("ddd");
+    assert_eq!(
+        launch_gguf_path(&early),
+        std::path::PathBuf::from(early.primary_weight_path.clone().unwrap())
+    );
+    std::fs::create_dir_all(snapshot.join("Q8")).unwrap();
+    std::os::unix::fs::symlink(&late, snapshot.join("Q8/l-00001-of-00002.gguf")).unwrap();
+    assert_eq!(
+        launch_gguf_path(&early),
+        snapshot.join("Q8/l-00001-of-00002.gguf")
+    );
+
+    // Another snapshot holding the same first shard gets its own link, never
+    // one kept for the first snapshot.
+    let other = repo.join("snapshots").join("rev2");
+    std::fs::create_dir_all(&other).unwrap();
+    std::os::unix::fs::symlink(blobs.join("aaa"), other.join("n-00001-of-00002.gguf")).unwrap();
+    let mut second = record("aaa");
+    second.source.reference = Some("rev2".to_owned());
+    assert_eq!(
+        launch_gguf_path(&second),
+        other.join("n-00001-of-00002.gguf")
+    );
+
+    // A blob read as a single file, rewritten as a split one, is read again.
+    let single_blob = blobs.join("eee");
+    std::fs::write(
+        &single_blob,
+        build_gguf(3, &[kv_string("general.architecture", "llama")]),
+    )
+    .unwrap();
+    let rewritten = record("eee");
+    assert_eq!(
+        launch_gguf_path(&rewritten),
+        std::path::PathBuf::from(rewritten.primary_weight_path.clone().unwrap())
+    );
+    std::fs::write(
+        &single_blob,
+        build_gguf(
+            3,
+            &[
+                kv_string("general.architecture", "llama"),
+                kv_u16("split.count", 2),
+                kv_string("general.name", "now split"),
+            ],
+        ),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&single_blob, snapshot.join("e-00001-of-00002.gguf")).unwrap();
+    assert_eq!(
+        launch_gguf_path(&rewritten),
+        snapshot.join("e-00001-of-00002.gguf")
+    );
+
+    // A link kept but since removed is not used.
+    std::fs::remove_file(snapshot.join("Q4/m-00001-of-00002.gguf")).unwrap();
+    let unlinked = record("aaa");
+    assert_eq!(
+        launch_gguf_path(&unlinked),
+        std::path::PathBuf::from(unlinked.primary_weight_path.clone().unwrap())
+    );
+
+    // A record whose snapshot is gone loads its blob, never another
+    // revision's link to it.
+    let mut gone = record("aaa");
+    gone.source.reference = Some("removed".to_owned());
+    assert_eq!(
+        launch_gguf_path(&gone),
+        std::path::PathBuf::from(gone.primary_weight_path.clone().unwrap())
+    );
+
+    // Outside a hub snapshot the primary weight is loaded.
+    let mut loose = record("aaa");
+    loose.source.kind = SourceKind::file();
+    assert_eq!(
+        launch_gguf_path(&loose),
+        std::path::PathBuf::from(loose.primary_weight_path.clone().unwrap())
+    );
 }

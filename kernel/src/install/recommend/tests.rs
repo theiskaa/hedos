@@ -52,11 +52,19 @@ fn a_big_mac_gets_the_largest_three_that_run_well_in_each_category() {
     let recs = run(&m5_pro(), &[], false);
     assert_eq!(
         picks_in(&recs, InstallCategory::Chat),
-        ["qwen3.8:27b", "gemma4:26b", "gemma4:31b"]
+        [
+            "ggml-org/gemma-4-26B-A4B-it-GGUF",
+            "ggml-org/gemma-4-31B-it-GGUF",
+            "ggml-org/Qwen3.8-27B-GGUF"
+        ]
     );
     assert_eq!(
         picks_in(&recs, InstallCategory::Code),
-        ["qwen2.5-coder:14b", "qwen3.6:27b-coding", "qwen3-coder:30b"]
+        [
+            "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+            "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            "ggml-org/Qwen3.6-27B-GGUF"
+        ]
     );
     assert_eq!(
         picks_in(&recs, InstallCategory::Voice),
@@ -79,12 +87,12 @@ fn what_is_past_the_working_set_is_too_large_and_shown_only_when_asked() {
     assert!(
         !shown
             .iter()
-            .any(|rec| rec.entry.reference == "gpt-oss:120b")
+            .any(|rec| rec.entry.reference == "ggml-org/gpt-oss-120b-GGUF")
     );
     let all = run(&m5_pro(), &[], true);
     let big = all
         .iter()
-        .find(|rec| rec.entry.reference == "gpt-oss:120b")
+        .find(|rec| rec.entry.reference == "ggml-org/gpt-oss-120b-GGUF")
         .unwrap();
     assert_eq!(big.status, Status::TooLarge);
     assert_eq!(big.fit.unwrap().assessment.verdict, FitVerdict::TooLarge);
@@ -95,11 +103,18 @@ fn a_small_mac_is_judged_against_its_working_set() {
     let recs = run(&small_mac(), &[], true);
     assert_eq!(
         picks_in(&recs, InstallCategory::Chat),
-        ["qwen3.5:4b", "gemma4:e4b", "gemma4:12b"]
+        [
+            "unsloth/Qwen3.5-4B-GGUF",
+            "ggml-org/gemma-4-E4B-it-GGUF",
+            "ggml-org/gemma-4-12B-it-GGUF"
+        ]
     );
     // 14b fits only tightly in 10.7 GiB, so the one model that runs well is
     // the only pick.
-    assert_eq!(picks_in(&recs, InstallCategory::Code), ["qwen2.5-coder:7b"]);
+    assert_eq!(
+        picks_in(&recs, InstallCategory::Code),
+        ["Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"]
+    );
     assert!(picks_in(&recs, InstallCategory::Image).is_empty());
     assert_eq!(
         with_status(&recs, Status::TooLarge)
@@ -112,32 +127,44 @@ fn a_small_mac_is_judged_against_its_working_set() {
 
 #[test]
 fn what_is_on_the_shelf_takes_no_pick_and_is_listed() {
-    let recs = run(&m5_pro(), &["gemma4:31b"], false);
+    // What the shelf knows a pulled repo by, lowercased.
+    let recs = run(&m5_pro(), &["gemma-4-31b-it-gguf"], false);
     assert_eq!(
         picks_in(&recs, InstallCategory::Chat),
-        ["gpt-oss:20b", "qwen3.8:27b", "gemma4:26b"]
+        [
+            "ggml-org/gpt-oss-20b-GGUF",
+            "ggml-org/gemma-4-26B-A4B-it-GGUF",
+            "ggml-org/Qwen3.8-27B-GGUF"
+        ]
     );
-    assert_eq!(with_status(&recs, Status::OnShelf), ["gemma4:31b"]);
+    assert_eq!(
+        with_status(&recs, Status::OnShelf),
+        ["ggml-org/gemma-4-31B-it-GGUF"]
+    );
 }
 
 #[test]
 fn with_nothing_running_well_the_smallest_that_fits_is_the_pick() {
-    // 1.32 GB × 1.25 of 2 GiB is 77 %: a tight fit, the only one.
-    let recs = run(&cpu_only(2), &[], false);
+    // 0.74 GB × 1.25 of 1 GiB is 86 %: a tight fit, the only one.
+    let recs = run(&cpu_only(1), &[], false);
     let chat = picks_in(&recs, InstallCategory::Chat);
-    assert_eq!(chat, ["qwen3.5:0.8b"]);
+    assert_eq!(chat, ["unsloth/Qwen3.5-0.8B-GGUF"]);
     let pick = recs
         .iter()
-        .find(|rec| rec.entry.reference == "qwen3.5:0.8b")
+        .find(|rec| rec.entry.reference == "unsloth/Qwen3.5-0.8B-GGUF")
         .unwrap();
     assert_eq!(pick.fit.unwrap().assessment.verdict, FitVerdict::TightFit);
 }
 
 #[test]
 fn with_nothing_fitting_there_is_no_pick() {
-    let recs = run(&cpu_only(1), &[], false);
+    let tiny = Machine {
+        memory_bytes: 768 << 20,
+        ..cpu_only(1)
+    };
+    let recs = run(&tiny, &[], false);
     assert!(picks_in(&recs, InstallCategory::Chat).is_empty());
-    let all = run(&cpu_only(1), &[], true);
+    let all = run(&tiny, &[], true);
     assert!(
         all.iter()
             .filter(|rec| rec.entry.category == InstallCategory::Chat)
@@ -198,11 +225,11 @@ fn a_download_past_the_free_disk_says_so() {
     machine.free_disk = vec![
         FreeDisk {
             provider: InstallProviderId::ollama(),
-            bytes: 19_000_000_000,
+            bytes: 400_000_000_000,
         },
         FreeDisk {
             provider: InstallProviderId::huggingface(),
-            bytes: 400_000_000_000,
+            bytes: 19_000_000_000,
         },
     ];
     let recs = run(&machine, &[], false);
@@ -213,17 +240,15 @@ fn a_download_past_the_free_disk_says_so() {
             .notes
             .clone()
     };
-    // 18.73 GB × 1.05 is past 19 GB; 17.74 GB × 1.05 is not.
+    // 18.80 GB × 1.05 is past 19 GB; 15.43 GB × 1.05 is not.
     assert_eq!(
-        note_of("gemma4:26b"),
+        note_of("ggml-org/gemma-4-31B-it-GGUF"),
         [Note::Disk {
-            needs: (18_731_025_387_f64 * DISK_HEADROOM) as u64,
+            needs: (18_802_495_759_f64 * DISK_HEADROOM) as u64,
             free: 19_000_000_000
         }]
     );
-    assert!(note_of("qwen3.8:27b").is_empty());
-    // Hugging Face pulls land on the disk with room.
-    assert!(note_of("stabilityai/stable-diffusion-xl-base-1.0").is_empty());
+    assert!(note_of("ggml-org/gemma-4-26B-A4B-it-GGUF").is_empty());
 }
 
 #[test]
@@ -234,7 +259,11 @@ fn a_card_too_small_for_a_model_runs_it_from_memory() {
     // that run well there are the picks, each spilling.
     assert_eq!(
         picks_in(&recs, InstallCategory::Chat),
-        ["qwen3.8:27b", "gemma4:26b", "gemma4:31b"]
+        [
+            "ggml-org/gemma-4-26B-A4B-it-GGUF",
+            "ggml-org/gemma-4-31B-it-GGUF",
+            "ggml-org/Qwen3.8-27B-GGUF"
+        ]
     );
     let placement = |reference: &str| {
         recs.iter()
@@ -242,8 +271,14 @@ fn a_card_too_small_for_a_model_runs_it_from_memory() {
             .and_then(|rec| rec.fit)
             .map(|fit| fit.placement)
     };
-    assert_eq!(placement("gemma4:31b"), Some(Placement::Spill));
-    assert_eq!(placement("gemma4:12b"), Some(Placement::Gpu));
+    assert_eq!(
+        placement("ggml-org/gemma-4-31B-it-GGUF"),
+        Some(Placement::Spill)
+    );
+    assert_eq!(
+        placement("ggml-org/gemma-4-12B-it-GGUF"),
+        Some(Placement::Gpu)
+    );
 }
 
 #[test]

@@ -1,0 +1,74 @@
+{
+ "files": [
+  [
+   ".gitattributes",
+   2141
+  ],
+  [
+   ".src_sha",
+   97
+  ],
+  [
+   "Qwen3.6-27B-BF16.gguf",
+   53808280864
+  ],
+  [
+   "Qwen3.6-27B-Q4_K_M.gguf",
+   19095766304
+  ],
+  [
+   "Qwen3.6-27B-Q8_0.gguf",
+   28595762464
+  ],
+  [
+   "README.md",
+   486
+  ],
+  [
+   "convert.log",
+   511563
+  ],
+  [
+   "dflash-Qwen3.6-27B-BF16.gguf",
+   3471497440
+  ],
+  [
+   "dflash-Qwen3.6-27B-Q8_0.gguf",
+   1849481440
+  ],
+  [
+   "mmproj-Qwen3.6-27B-BF16.gguf",
+   931145984
+  ],
+  [
+   "mmproj-Qwen3.6-27B-Q8_0.gguf",
+   629247104
+  ],
+  [
+   "mtp-Qwen3.6-27B-BF16.gguf",
+   5946008800
+  ],
+  [
+   "mtp-Qwen3.6-27B-Q4_0.gguf",
+   1680270560
+  ],
+  [
+   "mtp-Qwen3.6-27B-Q8_0.gguf",
+   3164005600
+  ]
+ ],
+ "gguf": {
+  "Qwen3.6-27B-Q4_K_M.gguf": {
+   "architecture": "qwen35",
+   "chat_template": true,
+   "context_length": 262144,
+   "embedding_length": 5120
+  },
+  "mmproj-Qwen3.6-27B-Q8_0.gguf": {
+   "projector_width": 5120
+  }
+ },
+ "repo": "ggml-org/Qwen3.6-27B-GGUF",
+ "sha": "1132d03976d88e30a09ab0ddbf1531d5e1b46e7c",
+ "texts": {}
+}

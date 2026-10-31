@@ -144,12 +144,24 @@ def load_pinned(model_dir, pinned=PINNED_SOURCES):
     return sys.modules[pinned[-1][0]]
 
 
+def cuda_runs(torch):
+    # Availability does not mean this build has kernels for the card.
+    # Run a kernel and read it back so asynchronous failures surface here.
+    if not torch.cuda.is_available():
+        return False
+    try:
+        torch.ones(1, device="cuda").sum().item()
+    except RuntimeError:
+        return False
+    return True
+
+
 def pick_device():
     import torch
 
     # The model's own loader only knows cuda and cpu, so on Apple Silicon it
     # would settle on the CPU without saying so.
-    if torch.cuda.is_available():
+    if cuda_runs(torch):
         return "cuda"
     if torch.backends.mps.is_available():
         return "mps"

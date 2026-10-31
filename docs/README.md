@@ -7,6 +7,7 @@ These guides go deeper than the top-level [README](../README.md). Start with get
 - **[Shelf](shelf.md)** is a guide to `hedos shelf`, the terminal screen: its layout, every key, the try, pull, pulls and bench screens, and running it over ssh or in tmux.
 - **[Gateway](gateway.md)** covers the local HTTP server: the OpenAI, Ollama, and Anthropic endpoints, and how to point tools at it.
 - **[Models](models.md)** explains discovery, installing, and removing models, and how weights are handled.
+- **[Engines](engines.md)** explains what models run on: the llama.cpp hedos carries, installing llama.cpp and uv, Ollama being optional, and how PyTorch's CUDA or CPU build is chosen.
 - **[Configuration](configuration.md)** lists the settings file, the data directory, and the environment variables hedos reads.
 - **[Architecture](architecture.md)** describes the four crates, the kernel-first design, and how a request flows from the CLI down to a runtime.
 

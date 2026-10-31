@@ -66,6 +66,12 @@ Values outside a range are clamped to it.
 | `job_history_limit` | integer | `50` | How many finished jobs (image generation and the like) to keep in history. |
 | `check_for_updates` | boolean | `true` | Whether commands look, once a day, for a newer hedos release and end with a line saying when one is out. See [`hedos upgrade`](cli.md#hedos-upgrade). |
 
+#### `[engines]`
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `llama_server` | string | `""` | An absolute path to the `llama-server` hedos runs GGUF models with, ahead of a build `hedos engines install llama.cpp` installed, the build hedos carries, and the one on the `PATH`. Empty means unset; a path that is not absolute or not executable is passed over. Read again each time a model server starts. See [`hedos engines`](cli.md#hedos-engines) and [engines.md](engines.md). |
+
 #### Keys hedos writes but does not read
 
 When hedos saves the file it writes every key it knows, so a saved file also carries `[models] approved_network_runtimes` and `approved_network_runtime_hashes`, `[chat] default_model_id`, `show_stats`, `send_with_enter` and `default_bench`, a `[voice]` table (`default_voice`, `speed`, `auto_speak`), and `[gateway] enabled`, `host` and `max_connections`. The current build does not act on any of them. In particular, changing `host` does not move the gateway off `127.0.0.1`.
@@ -102,6 +108,9 @@ keep_ended = 20
 [advanced]
 job_history_limit = 50
 check_for_updates = true
+
+[engines]
+llama_server = ""
 ```
 
 Every value here is optional. A file with only `[models] keep_warm = "one_hour"` is complete.
@@ -118,12 +127,14 @@ State lives under `~/.local/share/hedos`, or `$XDG_DATA_HOME/hedos` when that va
 | `pulls/` | One directory per pull: what it fetches, where it stands, and its history. The pull workers, the CLI and the shelf coordinate through it. |
 | `gateway/` | The gateway's audit log, `audit.jsonl`, one JSON line per request. It rotates at 5 MiB. `hedos stats` and the shelf read it. |
 | `bundles/` | The Python runtime code that ships inside the binary, unpacked on start. `bundles/Runtimes/` also holds the shipped runtime manifests. |
-| `env/` | The Python environments the sidecar runtimes build with `uv`, one per runtime. `env/manifests/` holds the ones for manifest runtimes. |
+| `env/` | The Python environments the sidecar runtimes build with `uv`: a directory per runtime (`env/mlx-lm/`, `env/audio/`, ...), each with its package cache (`uv-cache/`). `env/manifests/` holds the ones for manifest runtimes, and `env/python/` the Python `uv` downloads when the machine has no 3.12. |
 | `workdirs/` | Scratch directories for the sidecar runtimes. |
 | `runtimes.d/` | Your own runtime manifests. See below. |
 | `launch/` | The harness configuration `hedos launch` generates. Your own harness config is never touched. |
 | `ui/` | What the shelf screen remembers between runs. |
 | `upgrade-check.json` | When hedos last looked for a newer release, and the newest it found. |
+| `engines/llama.cpp/` | The llama.cpp builds hedos runs: the one it carries, unpacked the first time a model runs (`b11669-metal-bundled/`, with llama.cpp's `LICENSE`), and one `hedos engines install llama.cpp` installed (`b11669-cuda-12/`), each with an `installed.json` saying which. `hedos engines remove llama.cpp` removes both; the carried one unpacks again when next needed. |
+| `engines/uv/` | The `uv` versions `hedos engines install uv` installed, one directory each (`0.13.4/`, with `uv`, `uvx` and an `installed.json`). hedos runs the pinned one, else the one installed last. `hedos engines remove uv` removes them. |
 
 None of this holds model weights. Removing the whole directory loses the registry, generated artifacts, history and pull records, but no model: the next `hedos scan` finds them all again.
 
@@ -154,11 +165,13 @@ hedos sees exactly one Hugging Face cache from the environment, the same rule th
 
 | Variable | Effect |
 |---|---|
-| `PATH` | Where hedos finds `llama-server`, the coding harnesses for `hedos launch`, and (after a few standard install locations) `ollama` and `uv`. |
+| `PATH` | Where hedos finds `llama-server` (after `engines.llama_server`, the build hedos installed, and the one it carries, and before Homebrew's `/opt/homebrew/bin` and `/usr/local/bin`), the coding harnesses for `hedos launch`, and `ollama` and `uv`, after a few standard install locations (and for `uv`, after the one hedos installed). |
 | `HEDOS_OPENAI_API_KEY` | The API key the OpenAI-compatible endpoint runtime sends, to every endpoint. |
 | `HEDOS_APPLE_SHIM` | The full path to `libhedos_apple_shim.dylib`, the Apple Intelligence bridge. Tried before the copy next to the `hedos` binary. |
 
-hedos looks for `ollama` in `/usr/local/bin`, `/opt/homebrew/bin` and `~/.local/bin` before `PATH`, and for `uv` in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` before `PATH`.
+hedos looks for `ollama` in `/usr/local/bin`, `/opt/homebrew/bin` and `~/.local/bin` before `PATH`, and for `uv` in its own `engines/uv/` (what `hedos engines install uv` put there), then `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, before `PATH`.
+
+`uv` runs with only the environment hedos passes a sidecar, so variables such as `UV_INDEX_URL` in your shell do not reach it; a mirror or index set in `uv.toml` does (`~/.config/uv/uv.toml`, or under `XDG_CONFIG_HOME` when you set it). Every package is checked against a hash in the lockfile whatever that file says (`--require-hashes`).
 
 The Python sidecars do not inherit your whole environment. They get an allowlist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, the locale and time zone, the temp and proxy variables, and the platform's library path), plus what the runtime itself declares. Credentials in your shell are not passed on.
 
@@ -208,7 +221,7 @@ laya can run on python:laya, which needs your approval: `hedos runtimes approve 
 
 `approve` shows the runtime's files, what it runs and installs, the release it downloads and that release's sha256 when it pins one, the paths and network access it declares, the models it would serve, and its hash, then asks you to confirm (`-y` skips the question). A pinned release is downloaded and checked before the approval is recorded, so a failed download approves nothing; running `approve` again retries it. It records the id in `models.approved_host_runtimes` and the hash in `models.approved_host_runtime_hashes`. What a manifest declares is its own account and is not enforced.
 
-The hash covers the manifest and every file beside it. If any of them changes, the approval stops counting and `hedos runtimes` shows the runtime as `changed since approval` until you approve it again.
+The hash covers the manifest, every file beside it, and the lockfile and its CPU variant wherever the manifest's path to them leads. If any of them changes, the approval stops counting and `hedos runtimes` shows the runtime as `changed since approval` until you approve it again.
 
 Approvals are read when a process starts. After approving or revoking, restart a running `hedos serve` (the command reminds you when one is running).
 
@@ -289,7 +302,7 @@ hedos looks for each companion among the Hugging Face repos on the shelf and pas
 
 ### Bringing an audio model
 
-A model that makes audio with its own code (HeartMuLa, DiffRhythm, Stable Audio 3, or one hedos has never heard of) is served by a runtime folder in `runtimes.d`, with no change to hedos: `python:yue2` is built this way. hedos has to see that the model makes audio before a runtime can lend it the `audio` capability: its `config.json` names a model type hedos knows as an audio generator, or its model card (`README.md`) is filed under `text-to-audio` or `text-to-music`, or tagged `music` with no chat template beside it. A model with none of these whose architecture ends in `ForCausalLM` reads as a chat model and keeps `chat`; give it a card that says what it is. The folder holds a `manifest.toml`, a `requirements.lock` (`uv pip compile --generate-hashes`), and a `main.py`:
+A model that makes audio with its own code (HeartMuLa, DiffRhythm, Stable Audio 3, or one hedos has never heard of) is served by a runtime folder in `runtimes.d`, with no change to hedos: `python:yue2` is built this way. hedos has to see that the model makes audio before a runtime can lend it the `audio` capability: its `config.json` names a model type hedos knows as an audio generator, or its model card (`README.md`) is filed under `text-to-audio` or `text-to-music`, or tagged `music` with no chat template beside it. A model with none of these whose architecture ends in `ForCausalLM` reads as a chat model and keeps `chat`; give it a card that says what it is. The folder holds a `manifest.toml`, a `requirements.lock` (`uv pip compile --generate-hashes`; every requirement needs a hash, since hedos installs with `--require-hashes`), and a `main.py`:
 
 ```toml
 id           = "python:my-music"
@@ -316,6 +329,8 @@ lockfile = "requirements.lock"
 [serve]
 entrypoint = "main.py"
 ```
+
+A runtime that needs torch can ship a CPU variant beside its lock. `requirements.lock` takes PyPI's torch (compile it with `--universal`), the CUDA build on Linux and the Metal one on a Mac; `requirements.cpu.lock` takes PyTorch's CPU build (compile it with `--universal --torch-backend cpu`), and hedos installs it in the lock's place on Linux when NVIDIA's driver is not loaded. It installs the variant with `--torch-backend cpu`, so torch and the packages around it (torchaudio, torchvision and the like) come from PyTorch's index and every other package from uv's usual index (PyPI, or a mirror a `uv.toml` names), as they were locked; that takes uv 0.6.9 or later. Any lockfile with a `.cpu` variant beside it (`deps.cpu.lock` for `deps.lock`) is read this way, so leave none beside a lock compiled otherwise. The shipped torch runtimes are built this way.
 
 hedos starts `main.py --model <snapshot> --workdir <dir>`, plus `--companion <role>=<snapshot>` for each companion, and speaks to it in frames on stdin and stdout: a little-endian `u32` length (of what follows), a type byte (`1` for JSON, `2` for bytes), then the payload. Anything the model's libraries print belongs on stderr, so `main.py` moves stdout aside first (see a shipped runtime's opening lines).
 

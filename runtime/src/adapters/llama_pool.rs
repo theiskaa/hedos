@@ -10,23 +10,23 @@
 //! [`LlamaServerPool::evict`] is the escape hatch for a hung-but-alive server (the
 //! pool can't detect one, only a crash); slot-map entries are not evicted (bounded
 //! by the number of distinct model ids); and `free_port` is a bind-then-drop that
-//! can, rarely, race a concurrent cold-start for a different model (which then
-//! surfaces as a clean `Unavailable`, no retry).
+//! can, rarely, lose the port before the server binds it, which is then tried
+//! again on another port.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use kernel::machine::LLAMA_CPP_INSTALL_HINT;
 use kernel::records::ModelRecord;
-use kernel::resolution::projector_for;
+use kernel::resolution::{launch_gguf_path, projector_for};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::RuntimeError;
-use super::llama_server::{
-    BackendFuture, EmbedderKind, LlamaBackend, ServerMode, keeps_kv_cache, model_gguf_path,
-};
+use super::llama_server::{BackendFuture, EmbedderKind, LlamaBackend, ServerMode, keeps_kv_cache};
 
 /// Why a server that died before it answered `/health` gave nothing.
 const STARTUP_EXIT: &str = "llama-server exited during startup";
@@ -44,6 +44,12 @@ const HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 pub trait ServerProcess: Send + Sync {
     /// Whether the process is still running (not yet exited).
     fn is_alive(&self) -> bool;
+
+    /// Whether the process ended by SIGKILL, which is how the kernel's
+    /// out-of-memory killer ends one.
+    fn killed(&self) -> bool {
+        false
+    }
 }
 
 /// One `llama-server` to start.
@@ -62,11 +68,23 @@ pub struct ServerLaunch<'a> {
     /// The name it gives the model in what it answers, in place of the path
     /// of its weights.
     pub alias: &'a str,
+    /// The `llama-server` [`ServerSpawner::prepare`] made ready, when it
+    /// chose one: the spawn runs exactly that one.
+    pub binary: Option<&'a Path>,
 }
 
 /// Spawns a `llama-server`-compatible process bound to a port. Injected so the pool
 /// is testable without the real binary.
 pub trait ServerSpawner: Send + Sync {
+    /// Get ready to spawn: choose the `llama-server` to run and do whatever
+    /// slow work it needs first (unpacking the llama.cpp build hedos carries,
+    /// the first time), returning the one chosen, if this spawner chooses.
+    /// The pool runs it where blocking is allowed, never on a thread that
+    /// serves requests, and passes what it returns to the spawn.
+    fn prepare(&self) -> Result<Option<PathBuf>, RuntimeError> {
+        Ok(None)
+    }
+
     /// Spawn the server `launch` describes. The production implementation uses
     /// `tokio::process`, so it must be called from within a Tokio runtime (the
     /// pool always calls it from an async task).
@@ -159,17 +177,40 @@ fn launch_args(server: &ServerLaunch<'_>, launch: Launch) -> Vec<String> {
     args
 }
 
+/// Finds the `llama-server` to run as things stand at a launch and makes it
+/// ready, which can take a while and touch the disk (unpacking the build hedos
+/// carries); or says why there is none.
+pub type Prepare = Arc<dyn Fn() -> Result<PathBuf, RuntimeError> + Send + Sync>;
+
 /// The production spawner: runs the `llama-server` binary.
 pub struct LlamaServerSpawner {
-    binary: PathBuf,
+    binary: Binary,
     extra_args: Vec<String>,
+}
+
+/// The `llama-server` a spawner runs.
+enum Binary {
+    /// Always this path.
+    Fixed(PathBuf),
+    /// Whatever `prepare` finds and makes ready before each spawn, so one
+    /// installed while a gateway runs is the next one launched.
+    Located(Prepare),
 }
 
 impl LlamaServerSpawner {
     /// A spawner running `binary` (a path to `llama-server`).
     pub fn new(binary: impl Into<PathBuf>) -> Self {
         Self {
-            binary: binary.into(),
+            binary: Binary::Fixed(binary.into()),
+            extra_args: Vec::new(),
+        }
+    }
+
+    /// A spawner running whatever `prepare` finds and makes ready when a
+    /// server is launched.
+    pub fn locating(prepare: Prepare) -> Self {
+        Self {
+            binary: Binary::Located(prepare),
             extra_args: Vec::new(),
         }
     }
@@ -180,15 +221,24 @@ impl LlamaServerSpawner {
         self
     }
 
-    /// Turn a spawn failure into an actionable error. A missing binary (the
-    /// common case, since `llama-server` is looked up on `PATH`) names what to
-    /// install rather than leaking the OS "No such file or directory"; any other
-    /// failure keeps its detail, which is genuinely about this spawn.
-    fn spawn_error(&self, error: std::io::Error) -> RuntimeError {
+    /// The `llama-server` to launch now: the error says what to install when
+    /// there is none.
+    fn binary(&self) -> Result<PathBuf, RuntimeError> {
+        match &self.binary {
+            Binary::Fixed(path) => Ok(path.clone()),
+            Binary::Located(prepare) => prepare(),
+        }
+    }
+
+    /// Turn a spawn failure of `binary` into an actionable error. A missing
+    /// binary names what to install rather than leaking the OS "No such file
+    /// or directory"; any other failure keeps its detail, which is genuinely
+    /// about this spawn.
+    fn spawn_error(&self, binary: &std::path::Path, error: std::io::Error) -> RuntimeError {
         if error.kind() == std::io::ErrorKind::NotFound {
             RuntimeError::Unavailable(format!(
-                "{} isn't installed or isn't on your PATH. It comes with llama.cpp (e.g. `brew install llama.cpp`).",
-                self.binary.display()
+                "{} isn't there to run. {LLAMA_CPP_INSTALL_HINT}",
+                binary.display()
             ))
         } else {
             RuntimeError::Unavailable(format!("could not start llama-server: {error}"))
@@ -197,9 +247,17 @@ impl LlamaServerSpawner {
 }
 
 impl ServerSpawner for LlamaServerSpawner {
+    fn prepare(&self) -> Result<Option<PathBuf>, RuntimeError> {
+        self.binary().map(Some)
+    }
+
     fn spawn(&self, launch: &ServerLaunch<'_>) -> Result<Box<dyn ServerProcess>, RuntimeError> {
         let shape = Launch::of(launch.mode, launch.gguf_path);
-        let child = tokio::process::Command::new(&self.binary)
+        let binary = match launch.binary {
+            Some(binary) => binary.to_path_buf(),
+            None => self.binary()?,
+        };
+        let child = tokio::process::Command::new(&binary)
             .args(launch_args(launch, shape))
             .args(&self.extra_args)
             .stdout(Stdio::null())
@@ -211,7 +269,7 @@ impl ServerSpawner for LlamaServerSpawner {
             // failed readiness wait).
             .kill_on_drop(true)
             .spawn()
-            .map_err(|error| self.spawn_error(error))?;
+            .map_err(|error| self.spawn_error(&binary, error))?;
         Ok(Box::new(ChildProcess {
             child: StdMutex::new(child),
         }))
@@ -230,6 +288,13 @@ impl ServerProcess for ChildProcess {
             .map(|mut child| matches!(child.try_wait(), Ok(None)))
             .unwrap_or(false)
     }
+
+    fn killed(&self) -> bool {
+        use std::os::unix::process::ExitStatusExt;
+        self.child.lock().is_ok_and(|mut child| {
+            matches!(child.try_wait(), Ok(Some(status)) if status.signal() == Some(libc::SIGKILL))
+        })
+    }
 }
 
 /// A per-model slot holding that model's running server, if any. The async mutex
@@ -238,6 +303,10 @@ impl ServerProcess for ChildProcess {
 #[derive(Default)]
 struct Slot {
     server: AsyncMutex<Option<Running>>,
+    /// The window of the chat server last made ready here, `0` for none or
+    /// while one is being started, readable while a request holds `server`
+    /// across its health check.
+    chat_window: AtomicI64,
 }
 
 struct Running {
@@ -291,11 +360,29 @@ impl LlamaServerPool {
             .and_then(|slots| slots.get(model_id).cloned());
         if let Some(slot) = slot {
             *slot.server.lock().await = None;
+            slot.chat_window.store(0, Ordering::Relaxed);
         }
     }
 }
 
 impl LlamaBackend for LlamaServerPool {
+    fn resident_window(&self, record: &ModelRecord) -> Option<i64> {
+        let slot = self.slots.lock().ok()?.get(&record.id).cloned()?;
+        let window = match slot.server.try_lock() {
+            Ok(running) => running
+                .as_ref()
+                .filter(|running| running.mode == ServerMode::Chat && running.process.is_alive())
+                .map_or(0, |running| running.context_tokens),
+            // Another request holds the slot, checking or replacing its
+            // server: the window of the one last made ready, which a
+            // replacement clears before it starts. A server that dies during
+            // that check is relaunched at the window it last ran with, as the
+            // request holding the slot would relaunch it.
+            Err(_) => slot.chat_window.load(Ordering::Relaxed),
+        };
+        Some(window).filter(|window| *window > 0)
+    }
+
     fn base_url(
         &self,
         record: &ModelRecord,
@@ -310,7 +397,9 @@ impl LlamaBackend for LlamaServerPool {
         // model that sees, whose projector is looked for when a server starts.
         let wanted = Wanted {
             model_id: record.id.clone(),
-            gguf: model_gguf_path(record).to_owned(),
+            // A hub model's split weights load by the snapshot's link, whose
+            // name tells llama.cpp where the other shards are.
+            gguf: launch_gguf_path(record).to_string_lossy().into_owned(),
             // llama-server splits an alias at commas into several names.
             alias: record.display_name().replace(',', " ").trim().to_owned(),
             context_tokens,
@@ -373,22 +462,72 @@ async fn ensure(
         return Ok(running.base_url.clone());
     }
 
-    let port = free_port()?;
+    slot.chat_window.store(0, Ordering::Relaxed);
     let projector = sight
         .as_ref()
         .and_then(projector_for)
         .and_then(|path| path.to_str().map(str::to_owned));
-    let process = spawner.spawn(&ServerLaunch {
-        gguf_path: gguf,
-        port,
-        context_tokens,
-        mode,
-        projector: projector.as_deref(),
-        alias,
-    })?;
-    let base_url = format!("http://127.0.0.1:{port}");
-    // If readiness fails, `process` drops here → the OS reaps it (kill_on_drop).
-    wait_ready(client, &base_url, process.as_ref(), ready_timeout).await?;
+    let mut retried = false;
+    let (process, base_url) = loop {
+        // Off the serving threads: the first launch can unpack the llama.cpp
+        // hedos carries, and it waits for another process doing the same.
+        let preparing = Arc::clone(spawner);
+        let binary = tokio::task::spawn_blocking(move || preparing.prepare())
+            .await
+            .map_err(|error| RuntimeError::Failed(format!("preparing llama-server: {error}")))??;
+        let vanished = || binary.as_deref().is_some_and(|path| !path.exists());
+        let mut ports_tried = 0;
+        let started = loop {
+            let port = free_port()?;
+            let started = start(
+                spawner.as_ref(),
+                client,
+                ready_timeout,
+                &ServerLaunch {
+                    gguf_path: gguf,
+                    port,
+                    context_tokens,
+                    mode,
+                    projector: projector.as_deref(),
+                    alias,
+                    binary: binary.as_deref(),
+                },
+            )
+            .await;
+            match started {
+                // The port was free when picked, but something can take it
+                // before the server binds it (one of this process's own
+                // connections, as its local port), and a server that cannot
+                // bind exits at once: another port is tried.
+                Err(error)
+                    if ports_tried < PORT_ATTEMPTS
+                        && lost_its_port(&error, port)
+                        && !vanished() =>
+                {
+                    ports_tried += 1;
+                }
+                started => break started,
+            }
+        };
+        match started {
+            Ok(started) => break started,
+            // Another hedos can replace the build this one prepared (a newer
+            // one unpacking its own) before or while it starts; preparing
+            // again puts it back.
+            Err(_) if !retried && vanished() => {
+                retried = true;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    slot.chat_window.store(
+        if mode == ServerMode::Chat {
+            context_tokens
+        } else {
+            0
+        },
+        Ordering::Relaxed,
+    );
     *guard = Some(Running {
         base_url: base_url.clone(),
         context_tokens,
@@ -397,6 +536,42 @@ async fn ensure(
         process,
     });
     Ok(base_url)
+}
+
+/// Spawn the server `launch` describes and wait until it answers, returning it
+/// with its base URL. A server that never gets ready is dropped, which reaps it
+/// (`kill_on_drop`).
+async fn start(
+    spawner: &dyn ServerSpawner,
+    client: &reqwest::Client,
+    ready_timeout: Duration,
+    launch: &ServerLaunch<'_>,
+) -> Result<(Box<dyn ServerProcess>, String), RuntimeError> {
+    let process = spawner.spawn(launch)?;
+    let base_url = format!("http://127.0.0.1:{}", launch.port);
+    wait_ready(client, &base_url, process.as_ref(), ready_timeout)
+        .await
+        .map_err(|error| match error {
+            RuntimeError::Unavailable(reason) if reason == STARTUP_EXIT && process.killed() => {
+                RuntimeError::Unavailable(format!(
+                    "llama-server was killed while loading, most likely by the system for running out of memory; it was starting with a {}-token window, and a smaller one may fit",
+                    launch.context_tokens
+                ))
+            }
+            error => error,
+        })?;
+    Ok((process, base_url))
+}
+
+/// How many more ports a launch whose port was taken tries.
+const PORT_ATTEMPTS: u32 = 2;
+
+/// Whether a launch on `port` failed because the port was taken: the server
+/// exited while starting (it cannot bind a taken port) and something else
+/// holds the port now. A server that exited for any other reason (a file it
+/// cannot load, say) would only exit again, after loading the model again.
+fn lost_its_port(error: &RuntimeError, port: u16) -> bool {
+    exited_during_startup(error) && std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
 }
 
 /// An ephemeral free TCP port on the loopback. The listener is dropped so the
@@ -479,6 +654,47 @@ mod tests {
             mode: ServerMode::Chat,
             projector,
             alias: "Llama 3",
+            binary: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_spawn_runs_the_binary_preparing_chose_over_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("hedos-pool-binary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ran = dir.join("ran");
+        let script = dir.join("llama-server");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let spawner = LlamaServerSpawner::new("/no/such/llama-server");
+        let process = spawner
+            .spawn(&ServerLaunch {
+                binary: Some(&script),
+                ..launch("/tmp/model.gguf", 2048, None)
+            })
+            .expect("spawned the prepared binary");
+        for _ in 0..100 {
+            if ran.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        drop(process);
+        assert!(ran.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_locating_spawner_with_nothing_to_run_says_how_to_install_llama_cpp() {
+        let spawner = LlamaServerSpawner::locating(Arc::new(|| {
+            Err(RuntimeError::Unavailable(LLAMA_CPP_INSTALL_HINT.to_owned()))
+        }));
+        match spawner.prepare() {
+            Err(RuntimeError::Unavailable(message)) => {
+                assert_eq!(message, LLAMA_CPP_INSTALL_HINT);
+            }
+            other => panic!("expected Unavailable, got {other:?}"),
         }
     }
 
@@ -617,10 +833,10 @@ mod tests {
         // A permissions failure is about this spawn, not a missing install, so
         // its detail is kept rather than replaced with the install hint.
         let spawner = LlamaServerSpawner::new("llama-server");
-        let error = spawner.spawn_error(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "permission denied",
-        ));
+        let error = spawner.spawn_error(
+            std::path::Path::new("llama-server"),
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
         match error {
             RuntimeError::Unavailable(message) => {
                 assert!(

@@ -3,7 +3,7 @@
 //! becomes one bundle model, loose `.gguf` files group into models, and a
 //! GGML-magic `.bin` is a whisper transcription model.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::discovery::gguf_models::discovered_models;
@@ -114,11 +114,33 @@ impl StoreScanner for LooseFileScanner {
         for dir in &self.user_directories {
             self.scan_root(dir, true, &mut result);
         }
+        // One folder can be reached twice: a watched folder inside Downloads,
+        // one linked to another, or `~/models` beside the default `~/Models`
+        // on a disk that ignores case. Its models are kept once, as first
+        // found.
+        let mut seen = HashSet::new();
+        result
+            .discovered
+            .retain(|model| seen.insert(place_of(Path::new(&model.source.path))));
         result
     }
 
     fn watched_directories(&self) -> Vec<PathBuf> {
         self.user_directories.clone()
+    }
+}
+
+/// Where `path` is on disk, whichever way it was reached: its folder resolved
+/// (links followed, and the spelling the disk keeps), with its own name. The
+/// name itself is not followed, so two links to one file stay two models.
+pub(crate) fn place_of(path: &Path) -> PathBuf {
+    match (
+        path.parent()
+            .and_then(|dir| std::fs::canonicalize(dir).ok()),
+        path.file_name(),
+    ) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
     }
 }
 

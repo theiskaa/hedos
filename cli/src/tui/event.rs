@@ -42,7 +42,7 @@ pub enum Event {
     /// A pull could not be started, stopped, or resumed, and why.
     PullRefused(String),
     /// The shelf and facts were re-read.
-    Refreshed(Refreshed),
+    Refreshed(Box<Refreshed>),
     /// A provider search came back.
     Searched(Searched),
     /// An install plan came back.

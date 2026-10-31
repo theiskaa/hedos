@@ -232,6 +232,13 @@ async fn run_install(
         .map(|sibling| HFCacheWriter::pending_blob_name(sibling, &revision))
         .collect();
     writer.remove_stray_incompletes(&keeping)?;
+    let superseded: HashSet<String> = info
+        .siblings
+        .iter()
+        .map(|sibling| HFCacheWriter::pending_blob_name(sibling, &revision))
+        .filter(|name| !keeping.contains(name))
+        .collect();
+    writer.remove_superseded_incompletes(&superseded);
 
     // Counted after the stray partials went, so none of them is in the count.
     let meter = Arc::new(InstallProgressMeter::new(

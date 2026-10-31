@@ -4,6 +4,7 @@ pub mod audio;
 pub mod bench;
 pub mod chat;
 pub mod disk_count;
+pub mod engines;
 pub mod image;
 pub mod launch;
 pub mod ls;

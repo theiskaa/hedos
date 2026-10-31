@@ -39,6 +39,7 @@ pub struct OllamaAdapter {
     id: RuntimeId,
     base_url: String,
     client: reqwest::Client,
+    present: bool,
 }
 
 impl OllamaAdapter {
@@ -53,7 +54,16 @@ impl OllamaAdapter {
             id: RuntimeId::ollama(),
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             client: reqwest::Client::new(),
+            present: true,
         }
+    }
+
+    /// The adapter, saying whether Ollama is installed or its daemon answers.
+    /// One without Ollama bids on nothing, so its models go to a runtime that
+    /// can serve them without it, or stay unresolved.
+    pub fn with_presence(mut self, present: bool) -> Self {
+        self.present = present;
+        self
     }
 
     fn invoke_chat(&self, model: &str, payload: JsonValue) -> ChunkStream {
@@ -139,7 +149,7 @@ impl RuntimeAdapter for OllamaAdapter {
     }
 
     fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
-        if identified.format != ModelFormat::OllamaStore {
+        if !self.present || identified.format != ModelFormat::OllamaStore {
             return None;
         }
         Some(RuntimeBid::new(RunTier::Native, BidPreference::OLLAMA))

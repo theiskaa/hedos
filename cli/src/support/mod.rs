@@ -6,6 +6,7 @@ pub mod bench_run;
 pub mod clock;
 pub mod download;
 pub mod elsewhere;
+pub mod engines;
 pub mod extract;
 pub mod harnesses;
 pub mod http;

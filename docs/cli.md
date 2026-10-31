@@ -22,6 +22,7 @@
 | [`hedos recommend`](#hedos-recommend) | Read this machine's hardware and recommend models to pull for it. |
 | [`hedos rm`](#hedos-rm) | Remove an installed model. |
 | [`hedos runtimes`](#hedos-runtimes) | List the manifest runtimes, and approve or revoke one. |
+| [`hedos engines`](#hedos-engines) | List the engines models run on, and install or remove llama.cpp. |
 | [`hedos bench`](#hedos-bench) | Measure what each model does on this machine. |
 | [`hedos stats`](#hedos-stats) | Report usage from the gateway's audit log. |
 | [`hedos shelf`](#hedos-shelf) | Open the shelf as a terminal screen. |
@@ -272,6 +273,8 @@ hedos ls --json
 - **FIT** reads `fits`, `tight`, or `too big`, judged from the model's estimated footprint against what the engine it resolved to may use on this machine: the GPU's share of memory where there is one, else all of it (see [Fit and memory](models.md#fit-and-memory)). It is the same assessment [`hedos recommend`](#hedos-recommend) uses. A dash means the footprint is unknown, and `gone` means the weights are gone, so there is nothing left to fit.
 
 When a model on the shelf waits on a manifest runtime you have not approved, `ls` adds a line under the table naming the models and the command that approves it (`hedos runtimes approve <id>`). See [`hedos runtimes`](#hedos-runtimes).
+
+When Ollama is not installed and a model in its store is one llama.cpp cannot load (its encoders packed into its weights, or its only chat template Ollama's own), nothing serves it, and `ls` adds a line naming those models: only Ollama runs them. See [models.md](models.md#models-in-ollamas-store-without-ollama).
 
 A control character, a bidirectional control, or a line or paragraph separator in a model's name is printed as its escape (`\u{1b}`, `\n`, `\u{202e}`), and a backslash is doubled, so a name cannot color the terminal, split a row, or reorder it.
 
@@ -524,7 +527,7 @@ hedos serve -p 8080
 
 ```
 gateway listening on http://127.0.0.1:43367/v1
-auth: open (loopback) — any local client is allowed. Ctrl-C to stop.
+auth: open (loopback), so any local client is allowed. Ctrl-C to stop.
 ```
 
 The first line goes to stdout; the auth notice goes to stderr. Under `--json` it prints `running`, `port`, and `baseUrl`.
@@ -664,15 +667,17 @@ hedos pull <subcommand> ...
 | `-d, --detach` | Start the download and return straight away. | follow it |
 
 ```sh
-hedos pull qwen2.5:3b                       # an Ollama tag
+hedos pull ggml-org/gemma-4-E4B-it-GGUF     # a Hugging Face repo of GGUF weights
 hedos pull Qwen/Qwen2.5-1.5B-Instruct       # a Hugging Face repo
-hedos pull gemma3:4b -d                     # start it and return
+hedos pull gemma3:4b                        # an Ollama tag, through Ollama
+hedos pull ggml-org/gemma-4-E4B-it-GGUF -d  # start it and return
 hedos pull                                  # search interactively
 ```
 
 #### Choosing what to pull
 
-- The reference is a Hugging Face repo (`org/model`) or an Ollama tag (`gemma3:4b`). hedos infers the provider from the shape; `--from` forces it.
+- The reference is a Hugging Face repo (`org/model`) or an Ollama tag (`gemma3:4b`). hedos infers the provider from the shape; `--from` forces it. An Ollama tag pulls through Ollama's daemon, so it needs Ollama installed.
+- From a repo of GGUF weights, a pull takes one quantization (`Q4_K_M` first, then `Q4_0`, `Q5_K_M`, `Q6_K`, `Q8_0`, `F16`; else the smallest), and one projector for a model that reads images: beside the weights, else at the repo's root, else anywhere in the repo; of those, the one named for the weights' quantization, else the smallest. The speculative-decoding drafts llama.cpp's own repos ship beside a model (`mtp-`, `dflash-`, `eagle3-` files) are never pulled.
 - Omit the reference in a terminal to search. Type a query to search Hugging Face (results show download and like counts), or leave it blank for the picks [`hedos recommend`](#hedos-recommend) makes for this machine that are not on the shelf yet, each with its download size, its fit, and what to install first when the engine that serves it is missing. A "search again" entry in the list returns to the prompt, so you can move between recommendations and a search, or try another query, without restarting the command.
 - Before any bytes move, hedos shows the plan (the name, the destination, and the size) and asks `Download now?`, defaulting to yes. Outside a terminal there is no prompt.
 - Gated Hugging Face repositories need a token with access to the repo (`HF_TOKEN`, `HF_TOKEN_PATH`, or `huggingface-cli login`), and you must accept the model's terms on its Hugging Face page first.
@@ -682,6 +687,8 @@ hedos pull                                  # search interactively
 The download runs in a worker process of its own, so it outlives the terminal that started it.
 
 - `hedos pull` follows that worker's progress. Ctrl-C detaches from it rather than cancelling.
+- When you watch a model llama.cpp serves land and no `llama-server` is here (a build of hedos that carries none, with none on the `PATH`), `hedos pull` shows what installing llama.cpp would fetch and asks once, defaulting to no. Under `--json`, outside a terminal, or on a no, it prints how to install it instead. See [`hedos engines`](#hedos-engines).
+- When you watch a model land whose runtime builds a Python environment that is not built yet, and no `uv` is here, `hedos pull` shows what installing uv would fetch and asks once the same way, defaulting to no. Under `--json`, outside a terminal, or on a no, it prints how to install it instead. The pull succeeds whatever becomes of either install.
 - `-d` starts the download and returns straight away, printing the commands that reach it:
 
   ```
@@ -779,24 +786,28 @@ hedos recommend [--kind <chat|code|voice|image>]... [--all]
 ```
 Apple M5 Pro · 6 performance + 12 efficiency cores · 64 GiB memory
 51.8 GiB for models on the GPU, its Metal working set
-207.9 GiB free on disk
+67.1 GiB free on disk
 
 chat
-  qwen3.8:27b                               17.7 GB  fits      Qwen's newest, strong on research and long tasks.
-  gemma4:26b                                18.7 GB  fits      A mixture of experts: big-model answers at a small model's pace.
-  gemma4:31b                                20.4 GB  fits      Gemma's flagship, for a machine with room to spare.
+  ggml-org/gemma-4-26B-A4B-it-GGUF           15.4 GB  fits      A mixture of experts: big-model answers at a small model's pace.
+  ggml-org/gemma-4-31B-it-GGUF               18.8 GB  fits      Gemma's flagship, for a machine with room to spare.
+  ggml-org/Qwen3.8-27B-GGUF                  19.6 GB  fits      Qwen's newest, strong on research and long tasks.
 
 code
-  qwen2.5-coder:14b                         9.0 GB   fits      A strong local coding model with a large context.
-  qwen3.6:27b-coding                        17.8 GB  fits      Qwen3.6 tuned for agentic coding.
-  qwen3-coder:30b                           18.6 GB  fits      Agentic coding over long context. A mixture of experts.
+  Qwen/Qwen2.5-Coder-14B-Instruct-GGUF       9 GB     fits      A strong local coding model with a large context.
+  unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF  18.6 GB  fits      Agentic coding over long context. A mixture of experts.
+  ggml-org/Qwen3.6-27B-GGUF                  19.7 GB  fits      Qwen3.6, strong at agentic coding.
 
 voice
-  mlx-community/Kokoro-82M-bf16             0.3 GB   on shelf  Tiny, warm text-to-speech. Instant on Apple Silicon.
+  mlx-community/Kokoro-82M-bf16              332 MB   on shelf  Tiny, warm text-to-speech. Instant on Apple Silicon.
 
 image
-  stabilityai/sdxl-turbo                    26.9 GB  fits      Images in one to four steps, fast enough to iterate on.
-  stabilityai/stable-diffusion-xl-base-1.0  41.2 GB  on shelf  Dependable, well-supported image workhorse.
+  stabilityai/sdxl-turbo                     26.9 GB  fits      Images in one to four steps, fast enough to iterate on.
+  stabilityai/stable-diffusion-xl-base-1.0   41.2 GB  on shelf  Dependable, well-supported image workhorse.
+
+audio
+  facebook/musicgen-small                    2.4 GB   fits      Instrumental clips up to 30 seconds from a description. Non-commercial licence.
+  ACE-Step/acestep-v15-xl-turbo-diffusers    11.1 GB  fits      Whole songs with vocals from lyrics and a style, in a few steps.
 
 hedos pull <name> fetches one · hedos recommend --all shows every model and why
 ```
@@ -805,17 +816,17 @@ Nothing is pulled; `hedos pull <name>` does that. The blank search of `hedos pul
 
 #### What it reads
 
-- **The memory a model may use.** On Apple Silicon that is Metal's working set, the share of memory the GPU may take, which every Metal engine budgets against: 51.8 GiB of 64 on the machine above. On Linux it is each NVIDIA card's memory (from `nvidia-smi`) or AMD card's (from the driver's files). On a machine with neither it is all of memory, and models run on the processor. When none of those answer, `llama-server --list-devices` is asked, when it is on `PATH`. None of this needs a model engine installed.
-- **The engines.** Whether Ollama (installed, or its daemon answering), `llama-server`, and `uv` are there.
-- **The chip, cores and memory**, for the header, and **the free disk** where each provider's pulls land: the Ollama models directory, and the Hugging Face cache. It reads one figure when both are on the same disk.
+- **The memory a model may use.** On Apple Silicon that is Metal's working set, the share of memory the GPU may take, which every Metal engine budgets against: 51.8 GiB of 64 on the machine above. On Linux it is each NVIDIA card's memory (from `nvidia-smi`) or AMD card's (from the driver's files). On a machine with neither it is all of memory, and models run on the processor. When none of those answer, `llama-server --list-devices` is asked, of the `llama-server` hedos would run (the configured one, a build it installed, the one it carries once unpacked, or one on the `PATH`). None of this needs a model engine installed.
+- **The engines.** Whether llama.cpp (a `llama-server` hedos can run: the configured one, a build it installed, the one it carries, or one on the `PATH` or in Homebrew's places), `uv`, and Ollama (installed, or its daemon answering) are there. When hedos runs the build it carries and this machine has a faster one (CUDA for an NVIDIA card on Linux, Vulkan for AMD), a line names `hedos engines install llama.cpp` and its size.
+- **The chip, cores and memory**, for the header, and **the free disk** where each provider's pulls land: the Hugging Face cache, and the Ollama models directory for a tag you pull through Ollama. It reads one figure when both are on the same disk.
 
 #### How the picks are made
 
-Each catalog model is judged by what serving it loads, on the engine that serves it: Ollama for every chat and code model, mlx-audio for speech (Apple Silicon only), diffusers for images. Each kind picks the largest models that run well, up to three, among those its engine can run here and that are not on the shelf. When none runs well, it picks the smallest that still fits, and when none fits, it says so (`nothing of this kind fits this machine`). A model on the shelf is listed as `on shelf` and takes no pick.
+Each catalog model is judged by what serving it loads, on the engine that serves it: llama.cpp for every chat and code model (a GGUF from Hugging Face, with its projector when it reads images), mlx-audio for speech (Apple Silicon only), diffusers for images and audio. Each kind picks the largest models that run well, up to three, among those its engine can run here and that are not on the shelf. When none runs well, it picks the smallest that still fits, and when none fits, it says so (`nothing of this kind fits this machine`). A model on the shelf is listed as `on shelf` and takes no pick.
 
-A card that cannot hold a model whole is not the end of it: Ollama and llama.cpp run what does not fit on the card from memory, slower. Such a model is judged against all of memory instead whenever that reads better, so a machine with a small card is never judged worse than it would be without one, and the model reads `spills`. A card under 1 GiB (an integrated GPU's carve-out) is not counted at all.
+A card that cannot hold a model whole is not the end of it: llama.cpp and Ollama run what does not fit on the card from memory, slower. Such a model is judged against all of memory instead whenever that reads better, so a machine with a small card is never judged worse than it would be without one, and the model reads `spills`. A card under 1 GiB (an integrated GPU's carve-out) is not counted at all.
 
-A missing engine never changes what fits. The picks stay the same, a line under the header says what to install first (once for each engine), and each pick that needs it reads `needs Ollama` or `needs uv`. A pick whose download would not fit on the free disk reads `short on disk`.
+A missing engine never changes what fits. The picks stay the same, a line under the header says what to install first (once for each engine), and each pick that needs it reads `needs llama.cpp` or `needs uv`. The line names `hedos engines install llama.cpp` or `hedos engines install uv`. A pick whose download would not fit on the free disk reads `short on disk`.
 
 With `--all`, every model is listed: the picks, `also fits` for one the larger picks passed over, `too big`, `on shelf`, and `can't run here` for one whose engine does not run on this machine.
 
@@ -843,7 +854,7 @@ It always shows a deletion preview first: the item count and the estimated size.
 - In a terminal, it then asks for a yes/no confirmation and deletes only if you agree. The default is no.
 - Outside a terminal, it does nothing unless `-y` is given, so a script can never delete without asking. It prints `Would delete ... Re-run with -y to confirm.` (and `"deleted": false` under `--json`).
 
-File-backed models are deleted from disk; Ollama models are deleted through the daemon. A record whose weights are already gone can be removed too, which drops it from the shelf.
+File-backed models are deleted from disk; Ollama models are deleted through the daemon. With Ollama not installed (no binary, and nothing answering where its daemon listens), hedos deletes an Ollama model's files itself, the way the daemon would: the manifest and each blob no other tag in the store names, so a tag sharing weights with another keeps them. It refuses, deleting nothing and saying why, when it cannot vouch for the store: a path that leaves it, a link among its manifests or blobs, a digest that is not `sha256:` and 64 lowercase hex characters, or another manifest it cannot read. A record whose weights are already gone can be removed too, which drops it from the shelf.
 
 ```sh
 hedos rm gemma3
@@ -851,6 +862,40 @@ hedos rm gemma3 --yes
 ```
 
 Under `--json` a deletion prints `model`, `name`, `trashedPaths`, `freedBytesEstimate`, `daemonDeleted`, and `"deleted": true`.
+
+### `hedos engines`
+
+List the engines models run on, and install or remove the ones hedos installs: llama.cpp, which it also carries, and `uv`, which builds the Python models' environments. Nothing installs without you asking. [engines.md](engines.md) explains how hedos chooses and runs each engine.
+
+```sh
+hedos engines [ls]
+hedos engines install llama.cpp [--variant <metal|cpu|vulkan|cuda-12|cuda-13|rocm>] [-y]
+hedos engines install uv [-y]
+hedos engines remove llama.cpp [-y]
+hedos engines remove uv [-y]
+```
+
+| Flag | Meaning | Default |
+| --- | --- | --- |
+| `install --variant <variant>` | llama.cpp's build (uv has one build for each machine, and refuses the flag): Metal on Apple Silicon, the CPU build on an Intel Mac, CUDA for NVIDIA cards, Vulkan for AMD cards, the CPU build otherwise. ROCm needs ROCm installed on its own, so it is used only when asked for. | the one that suits this machine |
+| `-y, --yes` | Install or remove without being asked to confirm. Required outside a terminal and under `--json`. | off |
+
+```
+ENGINE     SERVES                    FOUND    VERSION              PATH OR NEXT STEP
+llama.cpp  GGUF models               bundled  0.7.0 (build 11669)  /Users/you/.local/share/hedos/engines/llama.cpp/b11669-metal-bundled/llama-server
+Ollama     models in Ollama's store  path     -                    /usr/local/bin/ollama
+uv         Python models             hedos    0.13.4               /Users/you/.local/share/hedos/engines/uv/0.13.4/uv
+```
+
+- **`ls`** (the default) shows each engine, where it was found (`config` for `engines.llama_server`, `hedos` for a build hedos installed, `bundled` for the one it carries, `path` for the `PATH`, Homebrew's places, or `~/.local/bin` where uv's own installer puts it, `daemon` for an Ollama that only answers, or `missing`), its version where it can be read, and the next step for one that is missing. The carried build reads "unpacks the first time a model runs" until it has. A `llama-server` older than llama.cpp 0.6.0 is flagged, since decision models need 0.6.0, and so is one on the `PATH` that hedos passes over. When this machine has a faster build than the carried one, a note names it. `--json` prints `engines`, each with `engine`, `serves`, `installed`, `found_in`, `path`, `version`, and `note`.
+- **`install llama.cpp`** installs the llama.cpp release this hedos pins (0.7.0). When the build asked for is the one hedos carries and runs, there is nothing to fetch: it says so and names the other builds for this machine. On Linux the CPU build is hedos's own, the one release builds carry (built from llama.cpp's pinned source and published on hedos's GitHub releases), which runs on any glibc hedos runs on; the GPU builds (Vulkan, CUDA, ROCm) are llama.cpp's own and need glibc 2.38 or newer. On an older system the build that suits the machine is the CPU build, and a GPU build asked for with `--variant` is refused with the reason before anything is shown. A build that will not start for want of a library (`libgomp.so.1`, say) is reported with the library and the package that has it. It first prints what it will fetch: the release and build, each archive's URL and sha256 (a CUDA build brings NVIDIA's runtime libraries as a second archive), the size, and where it goes (`engines/llama.cpp/` under the data directory), plus the smaller Vulkan build when it is about to fetch CUDA. Then it asks, defaulting to no. Each archive is checked against its pinned sha256 and size, unpacked whole into a staging directory, and its `llama-server` is run once to see it is the pinned build before it replaces the build there. Only one install runs at a time. `--json` prints one object either way: `engine`, `version`, `build`, `variant`, `path`, and `status`, which is `installed` when a build was fetched or `carried` when the build hedos carries was the one asked for.
+- **`remove llama.cpp`** removes the builds hedos installed or unpacked and says which `llama-server` hedos runs now, if any. The one hedos carries cannot be removed: it unpacks again the first time a model runs.
+- **`install uv`** installs the `uv` release this hedos pins (0.13.4), for the Python models: MLX, diffusers, audio, embeddings, and the manifest runtimes with a Python environment. On Linux it is uv's static build, which runs on any glibc. It first prints what it will fetch (the archive's URL and sha256, the size, and where it goes, `engines/uv/` under the data directory) and that the first Python model to run then fetches Python 3.12, when the machine has none, and that model's packages. Then it asks, defaulting to no. The archive is checked against its pinned sha256 and size, unpacked into a staging directory, and its `uv` is asked its version before it is moved into place. When the pinned `uv` is already there, whole, there is nothing to fetch and it says so. `--json` prints `engine`, `version`, `path`, and `status`, which is `installed` when it was fetched or `present` when it was already there.
+- **`remove uv`** removes the `uv` hedos installed, never one you installed, and says which `uv` hedos uses now, if any. A Python model whose environment is built keeps running without `uv`; one being prepared at that moment may fail, and is prepared again the next time it runs. Environments, the Python and the package caches stay.
+
+Both removals print, under `--json`, `engine`, `removed` (the paths), and `now_runs` (what hedos runs now, or `null`).
+
+hedos runs the first `llama-server` it finds of: the absolute path `engines.llama_server` names in [the settings](configuration.md), a build `install` put there, the build hedos carries (in release builds), one on the `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin`. Every build of hedos's own comes before the `PATH`, so an older llama.cpp installed there runs only when the settings name it. It builds Python environments with the first `uv` it finds of: the one `install uv` put there, then `~/.local/bin/uv`, `/opt/homebrew/bin/uv`, `/usr/local/bin/uv`, and the `PATH`. Ollama is not installed by hedos; `install` says where to get it.
 
 ### `hedos runtimes`
 
@@ -994,7 +1039,7 @@ When this binary is already the newest release, it says so and exits `0`. Under 
 A command that runs to its end, or fails, ends with one line on stderr when a newer release is out:
 
 ```
-hedos 1.5.4 is available (you have 1.5.3). Run `hedos upgrade` to update.
+hedos 1.6.1 is available (you have 1.6.0). Run `hedos upgrade` to update.
 ```
 
 No command waits on the network for it. At most once a day, a command starts a detached process that looks up the newest release and remembers the answer in `upgrade-check.json` in the data directory; the notice reads only that file. Only one command at a time starts it. The notice and the daily look stay off under `--json`, when stderr is not a terminal, when `HEDOS_NO_UPDATE_CHECK` is set to anything but an empty value, `0` or `false`, and when `advanced.check_for_updates` is `false`. A command stopped by a signal, or whose stdout reader went away, ends without it. `hedos upgrade` itself always looks, and never adds the notice.

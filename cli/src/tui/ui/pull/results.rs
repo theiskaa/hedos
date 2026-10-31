@@ -234,7 +234,10 @@ fn offer_line(
     };
     let name_width = columns.name(width).saturating_sub(2);
     // Two cells of air keep a long name off the column after it.
-    let name = text::clip(&offer.reference, name_width.saturating_sub(2));
+    let name = text::clip(
+        offer.name.as_deref().unwrap_or(&offer.reference),
+        name_width.saturating_sub(2),
+    );
     let name_style = if quiet {
         SOFT
     } else if selected {

@@ -128,23 +128,49 @@ def detect_variant(model_path):
     return None
 
 
-def load_pipeline(model_path, torch, pipeline_cls):
+def cuda_runs(torch):
+    # Availability does not mean this build has kernels for the card.
+    # Run a kernel and read it back so asynchronous failures surface here.
+    if not torch.cuda.is_available():
+        return False
+    try:
+        torch.ones(1, device="cuda").sum().item()
+    except RuntimeError:
+        return False
+    return True
+
+
+def device_of(torch):
+    if torch.backends.mps.is_available():
+        return "mps"
+    if cuda_runs(torch):
+        return "cuda"
+    return "cpu"
+
+
+def generator(torch, device, seed):
+    return torch.Generator(device).manual_seed(seed)
+
+
+def load_pipeline(model_path, torch, pipeline_cls, device):
     variant = detect_variant(model_path)
+    # Half precision only on a GPU: the CPU runs it slowly, if at all.
+    half = torch.float32 if device == "cpu" else torch.float16
     try:
         pipe = pipeline_cls.from_pretrained(
-            model_path, torch_dtype=torch.float16, local_files_only=True, variant=variant
+            model_path, torch_dtype=half, local_files_only=True, variant=variant
         )
     except Exception:
         fallback = None if variant is not None else "fp16"
         try:
             pipe = pipeline_cls.from_pretrained(
-                model_path, torch_dtype=torch.float16, local_files_only=True, variant=fallback
+                model_path, torch_dtype=half, local_files_only=True, variant=fallback
             )
         except Exception:
             pipe = pipeline_cls.from_pretrained(
                 model_path, torch_dtype=torch.float32, local_files_only=True, variant=None
             )
-    pipe = pipe.to("mps")
+    pipe = pipe.to(device)
     pipe.set_progress_bar_config(disable=True)
     return pipe
 
@@ -162,7 +188,8 @@ def main():
     from diffusers import AutoPipelineForText2Image
     from PIL import Image
 
-    pipe = load_pipeline(args.model, torch, AutoPipelineForText2Image)
+    device = device_of(torch)
+    pipe = load_pipeline(args.model, torch, AutoPipelineForText2Image, device)
     supports_callback = "callback_on_step_end" in inspect.signature(pipe.__call__).parameters
     supports_negative = "negative_prompt" in inspect.signature(pipe.__call__).parameters
     send_json({"event": "ready"})
@@ -209,7 +236,7 @@ def main():
                 "guidance_scale": guidance,
                 "width": width,
                 "height": height,
-                "generator": torch.Generator("mps").manual_seed(seed),
+                "generator": generator(torch, device, seed),
                 "output_type": "pil",
             }
             if negative_prompt is not None and str(negative_prompt).strip() and supports_negative:

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use kernel::install::InstallProviderId;
 use kernel::machine::{
-    Cores, Device, DeviceKind, DevicesFrom, Engines, FreeDisk, OLLAMA_INSTALL_HINT, Os,
+    Cores, Device, DeviceKind, DevicesFrom, Engines, FreeDisk, LLAMA_CPP_INSTALL_HINT, Os,
     UV_INSTALL_HINT,
 };
 
@@ -106,13 +106,17 @@ fn the_report_opens_with_the_machine() {
 #[test]
 fn each_kind_lists_its_picks_and_what_is_on_the_shelf() {
     let machine = big_mac();
-    let lines = report(&machine, &judge(&machine, &["gemma4:31b"]), false);
-    let row = row_of(&lines, "qwen3.8:27b");
-    assert!(row.contains("17.7 GB"), "{row}");
+    let lines = report(&machine, &judge(&machine, &["gemma-4-31b-it-gguf"]), false);
+    let row = row_of(&lines, "ggml-org/Qwen3.8-27B-GGUF");
+    assert!(row.contains("19.6 GB"), "{row}");
     assert!(row.contains("fits"), "{row}");
     assert!(row.contains("Qwen's newest"), "{row}");
-    assert!(row_of(&lines, "gemma4:31b").contains("on shelf"));
-    assert!(!lines.iter().any(|line| line.contains("gpt-oss:120b")));
+    assert!(row_of(&lines, "ggml-org/gemma-4-31B-it-GGUF").contains("on shelf"));
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains("ggml-org/gpt-oss-120b-GGUF"))
+    );
     assert_eq!(
         lines.last().map(String::as_str),
         Some("hedos pull <name> fetches one · hedos recommend --all shows every model and why")
@@ -124,8 +128,14 @@ fn rows_line_up_across_kinds() {
     let machine = big_mac();
     let lines = report(&machine, &judge(&machine, &[]), false);
     let column = |reference: &str| row_of(&lines, reference).find(" GB").unwrap();
-    assert_eq!(column("qwen3.8:27b"), column("qwen3-coder:30b"));
-    assert_eq!(column("qwen3.8:27b"), column("stabilityai/sdxl-turbo"));
+    assert_eq!(
+        column("ggml-org/Qwen3.8-27B-GGUF"),
+        column("unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF")
+    );
+    assert_eq!(
+        column("ggml-org/Qwen3.8-27B-GGUF"),
+        column("stabilityai/sdxl-turbo")
+    );
 }
 
 #[test]
@@ -133,15 +143,15 @@ fn a_bare_machine_says_once_what_to_install_and_keeps_its_picks() {
     let mut bare = big_mac();
     bare.engines = Engines::default();
     let lines = report(&bare, &judge(&bare, &[]), false);
-    assert_eq!(lines[3], OLLAMA_INSTALL_HINT);
+    assert_eq!(lines[3], LLAMA_CPP_INSTALL_HINT);
     assert_eq!(lines[4], UV_INSTALL_HINT);
     assert_eq!(lines[5], "");
-    assert!(row_of(&lines, "qwen3.8:27b").contains("needs Ollama"));
+    assert!(row_of(&lines, "ggml-org/Qwen3.8-27B-GGUF").contains("needs llama.cpp"));
     assert!(row_of(&lines, "mlx-community/Kokoro-82M-bf16").contains("needs uv"));
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.as_str() == OLLAMA_INSTALL_HINT)
+            .filter(|line| line.as_str() == LLAMA_CPP_INSTALL_HINT)
             .count(),
         1
     );
@@ -171,8 +181,8 @@ fn a_machine_without_a_gpu_says_where_models_run_and_why_a_kind_is_empty() {
 fn all_shows_every_model_and_where_it_stands() {
     let machine = big_mac();
     let lines = report(&machine, &judge(&machine, &[]), true);
-    assert!(row_of(&lines, "gpt-oss:120b").contains("too big"));
-    assert!(row_of(&lines, "qwen3.5:0.8b").contains("also fits"));
+    assert!(row_of(&lines, "ggml-org/gpt-oss-120b-GGUF").contains("too big"));
+    assert!(row_of(&lines, "unsloth/Qwen3.5-0.8B-GGUF").contains("also fits"));
     assert_eq!(
         lines.last().map(String::as_str),
         Some("hedos pull <name> fetches one")
@@ -201,7 +211,7 @@ fn a_card_that_cannot_hold_a_model_says_it_spills() {
         lines[1],
         "12 GiB for models on NVIDIA GeForce RTX 4070 (nvidia-smi); a larger model runs partly from memory"
     );
-    assert!(row_of(&lines, "gpt-oss:20b").contains("also spills"));
+    assert!(row_of(&lines, "ggml-org/gpt-oss-20b-GGUF").contains("also spills"));
 }
 
 #[test]
@@ -255,15 +265,15 @@ fn the_json_carries_the_machine_and_each_shown_model() {
     assert!(recommendations.iter().all(|rec| rec["status"] == "pick"));
     let chat = recommendations
         .iter()
-        .find(|rec| rec["reference"] == "qwen3.8:27b")
+        .find(|rec| rec["reference"] == "ggml-org/Qwen3.8-27B-GGUF")
         .unwrap();
     assert_eq!(chat["kind"], "chat");
-    assert_eq!(chat["engine"], "ollama");
+    assert_eq!(chat["engine"], "llama-cpp");
     assert_eq!(chat["verdict"], "runs_well");
     assert_eq!(chat["placement"], "gpu");
-    assert_eq!(chat["download_bytes"], 17_741_871_939_u64);
+    assert_eq!(chat["download_bytes"], 19_603_657_041_u64);
     assert_eq!(chat["notes"][0]["kind"], "install");
-    assert_eq!(chat["notes"][0]["hint"], OLLAMA_INSTALL_HINT);
+    assert_eq!(chat["notes"][0]["hint"], LLAMA_CPP_INSTALL_HINT);
 
     let all = document(&bare, &judged, true);
     assert_eq!(

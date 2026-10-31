@@ -19,6 +19,9 @@ use crate::sidecar::SidecarSupervisor;
 /// How long a loaded FLUX model stays warm after its last use.
 const WARM_WINDOW: Duration = Duration::from_secs(60);
 
+/// The bundle this sidecar ships as.
+pub(crate) const MFLUX_BUNDLE: &str = "python-mflux";
+
 /// The mflux image Python-sidecar adapter.
 pub struct MfluxAdapter {
     base: SidecarJobAdapter,
@@ -42,7 +45,7 @@ impl MfluxAdapter {
             base: SidecarJobAdapter::new(
                 SidecarJobSpec {
                     id: RuntimeId::mflux(),
-                    bundle_name: "python-mflux",
+                    bundle_name: MFLUX_BUNDLE,
                     preparing_status: "Preparing image runtime…",
                     starting_status: "Starting image runtime…",
                     warm_window: Some(WARM_WINDOW),

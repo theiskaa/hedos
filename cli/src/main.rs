@@ -62,6 +62,8 @@ enum Command {
     Rm(commands::rm::RmArgs),
     /// List the manifest runtimes, and approve or revoke one.
     Runtimes(commands::runtimes::RuntimesArgs),
+    /// List the engines models run on, and install or remove llama.cpp or uv.
+    Engines(commands::engines::EnginesArgs),
     /// Discover models on this machine and refresh the shelf.
     Scan(commands::scan::ScanArgs),
     /// Synthesize speech to a WAV file.
@@ -206,6 +208,7 @@ async fn dispatch(command: Command, out: &Out) -> Result<(), CliError> {
         Command::DiskCount => commands::disk_count::run(out),
         Command::Rm(args) => commands::rm::run(args, out).await,
         Command::Runtimes(args) => commands::runtimes::run(args, out).await,
+        Command::Engines(args) => commands::engines::run(args, out).await,
         Command::Scan(args) => commands::scan::run(args, out).await,
         Command::Speak(args) => commands::speak::run(args, out).await,
         Command::Transcribe(args) => commands::transcribe::run(args, out).await,
