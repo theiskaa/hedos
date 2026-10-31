@@ -1,6 +1,6 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
-  <img alt="hedos: ἕδος, a seat, an abode, a foundation" width="480" src="assets/banner-light.svg">
+  <img alt="hedos: ἕδος, a seat, an abode, a foundation" width="511" src="assets/banner-light.svg">
 </picture>
 
 <br/>
