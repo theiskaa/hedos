@@ -145,17 +145,15 @@ def load_pinned(model_dir, pinned=PINNED_SOURCES):
 
 
 def cuda_runs(torch):
-    # A CUDA build calls a card it has no kernels for available, then fails
-    # every job on it; such a card is left to the CPU.
+    # Availability does not mean this build has kernels for the card.
+    # Run a kernel and read it back so asynchronous failures surface here.
     if not torch.cuda.is_available():
         return False
-    major, minor = torch.cuda.get_device_capability()
-    built = [
-        int("".join(c for c in arch[3:] if c.isdigit()))
-        for arch in torch.cuda.get_arch_list()
-        if arch.startswith("sm_")
-    ]
-    return bool(built) and major * 10 + minor >= min(built)
+    try:
+        torch.ones(1, device="cuda").sum().item()
+    except RuntimeError:
+        return False
+    return True
 
 
 def pick_device():

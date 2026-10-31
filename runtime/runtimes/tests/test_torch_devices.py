@@ -8,16 +8,31 @@ from types import SimpleNamespace
 import pytest
 
 
-def fake_torch(mps=False, cuda=False, capability=(8, 6), archs=("sm_75", "sm_80", "sm_90a")):
+def fake_torch(mps=False, cuda=False, kernel_error=None, fail_at="item"):
+    probes = []
+
+    def read():
+        if kernel_error is not None:
+            raise RuntimeError(kernel_error)
+        return 1.0
+
+    def ones(count, *, device):
+        probes.append((count, device))
+        if kernel_error is not None and fail_at == "ones":
+            raise RuntimeError(kernel_error)
+        return SimpleNamespace(sum=lambda: SimpleNamespace(item=read))
+
     return SimpleNamespace(
         float16="float16",
         float32="float32",
         backends=SimpleNamespace(mps=SimpleNamespace(is_available=lambda: mps)),
         cuda=SimpleNamespace(
             is_available=lambda: cuda,
-            get_device_capability=lambda: capability,
-            get_arch_list=lambda: list(archs),
+            get_device_capability=lambda: (8, 7),
+            get_arch_list=lambda: ["sm_75", "sm_80", "sm_86", "sm_90"],
         ),
+        ones=ones,
+        probes=probes,
         Generator=Generator,
     )
 
@@ -33,16 +48,33 @@ class Generator:
 
 
 @pytest.mark.parametrize("sidecar", ["audio_gen", "diffusers_sidecar", "laya", "zerank"])
-def test_cuda_runs_only_on_a_card_torch_was_built_for(sidecar, request):
+def test_cuda_runs_only_after_a_kernel_completes(sidecar, request):
     module = request.getfixturevalue(sidecar)
-    assert module.cuda_runs(fake_torch(cuda=True, capability=(8, 6)))
-    assert module.cuda_runs(fake_torch(cuda=True, capability=(7, 5)))
-    assert module.cuda_runs(fake_torch(cuda=True, capability=(12, 0)))
-    assert not module.cuda_runs(fake_torch(cuda=True, capability=(6, 1)))
-    assert not module.cuda_runs(fake_torch(cuda=True, capability=(7, 5), archs=("sm_80", "sm_90")))
-    assert module.cuda_runs(fake_torch(cuda=True, capability=(5, 0), archs=("sm_50", "compute_50")))
-    assert not module.cuda_runs(fake_torch(cuda=True, archs=()))
-    assert not module.cuda_runs(fake_torch(cuda=False))
+    torch = fake_torch(cuda=True)
+    assert module.cuda_runs(torch)
+    assert torch.probes == [(1, "cuda")]
+    unavailable = fake_torch(cuda=False)
+    assert not module.cuda_runs(unavailable)
+    assert unavailable.probes == []
+
+
+@pytest.mark.parametrize("sidecar", ["audio_gen", "diffusers_sidecar", "laya", "zerank"])
+@pytest.mark.parametrize("fail_at", ["ones", "item"])
+@pytest.mark.parametrize(
+    "error", ["no kernel image is available for execution on the device", "CUDA out of memory"]
+)
+def test_cuda_falls_back_when_a_kernel_cannot_run(sidecar, request, fail_at, error):
+    module = request.getfixturevalue(sidecar)
+    assert not module.cuda_runs(fake_torch(cuda=True, kernel_error=error, fail_at=fail_at))
+
+
+@pytest.mark.parametrize("sidecar", ["audio_gen", "diffusers_sidecar", "laya", "zerank"])
+def test_cuda_keeps_working_forward_compatibility(sidecar, request):
+    module = request.getfixturevalue(sidecar)
+    torch = fake_torch(cuda=True)
+    torch.cuda.get_device_capability = lambda: (12, 0)
+    torch.cuda.get_arch_list = lambda: ["sm_90", "compute_90"]
+    assert module.cuda_runs(torch)
 
 
 @pytest.mark.parametrize("sidecar", ["audio_gen", "diffusers_sidecar"])
@@ -50,7 +82,7 @@ def test_a_pipeline_runs_on_metal_then_a_card_it_can_use_then_the_cpu(sidecar, r
     module = request.getfixturevalue(sidecar)
     assert module.device_of(fake_torch(mps=True)) == "mps"
     assert module.device_of(fake_torch(cuda=True)) == "cuda"
-    assert module.device_of(fake_torch(cuda=True, capability=(6, 1))) == "cpu"
+    assert module.device_of(fake_torch(cuda=True, kernel_error="no kernel image")) == "cpu"
     assert module.device_of(fake_torch()) == "cpu"
 
 
@@ -106,8 +138,8 @@ def test_a_judge_runs_on_a_card_it_can_use_then_metal_then_the_cpu(sidecar, requ
     module = request.getfixturevalue(sidecar)
     for torch, device in [
         (fake_torch(cuda=True), "cuda"),
-        (fake_torch(cuda=True, capability=(6, 1)), "cpu"),
-        (fake_torch(cuda=True, capability=(6, 1), mps=True), "mps"),
+        (fake_torch(cuda=True, kernel_error="no kernel image"), "cpu"),
+        (fake_torch(cuda=True, kernel_error="no kernel image", mps=True), "mps"),
         (fake_torch(mps=True), "mps"),
         (fake_torch(), "cpu"),
     ]:

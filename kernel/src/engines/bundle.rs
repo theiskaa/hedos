@@ -461,7 +461,11 @@ mod tests {
             names.len()
         );
         assert!(names.iter().any(|name| name.ends_with("/llama-server")));
-        assert!(cut.len() < release.len());
+        let mut original = Vec::new();
+        GzDecoder::new(release.as_slice())
+            .read_to_end(&mut original)
+            .unwrap();
+        assert!(cut.len() < original.len());
     }
 
     #[test]

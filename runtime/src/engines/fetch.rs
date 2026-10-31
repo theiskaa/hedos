@@ -158,7 +158,12 @@ const LOCK_PATIENCE: Duration = Duration::from_secs(1);
 /// How often it is retried meanwhile.
 const LOCK_RETRY: Duration = Duration::from_millis(20);
 
-/// How long an unpacked program may take to say its version.
+/// Freshly unpacked macOS libraries can take seconds to validate in dyld
+/// before the program reaches its version handler.
+#[cfg(target_os = "macos")]
+const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an unpacked program may take to say its version elsewhere.
+#[cfg(not(target_os = "macos"))]
 const VERSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The most of each stream a program asked its version writes that is read.
