@@ -1085,7 +1085,7 @@ When this binary is already the newest release, it says so and exits `0`. Under 
 A command that runs to its end, or fails, ends with one line on stderr when a newer release is out:
 
 ```
-hedos 1.6.1 is available (you have 1.6.0). Run `hedos upgrade` to update.
+hedos 1.6.2 is available (you have 1.6.1). Run `hedos upgrade` to update.
 ```
 
 No command waits on the network for it. At most once a day, a command starts a detached process that looks up the newest release and remembers the answer in `upgrade-check.json` in the data directory; the notice reads only that file. Only one command at a time starts it. The notice and the daily look stay off under `--json`, when stderr is not a terminal, when `HEDOS_NO_UPDATE_CHECK` is set to anything but an empty value, `0` or `false`, and when `advanced.check_for_updates` is `false`. A command stopped by a signal, or whose stdout reader went away, ends without it. `hedos upgrade` itself always looks, and never adds the notice.
