@@ -328,9 +328,16 @@ async fn run_hand_off(
             harness,
             program,
             record,
-        } => commands::launch::launch(session, harness, program, record, &[], out)
-            .await
-            .map(Some),
+        } => commands::launch::launch(
+            session,
+            harness,
+            program,
+            commands::launch::LaunchModel::Record(record),
+            &[],
+            out,
+        )
+        .await
+        .map(Some),
         HandOff::Chat { record } => commands::chat::chat(session, record, None, None, out)
             .await
             .map(|()| None),

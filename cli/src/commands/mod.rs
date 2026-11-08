@@ -11,6 +11,7 @@ pub mod ls;
 pub mod pull;
 pub mod recommend;
 pub mod rm;
+pub mod route;
 pub mod run;
 pub mod runtimes;
 pub mod scan;

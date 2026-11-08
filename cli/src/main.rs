@@ -47,6 +47,8 @@ enum Command {
     Serve(commands::serve::ServeArgs),
     /// Run a coding harness (opencode, claude, aider) on a local model.
     Launch(commands::launch::LaunchArgs),
+    /// Route the gateway's `auto` model between a small and a large model.
+    Route(commands::route::RouteArgs),
     /// Fetch a model from Ollama or Hugging Face.
     Pull(commands::pull::PullArgs),
     /// Read this machine's hardware and recommend models to pull for it.
@@ -202,6 +204,7 @@ async fn dispatch(command: Command, out: &Out) -> Result<(), CliError> {
         Command::Chat(args) => commands::chat::run(args, out).await,
         Command::Serve(args) => commands::serve::run(args, out).await,
         Command::Launch(args) => commands::launch::run(args, out).await,
+        Command::Route(args) => commands::route::run(args, out).await,
         Command::Pull(args) => commands::pull::run(args, out).await,
         Command::Recommend(args) => commands::recommend::run(args, out).await,
         Command::PullWorker(args) => commands::pull::worker::run(args).await,
