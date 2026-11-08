@@ -44,6 +44,12 @@ pub struct GatewayAuditEntry {
     /// Extra detail (e.g. an internal error description).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub detail: Option<String>,
+    /// The virtual model the request named, when auto routing chose `model`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub routed_from: Option<String>,
+    /// Why auto routing chose `model`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub route_reason: Option<String>,
 }
 
 /// Serialize `ts_millis` as an ISO 8601 string and parse it back.
@@ -232,6 +238,8 @@ impl GatewayAuditLog {
             detail: Some(format!(
                 "{suppressed} more unauthenticated requests rejected"
             )),
+            routed_from: None,
+            route_reason: None,
         });
     }
 
@@ -369,6 +377,8 @@ mod tests {
             status: 200,
             duration_ms: 1,
             detail: None,
+            routed_from: None,
+            route_reason: None,
         }
     }
 

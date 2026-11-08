@@ -125,6 +125,7 @@ mod tests {
             rejected_requests: 9,
             rejection_rate: 9.0 / 142.0,
             models: Vec::new(),
+            routing: None,
         };
         assert_eq!(header(&summary), "142 requests · 9 rejected (6.3%)");
     }

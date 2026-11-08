@@ -4,15 +4,16 @@
 //! single response).
 
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
-use kernel::records::{Capability, JsonValue};
+use kernel::records::JsonValue;
 
 use super::stream::{DEFAULT_RUN_TIMEOUT_SECONDS, drain_bounded};
 use super::{
-    GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch, respond_json,
-    runtime_failed,
+    Dispatched, GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch,
+    respond_json_with, runtime_failed,
 };
+use crate::auto_route::RouteRequest;
 use crate::error::GatewayError;
-use crate::identity::{GatewayIdentity, GatewayOutcome};
+use crate::identity::GatewayIdentity;
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
 use crate::responder::GatewayResponder;
@@ -49,14 +50,18 @@ impl GatewayHandling for OpenAIChatHandler {
                 chat.tools.clear();
             }
             let payload = openai::chat_payload(&chat);
-            let (record, mut stream) = dispatch(
+            let routing = RouteRequest::chat(&chat.messages, &chat.tools);
+            let Dispatched {
+                mut stream,
+                headers,
+                outcome,
+            } = dispatch(
                 port,
                 identity,
                 &chat.model,
-                Capability::chat(),
-                !chat.tools.is_empty(),
                 &chat.sampling,
                 payload,
+                routing,
             )
             .await?;
 
@@ -66,7 +71,7 @@ impl GatewayHandling for OpenAIChatHandler {
             let include_usage = chat.include_usage;
 
             if chat.stream {
-                let body = responder.begin_stream(200, "text/event-stream")?;
+                let body = responder.begin_stream_with(200, "text/event-stream", headers)?;
                 let drain = async {
                     let mut first = true;
                     let mut final_stats: Option<GenerationStats> = None;
@@ -141,12 +146,9 @@ impl GatewayHandling for OpenAIChatHandler {
                     final_stats.as_ref(),
                     &tool_calls,
                 );
-                respond_json(responder, &body);
+                respond_json_with(responder, &body, headers);
             }
-            Ok(GatewayOutcome::ok_for(
-                Some(&record.id),
-                Some(&Capability::chat()),
-            ))
+            Ok(outcome)
         })
     }
 }
@@ -176,22 +178,18 @@ impl GatewayHandling for OllamaChatHandler {
         Box::pin(async move {
             let chat = ollama::decode_chat_request(&request.decoded_json()?)?;
             let payload = ollama::chat_payload(&chat);
-            let (record, mut stream) = dispatch(
-                port,
-                identity,
-                &chat.model,
-                Capability::chat(),
-                !chat.tools.is_empty(),
-                &chat.options,
-                payload,
-            )
-            .await?;
+            let routing = RouteRequest::chat(&chat.messages, &chat.tools);
+            let Dispatched {
+                mut stream,
+                headers,
+                outcome,
+            } = dispatch(port, identity, &chat.model, &chat.options, payload, routing).await?;
 
             // Each frame carries a fresh timestamp, as Ollama does.
             let served = chat.model.clone();
 
             if chat.stream {
-                let body = responder.begin_stream(200, "application/x-ndjson")?;
+                let body = responder.begin_stream_with(200, "application/x-ndjson", headers)?;
                 let drain = async {
                     let mut final_stats: Option<GenerationStats> = None;
                     let mut saw_tool_call = false;
@@ -247,12 +245,9 @@ impl GatewayHandling for OllamaChatHandler {
                     final_stats.as_ref(),
                     &tool_calls,
                 );
-                respond_json(responder, &body);
+                respond_json_with(responder, &body, headers);
             }
-            Ok(GatewayOutcome::ok_for(
-                Some(&record.id),
-                Some(&Capability::chat()),
-            ))
+            Ok(outcome)
         })
     }
 }

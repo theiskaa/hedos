@@ -616,6 +616,8 @@ mod tests {
             status: if outcome == "ok" { 200 } else { 500 },
             duration_ms: 10,
             detail: None,
+            routed_from: None,
+            route_reason: None,
         }
     }
 

@@ -76,7 +76,7 @@ async fn the_extractors_reply_comes_back_as_written() {
     assert_eq!(status, Some(200));
     assert_eq!(body, TESSERA_REPLY);
     let invoked = port.invoked.lock().unwrap();
-    let (capability, payload) = &invoked[0];
+    let (capability, payload, _) = &invoked[0];
     assert_eq!(*capability, Capability::extract());
     assert_eq!(
         serde_json::to_value(payload).unwrap(),

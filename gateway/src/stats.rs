@@ -27,6 +27,33 @@ pub struct GatewayStats {
     /// model (auth failures, model listings, coalesced summaries) are counted in
     /// the totals above but appear in no row here.
     pub models: Vec<ModelStats>,
+    /// What auto routing did, when it served anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingStats>,
+}
+
+/// The requests auto routing chose a model for: how many went to each model,
+/// and why.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RoutingStats {
+    /// Requests that named the virtual model.
+    pub requests: u64,
+    /// Those that were refused or failed, apart from the ones their client
+    /// abandoned.
+    pub failed: u64,
+    /// How many each model served, busiest first.
+    pub models: Vec<Count>,
+    /// How many each reason sent where they went, commonest first.
+    pub reasons: Vec<Count>,
+}
+
+/// A label and how many requests it covers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Count {
+    /// The model id or the reason.
+    pub label: String,
+    /// The requests.
+    pub requests: u64,
 }
 
 /// One model's slice of the audit log.
@@ -76,12 +103,28 @@ pub fn summarize(entries: &[GatewayAuditEntry]) -> GatewayStats {
     let total_requests = entries.len() as u64;
     let mut rejected_requests = 0u64;
     let mut per_model: BTreeMap<&str, ModelTally> = BTreeMap::new();
+    let mut routed = 0u64;
+    let mut routed_failed = 0u64;
+    let mut routed_models: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut reasons: BTreeMap<&str, u64> = BTreeMap::new();
 
     for entry in entries {
         let ok = entry.is_ok();
         let failed = !ok && !entry.is_cancelled();
         if failed {
             rejected_requests += 1;
+        }
+        if entry.routed_from.is_some() {
+            routed += 1;
+            if failed {
+                routed_failed += 1;
+            }
+            if let Some(model) = entry.model.as_deref() {
+                *routed_models.entry(model).or_default() += 1;
+            }
+            if let Some(reason) = entry.route_reason.as_deref() {
+                *reasons.entry(reason).or_default() += 1;
+            }
         }
         if let Some(model) = entry.model.as_deref() {
             let tally = per_model.entry(model).or_default();
@@ -115,7 +158,27 @@ pub fn summarize(entries: &[GatewayAuditEntry]) -> GatewayStats {
         rejected_requests,
         rejection_rate: rate(rejected_requests, total_requests),
         models,
+        routing: (routed > 0).then(|| RoutingStats {
+            requests: routed,
+            failed: routed_failed,
+            models: busiest(routed_models),
+            reasons: busiest(reasons),
+        }),
     }
+}
+
+/// `counts` as rows, busiest first; the labels already ascend, so a stable
+/// sort leaves ties in name order.
+fn busiest(counts: BTreeMap<&str, u64>) -> Vec<Count> {
+    let mut rows: Vec<Count> = counts
+        .into_iter()
+        .map(|(label, requests)| Count {
+            label: label.to_owned(),
+            requests,
+        })
+        .collect();
+    rows.sort_by_key(|row| std::cmp::Reverse(row.requests));
+    rows
 }
 
 /// `numerator / denominator` as a ratio, or `0.0` when `denominator` is zero.
@@ -166,7 +229,64 @@ mod tests {
             status: if outcome == "ok" { 200 } else { 500 },
             duration_ms,
             detail: None,
+            routed_from: None,
+            route_reason: None,
         }
+    }
+
+    fn routed(model: &str, reason: &str) -> GatewayAuditEntry {
+        GatewayAuditEntry {
+            routed_from: Some("auto".to_owned()),
+            route_reason: Some(reason.to_owned()),
+            ..entry(Some(model), "ok", 10)
+        }
+    }
+
+    #[test]
+    fn routed_requests_are_counted_by_model_and_reason() {
+        let entries = [
+            routed("tiny", "short turn"),
+            routed("tiny", "short turn"),
+            routed("big", "hard word \"refactor\""),
+            entry(Some("big"), "ok", 10),
+            entry(None, "unauthorized", 0),
+            GatewayAuditEntry {
+                routed_from: Some("auto".to_owned()),
+                ..entry(None, "bad_request", 0)
+            },
+        ];
+        let summary = summarize(&entries);
+        let routing = summary.routing.expect("something was routed");
+        assert_eq!(routing.requests, 4);
+        assert_eq!(routing.failed, 1);
+        let models: Vec<(&str, u64)> = routing
+            .models
+            .iter()
+            .map(|row| (row.label.as_str(), row.requests))
+            .collect();
+        assert_eq!(models, [("tiny", 2), ("big", 1)]);
+        assert_eq!(routing.reasons[0].label, "short turn");
+        assert_eq!(routing.reasons[0].requests, 2);
+        assert_eq!(
+            summary.models[0].requests, 2,
+            "per-model rows count every request"
+        );
+    }
+
+    #[test]
+    fn nothing_routed_leaves_routing_out() {
+        let summary = summarize(&[entry(Some("big"), "ok", 10)]);
+        assert!(summary.routing.is_none());
+        let value = serde_json::to_value(&summary).unwrap();
+        assert!(value.get("routing").is_none());
+    }
+
+    #[test]
+    fn an_old_log_line_without_routing_fields_still_reads() {
+        let line = r#"{"ts":"2026-11-01T00:00:00Z","method":"POST","route":"/v1/chat/completions","model":"m","outcome":"ok","status":200,"durationMs":5}"#;
+        let entry: GatewayAuditEntry = serde_json::from_str(line).unwrap();
+        assert_eq!(entry.routed_from, None);
+        assert_eq!(entry.route_reason, None);
     }
 
     #[test]

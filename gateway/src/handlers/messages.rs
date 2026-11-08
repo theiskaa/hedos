@@ -6,15 +6,15 @@
 //! even though the unary path is implemented for completeness.
 
 use kernel::capabilities::{CapabilityChunk, GenerationStats};
-use kernel::records::Capability;
 
 use super::stream::{DEFAULT_RUN_TIMEOUT_SECONDS, drain_bounded};
 use super::{
-    GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch, respond_json,
-    runtime_failed,
+    Dispatched, GatewayHandling, HandlerFuture, collect_completion, completion_id, dispatch,
+    respond_json_with, runtime_failed,
 };
+use crate::auto_route::RouteRequest;
 use crate::error::GatewayError;
-use crate::identity::{GatewayIdentity, GatewayOutcome};
+use crate::identity::GatewayIdentity;
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
 use crate::responder::GatewayResponder;
@@ -46,14 +46,18 @@ impl GatewayHandling for AnthropicMessagesHandler {
         Box::pin(async move {
             let message = anthropic::decode_messages_request(request.decoded_json()?)?;
             let payload = anthropic::messages_payload(&message);
-            let (record, mut stream) = dispatch(
+            let routing = RouteRequest::chat(&message.messages, &message.tools);
+            let Dispatched {
+                mut stream,
+                headers,
+                outcome,
+            } = dispatch(
                 port,
                 identity,
                 &message.model,
-                Capability::chat(),
-                !message.tools.is_empty(),
                 &message.sampling,
                 payload,
+                routing,
             )
             .await?;
 
@@ -61,7 +65,7 @@ impl GatewayHandling for AnthropicMessagesHandler {
             let served = message.model.clone();
 
             if message.stream {
-                let body = responder.begin_stream(200, "text/event-stream")?;
+                let body = responder.begin_stream_with(200, "text/event-stream", headers)?;
                 let drain = async {
                     body.write(anthropic::message_start(&id, &served, None));
 
@@ -121,12 +125,9 @@ impl GatewayHandling for AnthropicMessagesHandler {
                 let (content, tool_calls, final_stats) = collect_completion(&mut stream).await?;
                 let value =
                     anthropic::message(&id, &served, &content, &tool_calls, final_stats.as_ref());
-                respond_json(responder, &value);
+                respond_json_with(responder, &value, headers);
             }
-            Ok(GatewayOutcome::ok_for(
-                Some(&record.id),
-                Some(&Capability::chat()),
-            ))
+            Ok(outcome)
         })
     }
 }

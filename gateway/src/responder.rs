@@ -89,16 +89,28 @@ impl GatewayResponder {
         status: u16,
         content_type: &str,
     ) -> Result<GatewayStreamBody, GatewayError> {
+        self.begin_stream_with(status, content_type, Vec::new())
+    }
+
+    /// [`begin_stream`](Self::begin_stream) with `extra_headers` after the
+    /// content type and cache control.
+    pub fn begin_stream_with(
+        &self,
+        status: u16,
+        content_type: &str,
+        extra_headers: Vec<(String, String)>,
+    ) -> Result<GatewayStreamBody, GatewayError> {
         if !self.start() {
             return Err(GatewayError::new(
                 GatewayErrorKind::ServerError,
                 "response already started",
             ));
         }
-        let headers = vec![
+        let mut headers = vec![
             ("Content-Type".to_owned(), content_type.to_owned()),
             ("Cache-Control".to_owned(), "no-cache".to_owned()),
         ];
+        headers.extend(extra_headers);
         let _ = self.tx.send(ResponsePart::Head { status, headers });
         Ok(GatewayStreamBody {
             tx: self.tx.clone(),

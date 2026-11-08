@@ -7,15 +7,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gateway::admission::{GatewayAdmissionState, GatewayWorkKind};
+use gateway::auto_route::AutoRoute;
 use gateway::port::{GatewayPort, GatewayResident, PortFuture};
 use kernel::capabilities::CapabilityChunk;
 use kernel::jobs::{Job, JobEvent};
+use kernel::profiles::{Verdict, assess, prompt_characters};
 use kernel::records::{
     Capability, JsonValue, Modality, ModelRecord, ModelSource, ModelState, SourceKind,
 };
+use kernel::routing::RouteRules;
 use runtime::adapters::{ChunkStream, RuntimeError};
 use runtime::facade::KernelError;
 use tokio::sync::mpsc;
@@ -70,6 +73,9 @@ pub struct MockPort {
     pub shelf: Vec<ModelRecord>,
     pub chunks: Vec<CapabilityChunk>,
     pub honored: HashSet<String>,
+    /// Parameter keys honored for a particular record id, in place of
+    /// `honored`.
+    pub honored_by: HashMap<String, HashSet<String>>,
     pub admission: GatewayAdmissionState,
     /// Voices returned by `voices`, first one used as the speech default.
     pub voices: Vec<String>,
@@ -79,8 +85,9 @@ pub struct MockPort {
     pub artifacts: HashMap<String, Vec<u8>>,
     /// Models reported as held in memory by `resident`.
     pub resident: Vec<GatewayResident>,
-    /// Every `invoke` this port received, in order: the capability and payload.
-    pub invoked: Mutex<Vec<(Capability, JsonValue)>>,
+    /// Every `invoke` this port received, in order: the capability, the
+    /// payload, and the record id.
+    pub invoked: Mutex<Vec<(Capability, JsonValue, String)>>,
     /// When set, each invoke's stream is left open after `chunks`, its sender
     /// kept here, so a test can see whether the reader let it go.
     pub open_streams: Option<Mutex<Vec<StreamSender>>>,
@@ -93,6 +100,12 @@ pub struct MockPort {
     /// When set, a job's event stream stays open after `job_events`, its
     /// sender kept here, as a job still running does.
     pub open_jobs: Option<Mutex<Vec<mpsc::UnboundedSender<JobEvent>>>>,
+    /// The `auto` routing this port serves, if any.
+    /// Shared, so two ports can serve one routing's memory.
+    pub auto_route: Option<Arc<AutoRoute>>,
+    /// The context window each model id is served at; models not listed fall
+    /// back to their record's declared window.
+    pub windows: HashMap<String, i64>,
 }
 
 /// The sending half of a runtime's chunk stream.
@@ -104,6 +117,7 @@ impl Default for MockPort {
             shelf: Vec::new(),
             chunks: Vec::new(),
             honored: HashSet::new(),
+            honored_by: HashMap::new(),
             admission: GatewayAdmissionState::Ready,
             voices: Vec::new(),
             job_events: Vec::new(),
@@ -115,6 +129,8 @@ impl Default for MockPort {
             submitted: Mutex::new(Vec::new()),
             cancelled: Mutex::new(Vec::new()),
             open_jobs: None,
+            auto_route: None,
+            windows: HashMap::new(),
         }
     }
 }
@@ -147,6 +163,51 @@ impl MockPort {
     }
 }
 
+/// A port with `tiny` and `big` on the shelf, each serving chat, completion
+/// and tools, and `auto` routing between them.
+pub fn routed_port() -> MockPort {
+    let model = |name: &str| {
+        let mut record = capable_model(name, Capability::chat());
+        record.capabilities = vec![
+            Capability::chat(),
+            Capability::complete(),
+            Capability::tools(),
+        ];
+        record
+    };
+    MockPort {
+        shelf: vec![model("tiny"), model("big")],
+        chunks: vec![
+            CapabilityChunk::Text("ok".to_owned()),
+            CapabilityChunk::Done(None),
+        ],
+        auto_route: Some(Arc::new(AutoRoute::new(
+            "auto",
+            "tiny",
+            "big",
+            RouteRules::default(),
+            Duration::from_secs(1800),
+        ))),
+        ..MockPort::default()
+    }
+}
+
+/// The names of the models `port` was invoked on, in order.
+pub fn invoked_names(port: &MockPort) -> Vec<String> {
+    port.invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, _, id)| {
+            port.shelf
+                .iter()
+                .find(|record| &record.id == id)
+                .map(|record| record.name.clone())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// A ready text chat model registered from an ollama tag.
 pub fn ready_model(name: &str) -> ModelRecord {
     capable_model(name, Capability::chat())
@@ -177,11 +238,14 @@ impl GatewayPort for MockPort {
 
     fn invoke<'a>(
         &'a self,
-        _model_id: &'a str,
+        model_id: &'a str,
         capability: Capability,
         payload: JsonValue,
     ) -> PortFuture<'a, Result<ChunkStream, KernelError>> {
-        self.invoked.lock().unwrap().push((capability, payload));
+        self.invoked
+            .lock()
+            .unwrap()
+            .push((capability, payload, model_id.to_owned()));
         let chunks = self.chunks.clone();
         Box::pin(async move {
             let (tx, stream) = ChunkStream::channel();
@@ -245,10 +309,14 @@ impl GatewayPort for MockPort {
 
     fn honored_params<'a>(
         &'a self,
-        _model_id: &'a str,
+        model_id: &'a str,
         _capability: Capability,
     ) -> PortFuture<'a, Result<HashSet<String>, KernelError>> {
-        let honored = self.honored.clone();
+        let honored = self
+            .honored_by
+            .get(model_id)
+            .unwrap_or(&self.honored)
+            .clone();
         Box::pin(async move { Ok(honored) })
     }
 
@@ -258,6 +326,30 @@ impl GatewayPort for MockPort {
     ) -> PortFuture<'a, Result<Option<Vec<u8>>, KernelError>> {
         let data = self.artifacts.get(id).cloned();
         Box::pin(async move { Ok(data) })
+    }
+
+    fn prompt_fit(
+        &self,
+        record: &ModelRecord,
+        _capability: &Capability,
+        payload: &JsonValue,
+        uncounted: i64,
+    ) -> Verdict {
+        match self
+            .windows
+            .get(&record.id)
+            .copied()
+            .or(record.context_length)
+        {
+            Some(window) => assess(prompt_characters(payload) + uncounted, window, None),
+            None => Verdict::Fits {
+                clamped_max_tokens: None,
+            },
+        }
+    }
+
+    fn auto_route(&self) -> Option<&AutoRoute> {
+        self.auto_route.as_deref()
     }
 
     fn admission_state<'a>(

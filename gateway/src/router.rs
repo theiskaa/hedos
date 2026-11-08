@@ -49,6 +49,8 @@ pub struct GatewayRoute {
     pub summary: String,
     /// A per-route body-size override (for large uploads).
     pub max_body_bytes: Option<usize>,
+    /// Whether this route serves the `auto` model.
+    pub routed: bool,
 }
 
 impl GatewayRoute {
@@ -62,12 +64,19 @@ impl GatewayRoute {
             group: String::new(),
             summary: String::new(),
             max_body_bytes: None,
+            routed: false,
         }
     }
 
     /// Mark this route as inference (subject to the concurrency cap).
     pub fn inference(mut self) -> Self {
         self.inference = true;
+        self
+    }
+
+    /// Mark this route as one auto routing serves.
+    pub fn routed(mut self) -> Self {
+        self.routed = true;
         self
     }
 
@@ -98,6 +107,7 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             Box::new(OpenAIChatHandler::default()),
         )
         .inference()
+        .routed()
         .described("OpenAI", "Stream or complete a chat"),
         GatewayRoute::new("GET", "/v1/models", Box::new(OpenAIModelsHandler))
             .described("OpenAI", "List the models this token can reach"),
@@ -107,6 +117,7 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             Box::new(AnthropicMessagesHandler::default()),
         )
         .inference()
+        .routed()
         .described("Anthropic", "Stream or complete a message"),
         GatewayRoute::new("POST", "/v1/systemone", Box::new(SystemOneHandler))
             .inference()
@@ -117,6 +128,7 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             .described("hedos", "Extract contacts from text"),
         GatewayRoute::new("POST", "/api/chat", Box::new(OllamaChatHandler::default()))
             .inference()
+            .routed()
             .described("Ollama", "Chat over the Ollama NDJSON protocol"),
         GatewayRoute::new("GET", "/api/tags", Box::new(OllamaTagsHandler))
             .described("Ollama", "List models, Ollama-style"),
@@ -141,9 +153,11 @@ pub fn standard_routes() -> Vec<GatewayRoute> {
             Box::new(OpenAICompletionsHandler),
         )
         .inference()
+        .routed()
         .described("OpenAI", "Complete a text prompt"),
         GatewayRoute::new("POST", "/api/generate", Box::new(OllamaGenerateHandler))
             .inference()
+            .routed()
             .described("Ollama", "Generate from a prompt, Ollama-style"),
         GatewayRoute::new(
             "POST",
@@ -375,6 +389,8 @@ impl GatewayRouter {
             status: outcome.status,
             duration_ms: now - started,
             detail: None,
+            routed_from: outcome.routed_from.clone(),
+            route_reason: outcome.route_reason.clone(),
         }
     }
 
@@ -406,7 +422,24 @@ impl GatewayRouter {
             status: error.status(),
             duration_ms: now - started,
             detail,
+            routed_from: self.routed_from(request),
+            route_reason: None,
         }
+    }
+
+    /// The virtual name a request asked for, when it went to a route auto
+    /// routing serves and named the routed model, so a refused or failed one
+    /// still counts among the routed requests in the stats. The body is read
+    /// only when routing is on and the route is one it serves.
+    fn routed_from(&self, request: &GatewayRequest) -> Option<String> {
+        let auto = self.port.auto_route()?;
+        let serves = self.routes.iter().any(|route| {
+            route.routed && route.path == request.path && route.method == request.method
+        });
+        if !serves {
+            return None;
+        }
+        requested_model(request).filter(|model| auto.answers(model))
     }
 }
 
