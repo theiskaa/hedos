@@ -621,6 +621,11 @@ impl RuntimeAdapter for LlamaServerAdapter {
         &self.id
     }
 
+    /// Not governed: the pool keeps one `llama-server` per model and stops none.
+    fn governed(&self) -> bool {
+        false
+    }
+
     fn wires_tools(&self) -> bool {
         true
     }

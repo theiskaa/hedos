@@ -203,6 +203,14 @@ pub trait RuntimeAdapter: Send + Sync {
         false
     }
 
+    /// Whether the memory governor loads and evicts this runtime's models. One
+    /// that keeps a server of its own per model, or serves from another
+    /// program's daemon, is not governed, and the eviction policy does not
+    /// reach its models.
+    fn governed(&self) -> bool {
+        true
+    }
+
     /// Whether this runtime forwards a `tools` array to its backend and parses
     /// tool calls out of the response. Resolution folds the `tools` capability
     /// onto a record only when its winning runtime does.

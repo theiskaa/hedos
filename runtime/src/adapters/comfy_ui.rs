@@ -108,6 +108,11 @@ impl RuntimeAdapter for ComfyUiAdapter {
         &self.id
     }
 
+    /// Not governed: ComfyUI's own server decides what it keeps loaded.
+    fn governed(&self) -> bool {
+        false
+    }
+
     fn can_serve(&self, record: &ModelRecord, capability: &Capability) -> bool {
         record.runtime.id.as_ref() == Some(self.id()) && capability == &Capability::image()
     }

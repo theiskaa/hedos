@@ -1,7 +1,8 @@
 //! Persistent settings, stored as one human-editable TOML file at
 //! `<config-dir>/hedos.toml` (config dir = `XDG_CONFIG_HOME`, else `~/.config`,
 //! else `%APPDATA%`). A single file with `[models]`/`[chat]`/`[voice]`/
-//! `[gateway]`/`[pull]`/`[advanced]`/`[engines]` tables, not a per-domain store.
+//! `[gateway]`/`[routing]`/`[pull]`/`[advanced]`/`[engines]` tables, not a
+//! per-domain store.
 //!
 //! Loading is tolerant: a missing file, a malformed file, or a malformed table
 //! falls back to defaults for just that scope, so a hand-edit typo never wipes
@@ -14,6 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+use kernel::routing::{DEFAULT_MAX_SIMPLE_CHARS, RouteRules};
 
 use crate::governor::{EvictionPolicy, KeepWarmPolicy};
 
@@ -189,6 +192,95 @@ impl Default for GatewaySettings {
     }
 }
 
+/// The virtual model name auto routing answers to when none is set.
+pub const DEFAULT_ROUTE_NAME: &str = "auto";
+
+/// How long a conversation remembers that it went large, in minutes, by
+/// default.
+pub const DEFAULT_STICKY_MINUTES: i64 = 30;
+
+/// What every surface says when auto routing is asked for while it is off.
+pub const ROUTING_OFF: &str =
+    "auto routing is off; turn it on with hedos route set --small <model> --large <model>";
+
+/// Auto routing on the gateway: one virtual model that serves each request with
+/// the small or the large model named here. Off until both are set.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct RoutingSettings {
+    /// The small model (name, alias, or id). Empty means unset.
+    pub small: String,
+    /// The large model (name, alias, or id). Empty means unset.
+    pub large: String,
+    /// The model name clients ask for to be routed.
+    pub name: String,
+    /// A latest user turn longer than this many characters goes large.
+    pub max_simple_chars: i64,
+    /// Words or phrases that send a turn large. Empty means the built-in list.
+    pub hard_words: Vec<String>,
+    /// How long a conversation remembers that it went large, in minutes.
+    pub sticky_minutes: i64,
+}
+
+impl Default for RoutingSettings {
+    fn default() -> Self {
+        Self {
+            small: String::new(),
+            large: String::new(),
+            name: DEFAULT_ROUTE_NAME.to_owned(),
+            max_simple_chars: DEFAULT_MAX_SIMPLE_CHARS as i64,
+            hard_words: Vec::new(),
+            sticky_minutes: DEFAULT_STICKY_MINUTES,
+        }
+    }
+}
+
+impl RoutingSettings {
+    /// Whether routing is on: both models set, and not the same name.
+    pub fn is_on(&self) -> bool {
+        !self.small().is_empty() && !self.large().is_empty() && self.small() != self.large()
+    }
+
+    /// The small model's name, trimmed.
+    pub fn small(&self) -> &str {
+        self.small.trim()
+    }
+
+    /// The large model's name, trimmed.
+    pub fn large(&self) -> &str {
+        self.large.trim()
+    }
+
+    /// The virtual model name, falling back to `auto` when blank.
+    pub fn model_name(&self) -> &str {
+        non_empty(self.name.trim()).unwrap_or(DEFAULT_ROUTE_NAME)
+    }
+
+    /// The policy's rules, with a hand-edited limit held to a sane range and
+    /// an empty word list standing for the built-in one.
+    pub fn rules(&self) -> RouteRules {
+        let mut rules = RouteRules {
+            max_simple_chars: self.max_simple_chars.clamp(200, 20_000) as usize,
+            ..RouteRules::default()
+        };
+        let words: Vec<String> = self
+            .hard_words
+            .iter()
+            .map(|word| word.trim().to_owned())
+            .filter(|word| !word.is_empty())
+            .collect();
+        if !words.is_empty() {
+            rules.hard_words = words;
+        }
+        rules
+    }
+
+    /// How long a conversation remembers its tier.
+    pub fn sticky_window(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.sticky_minutes.clamp(1, 24 * 60) as u64 * 60)
+    }
+}
+
 /// Background pulls: how many run at once, whether an interrupted one is picked
 /// back up, and how long a half-downloaded file is kept.
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
@@ -297,6 +389,8 @@ pub struct Settings {
     pub voice: VoiceSettings,
     /// Loopback gateway.
     pub gateway: GatewaySettings,
+    /// Auto routing on the gateway.
+    pub routing: RoutingSettings,
     /// Background pulls.
     pub pull: PullSettings,
     /// Advanced.
@@ -347,6 +441,7 @@ impl SettingsStore {
             chat: decode_table(&table, "chat"),
             voice: decode_table(&table, "voice"),
             gateway: decode_table(&table, "gateway"),
+            routing: decode_table(&table, "routing"),
             pull: decode_table(&table, "pull"),
             advanced: decode_table(&table, "advanced"),
             engines: decode_table(&table, "engines"),
@@ -551,6 +646,61 @@ fn process_env() -> HashMap<String, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn routing_is_off_until_two_different_models_are_named() {
+        let mut routing = RoutingSettings::default();
+        assert!(!routing.is_on());
+        routing.small = "qwen3-4b".to_owned();
+        assert!(!routing.is_on());
+        routing.large = " qwen3-4b ".to_owned();
+        assert!(!routing.is_on(), "the same model twice routes nowhere");
+        routing.large = "qwen3-coder-30b".to_owned();
+        assert!(routing.is_on());
+    }
+
+    #[test]
+    fn a_hand_edited_routing_table_falls_back_to_sane_values() {
+        let routing = RoutingSettings {
+            name: "  ".to_owned(),
+            max_simple_chars: 3,
+            hard_words: vec![" ".to_owned()],
+            sticky_minutes: 0,
+            ..RoutingSettings::default()
+        };
+        assert_eq!(routing.model_name(), "auto");
+        assert_eq!(routing.rules().max_simple_chars, 200);
+        assert_eq!(routing.rules().hard_words, RouteRules::default().hard_words);
+        assert_eq!(routing.sticky_window(), std::time::Duration::from_secs(60));
+
+        let custom = RoutingSettings {
+            hard_words: vec!["Fix".to_owned()],
+            max_simple_chars: i64::MAX,
+            ..RoutingSettings::default()
+        };
+        assert_eq!(custom.rules().hard_words, vec!["Fix".to_owned()]);
+        assert_eq!(custom.rules().max_simple_chars, 20_000);
+    }
+
+    #[test]
+    fn a_malformed_routing_table_leaves_the_others_alone() {
+        let path = temp_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "[gateway]\nport = 9000\n\n[routing]\nsmall = 4\n").unwrap();
+        let settings = SettingsStore::new(&path).load();
+        assert_eq!(settings.gateway.port, 9000);
+        assert_eq!(settings.routing, RoutingSettings::default());
+
+        fs::write(
+            &path,
+            "[routing]\nsmall = \"a\"\nlarge = \"b\"\nname = \"router\"\n",
+        )
+        .unwrap();
+        let settings = SettingsStore::new(&path).load();
+        assert!(settings.routing.is_on());
+        assert_eq!(settings.routing.model_name(), "router");
+        assert_eq!(settings.routing.sticky_minutes, 30);
+    }
+
     #[test]
     fn the_pull_settings_are_read_as_counts_and_durations() {
         let settings = PullSettings {

@@ -123,6 +123,11 @@ impl RuntimeAdapter for OllamaAdapter {
         &self.id
     }
 
+    /// Not governed: the Ollama daemon decides what it keeps loaded.
+    fn governed(&self) -> bool {
+        false
+    }
+
     fn wires_tools(&self) -> bool {
         true
     }

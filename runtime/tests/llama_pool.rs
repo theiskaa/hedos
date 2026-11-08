@@ -896,3 +896,10 @@ async fn collect(mut stream: ChunkStream) -> (Vec<CapabilityChunk>, Option<Runti
     }
     (chunks, error)
 }
+
+#[test]
+fn the_adapter_is_outside_the_governor() {
+    // One server per model, none stopped: the eviction policy never reaches it.
+    let adapter = LlamaServerAdapter::new(Arc::new(fast_pool(Arc::new(MockSpawner::new(true)))));
+    assert!(!adapter.governed());
+}
