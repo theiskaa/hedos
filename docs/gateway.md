@@ -61,6 +61,8 @@ Errors come back in the shape of the route's dialect:
 
 The `model` in a request can be a record id, an alias, or a name. An exact id wins outright. Otherwise the gateway tries, in order, the alias, the exact name, the name ignoring case, and the name ignoring case and a trailing `:latest`, so `Llama3:latest` finds `llama3`. Only ready models count. A name that matches nothing is a `404` (`no ready model matches qwen9`), and one that matches several models at the same step is a `400` that lists their ids, so you can send one of those instead. `/v1/models` and `/api/tags` list each model under its alias when it has one, else its name, which is the name to send back.
 
+One name is not a model: with [auto routing](#auto-routing) on, `auto` stands for the small and large models it chooses between.
+
 ## Examples
 
 ### OpenAI
@@ -196,6 +198,46 @@ An Ollama client gets the routes in the table above and nothing else. Managing m
 | `crush` | OpenAI | a generated `crush.json`, named by `CRUSH_GLOBAL_CONFIG` |
 
 Every harness but aider drives the model through tool calls, so the picker offers only models with the `tools` capability for them. See [cli.md](cli.md#hedos-launch) for the full `hedos launch` reference.
+
+With [auto routing](#auto-routing) on, `hedos launch <harness> -m auto` opens the harness on `auto`. Whatever model it opens on, while routing is on, the harnesses that run light background work (titles, summaries, commit messages) on a second model get `auto` for it: `ANTHROPIC_DEFAULT_HAIKU_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` for Claude Code, `small_model` for opencode, `--weak-model` for aider, and the `small` role for crush. A title turn routes to the small model anyway, and the work that is not light (Claude Code's subagents run on that slot with every tool) keeps routing's fallbacks. Goose has no such slot.
+
+## Auto routing
+
+A request for the model `auto` is served by one of two models you choose: a small, fast one for simple requests and a large one for the rest. Clients keep naming one model; hedos picks per request.
+
+```sh
+hedos route set --small qwen2.5-0.5b --large qwen3-coder
+hedos serve
+```
+
+It is off until both models are set, with [`hedos route set`](cli.md#hedos-route) or under [`[routing]`](configuration.md#routing) in `hedos.toml`. The gateway reads the setting when it starts.
+
+It routes chat and text generation on every dialect: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/api/chat`, and `/api/generate`. Nothing else accepts `auto`.
+
+### How it chooses
+
+1. **What the request needs.** A model that cannot serve the request is passed over: one without the `tools` capability when tools are attached, one that cannot see when the last message carries an image, one whose runtime does not take one of the request's parameters, and one whose context window the prompt does not fit. The fit is judged as the runtime judges it, with the model's own stored `context_length` and system prompt, plus the tool definitions the engine also reads.
+2. **How demanding the latest user turn is.** Only the turn the person last typed is read, never the system prompt or the history: agent harnesses send a long system prompt and their whole tool list with every request, so the prompt as a whole says nothing. `<system-reminder>` blocks Claude Code injects are cut out first. The turn goes to the large model when it carries a document, a fenced code block, a diff, or a stack trace, when it is longer than `max_simple_chars` (1,200 characters), or when it uses one of the hard words (by default implement, refactor, architecture, design, migrate, optimize, debug, investigate, prove, and "step by step", matched as whole words). Otherwise it goes to the small one.
+3. **A conversation never moves down.** Once a conversation reaches the large model it stays there. Switching models mid-conversation throws away the engine's prompt cache, so the other model reads the whole history again, and with one model resident at a time it also unloads one model and loads the other. A conversation is recognized by its system prompt and first user message, and remembered in memory for `sticky_minutes` (30) after its last request.
+
+When the model step 2 picks cannot serve the request, the other one does. When one of the two is not on the shelf or not ready, the other serves everything it can. When neither can, the request is refused naming both and why: a `404` when neither is ready, a `400` when they are but cannot serve this request.
+
+The rules are plain and tunable on purpose. [`hedos route explain`](cli.md#hedos-route) shows where a turn would go without running anything.
+
+### What the client sees
+
+The response's `model` field says `auto`, as asked. Two headers name what happened:
+
+```
+x-hedos-model: qwen2.5-0.5b
+x-hedos-route: short turn
+```
+
+`/v1/models` and `/api/tags` list `auto` first. `/v1/models` gives it the larger of the two context windows, since a conversation that outgrows the small model's goes to the large one. `/api/show` describes it as the large model, claiming what either model can do. The name matches the way a model name does, ignoring case and a trailing `:latest`.
+
+### Keeping both loaded
+
+Routing pays off when both models stay in memory. For models hedos's memory governor loads (the MLX and Python sidecars, among others), the eviction setting decides: under the default `eviction = "strict_single"`, one model of 1 GiB or more is resident at a time, so a small model under 1 GiB stays loaded beside the large one, but two larger ones replace each other on every switch; `eviction = "budgeted"` keeps both while they fit the memory budget. The setting does not reach the rest: llama.cpp keeps a server running for each model it serves, and Ollama decides itself what its daemon keeps loaded. [`hedos route`](cli.md#hedos-route) says which case you are in.
 
 ## Judges
 
@@ -423,9 +465,10 @@ Every request is recorded, one JSON object per line, in `audit.jsonl` under the 
 - `model` is the record id of the model that served it, and `capability` what it was asked to do. A refused request has neither, except one the gateway's stop ended, which names the model its body asked for.
 - `outcome` is `ok`, `cancelled` (its client went away, status `499`), or why it failed: `bad_request`, `unauthorized`, `forbidden`, `not_found`, `not_supported`, `saturated`, `timeout`, or `error`.
 - `detail` appears on a server error (its message), a cancelled request (why it ended, which its client is never sent), and a request the gateway's stop ended (`the gateway is stopping`).
+- `routedFrom` appears on a request to one of the endpoints [auto routing](#auto-routing) serves that names `auto`, served or not, and `routeReason` on one it served: why `model` was chosen.
 - The log records no token counts.
 
-`hedos stats` reads every generation of the log back and reports the total request count, how many were rejected (any outcome but `ok` and `cancelled`), and per model, by record id, the request count, the error count and rate, the p50, p90, and p99 latency of its successful requests, and when it was last seen. A refused request has no model, so it counts in the totals but under no model's row. `--json` prints the full summary. With no log yet, it says so and exits `0`.
+`hedos stats` reads every generation of the log back and reports the total request count, how many were rejected (any outcome but `ok` and `cancelled`), and per model, by record id, the request count, the error count and rate, the p50, p90, and p99 latency of its successful requests, and when it was last seen. A refused request has no model, so it counts in the totals but under no model's row. When anything was routed, it ends with how many requests asked for `auto`, how many of those failed or were refused, how many went to each model, and why. `--json` prints the full summary. With no log yet, it says so and exits `0`.
 
 ## Troubleshooting
 

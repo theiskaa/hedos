@@ -16,6 +16,7 @@
 | [`hedos audio`](#hedos-audio) | Make a song, music or a sound to a file. |
 | [`hedos serve`](#hedos-serve) | Run the OpenAI-, Ollama- and Anthropic-compatible gateway on loopback. |
 | [`hedos launch`](#hedos-launch) | Run a coding harness against a gateway that lives as long as the harness. |
+| [`hedos route`](#hedos-route) | Route the gateway's `auto` model between a small and a large model. |
 | [`hedos warm`](#hedos-warm) | Load a model into memory. |
 | [`hedos unload`](#hedos-unload) | Evict a model from memory. |
 | [`hedos pull`](#hedos-pull) | Fetch a model from Ollama or Hugging Face, and manage the pulls under way. |
@@ -547,7 +548,7 @@ hedos launch [harness] [-m <model>] [-- <harness args>...]
 
 | Flag | Meaning | Default |
 | --- | --- | --- |
-| `-m, --model <name>` | The model to open the harness on. | pick interactively |
+| `-m, --model <name>` | The model to open the harness on, or `auto` for [auto routing](#hedos-route). | pick interactively |
 | `-- <args>` | Anything after `--` is passed straight through to the harness. | none |
 
 ```sh
@@ -603,6 +604,43 @@ The whole tool-capable shelf (the whole chat-capable shelf, for Aider) is offere
 #### Interrupts and exit code
 
 Ctrl-C goes to the harness, not to hedos, so it handles the interrupt the way it normally would. The harness's exit code becomes the exit code of `hedos launch`. A harness killed by a signal other than SIGINT exits `128 + signal`.
+
+#### Launching on `auto`
+
+With [auto routing](#hedos-route) on, `auto` is offered first in the picker and inside the harness, and `-m auto` opens on it. The pre-flight checks each of the two models that can serve the harness and loads them, and names one that cannot (not ready, or without tools for a harness that needs them), since its requests all go to the other.
+
+Whatever the model, while routing is on, the harness's slot for light background work gets `auto`: Claude Code's Haiku-class model, opencode's `small_model`, aider's `--weak-model`, and crush's `small` role. A title turn routes to the small model anyway, and work on that slot that is not light (Claude Code's subagents, with every tool) keeps routing's fallbacks. The slot is left unset when neither model can drive the harness.
+
+### `hedos route`
+
+Route the gateway's `auto` model: each request for it is served by a small model or a large one, by the rules in [gateway.md](gateway.md#auto-routing).
+
+```sh
+hedos route                                      # show the two models
+hedos route set --small <model> --large <model> [--name <name>]
+hedos route off
+hedos route explain [--tools] [--image] [--history <chars>] <text | --file <path>>
+```
+
+`set` resolves both models the way any command names one, refuses one that is not a ready chat model or the same model twice, writes them under [`[routing]`](configuration.md#routing) (by the name the gateway lists, or by id when that name also reaches another model), and warns when the small model cannot call tools (every agent harness sends tools, so those requests all go large). A running gateway keeps its old setting until it restarts, and `set` says so.
+
+`hedos route` shows each model's size, context window, and whether it calls tools or reads images, then whether the two can stay loaded together under the eviction policy, so that switching between them costs no reload. For a model the eviction policy does not reach (llama.cpp, Ollama, an endpoint), it says that model's runtime decides what stays loaded:
+
+```
+auto routes between
+  small  Qwen2.5-0.5B-Instruct-4bit  289 MB · 32768 tokens · tools
+  large  Ternary-Bonsai-8B-mlx-2bit  2.3 GB · 65536 tokens · tools
+both stay loaded together, so switching between them costs no reload
+```
+
+`explain` runs the gateway's own routing on a turn and prints where it would go and why, without loading a model or remembering the turn. `--tools` and `--image` add what an agent request or a picture would, and `--history` adds that many characters of earlier conversation to the prompt, to see where the small model's window runs out.
+
+```
+$ hedos route explain "please refactor the parser"
+auto → Ternary-Bonsai-8B-mlx-2bit (large): hard word "refactor"
+```
+
+Under `--json` each prints its fields.
 
 ### `hedos warm`
 
@@ -987,6 +1025,14 @@ It prints the total request count and the rejection rate, then per model the req
 MODEL       REQUESTS  ERRORS    P50    P90     P99     LAST SEEN
 qwen2.5:7b  118       2 (1.7%)  412ms  1310ms  2875ms  2026-10-07T09:14:02Z
 gemma3:12b  24        1 (4.2%)  890ms  2140ms  3022ms  2026-10-06T17:40:51Z
+```
+
+When [auto routing](#hedos-route) served anything, it ends with how many requests it routed, where they went, and why:
+
+```
+8 routed requests · 1 failed
+  to       fcd0a3e965aa60bc 4 · ecfb124ebf9aaa19 3
+  because  short turn 4 · hard word "refactor" 2 · conversation already large 1
 ```
 
 Under `--json` it prints the full summary. With no audit log yet (nothing has been served), it says so and exits `0`.
