@@ -57,10 +57,15 @@ pub fn resolve(
         }
     }
 
-    Err(GatewayError::new(
+    Err(no_match(requested))
+}
+
+/// The not-found error for a model name that matches nothing ready.
+pub fn no_match(requested: &str) -> GatewayError {
+    GatewayError::new(
         GatewayErrorKind::NotFound,
         format!("no ready model matches {requested}"),
-    ))
+    )
 }
 
 /// Resolve `requested` and authorize it: match it on the port's shelf within the
@@ -75,9 +80,21 @@ pub async fn resolve_authorized(
 ) -> Result<ModelRecord, GatewayError> {
     let shelf = port.shelf().await;
     let record = resolve(requested, &shelf, &identity.scopes)?;
-    identity.require(&record.id, &capability)?;
-    require_admission(port, &record, kind).await?;
+    authorize(port, &record, &capability, kind, identity).await?;
     Ok(record)
+}
+
+/// The gate after a model is chosen: require the capability scope, and check
+/// the machine can admit the work now.
+pub async fn authorize(
+    port: &dyn GatewayPort,
+    record: &ModelRecord,
+    capability: &Capability,
+    kind: GatewayWorkKind,
+    identity: &GatewayIdentity,
+) -> Result<(), GatewayError> {
+    identity.require(&record.id, capability)?;
+    require_admission(port, record, kind).await
 }
 
 fn select<'a>(

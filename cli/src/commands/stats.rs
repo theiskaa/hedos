@@ -3,7 +3,7 @@
 
 use clap::Args;
 use gateway::audit::GatewayAuditLog;
-use gateway::stats::{self, GatewayStats, ModelStats};
+use gateway::stats::{self, Count, GatewayStats, ModelStats, RoutingStats};
 use kernel::time::iso8601;
 use runtime::boot::HedosDirs;
 
@@ -36,7 +36,33 @@ pub async fn run(_args: StatsArgs, out: &Out) -> Result<(), CliError> {
         out.line("");
         out.line(&table(&summary.models));
     }
+    if let Some(routing) = &summary.routing {
+        out.line("");
+        for line in routing_lines(routing) {
+            out.line(&line);
+        }
+    }
     Ok(())
+}
+
+/// What auto routing did: how many requests it routed, where they went, and
+/// why.
+fn routing_lines(routing: &RoutingStats) -> Vec<String> {
+    let counts = |rows: &[Count]| {
+        rows.iter()
+            .map(|row| format!("{} {}", row.label, row.requests))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    };
+    let failed = match routing.failed {
+        0 => String::new(),
+        failed => format!(" · {failed} failed"),
+    };
+    vec![
+        format!("{} routed requests{failed}", routing.requests),
+        format!("  to       {}", counts(&routing.models)),
+        format!("  because  {}", counts(&routing.reasons)),
+    ]
 }
 
 /// The one-line overall summary, e.g. `142 requests · 9 rejected (6.3%)`.
@@ -125,8 +151,31 @@ mod tests {
             rejected_requests: 9,
             rejection_rate: 9.0 / 142.0,
             models: Vec::new(),
+            routing: None,
         };
         assert_eq!(header(&summary), "142 requests · 9 rejected (6.3%)");
+    }
+
+    #[test]
+    fn routing_lines_say_where_requests_went_and_why() {
+        let row = |label: &str, requests| Count {
+            label: label.to_owned(),
+            requests,
+        };
+        let lines = routing_lines(&RoutingStats {
+            requests: 4,
+            failed: 1,
+            models: vec![row("tiny", 2), row("big", 1)],
+            reasons: vec![row("short turn", 2), row("needs tools", 1)],
+        });
+        assert_eq!(
+            lines,
+            [
+                "4 routed requests · 1 failed",
+                "  to       tiny 2 · big 1",
+                "  because  short turn 2 · needs tools 1",
+            ]
+        );
     }
 
     #[test]

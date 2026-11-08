@@ -69,6 +69,10 @@ pub struct GatewayOutcome {
     pub model: Option<String>,
     /// The capability that was exercised, if any.
     pub capability: Option<String>,
+    /// The virtual model the request named, when auto routing chose the model.
+    pub routed_from: Option<String>,
+    /// Why routing chose the model it did.
+    pub route_reason: Option<String>,
 }
 
 impl GatewayOutcome {
@@ -79,6 +83,8 @@ impl GatewayOutcome {
             outcome: OK_OUTCOME.to_owned(),
             model: None,
             capability: None,
+            routed_from: None,
+            route_reason: None,
         }
     }
 
@@ -89,7 +95,16 @@ impl GatewayOutcome {
             outcome: OK_OUTCOME.to_owned(),
             model: model.map(str::to_owned),
             capability: capability.map(|capability| capability.as_str().to_owned()),
+            routed_from: None,
+            route_reason: None,
         }
+    }
+
+    /// The same outcome, noting that `virtual_name` routed it and why.
+    pub fn routed(mut self, virtual_name: &str, reason: &str) -> Self {
+        self.routed_from = Some(virtual_name.to_owned());
+        self.route_reason = Some(reason.to_owned());
+        self
     }
 }
 

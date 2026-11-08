@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use kernel::jobs::{Job, JobEvent};
+use kernel::profiles::Verdict;
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use runtime::Kernel;
 use runtime::adapters::ChunkStream;
@@ -13,6 +14,7 @@ use runtime::facade::KernelError;
 use tokio::sync::mpsc;
 
 use crate::admission::{GatewayAdmissionState, GatewayWorkKind};
+use crate::auto_route::AutoRoute;
 use crate::defaults;
 use crate::port::{GatewayPort, GatewayResident, PortFuture};
 
@@ -20,12 +22,22 @@ use crate::port::{GatewayPort, GatewayResident, PortFuture};
 #[derive(Clone)]
 pub struct KernelGateway {
     kernel: Arc<Kernel>,
+    auto_route: Option<Arc<AutoRoute>>,
 }
 
 impl KernelGateway {
     /// Wrap a shared kernel as a gateway port.
     pub fn new(kernel: Arc<Kernel>) -> Self {
-        Self { kernel }
+        Self {
+            kernel,
+            auto_route: None,
+        }
+    }
+
+    /// The same port, serving `auto_route` (or no routing, for `None`).
+    pub fn with_auto_route(mut self, auto_route: Option<AutoRoute>) -> Self {
+        self.auto_route = auto_route.map(Arc::new);
+        self
     }
 }
 
@@ -109,6 +121,21 @@ impl GatewayPort for KernelGateway {
         self.kernel
             .embedding_window(record)
             .or(record.context_length)
+    }
+
+    fn prompt_fit(
+        &self,
+        record: &ModelRecord,
+        capability: &Capability,
+        payload: &JsonValue,
+        uncounted: i64,
+    ) -> Verdict {
+        self.kernel
+            .assess_prompt(record, capability, payload, uncounted)
+    }
+
+    fn auto_route(&self) -> Option<&AutoRoute> {
+        self.auto_route.as_deref()
     }
 
     fn admission_state<'a>(

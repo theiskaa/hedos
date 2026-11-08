@@ -60,7 +60,12 @@ pub(crate) async fn serve(session: &Session, port: Option<u16>, out: &Out) -> Re
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;
     let audit_dir = session.dirs.sub("gateway");
 
-    let router = serving::router(Arc::clone(&session.kernel), &audit_dir, max_inference);
+    let router = serving::router(
+        Arc::clone(&session.kernel),
+        &audit_dir,
+        max_inference,
+        &session.settings.routing,
+    );
     let listener = serving::bind(port).await?;
     let address = listener.local_addr()?;
     let base_url = format!("http://{address}/v1");

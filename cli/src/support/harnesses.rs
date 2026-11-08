@@ -153,7 +153,9 @@ const TOKEN: &str = "hedos";
 
 impl HarnessSpec {
     /// The wiring for this harness against a gateway on `port`, opening on
-    /// `model` with `available` offered in its model picker.
+    /// `model` with `available` offered in its model picker, and handing its
+    /// light background work (titles, summaries, commit messages) to `light`
+    /// when there is one, in the harnesses that have a slot for it.
     ///
     /// The harnesses configured through a file have to be told every model by
     /// name — neither opencode nor crush discovers them — so listing only the
@@ -168,6 +170,7 @@ impl HarnessSpec {
         port: u16,
         model: &str,
         available: &[String],
+        light: Option<&str>,
         config_dir: &std::path::Path,
     ) -> LaunchPlan {
         let origin = format!("http://127.0.0.1:{port}");
@@ -183,6 +186,13 @@ impl HarnessSpec {
                 env.insert("ANTHROPIC_BASE_URL".to_owned(), origin);
                 env.insert("ANTHROPIC_AUTH_TOKEN".to_owned(), TOKEN.to_owned());
                 env.insert("ANTHROPIC_MODEL".to_owned(), model.to_owned());
+                if let Some(light) = light {
+                    // The Haiku-class model Claude Code runs its background
+                    // tasks on. The second name is the older spelling, still
+                    // read by earlier releases.
+                    env.insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_owned(), light.to_owned());
+                    env.insert("ANTHROPIC_SMALL_FAST_MODEL".to_owned(), light.to_owned());
+                }
                 // Pre-release capabilities pair a beta header with a body field
                 // the gateway does not implement; sending neither is a clean
                 // degrade, sending one half is a hard 400.
@@ -196,7 +206,7 @@ impl HarnessSpec {
                 // opencode.json is neither read around nor written to.
                 env.insert(
                     "OPENCODE_CONFIG_CONTENT".to_owned(),
-                    opencode_config(&v1, model, available).to_string(),
+                    opencode_config(&v1, model, available, light).to_string(),
                 );
                 env.insert("OPENCODE_MODEL".to_owned(), format!("hedos/{model}"));
             }
@@ -207,6 +217,11 @@ impl HarnessSpec {
                 // the chat-completions endpoint rather than a named provider.
                 args.push("--model".to_owned());
                 args.push(format!("openai/{model}"));
+                if let Some(light) = light {
+                    // Commit messages and chat-history summaries.
+                    args.push("--weak-model".to_owned());
+                    args.push(format!("openai/{light}"));
+                }
             }
             HarnessKind::Goose => {
                 env.insert("GOOSE_PROVIDER".to_owned(), "openai".to_owned());
@@ -224,7 +239,7 @@ impl HarnessSpec {
                 let path = config_dir.join("crush.json");
                 files.push((
                     path.clone(),
-                    crush_config(&v1, model, available).to_string(),
+                    crush_config(&v1, model, available, light).to_string(),
                 ));
                 env.insert(
                     "CRUSH_GLOBAL_CONFIG".to_owned(),
@@ -241,12 +256,17 @@ impl HarnessSpec {
 ///
 /// Every model has to be declared: opencode does no discovery, so one left out
 /// of this map simply does not exist as far as its picker is concerned.
-fn opencode_config(base_url: &str, model: &str, available: &[String]) -> serde_json::Value {
+fn opencode_config(
+    base_url: &str,
+    model: &str,
+    available: &[String],
+    light: Option<&str>,
+) -> serde_json::Value {
     let models: serde_json::Map<String, serde_json::Value> = available
         .iter()
         .map(|name| (name.clone(), json!({ "name": name })))
         .collect();
-    json!({
+    let mut config = json!({
         "$schema": "https://opencode.ai/config.json",
         "provider": {
             "hedos": {
@@ -257,7 +277,12 @@ fn opencode_config(base_url: &str, model: &str, available: &[String]) -> serde_j
             }
         },
         "model": format!("hedos/{model}"),
-    })
+    });
+    if let Some(light) = light {
+        // Titles and summaries.
+        config["small_model"] = json!(format!("hedos/{light}"));
+    }
+    config
 }
 
 /// A crush provider block pointing at the gateway, opening on `model`.
@@ -266,14 +291,20 @@ fn opencode_config(base_url: &str, model: &str, available: &[String]) -> serde_j
 /// type routes to the Responses API for any model id containing `gpt-4` or
 /// `gpt-5`, and no config flag turns that off. The `models` selection block is
 /// what makes `-m` real for crush — without it, crush opens on its own
-/// persisted choice and the named model is ignored. Both roles point at the
-/// same local model; there is no separate small one to hand the light tasks.
-fn crush_config(base_url: &str, model: &str, available: &[String]) -> serde_json::Value {
+/// persisted choice and the named model is ignored. The small role takes the
+/// light-work model when there is one, and the chosen model otherwise.
+fn crush_config(
+    base_url: &str,
+    model: &str,
+    available: &[String],
+    light: Option<&str>,
+) -> serde_json::Value {
     let models: Vec<serde_json::Value> = available
         .iter()
         .map(|name| json!({ "id": name, "name": name }))
         .collect();
     let selected = json!({ "model": model, "provider": "hedos" });
+    let small = json!({ "model": light.unwrap_or(model), "provider": "hedos" });
     json!({
         "$schema": "https://charm.land/crush.json",
         "providers": {
@@ -285,8 +316,8 @@ fn crush_config(base_url: &str, model: &str, available: &[String]) -> serde_json
             }
         },
         "models": {
-            "large": selected.clone(),
-            "small": selected,
+            "large": selected,
+            "small": small,
         },
     })
 }
@@ -299,7 +330,63 @@ mod tests {
     fn plan_for(key: &str) -> LaunchPlan {
         let spec = find(key).expect("harness is registered");
         let available = ["qwen3".to_owned(), "gemma3".to_owned()];
-        spec.plan(4321, "qwen3", &available, Path::new("/tmp/hedos-launch"))
+        spec.plan(
+            4321,
+            "qwen3",
+            &available,
+            None,
+            Path::new("/tmp/hedos-launch"),
+        )
+    }
+
+    fn routed_plan_for(key: &str) -> LaunchPlan {
+        let spec = find(key).expect("harness is registered");
+        let available = ["auto".to_owned(), "tiny".to_owned(), "big".to_owned()];
+        spec.plan(
+            4321,
+            "auto",
+            &available,
+            Some("tiny"),
+            Path::new("/tmp/hedos-launch"),
+        )
+    }
+
+    #[test]
+    fn each_slot_for_light_work_takes_the_light_model() {
+        let claude = routed_plan_for("claude");
+        assert_eq!(claude.env["ANTHROPIC_MODEL"], "auto");
+        assert_eq!(claude.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "tiny");
+        assert_eq!(claude.env["ANTHROPIC_SMALL_FAST_MODEL"], "tiny");
+
+        let opencode = routed_plan_for("opencode");
+        let value: serde_json::Value =
+            serde_json::from_str(&opencode.env["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(value["model"], "hedos/auto");
+        assert_eq!(value["small_model"], "hedos/tiny");
+        assert!(value["provider"]["hedos"]["models"]["auto"].is_object());
+
+        let aider = routed_plan_for("aider");
+        assert_eq!(
+            aider.args,
+            vec!["--model", "openai/auto", "--weak-model", "openai/tiny"]
+        );
+
+        let crush = routed_plan_for("crush");
+        let value: serde_json::Value = serde_json::from_str(&crush.files[0].1).unwrap();
+        assert_eq!(value["models"]["large"]["model"], "auto");
+        assert_eq!(value["models"]["small"]["model"], "tiny");
+    }
+
+    #[test]
+    fn without_a_light_model_no_slot_for_light_work_is_set() {
+        let claude = plan_for("claude");
+        assert!(!claude.env.contains_key("ANTHROPIC_DEFAULT_HAIKU_MODEL"));
+        assert!(!claude.env.contains_key("ANTHROPIC_SMALL_FAST_MODEL"));
+        let opencode = plan_for("opencode");
+        let value: serde_json::Value =
+            serde_json::from_str(&opencode.env["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert!(value.get("small_model").is_none());
+        assert_eq!(plan_for("aider").args, vec!["--model", "openai/qwen3"]);
     }
 
     #[test]

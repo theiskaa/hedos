@@ -21,6 +21,8 @@ fn entry(ts_millis: i64, outcome: &str) -> GatewayAuditEntry {
         status: 200,
         duration_ms: 42,
         detail: None,
+        routed_from: None,
+        route_reason: None,
     }
 }
 
@@ -37,6 +39,8 @@ fn unauthorized(ts_millis: i64) -> GatewayAuditEntry {
         status: 401,
         duration_ms: 0,
         detail: None,
+        routed_from: None,
+        route_reason: None,
     }
 }
 

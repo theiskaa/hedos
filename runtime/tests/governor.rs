@@ -454,6 +454,37 @@ async fn budgeted_policy_evicts_the_oldest() {
     assert!(gov.is_resident("b") && gov.is_resident("c"));
 }
 
+#[test]
+fn two_models_hold_together_as_the_policy_allows() {
+    let gov = MemoryGovernor::new(GovernorConfig::with_total_mb(10_000));
+    assert!(
+        gov.hold_together(&[Some(500), Some(6000)]),
+        "strict-single keeps one light model beside a heavy one"
+    );
+    assert!(!gov.hold_together(&[Some(2000), Some(6000)]));
+    assert!(
+        !gov.hold_together(&[None, Some(6000)]),
+        "an unknown footprint counts as heavy"
+    );
+
+    gov.apply(&ResidencyPolicy {
+        keep_warm: KeepWarmPolicy::FiveMinutes,
+        eviction: EvictionPolicy::Budgeted,
+        ram_budget_mb: None,
+    });
+    assert!(gov.hold_together(&[Some(2000), Some(6000)]));
+    assert!(
+        !gov.hold_together(&[Some(2000), Some(6500)]),
+        "the default budget is 80% of memory"
+    );
+    gov.apply(&ResidencyPolicy {
+        keep_warm: KeepWarmPolicy::FiveMinutes,
+        eviction: EvictionPolicy::Budgeted,
+        ram_budget_mb: Some(9000),
+    });
+    assert!(gov.hold_together(&[Some(2000), Some(6500)]));
+}
+
 #[tokio::test(start_paused = true)]
 async fn idle_unload_fires_after_a_generation_ends() {
     let gov = governor();

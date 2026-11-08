@@ -20,7 +20,9 @@ use kernel::artifacts::{Artifact, ArtifactStore};
 use kernel::discovery::{DiscoveryService, DiscoverySummary, StoreScanner};
 use kernel::jobs::{JobHistoryStore, reseeded, seeded};
 use kernel::manifests::RuntimeManifest;
-use kernel::profiles::{BUILTIN_CONTEXT_WINDOW, Verdict, assess, merged, prompt_characters};
+use kernel::profiles::{
+    BUILTIN_CONTEXT_WINDOW, Verdict, assess, merged, prompt_characters, stored_context_length,
+};
 use kernel::records::{Capability, JsonValue, ModelRecord, SourceKind};
 use kernel::resolution::IdentificationCache;
 use kernel::{Registry, RegistryError};
@@ -314,6 +316,60 @@ impl Kernel {
         }
         let entry = self.adapter_for(record, &Capability::embed()).ok()?;
         effective_window(record, entry.adapter.as_ref(), None)
+    }
+
+    /// The context window a `capability` request to `record` is checked
+    /// against when the request names no `context_length` of its own: the
+    /// record's stored one when it has one, else what its runtime picks. `None`
+    /// when no adapter serves it or its runtime sets no budget.
+    pub fn context_window(&self, record: &ModelRecord, capability: &Capability) -> Option<i64> {
+        let entry = self.adapter_for(record, capability).ok()?;
+        effective_window(
+            record,
+            entry.adapter.as_ref(),
+            stored_context_length(record),
+        )
+    }
+
+    /// Whether the memory governor loads and evicts `record` when it serves
+    /// `capability`, so the eviction policy applies to it. `false` when no
+    /// adapter serves it.
+    pub fn governed(&self, record: &ModelRecord, capability: &Capability) -> bool {
+        self.adapter_for(record, capability)
+            .is_ok_and(|entry| entry.adapter.governed())
+    }
+
+    /// Whether a `capability` request carrying `payload` fits `record`'s
+    /// window, judged as [`invoke`](Self::invoke) judges it: the record's own
+    /// parameters and system prompt merged in first. `uncounted` adds what the
+    /// engine reads but the check does not count, such as tool definitions. A
+    /// model no adapter serves, or whose runtime sets no budget, fits.
+    pub fn assess_prompt(
+        &self,
+        record: &ModelRecord,
+        capability: &Capability,
+        payload: &JsonValue,
+        uncounted: i64,
+    ) -> Verdict {
+        let unbudgeted = Verdict::Fits {
+            clamped_max_tokens: None,
+        };
+        let Ok(entry) = self.adapter_for(record, capability) else {
+            return unbudgeted;
+        };
+        let fallback = self.chat_fallback(capability);
+        let configured = merged(
+            record,
+            capability,
+            payload.clone(),
+            fallback.as_deref(),
+            None,
+            None,
+        );
+        match request_window(record, entry.adapter.as_ref(), &configured) {
+            Some(window) => assess(prompt_characters(&configured) + uncounted, window, None),
+            None => unbudgeted,
+        }
     }
 
     fn adapter_for(
@@ -689,6 +745,16 @@ fn effective_window(
         .filter(|window| *window > 0)
 }
 
+/// The window a merged request is judged against: the `context_length` it
+/// carries, or the one its runtime picks.
+fn request_window(
+    record: &ModelRecord,
+    adapter: &dyn RuntimeAdapter,
+    configured: &JsonValue,
+) -> Option<i64> {
+    effective_window(record, adapter, field_i64(configured, "context_length"))
+}
+
 /// Assess `configured` against the model's window: reject when the prompt no
 /// longer fits, otherwise clamp `max_tokens` to what the window leaves free.
 fn clamp_to_window(
@@ -697,7 +763,7 @@ fn clamp_to_window(
     mut configured: JsonValue,
 ) -> Result<JsonValue, KernelError> {
     let requested_context = field_i64(&configured, "context_length");
-    let Some(window) = effective_window(record, adapter, requested_context) else {
+    let Some(window) = request_window(record, adapter, &configured) else {
         return Ok(configured);
     };
     let requested_max = field_i64(&configured, "max_tokens");

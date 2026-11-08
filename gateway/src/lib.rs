@@ -8,6 +8,7 @@
 pub mod admission;
 pub mod audit;
 pub mod auth;
+pub mod auto_route;
 pub mod defaults;
 pub mod error;
 pub mod handlers;

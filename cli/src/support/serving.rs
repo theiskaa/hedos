@@ -10,21 +10,30 @@ use std::time::Duration;
 
 use gateway::audit::GatewayAuditLog;
 use gateway::auth::OpenAuth;
+use gateway::auto_route::AutoRoute;
 use gateway::kernel_gateway::KernelGateway;
 use gateway::router::{GatewayRouter, standard_routes};
 use kernel::time::millis_from_iso8601;
 use runtime::facade::Kernel;
+use runtime::settings::RoutingSettings;
 use serde::Deserialize;
 use tokio::net::TcpListener;
 
 use crate::error::CliError;
 use crate::support::http::probe_json;
 
-/// Build the router that serves `kernel`, auditing into `audit_dir` and
-/// admitting at most `max_inference` concurrent inference requests.
-pub fn router(kernel: Arc<Kernel>, audit_dir: &Path, max_inference: usize) -> Arc<GatewayRouter> {
+/// Build the router that serves `kernel`, auditing into `audit_dir`,
+/// admitting at most `max_inference` concurrent inference requests, and
+/// serving the `auto` model when `routing` turns it on.
+pub fn router(
+    kernel: Arc<Kernel>,
+    audit_dir: &Path,
+    max_inference: usize,
+    routing: &RoutingSettings,
+) -> Arc<GatewayRouter> {
+    let port = KernelGateway::new(kernel).with_auto_route(AutoRoute::from_settings(routing));
     Arc::new(GatewayRouter::new(
-        Arc::new(KernelGateway::new(kernel)),
+        Arc::new(port),
         Box::new(OpenAuth),
         Box::new(GatewayAuditLog::new(audit_dir)),
         standard_routes(),

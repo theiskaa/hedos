@@ -10,7 +10,7 @@ use crate::error::{GatewayError, GatewayErrorKind};
 use crate::identity::{GatewayIdentity, GatewayOutcome};
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
-use crate::resolver::resolve;
+use crate::resolver::{no_match, resolve};
 use crate::responder::GatewayResponder;
 use crate::wire::{ollama, openai};
 
@@ -25,7 +25,18 @@ fn ready(shelf: &[ModelRecord]) -> Vec<ModelRecord> {
         .collect()
 }
 
-/// `GET /v1/models`: every ready model the token can reach.
+/// The `auto` model as the caller sees it, when routing is on and one of its
+/// models is ready and in reach.
+fn auto_listing(
+    port: &dyn GatewayPort,
+    shelf: &[ModelRecord],
+    identity: &GatewayIdentity,
+) -> Option<ModelRecord> {
+    port.auto_route()?.listing(shelf, &identity.scopes)
+}
+
+/// `GET /v1/models`: every ready model the token can reach, led by `auto`
+/// when routing is on.
 pub struct OpenAIModelsHandler;
 
 impl GatewayHandling for OpenAIModelsHandler {
@@ -38,7 +49,10 @@ impl GatewayHandling for OpenAIModelsHandler {
     ) -> HandlerFuture<'a> {
         Box::pin(async move {
             let shelf = port.shelf().await;
-            let visible = identity.scopes.filter(&ready(&shelf));
+            let mut visible = identity.scopes.filter(&ready(&shelf));
+            if let Some(auto) = auto_listing(port, &shelf, identity) {
+                visible.insert(0, auto);
+            }
             let listed = openai::models_list(&visible, |record| port.served_window(record));
             respond_json(responder, &listed);
             Ok(GatewayOutcome::ok())
@@ -46,7 +60,8 @@ impl GatewayHandling for OpenAIModelsHandler {
     }
 }
 
-/// `GET /api/tags`: every ready chat model the token can reach, Ollama-style.
+/// `GET /api/tags`: every ready chat model the token can reach, Ollama-style,
+/// led by `auto` when routing is on.
 pub struct OllamaTagsHandler;
 
 impl GatewayHandling for OllamaTagsHandler {
@@ -63,7 +78,10 @@ impl GatewayHandling for OllamaTagsHandler {
                 .into_iter()
                 .filter(|record| record.capabilities.contains(&Capability::chat()))
                 .collect();
-            let visible = identity.scopes.filter(&chat_models);
+            let mut visible = identity.scopes.filter(&chat_models);
+            if let Some(auto) = auto_listing(port, &shelf, identity) {
+                visible.insert(0, auto);
+            }
             respond_json(responder, &ollama::tags(&visible));
             Ok(GatewayOutcome::ok())
         })
@@ -131,7 +149,12 @@ impl GatewayHandling for OllamaShowHandler {
                     GatewayError::new(GatewayErrorKind::BadRequest, "model is required")
                 })?;
             let shelf = port.shelf().await;
-            let record = resolve(requested, &shelf, &identity.scopes)?;
+            let record = match port.auto_route().filter(|auto| auto.answers(requested)) {
+                Some(auto) => auto
+                    .listing(&shelf, &identity.scopes)
+                    .ok_or_else(|| no_match(requested))?,
+                None => resolve(requested, &shelf, &identity.scopes)?,
+            };
 
             let mut capabilities = Vec::new();
             if record.capabilities.contains(&Capability::chat())

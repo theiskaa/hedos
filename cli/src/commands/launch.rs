@@ -5,14 +5,19 @@
 //! start first and no port to collide with. When the harness exits, the gateway
 //! stops and its exit code becomes ours.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
 use clap::Args;
+use gateway::GatewayScopes;
+use gateway::auto_route::AutoRoute;
 use gateway::server;
 use kernel::records::{Capability, JsonValue, ModelRecord};
+use kernel::routing::{ByTier, feature};
+use runtime::settings::{DEFAULT_ROUTE_NAME, ROUTING_OFF, RoutingSettings};
 use tokio::sync::oneshot;
 
 use crate::error::CliError;
@@ -21,7 +26,7 @@ use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload;
 use crate::support::serving;
-use crate::support::session::Session;
+use crate::support::session::{self, Session};
 use crate::support::spinner::Spinner;
 
 /// Arguments for `launch`.
@@ -29,7 +34,8 @@ use crate::support::spinner::Spinner;
 pub struct LaunchArgs {
     /// The harness to launch. Omit to pick one interactively.
     harness: Option<String>,
-    /// The model to serve it (name, alias, or id). Omit to pick one.
+    /// The model to serve it (name, alias, or id), or `auto` to route each
+    /// request between the models `hedos route` set. Omit to pick one.
     #[arg(short, long)]
     model: Option<String>,
     /// Arguments passed through to the harness, after `--`.
@@ -45,6 +51,42 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
     let session = Session::open()?;
     let shelf = session.shelf_or_discover().await?;
     let warm = session.warm_set_anywhere(&shelf).await;
+    let auto = AutoRoute::from_settings(&session.settings.routing);
+    if let Some(requested) = args.model.as_deref() {
+        if let Some(auto) = auto.as_ref().filter(|auto| auto.answers(requested)) {
+            let status = launch(
+                &session,
+                spec,
+                &program,
+                LaunchModel::Auto(auto),
+                &args.passthrough,
+                out,
+            )
+            .await?;
+            return exit_result(status, spec);
+        }
+        // A model of that name still launches as itself.
+        if auto.is_none()
+            && requested == DEFAULT_ROUTE_NAME
+            && session::resolve(requested, &shelf, None).is_err()
+        {
+            return Err(CliError::new(ROUTING_OFF));
+        }
+    }
+
+    // Routing, when on, is offered first in the picker, as the gateway lists it.
+    let listed = auto
+        .as_ref()
+        .filter(|_| args.model.is_none())
+        .and_then(|auto| auto.listing(&shelf, &GatewayScopes::all()));
+    let offered: Cow<[ModelRecord]> = match &listed {
+        Some(listed) => Cow::Owned(
+            std::iter::once(listed.clone())
+                .chain(shelf.iter().cloned())
+                .collect(),
+        ),
+        None => Cow::Borrowed(&shelf),
+    };
 
     // Tool calling is what every harness but aider drives the model through, so
     // the picker offers only tool-capable models for those. An explicit `-m`
@@ -58,16 +100,33 @@ pub async fn run(args: LaunchArgs, out: &Out) -> Result<(), CliError> {
     let record = interactive::choose_model(
         out,
         args.model.as_deref(),
-        &shelf,
+        &offered,
         Some(&pick_capability),
         &format!("model for {}", spec.display),
         &warm,
     )?;
-    let status = launch(&session, spec, &program, record, &args.passthrough, out).await?;
+    let picked_auto = listed
+        .as_ref()
+        .is_some_and(|listed| listed.id == record.id && listed.alias == record.alias);
+    let chosen = match &auto {
+        Some(auto) if picked_auto => LaunchModel::Auto(auto),
+        _ => LaunchModel::Record(record),
+    };
+    let status = launch(&session, spec, &program, chosen, &args.passthrough, out).await?;
     exit_result(status, spec)
 }
 
-/// Serve `record` to `spec` (the binary at `program`) on an ephemeral gateway
+/// What a launched harness is served: one model, or the `auto` model routing
+/// between the two `hedos route` set.
+#[derive(Clone, Copy)]
+pub(crate) enum LaunchModel<'a> {
+    /// One model on the shelf.
+    Record(&'a ModelRecord),
+    /// The routed `auto` model.
+    Auto(&'a AutoRoute),
+}
+
+/// Serve `chosen` to `spec` (the binary at `program`) on an ephemeral gateway
 /// until the harness exits, and return how it exited. Shared by the command
 /// and `hedos shelf`. The picker list comes from the live shelf, so a caller's
 /// older snapshot never reaches the harness.
@@ -75,7 +134,7 @@ pub(crate) async fn launch(
     session: &Session,
     spec: &HarnessSpec,
     program: &Path,
-    record: &ModelRecord,
+    chosen: LaunchModel<'_>,
     passthrough: &[String],
     out: &Out,
 ) -> Result<std::process::ExitStatus, CliError> {
@@ -84,16 +143,42 @@ pub(crate) async fn launch(
     // The ids the harness sends back must be the ones `/v1/models` advertises,
     // or the gateway cannot resolve them.
     let wire_id = |record: &ModelRecord| record.wire_id().to_owned();
-    let model = wire_id(record);
     // The models offered inside the harness's own picker: the same tool-capable
     // set, so switching models there can't land on one that won't work either.
-    let available: Vec<String> = shelf
+    let mut available: Vec<String> = shelf
         .iter()
         .filter(|record| record.capabilities.contains(&needed))
         .map(wire_id)
         .collect();
 
-    preflight(session, record, spec, out).await?;
+    let configured;
+    let auto = match chosen {
+        LaunchModel::Auto(auto) => Some(auto),
+        LaunchModel::Record(_) => {
+            configured = AutoRoute::from_settings(&session.settings.routing);
+            configured.as_ref()
+        }
+    };
+    let tiers = auto
+        .map(|auto| auto.resolved(&shelf, &GatewayScopes::all()))
+        .unwrap_or_default();
+    if let Some(auto) = auto
+        && tiers.iter().any(|(_, record)| record.is_some())
+    {
+        available.insert(0, auto.name().to_owned());
+    }
+    let light = auto.and_then(|auto| light_model(auto, &tiers, &needed));
+
+    let model = match chosen {
+        LaunchModel::Record(record) => {
+            preflight(session, record, spec, out).await?;
+            wire_id(record)
+        }
+        LaunchModel::Auto(auto) => {
+            preflight_routed(session, auto, &tiers, spec, &needed, out).await?;
+            auto.name().to_owned()
+        }
+    };
 
     let max_inference = session.settings.gateway.max_concurrent_inference.max(1) as usize;
     let audit_dir = session.dirs.sub("gateway");
@@ -101,13 +186,14 @@ pub(crate) async fn launch(
 
     let listener = serving::bind(0).await?;
     let port = listener.local_addr()?.port();
-    let plan = spec.plan(port, &model, &available, &config_dir);
+    let plan = spec.plan(port, &model, &available, light.as_deref(), &config_dir);
 
     materialize(&plan, &config_dir)?;
     let (server_task, stop) = serve_for_launch(
         Arc::clone(&session.kernel),
         &audit_dir,
         max_inference,
+        &session.settings.routing,
         listener,
     );
 
@@ -193,12 +279,13 @@ fn serve_for_launch(
     kernel: Arc<runtime::facade::Kernel>,
     audit_dir: &Path,
     max_inference: usize,
+    routing: &RoutingSettings,
     listener: tokio::net::TcpListener,
 ) -> (
     tokio::task::JoinHandle<std::io::Result<()>>,
     oneshot::Sender<()>,
 ) {
-    let router = serving::router(kernel, audit_dir, max_inference);
+    let router = serving::router(kernel, audit_dir, max_inference, routing);
     let (stop, stopped) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
         server::serve_with_shutdown(listener, router, async {
@@ -306,6 +393,66 @@ async fn preflight(
             error.message
         ))
     })
+}
+
+/// Preflight both routed models: each that can serve the harness is checked
+/// and warmed as a single model would be, and one that cannot is named, since
+/// every request it would have taken goes to the other.
+async fn preflight_routed(
+    session: &Session,
+    auto: &AutoRoute,
+    tiers: &ByTier<Option<ModelRecord>>,
+    spec: &HarnessSpec,
+    needed: &Capability,
+    out: &Out,
+) -> Result<(), CliError> {
+    let mut serving = 0;
+    for (tier, resolved) in tiers.iter() {
+        let Some(record) = resolved else {
+            out.err(&format!(
+                "{} ({tier}) is not ready, so {} sends everything to the other model",
+                auto.configured(tier),
+                auto.name()
+            ));
+            continue;
+        };
+        if !record.can(needed) {
+            out.err(&format!(
+                "{} ({tier}) lacks {}, so every {} request goes to the other model",
+                record.display_name(),
+                feature(needed),
+                spec.display
+            ));
+            continue;
+        }
+        preflight(session, record, spec, out).await?;
+        serving += 1;
+    }
+    if serving == 0 {
+        return Err(CliError::new(format!(
+            "neither model {} routes between can serve {}",
+            auto.name(),
+            spec.display
+        )));
+    }
+    Ok(())
+}
+
+/// The model a harness hands its light background work (titles, summaries,
+/// commit messages) while routing is on: `auto` itself, whatever model the
+/// harness opens on. Short title turns route small anyway, and some of that
+/// work is not light at all (Claude Code's subagents run on this slot with the
+/// whole tool list), so it keeps routing's fallbacks. Only when one of the two
+/// models can drive the harness.
+fn light_model(
+    auto: &AutoRoute,
+    tiers: &ByTier<Option<ModelRecord>>,
+    needed: &Capability,
+) -> Option<String> {
+    tiers
+        .iter()
+        .any(|(_, record)| record.as_ref().is_some_and(|record| record.can(needed)))
+        .then(|| auto.name().to_owned())
 }
 
 /// The window below which a harness's opening request — its system prompt plus
@@ -503,6 +650,9 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use kernel::records::{Modality, ModelSource, SourceKind};
+    use kernel::routing::RouteRules;
+
     use super::*;
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -604,6 +754,38 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn light_work_goes_to_auto_when_either_model_can_drive_the_harness() {
+        let record = |capabilities: Vec<Capability>| {
+            ModelRecord::new(
+                "tiny",
+                Modality::text(),
+                capabilities,
+                ModelSource::new(SourceKind::ollama(), "tiny"),
+            )
+        };
+        let auto = AutoRoute::new(
+            "auto",
+            "tiny",
+            "big",
+            RouteRules::default(),
+            std::time::Duration::from_secs(60),
+        );
+        let only = |small: Option<ModelRecord>| ByTier { small, large: None };
+        let chats = only(Some(record(vec![Capability::chat()])));
+        let calls = only(Some(record(vec![Capability::chat(), Capability::tools()])));
+        assert_eq!(
+            light_model(&auto, &calls, &Capability::tools()).as_deref(),
+            Some("auto")
+        );
+        assert_eq!(light_model(&auto, &chats, &Capability::tools()), None);
+        assert_eq!(
+            light_model(&auto, &chats, &Capability::chat()).as_deref(),
+            Some("auto")
+        );
+        assert_eq!(light_model(&auto, &only(None), &Capability::chat()), None);
     }
 }
 

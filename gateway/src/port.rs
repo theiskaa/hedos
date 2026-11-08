@@ -8,12 +8,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use kernel::jobs::{Job, JobEvent};
+use kernel::profiles::{Verdict, assess, prompt_characters};
 use kernel::records::{Capability, JsonValue, ModelRecord};
 use runtime::adapters::ChunkStream;
 use runtime::facade::KernelError;
 use tokio::sync::mpsc;
 
 use crate::admission::{GatewayAdmissionState, GatewayWorkKind};
+use crate::auto_route::AutoRoute;
 use crate::error::{GatewayError, GatewayErrorKind};
 
 /// A boxed future returned by a [`GatewayPort`] method, borrowing the port (and
@@ -95,6 +97,30 @@ pub trait GatewayPort: Send + Sync {
     /// one input may hold), otherwise the one it declares.
     fn served_window(&self, record: &ModelRecord) -> Option<i64> {
         record.context_length
+    }
+
+    /// Whether a `capability` request carrying `payload` fits `record`'s
+    /// window as the runtime judges it, with `uncounted` more characters the
+    /// runtime's check leaves out (tool definitions). This default judges by
+    /// the record's declared window alone.
+    fn prompt_fit(
+        &self,
+        record: &ModelRecord,
+        _capability: &Capability,
+        payload: &JsonValue,
+        uncounted: i64,
+    ) -> Verdict {
+        match record.context_length {
+            Some(window) => assess(prompt_characters(payload) + uncounted, window, None),
+            None => Verdict::Fits {
+                clamped_max_tokens: None,
+            },
+        }
+    }
+
+    /// The `auto` routing this gateway serves, when `[routing]` turns it on.
+    fn auto_route(&self) -> Option<&AutoRoute> {
+        None
     }
 
     /// Whether the machine can admit a request for a model of the given

@@ -5,15 +5,16 @@
 use std::collections::BTreeMap;
 
 use kernel::capabilities::CapabilityChunk;
-use kernel::records::{Capability, JsonValue};
+use kernel::records::JsonValue;
 use serde_json::json;
 
 use super::{
-    GatewayHandling, HandlerFuture, bad_request, collect_completion, completion_id, dispatch,
-    required_model, respond_json, runtime_failed,
+    Dispatched, GatewayHandling, HandlerFuture, bad_request, collect_completion, completion_id,
+    dispatch, required_model, respond_json_with, runtime_failed,
 };
+use crate::auto_route::RouteRequest;
 use crate::error::GatewayError;
-use crate::identity::{GatewayIdentity, GatewayOutcome};
+use crate::identity::GatewayIdentity;
 use crate::port::GatewayPort;
 use crate::request::GatewayRequest;
 use crate::responder::GatewayResponder;
@@ -96,22 +97,18 @@ impl GatewayHandling for OpenAICompletionsHandler {
                 .and_then(JsonValue::as_bool)
                 .unwrap_or(false);
 
+            let routing = RouteRequest::prompt(&prompt);
             let payload = prompt_payload(prompt, &sampling);
-            let (record, mut out) = dispatch(
-                port,
-                identity,
-                model,
-                Capability::complete(),
-                false,
-                &sampling,
-                payload,
-            )
-            .await?;
+            let Dispatched {
+                stream: mut out,
+                headers,
+                outcome,
+            } = dispatch(port, identity, model, &sampling, payload, routing).await?;
 
             let id = completion_id("cmpl-");
             let created = now_unix_seconds();
             if stream {
-                let body = responder.begin_stream(200, "text/event-stream")?;
+                let body = responder.begin_stream_with(200, "text/event-stream", headers)?;
                 let mut final_stats = None;
                 while let Some(result) = out.recv().await {
                     match result.map_err(runtime_failed)? {
@@ -146,15 +143,13 @@ impl GatewayHandling for OpenAICompletionsHandler {
                 body.end();
             } else {
                 let (text, _tool_calls, final_stats) = collect_completion(&mut out).await?;
-                respond_json(
+                respond_json_with(
                     responder,
                     &openai::text_completion(&id, created, model, &text, final_stats.as_ref()),
+                    headers,
                 );
             }
-            Ok(GatewayOutcome::ok_for(
-                Some(&record.id),
-                Some(&Capability::complete()),
-            ))
+            Ok(outcome)
         })
     }
 }
@@ -186,20 +181,16 @@ impl GatewayHandling for OllamaGenerateHandler {
                 .and_then(JsonValue::as_bool)
                 .unwrap_or(true);
 
+            let routing = RouteRequest::prompt(&prompt);
             let payload = prompt_payload(prompt, &options);
-            let (record, mut out) = dispatch(
-                port,
-                identity,
-                model,
-                Capability::complete(),
-                false,
-                &options,
-                payload,
-            )
-            .await?;
+            let Dispatched {
+                stream: mut out,
+                headers,
+                outcome,
+            } = dispatch(port, identity, model, &options, payload, routing).await?;
 
             if stream {
-                let body = responder.begin_stream(200, "application/x-ndjson")?;
+                let body = responder.begin_stream_with(200, "application/x-ndjson", headers)?;
                 let mut final_stats = None;
                 while let Some(result) = out.recv().await {
                     match result.map_err(runtime_failed)? {
@@ -221,12 +212,9 @@ impl GatewayHandling for OllamaGenerateHandler {
                 let mut object =
                     ollama::generate_final(model, &now_iso8601(), final_stats.as_ref());
                 object["response"] = json!(response);
-                respond_json(responder, &object);
+                respond_json_with(responder, &object, headers);
             }
-            Ok(GatewayOutcome::ok_for(
-                Some(&record.id),
-                Some(&Capability::complete()),
-            ))
+            Ok(outcome)
         })
     }
 }

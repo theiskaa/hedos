@@ -421,6 +421,25 @@ impl MemoryGovernor {
         }
     }
 
+    /// Whether models of these footprints can all stay resident at once under
+    /// the current policy: under strict-single, at most one of them is heavy;
+    /// under the budgeted policy, together they fit the budget. An unknown
+    /// footprint counts as heavy, as admission counts it.
+    pub fn hold_together(&self, footprints_mb: &[Option<i64>]) -> bool {
+        let heavy = self.inner.heavy_threshold_mb;
+        let sizes = footprints_mb
+            .iter()
+            .map(|footprint| footprint.unwrap_or(heavy));
+        let state = lock(&self.inner.state);
+        match state.eviction_policy {
+            EvictionPolicy::StrictSingle => sizes.filter(|size| *size >= heavy).count() <= 1,
+            EvictionPolicy::Budgeted => {
+                let budget = state.ram_budget_mb.unwrap_or_else(|| self.default_budget());
+                sizes.sum::<i64>() <= budget
+            }
+        }
+    }
+
     fn eviction_policy(&self) -> EvictionPolicy {
         lock(&self.inner.state).eviction_policy
     }

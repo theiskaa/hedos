@@ -10,6 +10,18 @@ use crate::error::{GatewayError, GatewayErrorKind};
 /// Parameter keys the gateway injects itself, which are always allowed through.
 const STRUCTURAL_KEYS: &[&str] = &["thinking"];
 
+/// The first parameter (in sorted order) the runtime doesn't honor, skipping
+/// the structural keys the gateway adds itself.
+pub fn unhonored<'a>(
+    params: &'a BTreeMap<String, JsonValue>,
+    honored: &HashSet<String>,
+) -> Option<&'a str> {
+    params
+        .keys()
+        .find(|key| !STRUCTURAL_KEYS.contains(&key.as_str()) && !honored.contains(*key))
+        .map(String::as_str)
+}
+
 /// Reject the first parameter (in sorted order) the runtime doesn't honor.
 ///
 /// Structural keys the gateway adds are skipped. The error names the runtime so
@@ -19,22 +31,15 @@ pub fn require(
     honored: &HashSet<String>,
     runtime: Option<&RuntimeId>,
 ) -> Result<(), GatewayError> {
-    for key in params.keys() {
-        if STRUCTURAL_KEYS.contains(&key.as_str()) {
-            continue;
-        }
-        if !honored.contains(key) {
-            let runtime_name = runtime.map(RuntimeId::as_str).unwrap_or("selected");
-            return Err(GatewayError::new(
-                GatewayErrorKind::BadRequest,
-                format!(
-                    "the parameter '{key}' is not supported by the {runtime_name} runtime serving this model"
-                ),
-            )
-            .with_code("unsupported_parameter"));
-        }
-    }
-    Ok(())
+    let Some(key) = unhonored(params, honored) else {
+        return Ok(());
+    };
+    let runtime_name = runtime.map(RuntimeId::as_str).unwrap_or("selected");
+    Err(GatewayError::new(
+        GatewayErrorKind::BadRequest,
+        format!("the parameter '{key}' is not supported by the {runtime_name} runtime serving this model"),
+    )
+    .with_code("unsupported_parameter"))
 }
 
 #[cfg(test)]

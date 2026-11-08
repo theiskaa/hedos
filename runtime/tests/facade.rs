@@ -13,6 +13,7 @@ use kernel::artifacts::ArtifactStore;
 use kernel::capabilities::CapabilityChunk;
 use kernel::discovery::{DiscoveredModel, ScanResult, StoreScanner};
 use kernel::jobs::{JobHistoryStore, JobRuntimeEvent, JobState};
+use kernel::profiles::Verdict;
 use kernel::records::{
     BidPreference, Capability, JsonValue, Modality, ModelRecord, ModelSource, RunTier, RuntimeId,
     SourceKind,
@@ -28,6 +29,8 @@ struct Fake {
     id: RuntimeId,
     serves: Vec<Capability>,
     window: Option<i64>,
+    requested_wins: bool,
+    ungoverned: bool,
     follows_memory: bool,
     wires_tools: bool,
     job_result: Option<(Vec<u8>, String)>,
@@ -41,6 +44,8 @@ impl Fake {
             id: RuntimeId::ollama(),
             serves,
             window: None,
+            requested_wins: false,
+            ungoverned: false,
             follows_memory: false,
             wires_tools: false,
             job_result: None,
@@ -51,6 +56,18 @@ impl Fake {
 
     fn window(mut self, window: i64) -> Self {
         self.window = Some(window);
+        self
+    }
+
+    /// A requested `context_length` replaces the window, as Ollama's does.
+    fn requested_wins(mut self) -> Self {
+        self.requested_wins = true;
+        self
+    }
+
+    /// Its models live outside the memory governor's reach.
+    fn ungoverned(mut self) -> Self {
+        self.ungoverned = true;
         self
     }
 
@@ -102,13 +119,20 @@ impl RuntimeAdapter for Fake {
     fn effective_context_window(
         &self,
         _record: &ModelRecord,
-        _requested: Option<i64>,
+        requested: Option<i64>,
     ) -> Option<i64> {
+        if self.requested_wins {
+            return requested.or(self.window);
+        }
         self.window
     }
 
     fn window_follows_memory(&self) -> bool {
         self.follows_memory
+    }
+
+    fn governed(&self) -> bool {
+        !self.ungoverned
     }
 
     fn wires_tools(&self) -> bool {
@@ -496,6 +520,100 @@ async fn invoke_passes_images_when_the_adapter_sees() {
             .await
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn assess_prompt_judges_a_prompt_as_invoke_does() {
+    let dir = TempDir::new();
+    let fake = Arc::new(
+        Fake::new(vec![Capability::chat()])
+            .window(8192)
+            .requested_wins(),
+    );
+    let mut narrow = record("m");
+    narrow.context_length = Some(8192);
+    narrow.params = kernel::profiles::context_length_spec(&narrow)
+        .into_iter()
+        .collect();
+    narrow
+        .param_values
+        .insert("context_length".to_owned(), JsonValue::Int(1024));
+    let kernel = kernel(
+        &dir,
+        Some(narrow.clone()),
+        vec![RegisteredAdapter::streaming(fake)],
+    );
+    let chat = Capability::chat();
+
+    // The stored window, not the runtime's own 8192, is the one invoke enforces.
+    let payload = chat_payload(&"x".repeat(4_000));
+    let verdict = kernel.assess_prompt(&narrow, &chat, &payload, 0);
+    assert!(matches!(verdict, Verdict::Exceeds { window: 1024, .. }));
+    assert!(matches!(
+        kernel.invoke("m", chat.clone(), payload).await.err(),
+        Some(KernelError::ContextExceeded { .. })
+    ));
+    assert_eq!(kernel.context_window(&narrow, &chat), Some(1024));
+
+    let short = chat_payload("hi");
+    assert!(matches!(
+        kernel.assess_prompt(&narrow, &chat, &short, 0),
+        Verdict::Fits { .. }
+    ));
+    assert!(
+        kernel
+            .invoke("m", chat.clone(), short.clone())
+            .await
+            .is_ok()
+    );
+    assert!(
+        matches!(
+            kernel.assess_prompt(&narrow, &chat, &short, 4_000),
+            Verdict::Exceeds { .. }
+        ),
+        "what the check does not count still counts when given"
+    );
+}
+
+#[test]
+fn a_model_is_governed_only_when_its_runtime_is() {
+    let governed = TempDir::new();
+    let fake = Arc::new(Fake::new(vec![Capability::chat()]));
+    let kernel_a = kernel(&governed, None, vec![RegisteredAdapter::streaming(fake)]);
+    assert!(kernel_a.governed(&record("m"), &Capability::chat()));
+    assert!(
+        !kernel_a.governed(&record("m"), &Capability::embed()),
+        "no adapter serves it"
+    );
+
+    let outside = TempDir::new();
+    let fake = Arc::new(Fake::new(vec![Capability::chat()]).ungoverned());
+    let kernel_b = kernel(&outside, None, vec![RegisteredAdapter::streaming(fake)]);
+    assert!(!kernel_b.governed(&record("m"), &Capability::chat()));
+
+    assert!(!runtime::adapters::OllamaAdapter::new().governed());
+}
+
+#[tokio::test]
+async fn assess_prompt_counts_the_records_own_system_prompt() {
+    let dir = TempDir::new();
+    let fake = Arc::new(Fake::new(vec![Capability::chat()]).window(300));
+    let mut talkative = record("m");
+    talkative.system_prompt = Some("s".repeat(1_000));
+    let kernel = kernel(
+        &dir,
+        Some(talkative.clone()),
+        vec![RegisteredAdapter::streaming(fake)],
+    );
+    let payload = chat_payload("hi");
+    assert!(matches!(
+        kernel.assess_prompt(&talkative, &Capability::chat(), &payload, 0),
+        Verdict::Exceeds { .. }
+    ));
+    assert!(matches!(
+        kernel.invoke("m", Capability::chat(), payload).await.err(),
+        Some(KernelError::ContextExceeded { .. })
+    ));
 }
 
 #[tokio::test]

@@ -14,6 +14,7 @@ use gateway::port::GatewayResident;
 use gateway::request::GatewayRequest;
 use gateway::responder::{GatewayResponder, ResponsePart};
 use gateway::scopes::GatewayScopes;
+use kernel::records::Capability;
 
 fn identity() -> GatewayIdentity {
     GatewayIdentity::new("client", "Client", GatewayScopes::all())
@@ -148,4 +149,96 @@ async fn ollama_show_requires_a_model() {
             .await
             .is_err()
     );
+}
+
+/// The routed port with `tiny` calling tools in an 8k window and `big` seeing
+/// in a 128k one.
+fn tools_small_vision_large() -> MockPort {
+    let mut port = common::routed_port();
+    port.shelf[0].capabilities = vec![Capability::chat(), Capability::tools()];
+    port.shelf[0].context_length = Some(8192);
+    port.shelf[1].capabilities = vec![Capability::chat(), Capability::see()];
+    port.shelf[1].context_length = Some(131_072);
+    port
+}
+
+#[tokio::test]
+async fn auto_leads_the_listings_with_the_wider_window() {
+    let port = tools_small_vision_large();
+    let (responder, rx) = GatewayResponder::new();
+    OpenAIModelsHandler
+        .handle(&get("/v1/models"), &identity(), &port, &responder)
+        .await
+        .unwrap();
+    let value = body(rx);
+    assert_eq!(value["data"][0]["id"], "auto");
+    assert_eq!(value["data"][0]["meta"]["n_ctx"], 131_072);
+    assert_eq!(value["data"].as_array().unwrap().len(), 3);
+
+    let (responder, rx) = GatewayResponder::new();
+    OllamaTagsHandler
+        .handle(&get("/api/tags"), &identity(), &port, &responder)
+        .await
+        .unwrap();
+    let value = body(rx);
+    assert_eq!(value["models"][0]["name"], "auto");
+    assert_eq!(value["models"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn auto_is_not_listed_while_routing_is_off_or_out_of_reach() {
+    let mut port = tools_small_vision_large();
+    port.auto_route = None;
+    let (responder, rx) = GatewayResponder::new();
+    OpenAIModelsHandler
+        .handle(&get("/v1/models"), &identity(), &port, &responder)
+        .await
+        .unwrap();
+    let ids: Vec<String> = body(rx)["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(ids, ["tiny", "big"]);
+
+    let port = tools_small_vision_large();
+    let scoped = GatewayIdentity::new(
+        "client",
+        "Client",
+        GatewayScopes {
+            models: Some(vec!["some-other-model".to_owned()]),
+            capabilities: None,
+        },
+    );
+    let (responder, rx) = GatewayResponder::new();
+    OpenAIModelsHandler
+        .handle(&get("/v1/models"), &scoped, &port, &responder)
+        .await
+        .unwrap();
+    assert_eq!(body(rx)["data"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn showing_auto_claims_what_either_model_can_do() {
+    let port = tools_small_vision_large();
+    let (responder, rx) = GatewayResponder::new();
+    let request = GatewayRequest::new(
+        "POST",
+        "/api/show",
+        Vec::new(),
+        br#"{"model":"auto"}"#.to_vec(),
+    );
+    OllamaShowHandler
+        .handle(&request, &identity(), &port, &responder)
+        .await
+        .unwrap();
+    let value = body(rx);
+    let capabilities: Vec<&str> = value["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|capability| capability.as_str().unwrap())
+        .collect();
+    assert_eq!(capabilities, ["completion", "vision", "tools"]);
 }

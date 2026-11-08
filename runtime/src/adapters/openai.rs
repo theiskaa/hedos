@@ -168,6 +168,11 @@ impl RuntimeAdapter for OpenAiEndpointAdapter {
         &self.id
     }
 
+    /// Not governed: the endpoint's own server decides what it keeps loaded.
+    fn governed(&self) -> bool {
+        false
+    }
+
     fn wires_tools(&self) -> bool {
         true
     }

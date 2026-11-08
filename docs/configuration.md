@@ -46,6 +46,19 @@ Settings are read when a command starts, so a running `hedos serve` or `hedos sh
 
 The gateway always binds `127.0.0.1`.
 
+#### `[routing]`
+
+[Auto routing](gateway.md#auto-routing) on the gateway. It is off until `small` and `large` both name a model, and they differ. [`hedos route set`](cli.md#hedos-route) writes them. The gateway reads this table when it starts.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `small` | string | `""` | The small, fast model, by name, alias, or id, resolved the way a request's `model` is. |
+| `large` | string | `""` | The large, capable model. |
+| `name` | string | `"auto"` | The model name clients ask for to be routed. Blank means `auto`. While routing is on, a model with this name is reached by its id. |
+| `max_simple_chars` | integer | `1200` | A latest user turn longer than this many characters goes to the large model (200 to 20000). |
+| `hard_words` | list of strings | `[]` | Words or phrases that send a turn to the large model, ignoring case. One of letters and digits matches as whole words; one carrying anything else (`c++`) matches as written. Empty means the built-in list; a list here replaces it. |
+| `sticky_minutes` | integer | `30` | How long a conversation that reached the large model stays there after its last request (1 to 1440). |
+
 #### `[pull]`
 
 | Key | Type | Default | Meaning |
@@ -96,6 +109,11 @@ default_system_prompt = "Answer briefly."
 [gateway]
 port = 43367
 max_concurrent_inference = 4
+
+[routing]
+# Serve the model `auto` with one of these, request by request.
+small = "qwen2.5-0.5b"
+large = "qwen3-coder"
 
 [pull]
 max_concurrent = 2
