@@ -18,7 +18,7 @@ publish-jobs = ["homebrew"]
 # Steps each build runs first: fetch the llama.cpp build hedos carries
 github-build-setup = "../build-setup.yml"
 
-# Custom GitHub runners (macos-13 is deprecated)
+# Custom GitHub runners (macos-13 and macos-14 are retired)
 [dist.github-custom-runners]
-aarch64-apple-darwin = "macos-14"
-x86_64-apple-darwin = "macos-14"
+aarch64-apple-darwin = "macos-15"
+x86_64-apple-darwin = "macos-15"
