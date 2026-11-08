@@ -18,6 +18,7 @@ pub mod records;
 pub mod registry;
 pub mod removal;
 pub mod resolution;
+pub mod routing;
 pub mod time;
 pub mod upgrade;
 
