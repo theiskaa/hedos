@@ -85,6 +85,219 @@ def test_materialize_images_handles_messages_with_no_images(mlx_vlm, tmp_path):
     assert paths == []
 
 
+INKLING_VOCAB = {
+    token: 200000 + index
+    for index, token in enumerate(
+        (
+            "<|message_user|>",
+            "<|message_model|>",
+            "<|content_text|>",
+            "<|content_thinking|>",
+            "<|end_message|>",
+            "<|content_model_end_sampling|>",
+            "<|content_invoke_tool_json|>",
+            "<|content_invoke_tool_text|>",
+        )
+    )
+}
+
+
+class InklingTokenizer:
+    def __init__(self, vocab):
+        self.vocab = {"plain": 1, **vocab}
+        self.all_special_tokens = list(vocab)
+        self.all_special_ids = list(vocab.values())
+
+    def get_vocab(self):
+        return self.vocab
+
+
+def inkling_steps(*pieces):
+    """A generation as stream_generate yields it: one step per token, a
+    special token's text being the token itself, then the final step that
+    repeats the last token."""
+    steps = [(INKLING_VOCAB.get(piece, 1), piece) for piece in pieces]
+    return [*steps, (steps[-1][0], "")]
+
+
+def read_inkling(mlx_vlm, steps, tools=()):
+    protocol = mlx_vlm.inkling.Protocol.of(InklingTokenizer(INKLING_VOCAB))
+    reader = mlx_vlm.inkling.Reader(protocol, [{"name": name} for name in tools])
+    events = []
+    for index, (token, text) in enumerate(steps):
+        events += reader.feed(token, text, final=index == len(steps) - 1)
+    return events
+
+
+def test_inkling_is_recognized_by_its_message_tokens(mlx_vlm):
+    assert mlx_vlm.inkling.Protocol.of(InklingTokenizer(INKLING_VOCAB)) is not None
+    partial = {k: v for k, v in INKLING_VOCAB.items() if k != "<|content_thinking|>"}
+    assert mlx_vlm.inkling.Protocol.of(InklingTokenizer(partial)) is None
+    assert mlx_vlm.inkling.Protocol.of(InklingTokenizer({})) is None
+
+
+def test_a_tokenizer_that_cannot_list_its_vocabulary_is_not_inkling(mlx_vlm):
+    assert mlx_vlm.inkling.Protocol.of(object()) is None
+
+
+def test_inkling_keeps_an_image_with_its_original_message(mlx_vlm, tmp_path):
+    messages = [
+        {"role": "user", "content": "red?", "images": ["aW1hZ2U="]},
+        {"role": "assistant", "content": "yes"},
+        {"role": "user", "content": "what shade?"},
+    ]
+    shaped, paths = mlx_vlm.materialize_images(messages, str(tmp_path), mark_images=True)
+    assert len(paths) == 1
+    assert shaped[0]["content"] == [{"type": "image"}, {"type": "text", "text": "red?"}]
+    assert shaped[2] == messages[2]
+
+
+def test_inkling_marks_an_image_only_message_without_an_empty_text_block(mlx_vlm, tmp_path):
+    messages = [{"role": "user", "content": "", "images": ["aW1hZ2U="]}]
+    shaped, _ = mlx_vlm.materialize_images(messages, str(tmp_path), mark_images=True)
+    assert shaped[0]["content"] == [{"type": "image"}]
+
+
+def test_inkling_template_reads_tool_history(mlx_vlm):
+    messages = [
+        {"role": "user", "content": "colour?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_1", "name": "color", "arguments": {"of": "sky"}}],
+        },
+        {"role": "tool", "tool_name": "color", "content": "blue"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "still blue"},
+    ]
+    _, assistant, named, by_id = mlx_vlm.inkling.template_messages(messages)
+    assert assistant == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "color", "arguments": {"of": "sky"}},
+            }
+        ],
+    }
+    assert named == {"role": "tool", "name": "color", "content": "blue"}
+    # The template names a result by the id of the call it answers.
+    assert by_id == messages[3]
+
+
+def test_inkling_runs_a_turn_with_thinking_off_at_zero_effort(mlx_vlm):
+    assert mlx_vlm.inkling.template_kwargs({"thinking": False}) == {"reasoning_effort": "none"}
+    assert mlx_vlm.inkling.template_kwargs({"thinking": True}) == {}
+    assert mlx_vlm.inkling.template_kwargs({}) == {}
+
+
+def test_inkling_streams_thinking_and_text_by_block(mlx_vlm):
+    steps = inkling_steps(
+        "<|message_model|>",
+        "<|content_thinking|>",
+        "First",
+        "<|end_message|>",
+        "<|message_model|>",
+        "<|content_text|>",
+        "O",
+        "K",
+        "<|end_message|>",
+    )
+    assert read_inkling(mlx_vlm, steps) == [
+        {"event": "thinking", "text": "First"},
+        {"event": "text", "text": "O"},
+        {"event": "text", "text": "K"},
+    ]
+
+
+def test_inkling_reads_markers_by_token_not_by_text(mlx_vlm):
+    # The words of a marker in ordinary text are text, and a step that flushes
+    # held text along with a marker keeps that text in the block it closes.
+    steps = [
+        (INKLING_VOCAB["<|message_model|>"], "<|message_model|>"),
+        (INKLING_VOCAB["<|content_text|>"], "<|content_text|>"),
+        (1, "say <|end_message|>"),
+        (INKLING_VOCAB["<|end_message|>"], "é<|end_message|>"),
+        (INKLING_VOCAB["<|end_message|>"], ""),
+    ]
+    assert read_inkling(mlx_vlm, steps) == [
+        {"event": "text", "text": "say <|end_message|>"},
+        {"event": "text", "text": "é"},
+    ]
+
+
+def test_inkling_flushes_the_text_held_at_the_end(mlx_vlm):
+    steps = [
+        (INKLING_VOCAB["<|message_model|>"], "<|message_model|>"),
+        (INKLING_VOCAB["<|content_text|>"], "<|content_text|>"),
+        (1, "caf"),
+        (1, "é"),
+    ]
+    assert read_inkling(mlx_vlm, steps) == [
+        {"event": "text", "text": "caf"},
+        {"event": "text", "text": "é"},
+    ]
+
+
+def test_inkling_assembles_a_tool_call_once_its_block_closes(mlx_vlm):
+    steps = inkling_steps(
+        "<|message_model|>",
+        "color",
+        "<|content_invoke_tool_json|>",
+        '{"name":"color",',
+        '"args":{"id":1}}',
+        "<|end_message|>",
+    )
+    assert read_inkling(mlx_vlm, steps, tools=["color"]) == [
+        {"event": "tool_call", "name": "color", "arguments": {"id": 1}}
+    ]
+
+
+def test_inkling_drops_invocations_that_are_not_offered_calls(mlx_vlm):
+    def invocation(header, body, close=True):
+        pieces = ["<|message_model|>", header, "<|content_invoke_tool_json|>", body]
+        return inkling_steps(*pieces, *(["<|end_message|>"] if close else []))
+
+    for steps in (
+        invocation("color", '{"name":"color","args":[1]}'),
+        invocation("other", '{"name":"other","args":{}}'),
+        invocation("other", '{"name":"color","args":{}}'),
+        invocation("color", "not JSON"),
+        invocation("color", '{"name":"color","args":{}}', close=False),
+    ):
+        assert read_inkling(mlx_vlm, steps, tools=["color"]) == []
+    assert read_inkling(mlx_vlm, invocation("color", '{"name":"color","args":{}}')) == []
+
+
+def test_inkling_drops_blocks_it_has_no_event_for(mlx_vlm):
+    steps = inkling_steps(
+        "<|message_model|>",
+        "<|content_invoke_tool_text|>",
+        "color(sky)",
+        "<|end_message|>",
+        "<|message_user|>",
+        "<|content_text|>",
+        "hi",
+        "<|end_message|>",
+    )
+    assert read_inkling(mlx_vlm, steps, tools=["color"]) == []
+
+
+def test_inkling_reads_on_once_the_model_speaks_again(mlx_vlm):
+    steps = inkling_steps(
+        "<|message_user|>",
+        "<|content_text|>",
+        "hi",
+        "<|end_message|>",
+        "<|message_model|>",
+        "<|content_text|>",
+        "hello",
+        "<|end_message|>",
+    )
+    assert read_inkling(mlx_vlm, steps) == [{"event": "text", "text": "hello"}]
+
+
 def test_tool_specs_absent_or_malformed_returns_empty(mlx_lm):
     assert mlx_lm.tool_specs({}) == []
     assert mlx_lm.tool_specs({"tools": "read"}) == []

@@ -7,6 +7,8 @@ import select
 import struct
 import time
 
+import inkling
+
 real_stdout = os.dup(1)
 os.dup2(2, 1)
 
@@ -285,7 +287,7 @@ def extract_tool_calls(text):
     return text, []
 
 
-def materialize_images(messages, workdir):
+def materialize_images(messages, workdir, *, mark_images=False):
     paths = []
     stripped = []
     for index, message in enumerate(messages):
@@ -298,6 +300,11 @@ def materialize_images(messages, workdir):
             paths.append(path)
         copy = dict(message)
         copy.pop("images", None)
+        if mark_images and images:
+            text = copy.get("content") or ""
+            copy["content"] = [{"type": "image"} for _ in images] + (
+                [{"type": "text", "text": text}] if text else []
+            )
         stripped.append(copy)
     return stripped, paths
 
@@ -316,6 +323,7 @@ def main():
 
     model, processor = load(args.model)
     config = load_config(args.model)
+    protocol = inkling.Protocol.of(getattr(processor, "tokenizer", processor))
     send_json({"event": "ready"})
 
     while True:
@@ -337,8 +345,9 @@ def main():
         last = None
         try:
             tools = tool_specs(request) if op == "chat" else []
-            messages, images = materialize_images(request.get("messages", []), args.workdir)
-            messages = inline_tool_history(messages)
+            messages, images = materialize_images(
+                request.get("messages", []), args.workdir, mark_images=protocol is not None
+            )
 
             # Rebound each request and called synchronously within it.
             def render(shaped):
@@ -349,20 +358,43 @@ def main():
                     num_images=len(images),  # noqa: B023
                 )
 
-            prompt = build_prompt(render, messages, tools)
             kwargs = {"max_tokens": int(request.get("max_tokens", 4096))}
             if "temperature" in request:
                 kwargs["temperature"] = float(request["temperature"])
             if "top_p" in request:
                 kwargs["top_p"] = float(request["top_p"])
 
+            reader = None
+            if protocol is not None:
+                # The checkpoint's own template declares the tools and renders
+                # the call history, so nothing is folded into the turns.
+                prompt = apply_chat_template(
+                    processor,
+                    config,
+                    inkling.template_messages(messages),
+                    num_images=len(images),
+                    **({"tools": tools} if tools else {}),
+                    **inkling.template_kwargs(request),
+                )
+                reader = inkling.Reader(protocol, tools)
+                # Upstream's documented prefill chunk for Inkling, bounding the
+                # activation memory each prefill step takes.
+                kwargs["prefill_step_size"] = 128
+            else:
+                prompt = build_prompt(render, inline_tool_history(messages), tools)
+
             # With tools offered, visible text is held to end-of-turn so a tool
-            # call can be parsed out of the full reply.
-            collector = [] if tools else None
+            # call can be parsed out of the full reply. Inkling's typed blocks
+            # say what each piece is as it streams, so nothing is held.
+            collector = [] if tools and reader is None else None
             send_json({"event": "begin"})
             for response in stream_generate(model, processor, prompt, images, **kwargs):
                 last = response
-                if collector is None:
+                if reader is not None:
+                    final = getattr(response, "finish_reason", None) is not None
+                    for event in reader.feed(response.token, response.text, final):
+                        send_json(event)
+                elif collector is None:
                     send_json({"event": "text", "text": response.text})
                 else:
                     collector.append(response.text)
