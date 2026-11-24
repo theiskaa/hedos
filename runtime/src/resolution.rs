@@ -33,11 +33,13 @@ use kernel::resolution::{IdentificationCache, IdentifiedModel, ModelFormat, iden
 use crate::adapters::RuntimeAdapter;
 use crate::sidecar::SidecarModelPaths;
 
-/// What identifying a record reads it by: where its weights are. A plan made
-/// from one set of these says nothing about a record that has another.
+/// What identifying a record reads it by: where its weights are, and the
+/// revision whose snapshot holds the config a bid reads. A plan made from one
+/// set of these says nothing about a record that has another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IdentityInputs {
     source: String,
+    reference: Option<String>,
     primary_weight_path: Option<String>,
     footprint_bytes: Option<i64>,
 }
@@ -46,6 +48,7 @@ impl IdentityInputs {
     fn of(record: &ModelRecord) -> Self {
         Self {
             source: record.source.path.clone(),
+            reference: record.source.reference.clone(),
             primary_weight_path: record.primary_weight_path.clone(),
             footprint_bytes: record.footprint_bytes,
         }
@@ -301,6 +304,34 @@ impl ResolutionEngine {
                     plan.identified.modality.as_ref(),
                     Some(modality) if *modality == Modality::audio() || *modality == Modality::speech()
                 )
+            },
+        )?;
+        Ok(StrandedModels { changed, unread: 0 })
+    }
+
+    /// Resolve the original Inkling 2 checkpoints a shelf written before
+    /// mlx-vlm read them in place left unresolved. It re-identifies unresolved
+    /// records neither downloading nor pinned by the user, and keeps a plan
+    /// only when mlx-vlm now wins plain safetensors, which it bids on for
+    /// nothing else, so every other unresolved record is left as it is. The
+    /// config it reads is read again by any scan, so nothing counts as unread.
+    pub fn resolve_stranded_inkling(
+        &self,
+        registry: &mut Registry,
+    ) -> Result<StrandedModels, RegistryError> {
+        let changed = self.resolve_where(
+            registry,
+            |record| {
+                record.state == ModelState::Unresolved
+                    && !record.downloading
+                    && record.runtime.resolved != Resolution::User
+            },
+            |_, plan| {
+                plan.identified.format == ModelFormat::Safetensors
+                    && plan
+                        .bids
+                        .first()
+                        .is_some_and(|bid| bid.id == RuntimeId::mlx_vlm())
             },
         )?;
         Ok(StrandedModels { changed, unread: 0 })

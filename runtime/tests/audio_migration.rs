@@ -229,7 +229,7 @@ async fn an_older_shelfs_audio_models_are_put_right_on_first_sight() {
         assert!(now.capabilities.contains(&Capability::chat()), "{id}");
     }
 
-    assert_eq!(Registry::open(&registry_dir).unwrap().migration_level(), 3);
+    assert_eq!(Registry::open(&registry_dir).unwrap().migration_level(), 4);
 
     // A full resolve afterwards agrees with what the migration left.
     kernel.resolve().await.expect("resolve");

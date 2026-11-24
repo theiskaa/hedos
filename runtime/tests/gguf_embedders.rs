@@ -19,7 +19,7 @@ use runtime::settings::SettingsStore;
 use support::{TempDir, gguf, kv_string, kv_u32};
 
 /// The migration level of a shelf every migration has run on.
-const MIGRATED: u32 = 3;
+const MIGRATED: u32 = 4;
 
 struct Fixture {
     root: TempDir,

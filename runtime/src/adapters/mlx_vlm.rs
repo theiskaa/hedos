@@ -1,6 +1,9 @@
-//! The mlx-vlm vision adapter: serves chat/vision for MLX-safetensors
-//! vision-language models through a Python sidecar. Like [`MlxLmAdapter`] but for
+//! The mlx-vlm vision adapter: serves chat and vision for MLX-safetensors
+//! vision-language models, and on Apple Silicon for the original Inkling 2
+//! checkpoints, through a Python sidecar. Like [`MlxLmAdapter`] but for
 //! `see`-capable models, and its output is not think-split.
+//!
+//! [`MlxLmAdapter`]: super::MlxLmAdapter
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -8,11 +11,17 @@ use std::path::PathBuf;
 use kernel::records::{BidPreference, Capability, JsonValue, ModelRecord, RunTier, RuntimeId};
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
+use super::inkling::InklingCheckpoint;
 use super::sidecar_adapter::{CancelMode, SidecarAdapter, SidecarSpec};
 use super::{ChunkStream, RuntimeAdapter};
 use crate::environment::EnvironmentManager;
 use crate::governor::MemoryGovernor;
 use crate::sidecar::SidecarSupervisor;
+
+/// Whether this build reads original checkpoints in place. Their mixed
+/// NVFP4/MXFP8 experts are verified on Apple Silicon's Metal backend only, so
+/// elsewhere only an MLX conversion bids.
+const LOADS_ORIGINAL_CHECKPOINTS: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 /// The bundle this sidecar ships as.
 pub(crate) const MLX_VLM_BUNDLE: &str = "python-mlx-vlm";
@@ -59,8 +68,8 @@ impl RuntimeAdapter for MlxVlmAdapter {
     }
 
     fn wires_tools(&self) -> bool {
-        // The sidecar offers the request's tools through a system block and
-        // parses tool calls back out of the finished turn.
+        // The sidecar offers the request's tools (in Inkling's own template, or
+        // through a system block) and parses tool calls back out of the turn.
         true
     }
 
@@ -68,17 +77,26 @@ impl RuntimeAdapter for MlxVlmAdapter {
         record.runtime.id.as_ref() == Some(self.base.id()) && is_vision_capability(capability)
     }
 
-    fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
-        if identified.format == ModelFormat::MlxSafetensors
-            && identified.capabilities.contains(&Capability::see())
-        {
-            Some(RuntimeBid::with_alternatives(
-                RunTier::Managed,
-                BidPreference::MLX_VLM,
-                vec![RuntimeId::mlx_swift()],
-            ))
-        } else {
-            None
+    fn bid(&self, record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
+        if !identified.capabilities.contains(&Capability::see()) {
+            return None;
+        }
+        match identified.format {
+            ModelFormat::MlxSafetensors => InklingCheckpoint::of(record)
+                .is_none_or(|inkling| inkling.loads_converted())
+                .then(|| {
+                    RuntimeBid::with_alternatives(
+                        RunTier::Managed,
+                        BidPreference::MLX_VLM,
+                        vec![RuntimeId::mlx_swift()],
+                    )
+                }),
+            // The checkpoint stays plain safetensors, so every other runtime
+            // still sees the format it really is.
+            ModelFormat::Safetensors if LOADS_ORIGINAL_CHECKPOINTS => InklingCheckpoint::of(record)
+                .is_some_and(|inkling| inkling.loads_native())
+                .then(|| RuntimeBid::new(RunTier::Managed, BidPreference::MLX_VLM)),
+            _ => None,
         }
     }
 
@@ -210,6 +228,79 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    /// A directory under the system temp dir, removed when dropped.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// A record over a folder whose `config.json` is `config`, holding the
+    /// ModelOpt quantization sidecar too, with the folder that holds it.
+    fn checkpoint(name: &str, config: serde_json::Value) -> (Scratch, ModelRecord) {
+        let dir = std::env::temp_dir().join(format!("hedos-mlx-vlm-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+        std::fs::write(dir.join("hf_quant_config.json"), "{}").unwrap();
+        let mut record = record();
+        record.source = ModelSource::new(SourceKind::folder(), dir.to_str().unwrap());
+        (Scratch(dir), record)
+    }
+
+    fn inkling_mini(is_varloop: bool) -> serde_json::Value {
+        serde_json::json!({
+            "model_type": "inkling2_loop",
+            "vision_config": {},
+            "quantization_config": {"quant_method": "modelopt"},
+            "text_config": {"loop_config": {"is_varloop": is_varloop}},
+        })
+    }
+
+    #[test]
+    fn it_bids_on_an_original_inkling_2_checkpoint_on_apple_silicon_only() {
+        let (_dir, mini) = checkpoint("native-mini", inkling_mini(false));
+        let bid = adapter().bid(
+            &mini,
+            &identified(ModelFormat::Safetensors, vec![Capability::see()]),
+        );
+        if LOADS_ORIGINAL_CHECKPOINTS {
+            let bid = bid.unwrap();
+            assert_eq!(bid.preference, BidPreference::MLX_VLM);
+            assert!(bid.alternatives.is_empty());
+        } else {
+            assert!(bid.is_none());
+        }
+    }
+
+    #[test]
+    fn it_does_not_bid_on_another_original_vision_checkpoint() {
+        let (_dir, other) = checkpoint(
+            "native-other",
+            serde_json::json!({"model_type": "qwen2_vl", "vision_config": {}}),
+        );
+        let plain = identified(ModelFormat::Safetensors, vec![Capability::see()]);
+        assert!(adapter().bid(&other, &plain).is_none());
+        assert!(
+            adapter().bid(&record(), &plain).is_none(),
+            "no config on disk"
+        );
+    }
+
+    #[test]
+    fn it_does_not_bid_on_a_variable_loop_inkling_in_either_form() {
+        let (_dir, variable) = checkpoint("variable", inkling_mini(true));
+        for format in [ModelFormat::Safetensors, ModelFormat::MlxSafetensors] {
+            assert!(
+                adapter()
+                    .bid(&variable, &identified(format, vec![Capability::see()]))
+                    .is_none(),
+                "{format:?}"
+            );
+        }
     }
 
     #[test]

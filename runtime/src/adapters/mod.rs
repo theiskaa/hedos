@@ -17,6 +17,7 @@ mod daemon_liveness;
 mod diffusers;
 mod embeddings;
 mod grammar;
+mod inkling;
 mod line_stream;
 mod llama_decision;
 mod llama_pool;
