@@ -2,6 +2,13 @@
 
 All notable changes to hedos are documented here. Each release section below is what ships as the GitHub Release notes.
 
+## v1.6.2 - 2026-11-26
+
+- Inkling 2 runs on Apple Silicon. hedos serves the original [`thinkingmachines/Inkling-2-Mini`](https://huggingface.co/thinkingmachines/Inkling-2-Mini) and `Inkling-2-Small` checkpoints through mlx-vlm, reading the Hugging Face snapshot in place with its mixed NVFP4/MXFP8 weights, so nothing is converted or copied. Mini needs its `hf_quant_config.json`, which a `hedos pull` keeps. A Mini already in the Hugging Face cache, left unresolved on the shelf by an earlier hedos, is picked up the first time the shelf is read. MLX conversions of any Inkling run on mlx-vlm too, and no longer on mlx-lm, which cannot load them. The variable-loop research checkpoint does not load in mlx-vlm and stays unresolved.
+- Inkling's replies are read in its own message format. Requests are rendered with the checkpoint's own chat template, and the reply is read block by block: reasoning streams as thinking and never as text, and tools are declared and called in the model's native format and come back as ordinary tool calls, with earlier calls and their results replayed on the next turn. An image stays with the message it was sent in. Turning thinking off runs the turn at the template's lowest effort, which shortens the reasoning without always removing it.
+- The vision runtime moves to mlx-vlm 0.8.1. Its environment is rebuilt once, the first time a vision model runs after the upgrade.
+- `hedos chat` shows the same loader as `hedos run` while a reply is on its way: the runtime's setup steps, then `Thinking…` while the model reasons, cleared as the answer starts. `hedos run` shows `Thinking…` too. The `generating` line a reply used to open with is gone.
+
 ## v1.6.1 - 2026-11-08
 
 - Auto routing (#36). The gateway serves a model named `auto` that answers each request with one of two models you choose: a small, fast one for simple requests and a large one for the rest. Set them with `hedos route set --small <model> --large <model>` or under the new `[routing]` table in `hedos.toml`. It routes chat and text generation on every dialect (`/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/api/chat`, `/api/generate`), so a client keeps naming one model and hedos picks per request.
