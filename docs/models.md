@@ -56,7 +56,7 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 | Ollama (`ollama`) | The models in Ollama's store | Ollama installed, or its daemon answering; hedos starts the daemon if it is installed but not running |
 | OpenAI-compatible endpoint (`generic:openai-server`) | Remote models reached by URL and key | A reachable server, with its API key (if it needs one) in `HEDOS_OPENAI_API_KEY` |
 | mlx-lm (`python:mlx-lm`) | MLX text models | [`uv`](https://astral.sh/uv) |
-| mlx-vlm (`python:mlx-vlm`) | MLX vision-language models | `uv` |
+| mlx-vlm (`python:mlx-vlm`) | MLX vision-language models, and the original Inkling 2 checkpoints on Apple Silicon | `uv` |
 | mlx-audio (`python:mlx-audio`) | Speech synthesis with Kokoro | `uv` |
 | audio (`python:audio`) | Songs, music and sound effects: the diffusers audio pipelines (Stable Audio, AudioLDM, AudioLDM2, MusicLDM, ACE-Step) and MusicGen | `uv` |
 | embeddings (`python:embeddings`) | Safetensors embedders | `uv` |
@@ -68,6 +68,12 @@ A model resolves to whichever of these fits it, and each serves only when its ba
 | Manifest runtimes (`python:laya`, `python:zerank`, `python:yue2`, `cli:tessera`, or your own) | Whatever the manifest declares | Approval with `hedos runtimes approve <id>`, and `uv` for a Python one |
 
 [engines.md](engines.md) covers the engines in full. The Python sidecars provision their own environment through `uv` on first use; their runtime code ships inside the binary. Without a `uv`, `hedos engines install uv` installs the one hedos pins, after saying what it fetches, and `hedos pull` and the shelf offer it when a Python model needs it; `uv` then fetches Python 3.12 when the machine has none. A model whose environment is built keeps running without `uv`. A manifest runtime runs code on the host, so it neither bids on a model nor serves one until you approve it, and the approval is bound to a hash of its files: editing any of them asks for it again. hedos ships `python:laya`, `python:zerank`, `python:yue2` and `cli:tessera` this way, and reads your own from `runtimes.d` in the data directory. `hedos runtimes` lists them and where each approval stands.
+
+### Inkling on Apple Silicon
+
+On Apple Silicon, hedos serves the original [`thinkingmachines/Inkling-2-Mini`](https://huggingface.co/thinkingmachines/Inkling-2-Mini) and `Inkling-2-Small` checkpoints through mlx-vlm, reading the Hugging Face snapshot in place with its mixed NVFP4/MXFP8 weights. Keep `hf_quant_config.json` beside Mini's weights: it names each expert's format. A shelf from an earlier hedos picks up a cached Mini the first time it is read. MLX conversions of any Inkling run on mlx-vlm like other MLX vision models.
+
+Inkling speaks in typed message blocks rather than one free-text reply, so hedos renders requests with the checkpoint's own chat template and reads the reply block by block. Reasoning streams as thinking, never as text. Tools are declared and called in the model's native format and come back as ordinary tool calls, and earlier calls and their results are replayed in that format on the next turn. Turning thinking off runs the turn at the template's lowest effort, which shortens the reasoning without always removing it. The variable-loop research checkpoint does not load in mlx-vlm, in either form, and stays unresolved.
 
 ### GGUF models on llama.cpp
 

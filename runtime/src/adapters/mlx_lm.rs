@@ -9,6 +9,7 @@ use kernel::records::{
 };
 use kernel::resolution::{IdentifiedModel, ModelFormat, RuntimeBid};
 
+use super::inkling::InklingCheckpoint;
 use super::sidecar_adapter::{CancelMode, SidecarAdapter, SidecarSpec};
 use super::sidecar_stream::separating;
 use super::{ChunkStream, RuntimeAdapter};
@@ -70,10 +71,12 @@ impl RuntimeAdapter for MlxLmAdapter {
         record.runtime.id.as_ref() == Some(self.base.id()) && is_text_capability(capability)
     }
 
-    fn bid(&self, _record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
+    fn bid(&self, record: &ModelRecord, identified: &IdentifiedModel) -> Option<RuntimeBid> {
         if identified.format == ModelFormat::MlxSafetensors
             && identified.modality == Some(Modality::text())
             && identified.capabilities.contains(&Capability::chat())
+            // The mlx-lm pin has no Inkling architecture, in any form.
+            && InklingCheckpoint::of(record).is_none()
         {
             Some(RuntimeBid::new(RunTier::Managed, BidPreference::MLX_LM))
         } else {
@@ -231,6 +234,25 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn it_does_not_bid_on_an_mlx_inkling_conversion() {
+        let dir = std::env::temp_dir().join(format!("hedos-mlx-lm-inkling-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), r#"{"model_type":"inkling2_loop"}"#).unwrap();
+        let mut inkling = record();
+        inkling.source = ModelSource::new(SourceKind::folder(), dir.to_str().unwrap());
+        let bid = adapter().bid(
+            &inkling,
+            &identified(
+                ModelFormat::MlxSafetensors,
+                Modality::text(),
+                vec![Capability::chat(), Capability::see()],
+            ),
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(bid.is_none());
     }
 
     #[test]

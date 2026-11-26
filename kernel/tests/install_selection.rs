@@ -528,3 +528,32 @@ fn a_projector_beside_the_weights_or_at_the_root_wins_over_one_elsewhere() {
         set(&["Q4_K_M/model-Q4_K_M.gguf", "mmproj-model-F16.gguf"])
     );
 }
+
+#[test]
+fn an_original_inkling_2_checkpoint_keeps_every_file_its_loader_reads() {
+    // Inkling 2 Mini's repo as published, with its real sizes. The quantization
+    // sidecar names each expert's NVFP4/MXFP8 format, and the tokenizer reads
+    // its tiktoken model from a subdirectory.
+    let files = [
+        ("chat_template.jinja", 6_868),
+        ("config.json", 2_722),
+        ("generation_config.json", 98),
+        ("hf_quant_config.json", 67_924),
+        ("model-00001-of-00001.safetensors", 19_526_019_168),
+        ("model.safetensors.index.json", 109_300),
+        ("mtp.safetensors", 635_801_416),
+        ("processor_config.json", 461),
+        ("README.md", 54_898),
+        ("special_tokens_map.json", 529),
+        ("tiktoken/tokenizer.model", 3_386_494),
+        ("tokenizer_config.json", 13_235),
+        ("tokenizer.json", 26_178_678),
+    ];
+    let entries: Vec<(&str, Option<i64>)> = files
+        .iter()
+        .map(|(path, bytes)| (*path, Some(*bytes)))
+        .collect();
+    let picked = select(&siblings(&entries));
+    let every: Vec<&str> = files.iter().map(|(path, _)| *path).collect();
+    assert_eq!(names(&picked), set(&every));
+}

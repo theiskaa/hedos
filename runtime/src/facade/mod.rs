@@ -53,6 +53,10 @@ const DECISION_MODELS_MIGRATION: u32 = 2;
 /// runtime that cannot load them have been resolved.
 const AUDIO_MODELS_MIGRATION: u32 = 3;
 
+/// The registry level once the original Inkling 2 checkpoints an older shelf
+/// left unresolved have been resolved.
+const INKLING_MODELS_MIGRATION: u32 = 4;
+
 /// How many times the first read of a shelf runs one migration when another
 /// process keeps writing the store under it.
 const MIGRATION_ATTEMPTS: usize = 3;
@@ -571,6 +575,12 @@ impl Kernel {
                 &mut registry,
                 AUDIO_MODELS_MIGRATION,
                 ResolutionEngine::resolve_stranded_audio,
+            );
+            migrate(
+                &engine,
+                &mut registry,
+                INKLING_MODELS_MIGRATION,
+                ResolutionEngine::resolve_stranded_inkling,
             );
         }
         let generation = registry.generation();

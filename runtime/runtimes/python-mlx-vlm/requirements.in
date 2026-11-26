@@ -1,1 +1,3 @@
-mlx-vlm
+# Inkling 2 (Mini and Small, from their original checkpoints) first shipped in
+# 0.8.1.
+mlx-vlm>=0.8.1

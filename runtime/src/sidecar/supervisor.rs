@@ -354,9 +354,6 @@ impl SidecarSupervisor {
             };
             let object = value.as_object();
             match control_event(&value) {
-                Some("begin") => {
-                    let _ = tx.send(Ok(CapabilityChunk::Status("generating".to_owned())));
-                }
                 Some("text") => {
                     let text = string_field(object, "text");
                     let start = int_field(object, "t0_ms");

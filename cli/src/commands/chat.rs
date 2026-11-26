@@ -4,15 +4,14 @@
 use std::io::{BufRead, IsTerminal, Write};
 
 use clap::Args;
-use kernel::capabilities::CapabilityChunk;
 use kernel::records::{Capability, JsonValue, ModelRecord};
 
+use super::run;
 use crate::error::CliError;
 use crate::support::interactive;
 use crate::support::output::Out;
 use crate::support::payload::{self, message};
 use crate::support::session::Session;
-use crate::support::signals::Interrupts;
 
 /// Arguments for `chat`.
 #[derive(Args)]
@@ -85,34 +84,10 @@ pub(crate) async fn chat(
 
         history.push(message("user", prompt));
         let payload = chat_payload(&history, max_tokens);
-        let mut stream = session
-            .kernel
-            .invoke_with(&record.id, Capability::chat(), payload, system, None)
-            .await?;
-
-        let mut reply = String::new();
-        // One listener for the whole reply: a press between two turns of the
-        // loop would otherwise land on no listener and be lost.
-        let mut interrupts = Interrupts::new();
-        loop {
-            tokio::select! {
-                received = stream.recv() => match received {
-                    Some(result) => {
-                        if let CapabilityChunk::Text(chunk) = result? {
-                            out.raw(&chunk);
-                            reply.push_str(&chunk);
-                        }
-                    }
-                    None => break,
-                },
-                // Ctrl-C cuts the reply short and returns to the prompt.
-                () = interrupts.next() => break,
-            }
-        }
+        // Ctrl-C cuts the reply short and returns to the prompt.
+        let reply = run::stream_answer(session, record, payload, system, out).await?;
         if out.is_json() {
             out.json(&serde_json::json!({ "role": "assistant", "content": reply }));
-        } else {
-            out.raw("\n");
         }
         history.push(message("assistant", &reply));
     }

@@ -8,11 +8,13 @@ use kernel::artifacts::ArtifactStore;
 use kernel::discovery::{DiscoveredModel, ScanResult, StoreScanner};
 use kernel::jobs::JobHistoryStore;
 use kernel::records::{
-    Modality, ModelRecord, ModelSource, ModelState, Resolution, RuntimeId, SourceKind,
+    Capability, Modality, ModelRecord, ModelSource, ModelState, Resolution, RuntimeId, SourceKind,
 };
 use runtime::adapters::OllamaAdapter;
+use runtime::boot::{HedosDirs, build_kernel};
 use runtime::facade::{Kernel, RegisteredAdapter};
 use runtime::governor::{GovernorConfig, MemoryGovernor};
+use runtime::settings::Settings;
 use std::sync::Arc;
 use support::TempDir;
 
@@ -261,4 +263,159 @@ async fn an_index_of_a_variant_nobody_fetched_leaves_an_mlx_repo_resolved() {
     assert!(!tiny.downloading);
     assert_eq!(tiny.runtime.id, Some(mlx));
     assert_eq!(tiny.state, ModelState::Ready);
+}
+
+/// A cached Hugging Face repo `name` under `hub` at revision `r1`, holding
+/// `config` beside a plain (or, with `mlx`, an MLX) safetensors weight and the
+/// ModelOpt quantization sidecar.
+fn cached_checkpoint(hub: &std::path::Path, name: &str, config: serde_json::Value, mlx: bool) {
+    let repo = hub.join(format!("models--fixture--{name}"));
+    let snapshot = repo.join("snapshots/r1");
+    std::fs::create_dir_all(&snapshot).unwrap();
+    std::fs::create_dir_all(repo.join("refs")).unwrap();
+    std::fs::write(repo.join("refs/main"), "r1").unwrap();
+    std::fs::write(snapshot.join("config.json"), config.to_string()).unwrap();
+    std::fs::write(snapshot.join("hf_quant_config.json"), b"{}").unwrap();
+    let header = if mlx {
+        &br#"{"__metadata__":{"format":"mlx"}}"#[..]
+    } else {
+        &br#"{"__metadata__":{"format":"pt"}}"#[..]
+    };
+    let mut weight = (header.len() as u64).to_le_bytes().to_vec();
+    weight.extend(header);
+    std::fs::write(snapshot.join("model.safetensors"), weight).unwrap();
+}
+
+/// The unresolved record an older shelf kept for the cached repo `name`.
+fn stranded_record(hub: &std::path::Path, name: &str) -> ModelRecord {
+    let repo = hub.join(format!("models--fixture--{name}"));
+    let mut source = ModelSource::new(SourceKind::huggingface_cache(), &repo.to_string_lossy());
+    source.reference = Some("r1".to_owned());
+    let mut record = ModelRecord::new(
+        name,
+        Modality::text(),
+        vec![
+            Capability::chat(),
+            Capability::complete(),
+            Capability::see(),
+        ],
+        source,
+    );
+    record.state = ModelState::Unresolved;
+    record.primary_weight_path = Some(
+        repo.join("snapshots/r1/model.safetensors")
+            .to_string_lossy()
+            .into_owned(),
+    );
+    record
+}
+
+fn inkling_mini(is_varloop: bool) -> serde_json::Value {
+    serde_json::json!({
+        "architectures": ["Inkling2LoopForConditionalGeneration"],
+        "model_type": "inkling2_loop",
+        "vision_config": {},
+        "quantization_config": {"quant_method": "modelopt"},
+        "text_config": {"loop_config": {"is_varloop": is_varloop}},
+    })
+}
+
+#[tokio::test]
+async fn original_inkling_2_checkpoints_resolve_on_first_shelf_read_and_on_discovery() {
+    let apple_silicon = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let dir = TempDir::new();
+    let hub = dir.join("hub");
+    let small = serde_json::json!({
+        "architectures": ["Inkling2ForConditionalGeneration"],
+        "model_type": "inkling2",
+        "vision_config": {},
+    });
+    let other = serde_json::json!({
+        "architectures": ["Qwen2VLForConditionalGeneration"],
+        "model_type": "qwen2_vl",
+        "vision_config": {},
+    });
+    for (name, config, mlx) in [
+        ("Mini", inkling_mini(false), false),
+        ("MiniPinned", inkling_mini(false), false),
+        ("MiniPulling", inkling_mini(false), false),
+        ("Small", small, false),
+        ("Variable", inkling_mini(true), false),
+        ("OtherVision", other, false),
+        ("Mini4bit", inkling_mini(false), true),
+        ("VariableMlx", inkling_mini(true), true),
+    ] {
+        cached_checkpoint(&hub, name, config, mlx);
+    }
+
+    let dirs = HedosDirs {
+        data: dir.join("data"),
+    };
+    let mut registry = Registry::open(&dirs.sub("registry")).unwrap();
+    let mini = stranded_record(&hub, "Mini");
+    let other = stranded_record(&hub, "OtherVision");
+    let mut pinned = stranded_record(&hub, "MiniPinned");
+    pinned.runtime.resolved = Resolution::User;
+    let mut pulling = stranded_record(&hub, "MiniPulling");
+    pulling.downloading = true;
+    for record in [&mini, &other, &pinned, &pulling] {
+        registry.register(record.clone()).unwrap();
+    }
+    drop(registry);
+
+    let ready_on_mlx_vlm = |record: &ModelRecord| {
+        if apple_silicon {
+            assert_eq!(record.state, ModelState::Ready, "{}", record.name);
+            assert_eq!(
+                record.runtime.id,
+                Some(RuntimeId::mlx_vlm()),
+                "{}",
+                record.name
+            );
+            assert!(record.capabilities.contains(&Capability::chat()));
+            assert!(record.capabilities.contains(&Capability::see()));
+        } else {
+            assert_eq!(record.state, ModelState::Unresolved, "{}", record.name);
+        }
+    };
+
+    let kernel = build_kernel(&dirs, &Settings::default()).unwrap();
+    let shelf = kernel.shelf().await;
+    let find = |id: &str| shelf.iter().find(|model| model.id == id).unwrap().clone();
+    let migrated = find(&mini.id);
+    ready_on_mlx_vlm(&migrated);
+    assert_eq!(migrated.source, mini.source);
+    assert_eq!(migrated.primary_weight_path, mini.primary_weight_path);
+    assert_eq!(find(&other.id).state, ModelState::Unresolved);
+    assert_eq!(find(&pinned.id), pinned);
+    assert_eq!(find(&pulling.id), pulling);
+    assert_eq!(
+        Registry::open(&dirs.sub("registry"))
+            .unwrap()
+            .migration_level(),
+        4
+    );
+    assert!(Arc::ptr_eq(&shelf, &kernel.shelf().await));
+
+    let fresh = build_kernel(
+        &HedosDirs {
+            data: dir.join("fresh"),
+        },
+        &Settings::default(),
+    )
+    .unwrap();
+    fresh
+        .discover(vec![Box::new(kernel::discovery::HFCacheScanner::single(
+            &hub,
+        ))])
+        .await
+        .unwrap();
+    let shelf = fresh.shelf().await;
+    let named = |name: &str| shelf.iter().find(|model| model.name == name).unwrap();
+    ready_on_mlx_vlm(named("Mini"));
+    ready_on_mlx_vlm(named("Small"));
+    assert_eq!(named("Mini4bit").runtime.id, Some(RuntimeId::mlx_vlm()));
+    for name in ["Variable", "VariableMlx", "OtherVision"] {
+        assert_eq!(named(name).state, ModelState::Unresolved, "{name}");
+    }
 }

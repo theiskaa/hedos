@@ -135,6 +135,7 @@ while True:
             continue
         send_json({"event": "begin"})
         if content == "deaf":
+            send_json({"event": "status", "message": "Ignoring cancels"})
             time.sleep(5)
             send_json({"event": "done", "seconds": 5.0})
             continue
