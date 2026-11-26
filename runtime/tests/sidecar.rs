@@ -122,7 +122,9 @@ async fn streams_audio_with_the_handshake_sample_rate() {
     }
     assert_eq!(audio.len(), 3);
     assert_eq!(audio[0], vec![0u8; 640]);
-    assert!(statuses.iter().any(|s| s == "generating"));
+    // A generation starting is not a status of its own: only what the sidecar
+    // says reaches the caller.
+    assert_eq!(statuses, ["voice= speed=None"]);
     assert_eq!(stats.and_then(|s| s.duration_ms), Some(120));
     supervisor.shutdown_all().await;
 }
