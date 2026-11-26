@@ -342,7 +342,8 @@ async fn collect_reply(
 
 /// Stream the model's reply to `payload`, a spinner standing in until the
 /// first token; the whole reply, for callers that also report it as JSON.
-async fn stream_answer(
+/// Shared with `hedos chat`, which streams each of its turns this way.
+pub(crate) async fn stream_answer(
     session: &Session,
     record: &ModelRecord,
     payload: JsonValue,
@@ -369,7 +370,10 @@ async fn stream_answer(
                         out.raw(&chunk);
                         text.push_str(&chunk);
                     }
-                    CapabilityChunk::Status(status) => spinner.set(&status),
+                    // Once the answer is streaming the spinner is gone, and
+                    // setting it again would print a stray line into the reply.
+                    CapabilityChunk::Status(status) if text.is_empty() => spinner.set(&status),
+                    CapabilityChunk::Thinking(_) if text.is_empty() => spinner.set("Thinking…"),
                     _ => {}
                 },
                 None => break,
